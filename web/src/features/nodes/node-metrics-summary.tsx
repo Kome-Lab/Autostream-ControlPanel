@@ -1,4 +1,7 @@
 "use client";
+import { useUICopy } from "@/lib/i18n/ui-v2/use-ui-copy";
+import { japaneseCopy, type UICopy } from "@/lib/i18n/ui-v2/copy";
+
 
 import { Activity } from "lucide-react";
 import { formatDateTimeInTimeZone } from "@/lib/timezone";
@@ -14,13 +17,14 @@ export function formatNodeDateTime(value?: string, timezone?: string) {
   return formatDateTimeInTimeZone(value, timezone, { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
 }
 
-export function nodeReportedPlatform(node: WorkerNode) {
-  const os = node.reported_os || (node.configure_token_used_at ? "OS未取得" : "OS未取得（Configure待ち）");
-  const arch = node.reported_arch || (node.configure_token_used_at ? "Arch未取得" : "Arch未取得（Configure待ち）");
+export function nodeReportedPlatform(node: WorkerNode, uiText: UICopy = japaneseCopy) {
+  const os = node.reported_os || (node.configure_token_used_at ? uiText("OS未取得") : uiText("OS未取得（Configure待ち）"));
+  const arch = node.reported_arch || (node.configure_token_used_at ? uiText("Arch未取得") : uiText("Arch未取得（Configure待ち）"));
   return `${os} / ${arch}`;
 }
 
 export function NodeMetricsSummary({ node }: { node: WorkerNode }) {
+  const uiText = useUICopy();
   const metrics = node.metrics || {};
   const entries = Object.entries(metrics).filter(([, value]) => value !== "" && value !== null && value !== undefined);
   if (node.service_type === "observability") {
@@ -31,7 +35,7 @@ export function NodeMetricsSummary({ node }: { node: WorkerNode }) {
       <div className="min-w-0 text-sm">
         <div className="flex items-center gap-1.5">
           <Activity className="size-3.5 text-muted-foreground" />
-          {entries.length > 0 ? `${entries.length}項目` : "未受信"}
+          {entries.length > 0 ? uiText("{0}項目", entries.length) : uiText("未受信")}
         </div>
         <div className="text-xs text-muted-foreground">
           UP {formatMetricDuration(uptime)} / Go {formatMetricCount(goroutines)}
@@ -46,7 +50,7 @@ export function NodeMetricsSummary({ node }: { node: WorkerNode }) {
     <div className="min-w-0 text-sm">
       <div className="flex items-center gap-1.5">
         <Activity className="size-3.5 text-muted-foreground" />
-        {entries.length > 0 ? `${entries.length}項目` : "未受信"}
+        {entries.length > 0 ? uiText("{0}項目", entries.length) : uiText("未受信")}
       </div>
       <div className="text-xs text-muted-foreground">
         CPU {formatMetricPercent(cpu)} / MEM {formatMetricPercent(memory)}

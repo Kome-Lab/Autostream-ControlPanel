@@ -1,4 +1,6 @@
 "use client";
+import { useUICopy } from "@/lib/i18n/ui-v2/use-ui-copy";
+
 
 import { Trash2 } from "lucide-react";
 import { type ResourceDefinition } from "@/features/resources/resource-config";
@@ -22,7 +24,8 @@ export function DeleteResourceButton({
   permission?: string;
   onResult: (result: ResourceActionExecutionResult, intent: ResourceActionIntent) => void;
 }) {
-  const label = resourceRowLabel(row);
+  const uiText = useUICopy();
+  const label = resourceRowLabel(row, uiText);
   const actionID = resourceActionID(resource.path, "delete");
   if (!actionID) return null;
   const intent: ResourceActionIntent = Object.freeze({ id: actionID, row: Object.freeze({ ...row }), publicLabel: label });
@@ -30,7 +33,7 @@ export function DeleteResourceButton({
     <ResourceActionControl
       controller={controller}
       intent={intent}
-      label={`${label} を削除`}
+      label={uiText("{0} を削除", label)}
       disabled={disabled}
       buttonProps={{ variant: "destructive", size: "icon-sm" }}
       onResult={onResult}

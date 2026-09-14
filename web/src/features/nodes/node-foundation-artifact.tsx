@@ -1,4 +1,6 @@
 "use client";
+import { useUICopy } from "@/lib/i18n/ui-v2/use-ui-copy";
+
 
 import { useEffect, useEffectEvent, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useQueryClient } from "@tanstack/react-query";
@@ -185,11 +187,12 @@ function NodeFoundationRow({
   node: WorkerNode;
   onSucceeded: (intent: NodeActionIntent, value: unknown) => void | Promise<void>;
 }>) {
+  const uiText = useUICopy();
   const actions: readonly Readonly<{ id: "NOD-02" | "NOD-03" | "NOD-04" | "NOD-05"; label: string; icon: React.ReactNode }>[] = [
     { id: "NOD-02", label: "Configure Token", icon: <KeyRound className="size-4" /> },
     { id: "NOD-03", label: "Runtime Token", icon: <RotateCw className="size-4" /> },
-    { id: "NOD-04", label: "Node更新", icon: <Pencil className="size-4" /> },
-    { id: "NOD-05", label: "Node削除", icon: <Trash2 className="size-4" /> },
+    { id: "NOD-04", label: uiText("Node更新"), icon: <Pencil className="size-4" /> },
+    { id: "NOD-05", label: uiText("Node削除"), icon: <Trash2 className="size-4" /> },
   ];
   return (
     <section className="rounded-md border p-3">

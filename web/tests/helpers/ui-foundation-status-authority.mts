@@ -3,21 +3,24 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
+import type { StatusAuthority, StatusVocabulary } from "./status-authority-types.mts";
 import { verifyStatusAuthoritySourceLocators } from "./status-authority-locators.mts";
 
-export function readStatusAuthority(webRoot) {
-  return JSON.parse(readFileSync(
+export function readStatusAuthority(webRoot: string) {
+  const authority: unknown = JSON.parse(readFileSync(
     join(webRoot, "tests", "fixtures", "ui-foundation-status-authority.json"),
     "utf8",
   ));
+  assertStatusAuthority(authority);
+  return authority;
 }
 
-export function deriveStatusAuthorityDomains(authority) {
+export function deriveStatusAuthorityDomains(authority: StatusAuthority) {
   assert.equal(authority.schemaVersion, 1, "status authority schema changed");
   assert.equal(Array.isArray(authority.authorities), true, "authority source inventory is missing");
   assert.equal(Array.isArray(authority.vocabularies), true, "authority vocabulary inventory is missing");
 
-  const authorityIds = new Set();
+  const authorityIds = new Set<string>();
   for (const source of authority.authorities) {
     assert.equal(typeof source.id, "string");
     assert.equal(authorityIds.has(source.id), false, `duplicate authority ${source.id}`);
@@ -26,8 +29,8 @@ export function deriveStatusAuthorityDomains(authority) {
     authorityIds.add(source.id);
   }
 
-  const domains = new Map();
-  const vocabularyIds = new Set();
+  const domains = new Map<string, readonly string[]>();
+  const vocabularyIds = new Set<string>();
   for (const vocabulary of authority.vocabularies) {
     assert.equal(vocabularyIds.has(vocabulary.id), false, `duplicate vocabulary ${vocabulary.id}`);
     assert.equal(authorityIds.has(vocabulary.authorityId), true, `${vocabulary.id} has no source authority`);
@@ -39,7 +42,7 @@ export function deriveStatusAuthorityDomains(authority) {
     assert.equal(new Set(entries.map((entry) => entry.symbol)).size, entries.length, `${vocabulary.id} has duplicate symbols`);
     assert.equal(new Set(entries.map((entry) => entry.value)).size, entries.length, `${vocabulary.id} has duplicate values`);
     const bySymbol = new Map(entries.map((entry) => [entry.symbol, entry.value]));
-    const assignedSymbols = new Set();
+    const assignedSymbols = new Set<string>();
 
     for (const projection of vocabulary.domains) {
       assert.equal(domains.has(projection.name), false, `duplicate domain authority ${projection.name}`);
@@ -47,12 +50,15 @@ export function deriveStatusAuthorityDomains(authority) {
         ? entries.map((entry) => entry.symbol)
         : projection.symbols;
       assert.equal(Array.isArray(symbols), true, `${vocabulary.id}:${projection.name} has no symbols`);
-      const values = [];
+      assert.ok(symbols);
+      const values: string[] = [];
       for (const symbol of symbols) {
         assert.equal(bySymbol.has(symbol), true, `${vocabulary.id}:${projection.name} invents ${symbol}`);
         assert.equal(assignedSymbols.has(symbol), false, `${vocabulary.id} assigns ${symbol} twice`);
         assignedSymbols.add(symbol);
-        values.push(bySymbol.get(symbol));
+        const value = bySymbol.get(symbol);
+        assert.ok(value !== undefined);
+        values.push(value);
       }
       assert.equal(new Set(values).size, values.length, `${projection.name} contains duplicate values`);
       domains.set(projection.name, Object.freeze(values));
@@ -72,19 +78,20 @@ export function deriveStatusAuthorityDomains(authority) {
   return domains;
 }
 
-export function compareStatusMappingInventory(authority, mappingFixture) {
+export function compareStatusMappingInventory(authority: StatusAuthority, mappingFixture: { domains?: unknown; mappings?: unknown }) {
   const expected = deriveStatusAuthorityDomains(authority);
   const errors = [];
   const fixtureDomains = Array.isArray(mappingFixture.domains) ? mappingFixture.domains : [];
-  const mappings = Array.isArray(mappingFixture.mappings) ? mappingFixture.mappings : [];
+  const mappings: unknown[] = Array.isArray(mappingFixture.mappings) ? mappingFixture.mappings : [];
   if (!sameStrings(fixtureDomains, [...expected.keys()])) {
     errors.push("domain inventory differs from source authority");
   }
 
-  const actual = new Map();
-  const seen = new Set();
+  const actual = new Map<string, string[]>();
+  const seen = new Set<string>();
   for (const mapping of mappings) {
     if (!mapping || typeof mapping !== "object"
+      || !("domain" in mapping) || !("wireValue" in mapping)
       || typeof mapping.domain !== "string"
       || typeof mapping.wireValue !== "string") {
       errors.push("malformed mapping row");
@@ -108,9 +115,9 @@ export function compareStatusMappingInventory(authority, mappingFixture) {
   return Object.freeze(errors);
 }
 
-export function verifyStatusAuthoritySources(webRoot, authority) {
+export function verifyStatusAuthoritySources(webRoot: string, authority: StatusAuthority) {
   const controlPanelRoot = resolve(webRoot, "..");
-  const repositoryRoots = Object.freeze({
+  const repositoryRoots: Readonly<Record<string, string | undefined>> = Object.freeze({
     "Autostream-ControlPanel": controlPanelRoot,
     "Autostream-Contracts": process.env.AUTOSTREAM_STATUS_CONTRACTS_ROOT || resolve(controlPanelRoot, "..", "Autostream-Contracts"),
     "Autostream-Observability": resolve(controlPanelRoot, "..", "Autostream-Observability"),
@@ -121,14 +128,16 @@ export function verifyStatusAuthoritySources(webRoot, authority) {
   for (const source of authority.authorities) {
     const root = repositoryRoots[source.repository];
     assert.equal(typeof root, "string", `unknown authority repository ${source.repository}`);
+    assert.ok(typeof root === "string");
     if (["contracts", "control-panel-stream-store", "control-panel-auth-store"].includes(source.id)) {
       assert.equal(source.currentSource?.objectKind, "commit", `${source.id}: current code-commit source metadata is required after responsibility extraction`);
+      assert.ok(source.currentSource);
       assert.match(source.currentSource.revision, /^[a-f0-9]{40}$/);
       const commit = execFileSync("git", ["-C", root, "rev-parse", "--verify", `${source.currentSource.revision}^{commit}`], { encoding: "utf8" }).trim();
       assert.equal(commit, source.currentSource.revision, `${source.id}: current authority must name the exact code commit`);
       verifyStatusAuthoritySourceLocators(root, source.id, commit, source.currentSource.locators, authority.vocabularies);
       for (const locator of source.currentSource.locators) {
-        const current = execFileSync("git", ["-C", root, "cat-file", "blob", `HEAD:${locator.path}`]);
+        const current: Buffer = execFileSync("git", ["-C", root, "cat-file", "blob", `HEAD:${locator.path}`]);
         assert.equal(sha256(current), locator.sourceSha256, `${source.id}:${locator.path} current product source digest`);
       }
       verifiedSources += 1;
@@ -162,7 +171,7 @@ export function verifyStatusAuthoritySources(webRoot, authority) {
   });
 }
 
-function extractVocabulary(vocabulary) {
+function extractVocabulary(vocabulary: StatusVocabulary) {
   switch (vocabulary.parser) {
     case "go-typed-constants":
       return regexEntries(vocabulary.excerpt, /^\s*([A-Za-z]\w*)\s+[A-Za-z]\w*\s*=\s*"([^"]+)"\s*$/gm);
@@ -191,29 +200,62 @@ function extractVocabulary(vocabulary) {
   }
 }
 
-function regexEntries(source, pattern) {
+function regexEntries(source: string, pattern: RegExp) {
   return [...source.matchAll(pattern)].map((match) => Object.freeze({ symbol: match[1], value: match[2] }));
 }
 
-function quotedValues(source, prefix) {
+function quotedValues(source: string, prefix: string) {
   return valueEntries([...source.matchAll(/'([^']+)'/g)].map((match) => match[1]), prefix);
 }
 
-function valueEntries(values, prefix) {
+function valueEntries(values: readonly string[], prefix: string) {
   return [...new Set(values)].map((value) => Object.freeze({ symbol: `${prefix}:${value}`, value }));
 }
 
-function sameStrings(left, right) {
+function sameStrings(left: readonly unknown[], right: readonly unknown[]) {
   return left.length === right.length
     && new Set(left).size === left.length
     && new Set(right).size === right.length
     && [...left].sort().every((value, index) => value === [...right].sort()[index]);
 }
 
-function normalizeNewlines(value) {
+function normalizeNewlines(value: string) {
   return value.replace(/\r\n/g, "\n");
 }
 
-function sha256(value) {
+function sha256(value: string | Uint8Array) {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function record(value: unknown): asserts value is Record<string, unknown> {
+  assert.ok(value !== null && typeof value === "object" && !Array.isArray(value), "authority record is missing");
+}
+function strings(value: unknown): asserts value is string[] {
+  assert.ok(Array.isArray(value) && value.every(entry => typeof entry === "string"), "authority string inventory is missing");
+}
+function assertStatusAuthority(value: unknown): asserts value is StatusAuthority {
+  record(value); assert.equal(typeof value.schemaVersion, "number");
+  assert.ok(Array.isArray(value.authorities)); assert.ok(Array.isArray(value.vocabularies));
+  for (const source of value.authorities) {
+    record(source);
+    for (const key of ["id", "repository", "branch", "head", "path", "sourceSha256"]) assert.equal(typeof source[key], "string");
+    if (source.currentSource !== undefined) {
+      record(source.currentSource);
+      assert.equal(typeof source.currentSource.objectKind, "string"); assert.equal(typeof source.currentSource.revision, "string");
+      assert.ok(Array.isArray(source.currentSource.locators));
+      for (const locator of source.currentSource.locators) {
+        record(locator); assert.equal(typeof locator.path, "string"); assert.equal(typeof locator.sourceSha256, "string"); strings(locator.vocabularyIds);
+      }
+    }
+  }
+  for (const vocabulary of value.vocabularies) {
+    record(vocabulary);
+    for (const key of ["id", "authorityId", "symbol", "parser", "excerpt", "excerptSha256"]) assert.equal(typeof vocabulary[key], "string");
+    strings(vocabulary.sentinelSymbols); assert.ok(Array.isArray(vocabulary.domains));
+    for (const projection of vocabulary.domains) {
+      record(projection); assert.equal(typeof projection.name, "string");
+      if (projection.include !== undefined) assert.equal(typeof projection.include, "string");
+      if (projection.symbols !== undefined) strings(projection.symbols);
+    }
+  }
 }

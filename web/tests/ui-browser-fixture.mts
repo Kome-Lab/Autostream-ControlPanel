@@ -234,6 +234,8 @@ export function createBrowserRouteFixture(browser: BrowserHarness): BrowserRoute
       fixture.startReadinessMethods.push(method);
       return method === "POST" ? fixture.startReadinessResponse : { status: 405, body: { code: "method_not_allowed" } };
     }
+    // UI renewal section 7.1: the permission-gated Dashboard incident GET.
+    if (pathname === "/observability/incidents" && method === "GET") return { body: [], requiredResponse: false };
     if (pathname === "/service-health" && method === "GET") return { ...fixture.healthResponse, requiredResponse: fixture.healthResponse.requiredResponse ?? false };
     if (pathname === "/version" && method === "GET") return { ...fixture.versionFixture, requiredResponse: fixture.versionFixture.requiredResponse ?? false };
     if (pathname === "/auth/session/refresh" && method === "POST") return fixture.refreshResponse;

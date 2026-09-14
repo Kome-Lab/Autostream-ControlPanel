@@ -50,7 +50,7 @@ test("artifact polling stops as soon as an artifact is reported", () => {
 
 test("the empty archive state exposes a manual refresh action", () => {
   assert.match(archiveViewSource, /refreshArtifacts/);
-  assert.match(archiveViewSource, />\s*更新\s*</);
+  assert.match(archiveViewSource, /\{uiText\("更新"\)\}/);
   assert.match(archiveViewSource, /archiveArtifactPollInterval/);
 });
 

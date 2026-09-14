@@ -1,3 +1,5 @@
+
+import { useUICopy } from "@/lib/i18n/ui-v2/use-ui-copy";
 import type { Dispatch, SetStateAction } from "react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -33,12 +35,13 @@ export function NodeEditDialog({
   submitEditNode: () => void;
   t: ReturnType<typeof useI18n>["t"]
 }) {
+  const uiText = useUICopy();
   return (
 <Dialog open={Boolean(editingNode)} onOpenChange={(open) => (!open ? setEditingNode(null) : undefined)}>
         <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
-            <DialogTitle>Nodeを編集</DialogTitle>
-            <DialogDescription>Node IDとNode typeは変更できません。接続先を変えた場合は必要に応じてNode Agent側の設定も更新してください。</DialogDescription>
+            <DialogTitle>{uiText("Nodeを編集")}</DialogTitle>
+            <DialogDescription>{uiText("Node IDとNode typeは変更できません。接続先を変えた場合は必要に応じてNode Agent側の設定も更新してください。")}</DialogDescription>
           </DialogHeader>
           <div className="grid gap-4">
             <div className="grid gap-2">
@@ -63,20 +66,18 @@ export function NodeEditDialog({
                 </div>
                 <label className="flex items-center gap-2 text-sm">
                   <Checkbox checked={editForm.ssl_enabled} onCheckedChange={(value) => setEditForm((current) => ({ ...current, ssl_enabled: value === true }))} />
-                  SSLを有効化してHTTPSを使用
-                </label>
+                  {uiText("SSLを有効化してHTTPSを使用")}</label>
                 <div className="rounded-md border bg-muted/40 p-3 text-sm">
                   <div className="font-medium">Node Agent API URL</div>
-                  <div className="mt-1 break-all text-muted-foreground">{editNodeApiURL(editForm) || "Hostと1024〜65535のPortを入力してください"}</div>
+                  <div className="mt-1 break-all text-muted-foreground">{editNodeApiURL(editForm) || uiText("Hostと1024〜65535のPortを入力してください")}</div>
                 </div>
               </>
             ) : (
               <div className="rounded-md border bg-muted/40 p-3 text-sm text-muted-foreground">
-                Host Pull Agentは受信endpointを持ちません。Execution Host IDとtransport ownershipは別の移行操作で管理されます。
-              </div>
+                {uiText("Host Pull Agentは受信endpointを持ちません。Execution Host IDとtransport ownershipは別の移行操作で管理されます。")}</div>
             )}
             <div className="grid gap-2">
-              <label className="text-sm font-medium">説明</label>
+              <label className="text-sm font-medium">{uiText("説明")}</label>
               <Textarea value={editForm.description} onChange={(event) => setEditForm((current) => ({ ...current, description: event.target.value }))} rows={3} />
             </div>
           </div>
@@ -85,7 +86,7 @@ export function NodeEditDialog({
               {t("cancel")}
             </Button>
             <Button onClick={submitEditNode} disabled={!allowed || !editFormValid || updatePending}>
-              {updatePending ? "保存中" : "保存"}
+              {updatePending ? uiText("保存中") : uiText("保存")}
             </Button>
           </DialogFooter>
         </DialogContent>

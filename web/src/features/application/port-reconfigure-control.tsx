@@ -1,4 +1,8 @@
 "use client";
+import { fixedPresentationText } from "@/lib/i18n/ui-v2/presentation-copy";
+
+import { useUICopy } from "@/lib/i18n/ui-v2/use-ui-copy";
+
 
 import { useId, useRef, useState } from "react";
 import { LoaderCircle, ServerCog } from "lucide-react";
@@ -39,6 +43,7 @@ export function PortReconfigureControl({
   updaterAuthorityFreshness: UpdaterActionAuthority["freshness"];
   onRefreshAuthority: (context: PortReconfigureAuthorityContext) => Promise<UpdaterActionAuthority>;
 }) {
+  const uiText = useUICopy();
   const inputID = useId();
   const reasonID = `${inputID}-reason`;
   const advertisedInputID = `${inputID}-advertised`;
@@ -106,8 +111,8 @@ export function PortReconfigureControl({
     && (dockerMode ? advancedOpen && validDockerPorts : validPort && advertisedInputValid)
     && !advertisedOnly
     && !submitting;
-  const reasonMessage = portReconfigureReasonMessage(reason);
-  const operationResult = systemUpdatePortJobResultLabel(latestJob);
+  const reasonMessage = portReconfigureReasonMessage(reason, uiText);
+  const operationResult = fixedPresentationText(systemUpdatePortJobResultLabel(latestJob), uiText);
 
   const proposal: PortReconfigureProposal = dockerMode
     ? Object.freeze({
@@ -182,31 +187,30 @@ export function PortReconfigureControl({
     <div className="mt-3 space-y-2 rounded-md border bg-background/70 p-3">
       <div>
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="text-xs font-medium">サービスのポート変更</div>
-          {dockerMode ? <Badge variant={dockerPortMappingTone(target?.port_mapping?.state)}>{dockerPortMappingLabel(target?.port_mapping?.state)}</Badge> : null}
+          <div className="text-xs font-medium">{uiText("サービスのポート変更")}</div>
+          {dockerMode ? <Badge variant={dockerPortMappingTone(target?.port_mapping?.state)}>{dockerPortMappingLabel(target?.port_mapping?.state, uiText)}</Badge> : null}
         </div>
         <p className="text-xs text-muted-foreground">
-          local listener: {eligibility.currentLocalListenPort ?? "未報告"} · 広告endpoint: {eligibility.currentPort ?? "未報告"}
+          local listener: {eligibility.currentLocalListenPort ?? uiText("未報告")} {uiText("· 広告endpoint:")}{eligibility.currentPort ?? uiText("未報告")}
         </p>
       </div>
       <div className="space-y-1">
-        <label className="text-xs font-medium" htmlFor={`${inputID}-mode`}>変更する範囲</label>
+        <label className="text-xs font-medium" htmlFor={`${inputID}-mode`}>{uiText("変更する範囲")}</label>
         <select id={`${inputID}-mode`} value={portMode} onChange={(event) => setPortMode(event.target.value as SystemUpdatePortMode)}
           className="block rounded-md border bg-background p-2 text-sm" disabled={!canExecute || !eligibility.ready || submitting}>
-          <option value="local_only">local listenerのみ</option>
-          <option value="local_and_advertised">local listenerと広告endpoint</option>
+          <option value="local_only">{uiText("local listenerのみ")}</option>
+          <option value="local_and_advertised">{uiText("local listenerと広告endpoint")}</option>
         </select>
       </div>
       {dockerMode ? (
         <div className="space-y-2 rounded-md border border-blue-200 bg-blue-50/50 p-2 text-xs text-blue-950 dark:border-blue-900 dark:bg-blue-950/20 dark:text-blue-100">
           <div className="grid gap-1 sm:grid-cols-3">
-            <PortMappingValue label="広告endpoint" value={formatPort(eligibility.dockerMapping?.advertised_port)} />
-            <PortMappingValue label="localhost公開" value={`${eligibility.dockerMapping?.published_host_ip || "127.0.0.1"}:${formatPort(eligibility.dockerMapping?.published_port)}`} />
-            <PortMappingValue label="container待受" value={formatPort(eligibility.dockerMapping?.container_port)} />
+            <PortMappingValue label={uiText("広告endpoint")} value={formatPort(eligibility.dockerMapping?.advertised_port, uiText)} />
+            <PortMappingValue label={uiText("localhost公開")} value={`${eligibility.dockerMapping?.published_host_ip || "127.0.0.1"}:${formatPort(eligibility.dockerMapping?.published_port, uiText)}`} />
+            <PortMappingValue label={uiText("container待受")} value={formatPort(eligibility.dockerMapping?.container_port, uiText)} />
           </div>
           <p>
-            Docker published portは127.0.0.1固定です。公開originやreverse proxy設定は自動変更しません。広告endpointを別のportにする場合は、既存proxyの転送先を別途確認してください。
-          </p>
+            {uiText("Docker published portは127.0.0.1固定です。公開originやreverse proxy設定は自動変更しません。広告endpointを別のportにする場合は、既存proxyの転送先を別途確認してください。")}</p>
           <Button
             type="button"
             size="sm"
@@ -216,13 +220,13 @@ export function PortReconfigureControl({
             onClick={() => setAdvancedOpen((open) => !open)}
             disabled={!canExecute || !eligibility.ready || submitting}
           >
-            {advancedOpen ? "詳細設定を閉じる" : "Docker詳細設定を開く"}
+            {advancedOpen ? uiText("詳細設定を閉じる") : uiText("Docker詳細設定を開く")}
           </Button>
         </div>
       ) : null}
       <div id={`${inputID}-advanced`} className={dockerMode && !advancedOpen ? "hidden" : "space-y-2"}>
-        {portMode === "local_and_advertised" ? <PortInput id={advertisedInputID} label="広告endpointポート"
-          help="Host、TLS、URLのpathは維持します。広告だけの変更はできません。" value={newAdvertisedPort}
+        {portMode === "local_and_advertised" ? <PortInput id={advertisedInputID} label={uiText("広告endpointポート")}
+          help={uiText("Host、TLS、URLのpathは維持します。広告だけの変更はできません。")} value={newAdvertisedPort}
           onChange={setNewAdvertisedPort} valid={validAdvertisedPort} minimum={1} describedBy={reasonID}
           disabled={!canExecute || !eligibility.ready || submitting} /> : null}
         <div className={dockerMode ? "grid gap-2 sm:grid-cols-3" : "flex flex-wrap items-end gap-2"}>
@@ -230,8 +234,8 @@ export function PortReconfigureControl({
             <>
               <PortInput
                 id={publishedInputID}
-                label="localhost publishedポート"
-                help="Hostの127.0.0.1でDockerが公開するport"
+                label={uiText("localhost publishedポート")}
+                help={uiText("Hostの127.0.0.1でDockerが公開するport")}
                 value={newPublishedPort}
                 onChange={setNewPublishedPort}
                 valid={validPublishedPort}
@@ -241,8 +245,8 @@ export function PortReconfigureControl({
               />
               <PortInput
                 id={containerInputID}
-                label="container待受ポート"
-                help="Nodeプロセスがcontainer内でlistenするport"
+                label={uiText("container待受ポート")}
+                help={uiText("Nodeプロセスがcontainer内でlistenするport")}
                 value={newContainerPort}
                 onChange={setNewContainerPort}
                 valid={validContainerPort}
@@ -253,7 +257,7 @@ export function PortReconfigureControl({
             </>
           ) : (
             <div className="min-w-36 flex-1 space-y-1">
-              <label className="text-xs font-medium" htmlFor={inputID}>新しいlocal listenerポート</label>
+              <label className="text-xs font-medium" htmlFor={inputID}>{uiText("新しいlocal listenerポート")}</label>
               <Input
                 id={inputID}
                 type="number"
@@ -282,7 +286,7 @@ export function PortReconfigureControl({
             })}
             refreshAuthority={() => onRefreshAuthority({ targetID: actionIntent.resourceId, proposal })}
             handler={submitPortReconfigure}
-            label={unchanged ? "変更不要か確認" : "ポート変更"}
+            label={unchanged ? uiText("変更不要か確認") : uiText("ポート変更")}
             icon={submitting ? <LoaderCircle className="size-4 animate-spin" /> : <ServerCog className="size-4" />}
             disabled={!ready}
             aria-busy={submitting}
@@ -291,9 +295,9 @@ export function PortReconfigureControl({
         ) : null}
       </div>
       <div id={reasonID} className={reason === "request_ambiguous" || reason === "recovery_required" ? "text-xs text-destructive" : "text-xs text-muted-foreground"} role="status" aria-live="polite">
-        {reasonMessage || "現在のsnapshotを固定して送信します。同じ値の場合も実状態を確認してから結果を表示します。"}
+        {reasonMessage || uiText("現在のsnapshotを固定して送信します。同じ値の場合も実状態を確認してから結果を表示します。")}
       </div>
-      {operationResult ? <div className="text-xs font-medium">直近のポート変更結果: {operationResult}</div> : null}
+      {operationResult ? <div className="text-xs font-medium">{uiText("直近のポート変更結果:")}{operationResult}</div> : null}
     </div>
   );
 }

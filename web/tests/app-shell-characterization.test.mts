@@ -43,14 +43,16 @@ const expectedNavigation = [
 
 test("admin navigation keeps four groups and the established 26 entries", () => {
   const sectionKeys = [...navigationSource.matchAll(/key:\s*"(nav(?:Operations|Profiles|Monitoring|Administration))"/g)].map((match) => match[1]);
-  assert.deepEqual(sectionKeys, ["navOperations", "navProfiles", "navMonitoring", "navAdministration"]);
+  assert.deepEqual(sectionKeys, ["navOperations", "navMonitoring", "navProfiles", "navAdministration"]);
 
   const entries = [...navigationSource.matchAll(/navItem\(\s*"([^"]+)",\s*"([^"]+)",\s*[A-Za-z0-9]+,\s*\[([^\]]*)\]/g)].map((match) => [
     match[1],
     match[2],
     [...match[3].matchAll(/"([^"]+)"/g)].map((permission) => permission[1]),
   ]);
-  assert.deepEqual(entries, expectedNavigation);
+  // UI renewal 001 section 6.2 permits regrouping; exact entry/ANY-permission bindings remain.
+  const byHref = (a: readonly unknown[], b: readonly unknown[]) => String(a[0]).localeCompare(String(b[0]));
+  assert.deepEqual(entries.toSorted(byHref), [...expectedNavigation].sort(byHref));
 });
 
 test("navigation implementation retains the permission authority used by runtime browser coverage", () => {
@@ -60,7 +62,7 @@ test("navigation implementation retains the permission authority used by runtime
 });
 
 test("desktop and mobile navigation retain shared state plumbing for runtime browser coverage", () => {
-  assert.match(shellSource, /max-lg:hidden/);
+  assert.match(shellSource, /max-xl:hidden/);
   assert.match(shellSource, /SheetContent[\s\S]*side="left"/);
   assert.match(shellSource, /SheetClose asChild/);
   assert.match(shellSource, /sectionState=\{synchronizedNavigationSectionsState\}/);

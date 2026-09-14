@@ -1,4 +1,6 @@
 "use client";
+import { useUICopy } from "@/lib/i18n/ui-v2/use-ui-copy";
+import { fixedPresentationText } from "@/lib/i18n/ui-v2/presentation-copy";
 
 import { useCallback, useId, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -33,6 +35,7 @@ export function StreamControlPlatformPanel({ stream }: { stream: Stream }) {
   const serviceHealth = useServiceHealth();
   const [notice, setNotice] = useState("");
   const [needsReconciliation, setNeedsReconciliation] = useState(false);
+  const uiText = useUICopy();
   const showReasonID = useId();
   const hideReasonID = useId();
   const visual = useQuery({
@@ -84,7 +87,7 @@ export function StreamControlPlatformPanel({ stream }: { stream: Stream }) {
     },
     onError: (error) => {
       setNeedsReconciliation(!(error instanceof CoverActionUnavailable));
-      setNotice(error instanceof CoverActionUnavailable ? error.message : t(adaptAPIError(error).messageKey));
+      setNotice(error instanceof CoverActionUnavailable ? fixedPresentationText(error.message, uiText) : t(adaptAPIError(error).messageKey));
     },
   });
 
@@ -102,8 +105,8 @@ export function StreamControlPlatformPanel({ stream }: { stream: Stream }) {
   const show = coverActionAvailability(true, permission, action.isPending, capability, reconcileRequired);
   const hide = coverActionAvailability(false, permission, action.isPending, capability, reconcileRequired);
   const coverStateUnavailableReason = locale === "ja" ? "Video Coverの状態を取得できるまで操作できません。" : "Video Cover controls are unavailable until its state is loaded.";
-  const showReason = !cover.data ? coverStateUnavailableReason : !show.allowed ? show.reason : "";
-  const hideReason = !cover.data ? coverStateUnavailableReason : !hide.allowed ? hide.reason : "";
+  const showReason = !cover.data ? coverStateUnavailableReason : !show.allowed ? fixedPresentationText(show.reason, uiText) : "";
+  const hideReason = !cover.data ? coverStateUnavailableReason : !hide.allowed ? fixedPresentationText(hide.reason, uiText) : "";
   const presentation = visualPresentation(visual.data, stream.name, locale);
   const mismatch = cover.data && (cover.data.applied_revision !== cover.data.desired_revision || cover.data.applied_active !== cover.data.desired_active);
   const issue = (active: boolean, hideConfirmed = false) => {

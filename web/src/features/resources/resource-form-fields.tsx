@@ -1,4 +1,6 @@
 "use client";
+import { useUICopy } from "@/lib/i18n/ui-v2/use-ui-copy";
+
 
 import { type ResourceDefinition } from "@/features/resources/resource-config";
 import { type SubmitResource, type ResourceRow } from "./resource-form-types";
@@ -11,6 +13,7 @@ import { UserForm, RoleForm } from "./resource-access-forms";
 import { NotificationChannelForm } from "./resource-notification-form";
 
 export function ResourceFormFields({ resource, disabled, submit, initial, submitLabel }: { resource: ResourceDefinition; disabled: boolean; submit: SubmitResource; initial?: ResourceRow; submitLabel?: string }) {
+  const uiText = useUICopy();
   switch (resource.form) {
     case "encoder-profile":
       return <EncoderProfileForm disabled={disabled} submit={submit} initial={initial} submitLabel={submitLabel} />;
@@ -41,6 +44,6 @@ export function ResourceFormFields({ resource, disabled, submit, initial, submit
     case "security-settings":
       return null;
     default:
-      return <p className="text-sm text-muted-foreground">このリソースは一覧確認のみ対応しています。</p>;
+      return <p className="text-sm text-muted-foreground">{uiText("このリソースは一覧確認のみ対応しています。")}</p>;
   }
 }

@@ -1,3 +1,5 @@
+
+import { japaneseCopy, type UICopy } from "@/lib/i18n/ui-v2/copy";
 import { isUpdaterHostBootstrapJobActive, updaterHostBootstrapEligibility } from "@/lib/updater-bootstrap";
 
 
@@ -6,16 +8,16 @@ export type Feedback = {
   message: string;
 };
 
-export function bootstrapResultSafeMessage(status?: string) {
+export function bootstrapResultSafeMessage(status?: string, uiText: UICopy = japaneseCopy) {
   const messages: Record<string, string> = {
-    succeeded: "検証済みhelperの導入と動作確認が完了しました。",
-    failed: "セットアップは完了しませんでした。状態を再取得し、安全な手順で確認してください。",
-    partial_failed: "一部の手順が完了しませんでした。状態を再取得して確認してください。",
-    credential_expired: "一時認証情報の有効期間が終了しました。再実行時は新しい認証情報を入力してください。",
-    running: "暗号化された要求を独立Updaterが処理しています。",
-    queued: "独立Updaterでの処理開始を待っています。",
+    succeeded: uiText("検証済みhelperの導入と動作確認が完了しました。"),
+    failed: uiText("セットアップは完了しませんでした。状態を再取得し、安全な手順で確認してください。"),
+    partial_failed: uiText("一部の手順が完了しませんでした。状態を再取得して確認してください。"),
+    credential_expired: uiText("一時認証情報の有効期間が終了しました。再実行時は新しい認証情報を入力してください。"),
+    running: uiText("暗号化された要求を独立Updaterが処理しています。"),
+    queued: uiText("独立Updaterでの処理開始を待っています。"),
   };
-  return messages[String(status || "").toLowerCase()] || "セットアップ状態を独立Updaterから取得しました。";
+  return messages[String(status || "").toLowerCase()] || uiText("セットアップ状態を独立Updaterから取得しました。");
 }
 
 export function eligibilityStatus(reason: ReturnType<typeof updaterHostBootstrapEligibility>["reason"] | undefined, statusKnown: boolean) {

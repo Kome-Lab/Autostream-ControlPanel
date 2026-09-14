@@ -1,0 +1,2937 @@
+{
+  "base_commit": "b266aabb896f0df9880a0354c1135130d6938e8d",
+  "protected": [
+    {
+      "path": "authoring/README.md",
+      "sha256": "6dcdf99150304dc9abb9d09be02839dbbb7583f1eab4843d9e6de5d7f2c7eab6"
+    },
+    {
+      "path": "authoring/artifact-layout.json",
+      "sha256": "d75688aecfbf98110fe87ddc346f45c4f1e19122855e38cefbeb464a678dc30e"
+    },
+    {
+      "path": "authoring/install-autostream-control-panel/account-installation.sh.inc",
+      "sha256": "7f7153ccfb5dd4749bc3179ed2ec7bc418d16dcaa8e256d47b8b8d0338170897"
+    },
+    {
+      "path": "authoring/install-autostream-control-panel/account-rollback.sh.inc",
+      "sha256": "f940a2e1103054e6d71ec7aea61ce52dcf3cbc38b0e96b2f4ef5a2e80afd0a1f"
+    },
+    {
+      "path": "authoring/install-autostream-control-panel/artifact-verification.sh.inc",
+      "sha256": "de5c1a9ae53d5efa2fcb0c2ffab08bbab21d7a340c031d1403ad961f749f1102"
+    },
+    {
+      "path": "authoring/install-autostream-control-panel/backup-link-rollback.sh.inc",
+      "sha256": "b96973255f210fa4cc6a6578e8affc865e20982c9fbf0ec8c673284ed50b6f60"
+    },
+    {
+      "path": "authoring/install-autostream-control-panel/cleanup.sh.inc",
+      "sha256": "76c431a5256fd9219e8cecc1679d0d5b32b020b869e1071b5bb03c8cf8e2c069"
+    },
+    {
+      "path": "authoring/install-autostream-control-panel/directory-journal.sh.inc",
+      "sha256": "6cd5f3c7610d97bf4ccbdada54152a02e2f63d4ada1fc996e6ae0f7b13386426"
+    },
+    {
+      "path": "authoring/install-autostream-control-panel/lock-boundaries.sh.inc",
+      "sha256": "a8eb79a07ef43c3002bff5b2d1abe44b76679593083a04e1741bfce331e298b8"
+    },
+    {
+      "path": "authoring/install-autostream-control-panel/preflight-input.sh.inc",
+      "sha256": "292880e46de0e92feb9f2f2b35cdb97438e58ce13928a420d81f0aba9d245329"
+    },
+    {
+      "path": "authoring/install-autostream-control-panel/public-activation.sh.inc",
+      "sha256": "8f969d57b3799357efe47e6516eed5c55784a0ceb9a14baafa5ba4f4e0e66f82"
+    },
+    {
+      "path": "authoring/install-autostream-control-panel/release-configuration.sh.inc",
+      "sha256": "b0068c36fc3e0dac32950da862eac4941840407a2fbbd83951eed97c02287bef"
+    },
+    {
+      "path": "cmd/control-panel/main.go",
+      "sha256": "c0edb14ce5174861f0d90af8437109316e98d913fb958504b217715858b57ad4"
+    },
+    {
+      "path": "cmd/control-panel/main_test.go",
+      "sha256": "27972593a916ca4a0d5cde414b93f39f159e40775151b83279a19b21f6fc46e7"
+    },
+    {
+      "path": "go.mod",
+      "sha256": "66aba3ffaeb2a4ccb042784bf1f3f08bea320d4e098cb87569b65ef2efd8d85c"
+    },
+    {
+      "path": "go.sum",
+      "sha256": "0b87713e3959cf3b837e7cc1de19fe671d3ae3ff8120bcd162e1b139efcf8683"
+    },
+    {
+      "path": "internal/database/archive_mapping.go",
+      "sha256": "a1a5f32de0992a1212707e36ed25703b3c4cb3cd68443682c1e380111f6c2def"
+    },
+    {
+      "path": "internal/database/archive_mapping_mariadb_test.go",
+      "sha256": "ceec38ecb6e6fdbdd5658a6867ab808aab5194c3624b1be4cbc28dd80318d01e"
+    },
+    {
+      "path": "internal/database/bundle8b_physical_eol_mariadb_test.go",
+      "sha256": "b33ca85e04fe3e441f7ce51f71b4c468de588bea601db06788de6f9d95c8ee0a"
+    },
+    {
+      "path": "internal/database/bundle8b_resume.go",
+      "sha256": "c5e6c88a5fb670d5da24879cf24cc3bab800dcb100e419eeb141ef2383377161"
+    },
+    {
+      "path": "internal/database/bundle8b_review_regression_test.go",
+      "sha256": "ebdf6d2414be6f9ba7ae3a48ee6a670811de695312eecdf272c52043392323d6"
+    },
+    {
+      "path": "internal/database/control_platform_features_migration_test.go",
+      "sha256": "9064b8831e92e27dc15ab3af36e4b88ef8b7b2eb04db0a983e8af27268c68843"
+    },
+    {
+      "path": "internal/database/database.go",
+      "sha256": "ed1c007a1dd34fb9742ec546b796b1aa44c698e4e4c0e2686d183be7e9d4f67a"
+    },
+    {
+      "path": "internal/database/database_test.go",
+      "sha256": "21b28d8669b1e6ef9fe838a012ff0225bdabbe1bb2b27394406de9e3aac7360d"
+    },
+    {
+      "path": "internal/database/discord_stream_stop_scope_migration_test.go",
+      "sha256": "845f49b5a28ac81bf35b439150d522ec657a100d6f9d4b08a0da9580a5d3e833"
+    },
+    {
+      "path": "internal/database/docker_port_reconfiguration_migration_test.go",
+      "sha256": "f8b6f417c6dd25e82954096593a341aed5a7280df513786eabd874f978d3217d"
+    },
+    {
+      "path": "internal/database/legacy_discord_configure_token_migration_test.go",
+      "sha256": "743c2e27d87d7f4f811aef6d3e55186dc9bdbd4f60f9e6a2e2b214c265d5fba7"
+    },
+    {
+      "path": "internal/database/migrations.go",
+      "sha256": "34702e4f8ef26d20df746c6489c52771c0d0e761ae7c087007665d3afedbaf72"
+    },
+    {
+      "path": "internal/database/migrations/001_init.sql",
+      "sha256": "c8919eee7f47d263f6556b1019c93a9220a80c2ed57c535da0cb417e486365e9"
+    },
+    {
+      "path": "internal/database/migrations/002_profiles.sql",
+      "sha256": "7508d4b38f8cffd971a9b7ccfe619093c31124b8ddef8cccbdadbdaf3021e705"
+    },
+    {
+      "path": "internal/database/migrations/003_security_settings_secrets.sql",
+      "sha256": "07322e309e3d6a2e29361f8f333e3b74ef179dffe504febce80d194d07e175b1"
+    },
+    {
+      "path": "internal/database/migrations/004_service_metrics.sql",
+      "sha256": "1023bd948e75a37da8f9200376a26da97c885ff237c4879b6e865aa9e37344fb"
+    },
+    {
+      "path": "internal/database/migrations/005_stream_artifacts_unique_key.sql",
+      "sha256": "cde23462d0661e5ff7223224a2c93eab444d43e8fe166e8f97761780e944ce91"
+    },
+    {
+      "path": "internal/database/migrations/006_mfa.sql",
+      "sha256": "751cfe1280ac1d7e472b338bbe9c234f9b3ea612087897e5682d33ad17f5ff54"
+    },
+    {
+      "path": "internal/database/migrations/007_integration_registry.sql",
+      "sha256": "675c75c89d5c7e09a01740d1650b443d87579517602f43d16bf32c593a8e7297"
+    },
+    {
+      "path": "internal/database/migrations/008_service_assignment_roles.sql",
+      "sha256": "35dacf2a793ce8814de9dc913b24cc47115c30dbe2ef68c873f443da7ae795a0"
+    },
+    {
+      "path": "internal/database/migrations/008_stream_youtube_runtimes.sql",
+      "sha256": "3e8cdd8f9353eb839f6707645529bd95e0138502e09d6206078b8d23d8db177e"
+    },
+    {
+      "path": "internal/database/migrations/009_stream_youtube_runtime_oauth_account.sql",
+      "sha256": "93a7196d17ab5cf255154fd734dba5d1b1e49aaec955cd5568172f8a2eb289af"
+    },
+    {
+      "path": "internal/database/migrations/010_oauth_login.sql",
+      "sha256": "8f787a4a38b25b23b9818b7632b4eb4eb361827b2592f7a9e0776ec1304e0006"
+    },
+    {
+      "path": "internal/database/migrations/011_super_admin_integration_permissions.sql",
+      "sha256": "33ea034f55ffaebc09694dc072a13d3005dfbaf5369f21c2213b17f1858a292e"
+    },
+    {
+      "path": "internal/database/migrations/012_stream_settings.sql",
+      "sha256": "1a8f8c05e5bf3328beb55cdaab92e8b1b4412410cad6f0edfd83e85d92b917ab"
+    },
+    {
+      "path": "internal/database/migrations/013_stream_discord_overrides.sql",
+      "sha256": "47d881aae4900aea5cd320b0e53d449486ecaa0851599b12fa61d6ce9997f4ab"
+    },
+    {
+      "path": "internal/database/migrations/014_oauth_provider_auto_provision.sql",
+      "sha256": "d69c3073331a5cf5efefc637b32abeb3bfc88fd9bc0ee731ef6c2261921e71ed"
+    },
+    {
+      "path": "internal/database/migrations/015_webauthn_credentials.sql",
+      "sha256": "5fb58ae152806ddfe90942283c11a6ba92a496a7ed0e3851dcdf8c984db750f5"
+    },
+    {
+      "path": "internal/database/migrations/016_webauthn_registration_challenges.sql",
+      "sha256": "eb4367751f057ba8f5a00b8e41de4befcfe6faa47131123a71d6620f9cfe972f"
+    },
+    {
+      "path": "internal/database/migrations/017_webauthn_ceremony_sessions.sql",
+      "sha256": "9d4d6b985fcda08fdf137ee2a7d48b3180af6d79d68b0f41125fc9674331427e"
+    },
+    {
+      "path": "internal/database/migrations/018_webauthn_ceremony_sessions_nullable_user.sql",
+      "sha256": "d6cc325e46006ae6e5532e4653d1f7721964b1679ea4ee1f241d7a6ea4d05d0a"
+    },
+    {
+      "path": "internal/database/migrations/019_runtime_secret_leases.sql",
+      "sha256": "d0aeb1c04e6677f2d36357a6cdd36f0484f5667e99e37751463a7e611ac67f12"
+    },
+    {
+      "path": "internal/database/migrations/020_stream_youtube_runtime_complete_on_stop.sql",
+      "sha256": "9e7187420e4a174d3029e290097d38f77c6b32fa8afa31ffad2e43590e8b57f2"
+    },
+    {
+      "path": "internal/database/migrations/021_stream_youtube_runtime_stream_key_secret.sql",
+      "sha256": "fa074fdd79fd562fa33bd2d2012a41ba3a2766e53c1ebb4ded26b88dda595da5"
+    },
+    {
+      "path": "internal/database/migrations/022_service_remediation_executions.sql",
+      "sha256": "0067804805166fef0722c09aa2c939c8657dae46dee3e867d5b0dac251ad6389"
+    },
+    {
+      "path": "internal/database/migrations/023_stream_youtube_runtime_complete_retry.sql",
+      "sha256": "95a59febf8d5f48d050e4d3bdcc07273fba453f134d9019f3c6ff02675401aca"
+    },
+    {
+      "path": "internal/database/migrations/024_stream_youtube_runtime_rtmp_url.sql",
+      "sha256": "1e4fa0147ddf330ffdead791d3d538b210dc217c11d1296ea49818ed5b1e3515"
+    },
+    {
+      "path": "internal/database/migrations/025_node_agent_registration.sql",
+      "sha256": "f0ff16f6e76bda0aba1f055ec18f2a408af4d7fd5c8d8bfcc1d88ebffa1a3cac"
+    },
+    {
+      "path": "internal/database/migrations/026_stream_archive_direct_settings.sql",
+      "sha256": "7516883c591008e7d2933fd88f1543011e22398961934d9fab79378890dfcd1c"
+    },
+    {
+      "path": "internal/database/migrations/027_oauth_login_state_requested_scopes.sql",
+      "sha256": "074b928e49506cfb599629952dcf0beb34055e679f6975b6cd6d3980f28ae40c"
+    },
+    {
+      "path": "internal/database/migrations/028_oauth_login_state_purpose.sql",
+      "sha256": "b9c9d1c4949752bc96c73ee090fb7ca0e848c6708d2ced0d73bdd8ebdd55c3d8"
+    },
+    {
+      "path": "internal/database/migrations/029_user_email.sql",
+      "sha256": "236ba924d907609e65f966def6f7f77561741283de4ff2688fb0bbeab9f77217"
+    },
+    {
+      "path": "internal/database/migrations/030_stream_auto_start_trigger.sql",
+      "sha256": "de0cc4b16d144d6e7d9bd70f6db61dbc14e3584f571fc82c8ffbf8219e30e82f"
+    },
+    {
+      "path": "internal/database/migrations/031_stream_schedule.sql",
+      "sha256": "2384c166a9a2edcadfefd486b3bad0e7e9070f998e5521b3b4feb06a295d5bd4"
+    },
+    {
+      "path": "internal/database/migrations/032_email_change_challenges.sql",
+      "sha256": "13b56ad035eadcdbf129bfdd6489d1ffc7dbbdd46b20714364d5e53d2fe6c620"
+    },
+    {
+      "path": "internal/database/migrations/033_oauth_login_state_account_label.sql",
+      "sha256": "e34936853ea0d2ddf33ea3d11c288035949030020b8be564ae1d4e561f35d6c2"
+    },
+    {
+      "path": "internal/database/migrations/034_service_metric_snapshots.sql",
+      "sha256": "6fdec83b313871f38fa51ed3c310d1f5ac6267a9bc08c0217a4c002bb55846f5"
+    },
+    {
+      "path": "internal/database/migrations/035_service_reported_build_metadata.sql",
+      "sha256": "d12f796a79ca6d80f5531f5d2e03db6845bcca8ed98ce87d051c76db9a48990f"
+    },
+    {
+      "path": "internal/database/migrations/036_stream_artifact_shares.sql",
+      "sha256": "64bf6634bb1806f898f54046cae2c1f803811be0d8bddcaf1bdb916d2fbb82d8"
+    },
+    {
+      "path": "internal/database/migrations/037_user_avatars.sql",
+      "sha256": "ba5955eb857281ec8c822d0f7082e63314cb3b090a2bcfb5e06181dffea7d166"
+    },
+    {
+      "path": "internal/database/migrations/038_audit_result.sql",
+      "sha256": "ba846a4c2f475fc3d84913ca6b647cdd17dc6863ffa751e5d1806d0442fe0894"
+    },
+    {
+      "path": "internal/database/migrations/039_system_update_jobs.sql",
+      "sha256": "2a673780054227d92c70172478d70fc91bfb5b3cb600a344e8db56c8f3d2978d"
+    },
+    {
+      "path": "internal/database/migrations/040_system_update_host_slots.sql",
+      "sha256": "1d0b5b85d4ab0e13dbac096d7a7c88c0cecb19783db7306ec5a4ddca66d560e3"
+    },
+    {
+      "path": "internal/database/migrations/041_system_update_mutation_grants.sql",
+      "sha256": "4215d26c97583ac359479fd64aad52278dbbdcbe8234ecffb459f057741ece94"
+    },
+    {
+      "path": "internal/database/migrations/042_update_agent_staged_token.sql",
+      "sha256": "e202a0cc3a2d778a7e9c0e571a1f90ecfa0a63adab64a8717e09375775f47442"
+    },
+    {
+      "path": "internal/database/migrations/043_update_agent_policies.sql",
+      "sha256": "d42bb1a0b11498477f480addfd4978cbf5d10770487e597fa0e5b289e6b199f9"
+    },
+    {
+      "path": "internal/database/migrations/044_service_endpoint_state.sql",
+      "sha256": "cb5527b4d1d2567c1c525dc47dd31b0d55f3127a5358a34e4dab9ff10ffc722f"
+    },
+    {
+      "path": "internal/database/migrations/045_system_update_execution_hosts.sql",
+      "sha256": "7967b2c902ad8305ef79d715e05ded6804a63ded00e1a5c226eae38f27f7d59f"
+    },
+    {
+      "path": "internal/database/migrations/046_service_port_reservations.sql",
+      "sha256": "a30bcc405ccfba28b91281fe770e277a6dc4e142d93e033507657a25db58feb2"
+    },
+    {
+      "path": "internal/database/migrations/047_system_update_job_ownership_fence.sql",
+      "sha256": "4b8a87f03f2909d3d4a88bac0a124a367dc834fc3f30a91330e21ad0fce32d02"
+    },
+    {
+      "path": "internal/database/migrations/048_system_update_mutation_grant_ownership_fence.sql",
+      "sha256": "049a950c37d3b5112e435689c2a13178fb85169be0e226591250bcbb56395baa"
+    },
+    {
+      "path": "internal/database/migrations/049_systemd_port_reconfiguration.sql",
+      "sha256": "dd4d75950d48c133646729d380c41ad1c84dfd5578e189b275c905f719cb0789"
+    },
+    {
+      "path": "internal/database/migrations/050_system_update_active_host_index.sql",
+      "sha256": "1089b8309f55f2367323dd543eb576f3e660f2b3449ed575d5737fe3b0500c2b"
+    },
+    {
+      "path": "internal/database/migrations/051_system_update_source_policy_revision.sql",
+      "sha256": "a27e4cceb27dcedb8caf0e857d235c1589ca08db8ff1989c77e5f9ac80cfd45b"
+    },
+    {
+      "path": "internal/database/migrations/052_system_update_runtime_token_rotations.sql",
+      "sha256": "96d9e2172174d82e2a3b055f78053507be3e8fb22d7a1d05199aa6c6579f890e"
+    },
+    {
+      "path": "internal/database/migrations/053_system_update_host_self_updates.sql",
+      "sha256": "5b0d525be34475acdf6213422c96ad71373e2bcaad00803b38842b1531473f1a"
+    },
+    {
+      "path": "internal/database/migrations/054_docker_port_reconfiguration.sql",
+      "sha256": "13b64b74ad3084dd8fdb2a91d19ac1c93f30419bd2dda3845f3af3c17595a716"
+    },
+    {
+      "path": "internal/database/migrations/055_runtime_token_rotation_terminal_scrub.sql",
+      "sha256": "25a2f389eae4c8f9cdcb36bfd70ea54e88a0b4f4ff1ee88d9ac21aa633543bee"
+    },
+    {
+      "path": "internal/database/migrations/056_docker_port_reconfiguration_independent_changes.sql",
+      "sha256": "b5b76964f87b498c80907f5b5072b1a2d74335ea66dc3fd5ceb8d9abbab658fc"
+    },
+    {
+      "path": "internal/database/migrations/057_host_self_update_grant_release_binding.sql",
+      "sha256": "afee91b5a5206f9cf264b28ccc9d6d156b23b3077f4225bc7dc5d52af07365e1"
+    },
+    {
+      "path": "internal/database/migrations/058_system_update_legacy_agent_owner.sql",
+      "sha256": "d7d5e6207fb8bd382cc756a00641a74f7242c8b746cc23edeb58345cee6e3c37"
+    },
+    {
+      "path": "internal/database/migrations/059_update_agent_target_databases.sql",
+      "sha256": "3457a802de7990007079c54332791828046e2233a9fb922b222c942f4c9189e7"
+    },
+    {
+      "path": "internal/database/migrations/060_update_agent_target_local_listeners.sql",
+      "sha256": "2dfd00e71dc576ee1e642513fadfb51f53e62fe3243257bc67ea794b45ee1556"
+    },
+    {
+      "path": "internal/database/migrations/061_oauth_account_refresh_token_updated_at.sql",
+      "sha256": "dcfedca76108c06ef445eef23b6b7c1a21f7fc2102f606cabd3d706f9785124c"
+    },
+    {
+      "path": "internal/database/migrations/062_oauth_login_state_target_account.sql",
+      "sha256": "f06376866f349043d2c7f1a61261be497ff1218d87621c70b0020f50c196226e"
+    },
+    {
+      "path": "internal/database/migrations/063_oauth_account_access_token_refreshed_at.sql",
+      "sha256": "f9aee81b3857a1c02831e7fa1783bb7305240ab3ffe5234cee8c59e7c44f0e4a"
+    },
+    {
+      "path": "internal/database/migrations/064_oauth_account_access_token_refresh_status.sql",
+      "sha256": "cd4aa7141aaaf5a630611f9aab2c8ab711e881b8498e4d4c2ea621eff5292292"
+    },
+    {
+      "path": "internal/database/migrations/065_revoke_legacy_discord_configure_tokens.sql",
+      "sha256": "b862e51abc8b135bf171f37289aa8414499ddfbdc49fc86f1b3bb0e28a1788ce"
+    },
+    {
+      "path": "internal/database/migrations/066_stream_youtube_relay_binding_claims.sql",
+      "sha256": "f52a9e10a43f3752f8ee3a3e45364a1235f50eb309d8aa6b5d22b2d71bdaafdc"
+    },
+    {
+      "path": "internal/database/migrations/067_stream_youtube_relay_binding_claim_prepare_state.sql",
+      "sha256": "d156841ad8d2739767ae8979b9fbf323b57a3b1b529f4d63ec7bc6a2280c894e"
+    },
+    {
+      "path": "internal/database/migrations/068_stream_discord_youtube_live_notification_outbox.sql",
+      "sha256": "4359d25018876f6e01aab763f1711997198efee20756b90b3af1ef81393f6fbf"
+    },
+    {
+      "path": "internal/database/migrations/069_pair_discord_stream_stop_scope.sql",
+      "sha256": "3560205f7c63a8bd7f0ca12fd274f94334b5280afcc7adf6030e62e443baac43"
+    },
+    {
+      "path": "internal/database/migrations/070_stream_status_lifecycle.sql",
+      "sha256": "7ed517ccba450fa93146ddba0809280ad154e37d5a07d32cf5b3bc0faf084ece"
+    },
+    {
+      "path": "internal/database/migrations/071_stream_media_runtime.sql",
+      "sha256": "d586841f4bd723252d513346e28811c74a1b5907ee319da89cba62a272ad3c29"
+    },
+    {
+      "path": "internal/database/migrations/072_stream_encoder_runtime_settings.sql",
+      "sha256": "416395c3dfc32972ba35a2f3e98ed40e81e3aa532bdcb009cee7f47c8f8a01e0"
+    },
+    {
+      "path": "internal/database/migrations/073_stream_archive_retention.sql",
+      "sha256": "483f212787093aafd86f7d44ffb4b9b526c98d1c142774c073ebc26f0ca2a2f9"
+    },
+    {
+      "path": "internal/database/migrations/074_archive_processing_event_lookup.sql",
+      "sha256": "5966d23f10f6a7b27daa03c5a023b51e5e1151580e8c0651ba179356f19cdba9"
+    },
+    {
+      "path": "internal/database/migrations/075_stream_archive_runs.sql",
+      "sha256": "9a25b0e2edf37a77ab86af5613447a9a0339018269a3909c669cc14647134da1"
+    },
+    {
+      "path": "internal/database/migrations/076_observability_email_scope.sql",
+      "sha256": "51d0497fb723de6a4009d6d6d02e0bfa23862936144669e5f7d7038f0740082e"
+    },
+    {
+      "path": "internal/database/migrations/077_stream_log_history.sql",
+      "sha256": "6763c645e9a8457e40ae45951904cadc4d2077e9000af44df7c5af54314fb759"
+    },
+    {
+      "path": "internal/database/migrations/078_service_metric_series_index.sql",
+      "sha256": "2b53bd55bd42b1694a60d57fca08d648cf4acad9ee821a5b9e8a2ef890dcabe3"
+    },
+    {
+      "path": "internal/database/migrations/079_control_platform_features.sql",
+      "sha256": "3b374fb5146b8bfb0504de60d2492aa4c74642cf25346088f49b7c3f0a268383"
+    },
+    {
+      "path": "internal/database/migrations/080_bundle8a_v2_migration.sql",
+      "sha256": "18182ad065059dd8c23bd6482f3375fedb784b2400720bd8d46271ece4d03554"
+    },
+    {
+      "path": "internal/database/migrations/081_bundle8b_physical_eol.sql",
+      "sha256": "98cbff37d3d4fc51067e1474cd8ab337bec7ff80a006b889743fa4478e9b783e"
+    },
+    {
+      "path": "internal/database/migrations/082_st_port_policy_snapshots.sql",
+      "sha256": "c77a0239a481904e7e4fd25a4c9f5fb503dd30bc9aed3c685f4a067c1c47ce7e"
+    },
+    {
+      "path": "internal/database/migrations/083_archive_run_mapping_correction.sql",
+      "sha256": "5d27af1106e0f58fea717299f9abd9ce5e9359da7b9ef31dac4823125c8f3263"
+    },
+    {
+      "path": "internal/database/migrations_test.go",
+      "sha256": "3317fe23706119a2f5988cc4e4ebe7048aeeab9756d4f6086541830cc133e9e2"
+    },
+    {
+      "path": "internal/database/oauth_account_access_token_migration_test.go",
+      "sha256": "a35b9b0652e6345be51f38d6bb5ab5906beed13d18692e056e1b63b809ac2cf1"
+    },
+    {
+      "path": "internal/database/oauth_account_access_token_refresh_status_migration_test.go",
+      "sha256": "eec16d3781e9d41c9e2812243004390c58f2b8e7fac99cc548a67822a99358e8"
+    },
+    {
+      "path": "internal/database/oauth_account_refresh_token_migration_test.go",
+      "sha256": "c5bafe1f12020e023130fd6c8866491fd6b1ccb6e640ec99a6f5defff617865a"
+    },
+    {
+      "path": "internal/database/oauth_discord_migrations_mariadb_test.go",
+      "sha256": "8a5e09a519ba1bfa5ff926d87730f8af6bea7f0c08ac3d035792c4492d58b49a"
+    },
+    {
+      "path": "internal/database/observability_email_scope_migration_test.go",
+      "sha256": "35acb6b67175b9066f3c989864c6fd2cb1cb3b1ed247ff9458f1c84164bf9d42"
+    },
+    {
+      "path": "internal/database/service_metric_series_index_migration_test.go",
+      "sha256": "e9d9dd140b7b756b3b3487471f394bf3d31145a60b0298ffa542d0a52762be49"
+    },
+    {
+      "path": "internal/database/stream_log_history_migration_test.go",
+      "sha256": "1016dc6fb519789919bdea808e8f2b461da4eeef07df7482e8b4eda2016c246f"
+    },
+    {
+      "path": "internal/database/stream_media_runtime_migration_test.go",
+      "sha256": "e98db0649a7ed937fcdb9a2f8d32b2b6983d98c75ae475ebbc15ec930c234b6d"
+    },
+    {
+      "path": "internal/database/stream_status_lifecycle_migration_test.go",
+      "sha256": "74785d2728549cd73c5fff251428cd1a8296c28e9dd1e7dc47d09e09ef196355"
+    },
+    {
+      "path": "internal/database/system_update_active_host_index_migration_test.go",
+      "sha256": "bf8d84e0f6b353a928fbf366060200d34a2dd67772856fd70d7abea0bb23066f"
+    },
+    {
+      "path": "internal/database/system_update_execution_host_migrations_test.go",
+      "sha256": "5ef90e9c99808e2de12670c9b2ab4c63e55066815c036b9cdd9ab9a0661bd91b"
+    },
+    {
+      "path": "internal/database/system_update_host_self_update_migration_test.go",
+      "sha256": "9a9bba39d3ad78348bf00263a84a7aeb580630ac4b9f4b3a87db7112b7f9d84c"
+    },
+    {
+      "path": "internal/database/system_update_legacy_agent_owner_migration_test.go",
+      "sha256": "c1520b219b62e179a2e1f622117150fb07e1e2436d47130b02e19d81556fb6b9"
+    },
+    {
+      "path": "internal/database/system_update_ownership_fence_migrations_test.go",
+      "sha256": "686853a8b3d103275ecdcd161bd99042cb67bc69a71557a0d3c239baa6ed1586"
+    },
+    {
+      "path": "internal/database/system_update_runtime_token_rotation_migration_test.go",
+      "sha256": "1f7134415fbc21cd4c5113eb4185ad398b4296547a1ce5cafe9b4671edf8ca0b"
+    },
+    {
+      "path": "internal/database/system_update_source_policy_revision_migration_test.go",
+      "sha256": "be334f97efab70e8a20b008be3f042f5653e88ba509f471dbccebbcc28485dfc"
+    },
+    {
+      "path": "internal/database/systemd_port_reconfiguration_migration_test.go",
+      "sha256": "15ebcd7f8eba5f92b003fc325bfeba4b422664091e454ec467a07303545e3b8b"
+    },
+    {
+      "path": "internal/database/update_agent_policies_migration_test.go",
+      "sha256": "a611128f2de45591283696da1b81102e1d956aec1b1ca3385934636a77bcd960"
+    },
+    {
+      "path": "internal/database/update_agent_target_databases_migration_test.go",
+      "sha256": "1a0d41dddfe638627995b5242c773c8a0d8fe78c58a5e3a91146e79521f64ff2"
+    },
+    {
+      "path": "internal/database/update_agent_target_local_listeners_migration_test.go",
+      "sha256": "feaaf4c166e159ee56ef178d883031299767b56a8ec5c51dd50743b60b2658b6"
+    },
+    {
+      "path": "internal/database/youtube_relay_binding_claim_migration_test.go",
+      "sha256": "e4a56558b94bbd6edffb2255745ea66e412c4ea68d8f29b8e7e4e26414f19a0b"
+    },
+    {
+      "path": "internal/httpapi/account_avatar.go",
+      "sha256": "bc5212306f6556ccdbd7c5a478d3b8eb30030391042c8df28edbb83f10280a79"
+    },
+    {
+      "path": "internal/httpapi/bundle9_routes_characterization_test.go",
+      "sha256": "ef686fb3576c9b73d8b3d3017d0983e1d1b88fb6a5535ba0726f64159968c433"
+    },
+    {
+      "path": "internal/httpapi/control_panel_system_update_target.go",
+      "sha256": "412e90bcab0ec674829cc856cdbeb09499c7e4d8099040195fe330fb8f17b227"
+    },
+    {
+      "path": "internal/httpapi/control_panel_system_update_target_test.go",
+      "sha256": "fb4c530c91a2cab238e7ce7b1bf1068d06e8b654991a0794a7284956e506c9ef"
+    },
+    {
+      "path": "internal/httpapi/control_platform_account_discord_test.go",
+      "sha256": "f1e1c88edc15f60af1a1a63c7b55a2f715fbfa28337e674e01733d59f843b56e"
+    },
+    {
+      "path": "internal/httpapi/control_platform_cover_test.go",
+      "sha256": "5115077b36f56095c05e12393047f74e43ddf9192bdd37ae07c425425e60f8ce"
+    },
+    {
+      "path": "internal/httpapi/control_platform_features.go",
+      "sha256": "efb07ea47c80bbf56a5fa87e0c7563a6e572d824a58c4a38d53a2c0e7d894437"
+    },
+    {
+      "path": "internal/httpapi/control_platform_media_test.go",
+      "sha256": "65856b88831bd66ff37ef1fbf10e11c11f77169cfda3d7461b97654d11bbd020"
+    },
+    {
+      "path": "internal/httpapi/control_platform_readiness_test.go",
+      "sha256": "8ba81739552746f4ebb52a81f2cf6ed21f37c2504424c983d94e3427561ceeab"
+    },
+    {
+      "path": "internal/httpapi/control_platform_visual_cover.go",
+      "sha256": "24a78b256168e74debcd0d0a7bba99327d76d2ada3c146fef01fe30ca75b51b3"
+    },
+    {
+      "path": "internal/httpapi/discord_youtube_live_notification_outbox.go",
+      "sha256": "5165966884baed3281cc32ad8607a5efc60f00e74879db372f1ee50347c15ee1"
+    },
+    {
+      "path": "internal/httpapi/discord_youtube_live_notification_outbox_test.go",
+      "sha256": "32442ffd1b8a4de97b75af4b3dd280474d72a155e1776adcac26df8c518454d2"
+    },
+    {
+      "path": "internal/httpapi/host_agent_configure_policy.go",
+      "sha256": "dff802ebb1978b036f73c1441f4ceb54ec6ef134167cb5c44d53759f84421935"
+    },
+    {
+      "path": "internal/httpapi/host_agent_configure_policy_e2e_test.go",
+      "sha256": "0dfe2639163a179737ed9e726086a5d0ddce194a36c398d3a4e7d738613ca963"
+    },
+    {
+      "path": "internal/httpapi/host_agent_policy.go",
+      "sha256": "3dd41bb927294f64421a19856c2bac65c735adf5784b1150839a77d118991843"
+    },
+    {
+      "path": "internal/httpapi/host_agent_policy_test.go",
+      "sha256": "1b254b69d54ddd73b79ec922e0ad640d2da1f3a93a302f68122018e0514aeb05"
+    },
+    {
+      "path": "internal/httpapi/host_self_updates.go",
+      "sha256": "4a9d88360b8c0463cae5b8358f5fd772dba7a689d73d583abfa8168bea211909"
+    },
+    {
+      "path": "internal/httpapi/host_self_updates_test.go",
+      "sha256": "2bdc67d5a7b8722a4355bbc0da6aba7aabd830837d1ecb008f05c94eda04350d"
+    },
+    {
+      "path": "internal/httpapi/login_limiter.go",
+      "sha256": "f344876b8addf4f676eaee53f0c95439bc4d73cb7c2656a310e762b68c92f084"
+    },
+    {
+      "path": "internal/httpapi/mailer.go",
+      "sha256": "be78cafaf0b13fbc0ec336f7d9ddd53fead512af68bbb1a146476db78eb16967"
+    },
+    {
+      "path": "internal/httpapi/mailer_test.go",
+      "sha256": "061bc909334b4220b6d0b7329c8bc114e7a71e7c2362c903e8fae6cb5c9631cc"
+    },
+    {
+      "path": "internal/httpapi/node_action_permissions.go",
+      "sha256": "1cf157dd18afddee4f8da172486ce0ddd316d9ebc180a28bf29ad1e6b45604f3"
+    },
+    {
+      "path": "internal/httpapi/node_action_permissions_test.go",
+      "sha256": "f4fbf6193815dc2e1174ea91fec3d51ad5d5909cc43e1dcaa37656b45573fb69"
+    },
+    {
+      "path": "internal/httpapi/node_endpoint_ownership.go",
+      "sha256": "4729325f79e0274d8bf1439bb592efb566b9ddfb554241a2796230808f1afada"
+    },
+    {
+      "path": "internal/httpapi/node_endpoint_ownership_test.go",
+      "sha256": "13dd44076d76e493746e94ca7e3acaeff36077ef7a1d44fc4351f23e8813cf46"
+    },
+    {
+      "path": "internal/httpapi/notification_channel_projection_v2_test.go",
+      "sha256": "830ea04897541257d872f170aff3787b3a4390543f1889f73592ddb19e33bf74"
+    },
+    {
+      "path": "internal/httpapi/oauth_token_refresh_test.go",
+      "sha256": "d5c9aec100df1d3c0d980aafa0d3eeb042da716a7b64dd28e4c08e271f9eea2a"
+    },
+    {
+      "path": "internal/httpapi/passkeys.go",
+      "sha256": "092d577f79095a2a5d3d959a36efed98074601d82d53712d1144d9a27e1662cd"
+    },
+    {
+      "path": "internal/httpapi/pull_registration_ownership_test.go",
+      "sha256": "e8e24eee2efbbba10f19d5fd052b9799a6078c79125b6db56e7db60710fa3f16"
+    },
+    {
+      "path": "internal/httpapi/relay_capability_v2_test.go",
+      "sha256": "885368dd879390bebbf50ef87f83b38282885007a3eaa7dfa33d998c6d2f591a"
+    },
+    {
+      "path": "internal/httpapi/runtime_token_rotation_admin_requests_test.go",
+      "sha256": "4d93364bb018fa21355228ecb653feb607a7c051d68e520c42520a6fe2e19293"
+    },
+    {
+      "path": "internal/httpapi/runtime_token_rotation_http_fixture_test.go",
+      "sha256": "06667cabbc73432d826a0e48039f17048438e7df4d395b91885be74d66b78ce9"
+    },
+    {
+      "path": "internal/httpapi/runtime_token_rotation_identity_fences_test.go",
+      "sha256": "495969b4e76fe229c79c99fbfc688fcf224622ea69860ad8fcfa7f2300092bdd"
+    },
+    {
+      "path": "internal/httpapi/runtime_token_rotations.go",
+      "sha256": "77108dc480aae382e463615fb20604decb080d14d535bed1591719c8238af283"
+    },
+    {
+      "path": "internal/httpapi/runtime_token_rotations_test.go",
+      "sha256": "3141ab33e38368376f65b9f70d357253bac15db67bd263285b0575e678c0b3fa"
+    },
+    {
+      "path": "internal/httpapi/server.go",
+      "sha256": "f0f3c8654824f096c04b264c394569d28fb6bdd333f3abffa39160091432ab2e"
+    },
+    {
+      "path": "internal/httpapi/server_account.go",
+      "sha256": "5d5ea2a1b6a3037275091a020a10b0694e145e0b6a4a5e2782498591f2b43ae9"
+    },
+    {
+      "path": "internal/httpapi/server_account_avatar_lifecycle_test.go",
+      "sha256": "2c945d58934eaee0a703ee83e604a586f8ee89a2a5be0d052c4e9d2d3d2c01ae"
+    },
+    {
+      "path": "internal/httpapi/server_account_test.go",
+      "sha256": "ac0e0d526cdd59bf5592f91e13a9c23c55d73280090ca06b50f4e0db95a8c24b"
+    },
+    {
+      "path": "internal/httpapi/server_archive_configuration.go",
+      "sha256": "979a5199dab7159a8b0082afad1ccc53d4c78ff97e4fcb7938e8a4d77a02142a"
+    },
+    {
+      "path": "internal/httpapi/server_archive_operations.go",
+      "sha256": "2cde628c2d3977270bb1f1c579404c88f7f21ddee8a86d3645b71adc294230de"
+    },
+    {
+      "path": "internal/httpapi/server_archive_operations_test.go",
+      "sha256": "58f7ac3d0573ff6a402931b8d4b7058555b7b22e0eeb63fb72f2ce860d0dc47c"
+    },
+    {
+      "path": "internal/httpapi/server_assignment_login_fixture_test.go",
+      "sha256": "6df775da0d4b849e2a741972c2e7cf6c18dad24be15f0f92df823a1a7c45d3c4"
+    },
+    {
+      "path": "internal/httpapi/server_audit.go",
+      "sha256": "195af2ef3f0700919cb459ba3b574775a9bce511663360026e92c091b65fa95d"
+    },
+    {
+      "path": "internal/httpapi/server_audit_projection_test.go",
+      "sha256": "c1782ec6c3c7f6afe85309ed231798e604ef501455601624a8fc9f6b6e061efe"
+    },
+    {
+      "path": "internal/httpapi/server_auth_cookies.go",
+      "sha256": "846fce61b60944a116ae8683f68118a96f27d5e464c7f8ae7c9c02f4d991ae8f"
+    },
+    {
+      "path": "internal/httpapi/server_auth_mfa.go",
+      "sha256": "bff08b1ad7aadecba470afd022c6b136518f9af0bbfa7d6f0f580820106e4efe"
+    },
+    {
+      "path": "internal/httpapi/server_auth_oauth.go",
+      "sha256": "ee8c1f960ec136f03ef8224bca47080e4037c537666697e81342ee897bd0b80c"
+    },
+    {
+      "path": "internal/httpapi/server_auth_oauth_connection_guards_test.go",
+      "sha256": "cec59d3ef2f74cbb8d578c1fde7bba8e2f3d003a83bbb07aec7a58d5ffbb2936"
+    },
+    {
+      "path": "internal/httpapi/server_auth_oauth_connection_test.go",
+      "sha256": "34e8893c73d3e514db87c371d385dfbd13bf59d76a13f86ee6119af8b068c1ea"
+    },
+    {
+      "path": "internal/httpapi/server_auth_oauth_linking_test.go",
+      "sha256": "b2caa3a3ff5263064b8090f9ce827610ef4311f510a4185648580266dec3d527"
+    },
+    {
+      "path": "internal/httpapi/server_auth_passkey_test.go",
+      "sha256": "5a29a70976e517cbdc6c6ee1a3adbaf6922c7c99b9bbe885e4b58a7ec32c970b"
+    },
+    {
+      "path": "internal/httpapi/server_auth_provider_fixture_test.go",
+      "sha256": "e86fd7c1b0a5ee93cb6e248ee6418e747349e6d8361e21643a27cc7a02dc5d80"
+    },
+    {
+      "path": "internal/httpapi/server_auth_session.go",
+      "sha256": "d79e1b4f17a81b8be4b00fdcc200604000f7eb96dda8d42e0dbe1b3959a9126e"
+    },
+    {
+      "path": "internal/httpapi/server_auth_session_policy_test.go",
+      "sha256": "9ca00d39030d7b3840e19c26bce63e8ded907439e36926a34ad88ef0d092250d"
+    },
+    {
+      "path": "internal/httpapi/server_auth_test.go",
+      "sha256": "36a5b15ff9fe4b47a0682d41a284732a670c9512ede8655c36544c4983a70199"
+    },
+    {
+      "path": "internal/httpapi/server_auth_totp_recovery_test.go",
+      "sha256": "e9b2643a80956ad132296ab59c69460739319806988e8591609d65b1c030d826"
+    },
+    {
+      "path": "internal/httpapi/server_auth_turnstile_test.go",
+      "sha256": "f1eb014448e598aea53243d88fe73134e418244835ec457cafd303119a666daa"
+    },
+    {
+      "path": "internal/httpapi/server_bootstrap.go",
+      "sha256": "c47c8123929d71773185c90d1d5fb0b41af34492bf3cc46aeae49904709e3221"
+    },
+    {
+      "path": "internal/httpapi/server_config_helpers.go",
+      "sha256": "6e7c78da1bdd39100c80af5d9fd6ff38081e32f887b85333c97f7cbdeb02a5f2"
+    },
+    {
+      "path": "internal/httpapi/server_discord_configs.go",
+      "sha256": "ebe7c253417a1324acd1a5e885d49f7103dee864013bb4406c57e0971a86e320"
+    },
+    {
+      "path": "internal/httpapi/server_discord_configs_test.go",
+      "sha256": "d611023426880767dc7c42a1b56ecfefea08c274596bc3a934bef93767a03d4d"
+    },
+    {
+      "path": "internal/httpapi/server_dispatch_method_fixture_test.go",
+      "sha256": "e1203e783fa2e829cd5731cd201daab0bd5305c79bf7cdd82544de38071d4c24"
+    },
+    {
+      "path": "internal/httpapi/server_external_e2e.go",
+      "sha256": "ded538fcd203c9fd6fb7e64071870d366fa3ff897be02062de5cfe0d5c8fb0a8"
+    },
+    {
+      "path": "internal/httpapi/server_integrations.go",
+      "sha256": "d59dfa84282819b16622764488d78682a832c279d48a2ef88ddc982e933c22e2"
+    },
+    {
+      "path": "internal/httpapi/server_integrations_test.go",
+      "sha256": "b39118d7abc18198b505bddb1e7dcb837cd0b78aaca90750bbfec9e57fd3fc75"
+    },
+    {
+      "path": "internal/httpapi/server_lifecycle_barrier_fixture_test.go",
+      "sha256": "ba9b5c844c3d612b1c74ea6704feac73939eaee04f5e066e57343d0301334473"
+    },
+    {
+      "path": "internal/httpapi/server_node_configuration_crypto_test.go",
+      "sha256": "ce0d180dde6c295bdc544fc0337337ae01a0c2957cffd981f2cd75786fff1c72"
+    },
+    {
+      "path": "internal/httpapi/server_node_identity.go",
+      "sha256": "1256f549286c2625d75e972fc2d7ffca9a7a19c54f29cd4cb66be8e5e597b192"
+    },
+    {
+      "path": "internal/httpapi/server_node_management_test.go",
+      "sha256": "e9a072e747a53ec5cc5c78d979c8c222827d0848812f809e59684c5e6da663b0"
+    },
+    {
+      "path": "internal/httpapi/server_node_pull_registration_test.go",
+      "sha256": "e9daf0e2e7266941b6091f7cb97e6cea2af260a6286de6e7adb23200f26798f3"
+    },
+    {
+      "path": "internal/httpapi/server_node_registration.go",
+      "sha256": "2a9c3ebe3088d99d685a9de6411127322463d65cd5d5ccaa769e70f4bb0de4ac"
+    },
+    {
+      "path": "internal/httpapi/server_node_registration_permissions_test.go",
+      "sha256": "9791f3d641f52ecf1bc0899da55354ace507e4dc346edbb6ca1be92401e426d2"
+    },
+    {
+      "path": "internal/httpapi/server_node_registration_test.go",
+      "sha256": "ef67b5320a97ec9336f8d002e46033f84eacc87cea2c34449a9bbfd306b3dad6"
+    },
+    {
+      "path": "internal/httpapi/server_node_registration_validation_test.go",
+      "sha256": "4950bb06003715e1f52de8974184b2de45dcda34caa60e6997e16e54205a3d92"
+    },
+    {
+      "path": "internal/httpapi/server_node_service_tokens_test.go",
+      "sha256": "a86c72446b75a61ae8e015ee1728accaadfab9bdb25827f11b28f45f9a9f1e9b"
+    },
+    {
+      "path": "internal/httpapi/server_nodes.go",
+      "sha256": "e278dab06dccb81bd265291e105c1649f70cff71589433621ee483ce806114cf"
+    },
+    {
+      "path": "internal/httpapi/server_oauth_fixture_test.go",
+      "sha256": "9c7b6da3e39e714dae4df75d684bd182e49a1af26762dfcb29a749ef18a5630b"
+    },
+    {
+      "path": "internal/httpapi/server_oauth_policy.go",
+      "sha256": "587f2a2ecb53e3690bb208f581773fdf99d20a909d431b1dcc27630c11c39286"
+    },
+    {
+      "path": "internal/httpapi/server_oauth_refresh.go",
+      "sha256": "9e0834ec28799c25c542d227c67262e214a5539c6b86f437dd8966a484357c50"
+    },
+    {
+      "path": "internal/httpapi/server_observability_proxy.go",
+      "sha256": "2bb628a7050554e64f1280b90996feb92abed13b51121b88676693d6ac17a8ee"
+    },
+    {
+      "path": "internal/httpapi/server_observability_proxy_test.go",
+      "sha256": "1d1d1112b25009b49088e9b113770a79f274eedc86dd7370b86aab3a17f425b5"
+    },
+    {
+      "path": "internal/httpapi/server_profiles.go",
+      "sha256": "ce7887e406692482d8b00dfd48041fb042f3d1d2b8f81dae9e0748b95fe8457c"
+    },
+    {
+      "path": "internal/httpapi/server_profiles_test.go",
+      "sha256": "a7302f336064d3690ae45480d093ac85b3a92548e9910ad593f85524cec27455"
+    },
+    {
+      "path": "internal/httpapi/server_registration_fixture_test.go",
+      "sha256": "b73dc0ccf8e13b4fa71dd7bb0c6d18dfb8a08ffc269a438b68dcedb48bcd5117"
+    },
+    {
+      "path": "internal/httpapi/server_relay_start_fixture_test.go",
+      "sha256": "edeac371f82ba979d7c1193eb32ad06eb0f00d59dc702f74d256669c874e9712"
+    },
+    {
+      "path": "internal/httpapi/server_release_manifest.go",
+      "sha256": "19a0bd09560f30026a47d03ca670d6e2d8c050a6237db2b67fc9bf20a493cc1b"
+    },
+    {
+      "path": "internal/httpapi/server_request_auth.go",
+      "sha256": "4537366736022296a85d1fb1baf04a9a3d5b22816e9025156381096f2e59671e"
+    },
+    {
+      "path": "internal/httpapi/server_request_middleware.go",
+      "sha256": "6c253e5f6577bc2435922d94e458985f8a6aa3381b68ac03cf0e1a11758bf207"
+    },
+    {
+      "path": "internal/httpapi/server_request_security.go",
+      "sha256": "1c5c09cb68244c1520cabf18701e3a5ee8d32213fc831be62f7a7e84998b4f1b"
+    },
+    {
+      "path": "internal/httpapi/server_response_json.go",
+      "sha256": "9953f8e043ff752e42cad6d2e2c51ad0f84c89e21b6b45fa56e591f9dc1d4dab"
+    },
+    {
+      "path": "internal/httpapi/server_routes.go",
+      "sha256": "e230ed95bf5fdd7a4f1fed831e8d8610b40f17eb3931c1fe5a6ba858ada60087"
+    },
+    {
+      "path": "internal/httpapi/server_routes_updater.go",
+      "sha256": "c9b11524b6a3a35b99c1d2b3062eeb7fc7bcf3bf4f4b439b7c62fe1a8a48fc9e"
+    },
+    {
+      "path": "internal/httpapi/server_runtime_config.go",
+      "sha256": "7096f29b602c3fff436ed73dcb77540e917592557f6dc53380f1d27fd598a8bc"
+    },
+    {
+      "path": "internal/httpapi/server_runtime_config_test.go",
+      "sha256": "c48af60314c4b532ba1f68aad8b6fed7cc54622df7a9b8653b47133035cef079"
+    },
+    {
+      "path": "internal/httpapi/server_runtime_discord_assignments_test.go",
+      "sha256": "7dd971fcf4ea2cfdddfc85938116e8d679e93f0ac8a8697afd9073476d80453e"
+    },
+    {
+      "path": "internal/httpapi/server_runtime_external_e2e_test.go",
+      "sha256": "927435505a6d0da20dc0fc2316adcf4e10ad32d947806e044dc08190464300b9"
+    },
+    {
+      "path": "internal/httpapi/server_runtime_media_profiles_test.go",
+      "sha256": "f2c0a1116da2c912ff8743a0899fe9f9bc6919400078d9c653acb07b13825678"
+    },
+    {
+      "path": "internal/httpapi/server_runtime_secret_assignment_test.go",
+      "sha256": "4af3ba7454c03633c8a2329e4fb20fff0f887c438caf30e7ad346ae433818f40"
+    },
+    {
+      "path": "internal/httpapi/server_runtime_secret_lease_test.go",
+      "sha256": "16fbed98e973e5f9966923772ae19b13da8b3dd16d5a557b74ec0c08865b90a1"
+    },
+    {
+      "path": "internal/httpapi/server_runtime_secret_profile_test.go",
+      "sha256": "2cadf64cdc04aa1b09f863b23e76d7ec1563ae2a4736c15fdb9c9a50b3e27275"
+    },
+    {
+      "path": "internal/httpapi/server_runtime_secrets.go",
+      "sha256": "08384b23ced9331ab07f6cacfd4dd2bc4a2ecec1730fbcd5f7997d5d09510354"
+    },
+    {
+      "path": "internal/httpapi/server_secret_dispatch_fixture_test.go",
+      "sha256": "967a8096308950d6e4643805fbaba9cea795f89545e0a639a45f4b3be3683002"
+    },
+    {
+      "path": "internal/httpapi/server_secrets.go",
+      "sha256": "a53e7d7fe5113485e2938b9040b10f45482b8bf2aa6a7c5327c5bafd0eace0d2"
+    },
+    {
+      "path": "internal/httpapi/server_service_registry.go",
+      "sha256": "f950f640ebdb451114570f76258c620bfb3c49314ed0bd432cbc921b013645ff"
+    },
+    {
+      "path": "internal/httpapi/server_service_registry_test.go",
+      "sha256": "4d5030828107974bc79e89f0316039641990ac0d2f257c2235b00a2ad7bafa38"
+    },
+    {
+      "path": "internal/httpapi/server_service_remediation.go",
+      "sha256": "12db496127250209fb7f021f5e6fd9843f89e64bc365c9dfa37ee3c34512fd98"
+    },
+    {
+      "path": "internal/httpapi/server_service_reports.go",
+      "sha256": "3fa25cea6bc487a520655b2fefe4c933bf6d16607f1960df51ba7ebd76913409"
+    },
+    {
+      "path": "internal/httpapi/server_service_tokens.go",
+      "sha256": "6ed99111c08b7080b3fe7cc6b9e518ac3c79986d2171ddaa4de82ea1d1322386"
+    },
+    {
+      "path": "internal/httpapi/server_settings.go",
+      "sha256": "e22ea291ecdb6c1bf96c312d4a6e75f7298722c9f0bb1043bc1c2fe09203dfd4"
+    },
+    {
+      "path": "internal/httpapi/server_settings_test.go",
+      "sha256": "4a3631cd4cc7a89a154fb3c82525f0d93901e76f8e7eba2d94116b0f9d5efe5e"
+    },
+    {
+      "path": "internal/httpapi/server_status_projection.go",
+      "sha256": "10be2c8fc0de74d9a22070fc727d06afd89c42445a5e40d819f34fcfbb333c15"
+    },
+    {
+      "path": "internal/httpapi/server_stream_action_auth_test.go",
+      "sha256": "cef0c8158941ef59f701b4cfd62511e49850def2dc04605fab10f8b5a5282a7d"
+    },
+    {
+      "path": "internal/httpapi/server_stream_archive_references_test.go",
+      "sha256": "18643100079a7cb185ffb41ef3539d5605563f233a98f40a680b4de09f6542ff"
+    },
+    {
+      "path": "internal/httpapi/server_stream_assignment_lookup.go",
+      "sha256": "bfd23d86d1472f924f0c611e7b8f297ecc7c96035df9c5faddaf0ef4f450456c"
+    },
+    {
+      "path": "internal/httpapi/server_stream_assignments.go",
+      "sha256": "8ef4925b9472c0aa06cd013dbbda345812d46cf0572dd89f91d6e100d750f950"
+    },
+    {
+      "path": "internal/httpapi/server_stream_concurrency_test.go",
+      "sha256": "d29aeffe0e6ad19bc1e3479a33e9fdaa15979494cef99c7ae65279966a46ca60"
+    },
+    {
+      "path": "internal/httpapi/server_stream_diagnostics.go",
+      "sha256": "0c023026f30368bde680f538cd6c98b54f2b8190247d63750a984fc9bd4471ae"
+    },
+    {
+      "path": "internal/httpapi/server_stream_discord_assignment_test.go",
+      "sha256": "c1cac5e20f59a3127adbd80f71a2266263150f1b4b03d99291975b1575557b44"
+    },
+    {
+      "path": "internal/httpapi/server_stream_dispatch.go",
+      "sha256": "e29b1200f41aac97fa385eeeff132f4a093502aaa4471d3c128895d6a8bbfee2"
+    },
+    {
+      "path": "internal/httpapi/server_stream_dispatch_errors.go",
+      "sha256": "6ac8de3d99f8e07b5a9be6fb5bfac1f39008d6d970aee790b4dda2b5cf7afade"
+    },
+    {
+      "path": "internal/httpapi/server_stream_lifecycle_failures_test.go",
+      "sha256": "fe25c1284f66065f045cdc3af5ea80744011fcd359848b24139f119e6b890f09"
+    },
+    {
+      "path": "internal/httpapi/server_stream_lifecycle_lock.go",
+      "sha256": "1cd97c86173b106c821ed04c41d1574d37a4d1cc132d4941992dea263d694bfb"
+    },
+    {
+      "path": "internal/httpapi/server_stream_lifecycle_test.go",
+      "sha256": "5d0df43ff6e6900583f5ca6370fba8a1df8bb6acf0e1a1e46565139a0be12f6f"
+    },
+    {
+      "path": "internal/httpapi/server_stream_media_proxy_test.go",
+      "sha256": "813f020d98b149c1e9ce504d5be143608177a2eb3212dba90a40565b710c0dd8"
+    },
+    {
+      "path": "internal/httpapi/server_stream_preview.go",
+      "sha256": "e8c161987831c0affc3e9faa4a9e40ebfc655d89b5fa682bcbe8c11f76b4dc86"
+    },
+    {
+      "path": "internal/httpapi/server_stream_preview_test.go",
+      "sha256": "e347d543a4184599b1969228db2c71c27bb472a9e43cf436da4e47113e1d1f3b"
+    },
+    {
+      "path": "internal/httpapi/server_stream_readiness.go",
+      "sha256": "e3366765c30a9e0f5881da8fb89fb532ae5328704f6d09a982afe6a7e706b3af"
+    },
+    {
+      "path": "internal/httpapi/server_stream_service_actions.go",
+      "sha256": "3403e910d89d3f962df04d48020cc8f5257802d0203f09942ce80a44b90d6e9a"
+    },
+    {
+      "path": "internal/httpapi/server_stream_settings.go",
+      "sha256": "db7b4b6d593753c04c01af77f2bc1d04aecdefc72a9ecff58bf780a64c461a1f"
+    },
+    {
+      "path": "internal/httpapi/server_stream_settings_test.go",
+      "sha256": "bce9553a98c07822646eff1a182decdd07d332c4ac198400a127851574d4fe3e"
+    },
+    {
+      "path": "internal/httpapi/server_stream_start.go",
+      "sha256": "99771fd969a1e165dfcc412ed4ed47013500633952981cc09c6a7f0197c14451"
+    },
+    {
+      "path": "internal/httpapi/server_stream_start_completion.go",
+      "sha256": "74971278896e809d13ccaa796cde07b27a5c1d551ded39db561c95d8d2a3533a"
+    },
+    {
+      "path": "internal/httpapi/server_stream_start_integrations_test.go",
+      "sha256": "915113d7947651209e1d42ff403896486f0e9aa6212d4788b44ee07a63a26cb9"
+    },
+    {
+      "path": "internal/httpapi/server_stream_start_orchestration.go",
+      "sha256": "0352e1aec506d5131568771b1238ec976929cbf4424cb3e35b5b6b24ec229ce1"
+    },
+    {
+      "path": "internal/httpapi/server_stream_start_readiness_test.go",
+      "sha256": "f0be7063dd1bd8f28764fe27b9eec7735df118e8c304b906d96e076cce7638a5"
+    },
+    {
+      "path": "internal/httpapi/server_stream_start_youtube.go",
+      "sha256": "310210c727e82ad225cf6ab601e43efb3dc1f5903bf3eeea8b08fdf6ef1282d8"
+    },
+    {
+      "path": "internal/httpapi/server_stream_stop.go",
+      "sha256": "e5d8ce6e881e3c645a0c618508b12559195be5c1d4eb3de445b1287c3cb9d619"
+    },
+    {
+      "path": "internal/httpapi/server_stream_stop_receipts_test.go",
+      "sha256": "c5cfc25f143ca6cb1e16ee861154456ba4d0d8fb1f479e5b393b6c824b5d853c"
+    },
+    {
+      "path": "internal/httpapi/server_streams.go",
+      "sha256": "5eafbebf64e09855a551377f93f082a81947c065b2ad32542ec9dee004f61c86"
+    },
+    {
+      "path": "internal/httpapi/server_test.go",
+      "sha256": "0b1a499d666117e157d347b6c600046efd4614b4b152493e995b4c4cf4c27c57"
+    },
+    {
+      "path": "internal/httpapi/server_users_roles.go",
+      "sha256": "e3ee915884ddf576e46f37c350877871b678fc9e5143177181e3301f25d28e80"
+    },
+    {
+      "path": "internal/httpapi/server_users_roles_test.go",
+      "sha256": "431a963d994461c1183f89004ee985ac3b69399c388d8097faf9d1a1ebdc608d"
+    },
+    {
+      "path": "internal/httpapi/server_version_compare.go",
+      "sha256": "8ee59ab57891273936650861effb4821104609cfff2f200374e114d39b11ce1c"
+    },
+    {
+      "path": "internal/httpapi/server_version_updates.go",
+      "sha256": "0a491ae449371f9a24a1e173cc3f0b29c7c932723c50e29269b5deb5fa644cce"
+    },
+    {
+      "path": "internal/httpapi/server_youtube_completion_retry_test.go",
+      "sha256": "72d0e7fd7f6a80e770b62ecc0c99ae93a8d6e64e423630ac08c7fc9a7d33a892"
+    },
+    {
+      "path": "internal/httpapi/server_youtube_failure_cleanup_test.go",
+      "sha256": "6c9b83de95ef9b2daf3d795a1bce46c526c45dac6b92faba5f86207b0dc7b629"
+    },
+    {
+      "path": "internal/httpapi/server_youtube_lifecycle.go",
+      "sha256": "36a43fa479bd6ac4776c78bf83fb13519612447cfb374947dae87abd458fadca"
+    },
+    {
+      "path": "internal/httpapi/server_youtube_lifecycle_test.go",
+      "sha256": "ca76281c7b5c1fa942c428b623ff5dc38a7a4c9b40aa4c8c1377251fe81e0e1b"
+    },
+    {
+      "path": "internal/httpapi/server_youtube_output_dispatch.go",
+      "sha256": "2c0dc004da790ebafab08c7e54df6f3c8068e93bef49ae7e7ed4b184615df5df"
+    },
+    {
+      "path": "internal/httpapi/server_youtube_output_settings_test.go",
+      "sha256": "3a28170fbccceae4a49e71f9007916221a46bff000c66a9618715c0273815071"
+    },
+    {
+      "path": "internal/httpapi/server_youtube_outputs.go",
+      "sha256": "c0de5c66d0bdae0a198beedffcaabdcc1cd31253165ea517612ea518412e5915"
+    },
+    {
+      "path": "internal/httpapi/server_youtube_provider_fixture_test.go",
+      "sha256": "93cc29173afc6fa2829f4cbdcd5a3c43df8f348056bb1e7be637fa6e1eade211"
+    },
+    {
+      "path": "internal/httpapi/server_youtube_readiness_test.go",
+      "sha256": "641019f624cf9134d27c11ecefb63c014691778e78199bd2950d15d7639a7b6e"
+    },
+    {
+      "path": "internal/httpapi/server_youtube_recovery.go",
+      "sha256": "66f76253f931c5ce609f02e664f8513531294087ba4329953afb44af52983223"
+    },
+    {
+      "path": "internal/httpapi/server_youtube_relay_completion_test.go",
+      "sha256": "c4cc8e21f151dcd5baf255cf95209e0af6a27b386abd6f04309e31a9b19b5567"
+    },
+    {
+      "path": "internal/httpapi/server_youtube_relay_prepare_recovery_test.go",
+      "sha256": "d5d7d5c71ce324e84c2611d0415d22d352ea98bbd42feb03e024b41fc8fd99bf"
+    },
+    {
+      "path": "internal/httpapi/server_youtube_relay_readiness_test.go",
+      "sha256": "62ca5bc0567496a2879373e1a3c98de45ac590792bda469d6dc98dde82b9f376"
+    },
+    {
+      "path": "internal/httpapi/server_youtube_relay_recovery_test.go",
+      "sha256": "25226c0a01de502c06a94cf8eb6f565deedc87d07abbc105bb10bb9d8ba96d5c"
+    },
+    {
+      "path": "internal/httpapi/server_youtube_relay_start_fence_test.go",
+      "sha256": "365ae0fcbff26cba070f8d48eb02d7f07a27570f5a2bcc6f4281bf2eb38b7e6d"
+    },
+    {
+      "path": "internal/httpapi/server_youtube_relay_stop_test.go",
+      "sha256": "d9c9dd38b7ff150f29e91b8b0c6bbf96a70958603bb8854a7940eeff49e2326e"
+    },
+    {
+      "path": "internal/httpapi/server_youtube_start_test.go",
+      "sha256": "0692f4f850fe8a20e0d23db2f6f923d427a38fb0e6a5ed1e9e8bf596788d7018"
+    },
+    {
+      "path": "internal/httpapi/service_email.go",
+      "sha256": "6b3ebf543f1c1c2046811b86d13827fabdcbce79c28047b18b44fe7fbb341393"
+    },
+    {
+      "path": "internal/httpapi/service_email_test.go",
+      "sha256": "7a034de679def7eb6d5fa5dacc6a416f6624443ad7bec4aef83b4e63f1dbbd4b"
+    },
+    {
+      "path": "internal/httpapi/st_port_full_chain_cp_commands_linux_test.go",
+      "sha256": "7d91b01f660b7f3f9dba441977f5030e42f0b6b824feb6196e28eefc60bf1700"
+    },
+    {
+      "path": "internal/httpapi/st_port_full_chain_cp_creation_linux_test.go",
+      "sha256": "e24a242c0bc373b3cb87bdec59dfb9ce6d62c823950de2c22773e67a504ed066"
+    },
+    {
+      "path": "internal/httpapi/st_port_full_chain_cp_fixture_linux_test.go",
+      "sha256": "c2beba1f34b84580c1e38b9e87e83e57c40eac52f1e7a9ebcd68fb09bcf8bb28"
+    },
+    {
+      "path": "internal/httpapi/st_port_full_chain_cp_replay_linux_test.go",
+      "sha256": "abbfdf55f1890cd1d7acf7affe7b6849b10379664c705ab88118adc0fe8d3b8e"
+    },
+    {
+      "path": "internal/httpapi/st_port_full_chain_cp_transport_linux_test.go",
+      "sha256": "563482aaebbf15122ef30befd8e045ce7e2fc2fb6c8ee417b418e0df9e82e791"
+    },
+    {
+      "path": "internal/httpapi/st_port_full_chain_docker_process_linux_test.go",
+      "sha256": "dff4b54cfd3759e16ad7f60d702bed4497f721a7c55d62b82cb1be120e2cd3ae"
+    },
+    {
+      "path": "internal/httpapi/st_port_full_chain_process_linux_test.go",
+      "sha256": "552341b172bb2e189ea65dd574748ac36499bd3b80031df4ae7c2b2820670046"
+    },
+    {
+      "path": "internal/httpapi/stream_archive_profile_test.go",
+      "sha256": "10a6035dbdd50e16c20cef316b15967456b46bdd90d9c35859083986ef787ad9"
+    },
+    {
+      "path": "internal/httpapi/stream_assignment_guard_test.go",
+      "sha256": "addfdd68d34310f4640299f078c57cdbb30f8695cecae45360eb1ca1db355cde"
+    },
+    {
+      "path": "internal/httpapi/stream_create_isolation_test.go",
+      "sha256": "c67131c48218d764200c3e713e8f36ec68e629cd0eb79623ef3e406cbb059063"
+    },
+    {
+      "path": "internal/httpapi/stream_create_json_framing_test.go",
+      "sha256": "3c71eec0b69273afaa904ffe108ab8fd8d1a00bc995503400a5a7197f99f41ff"
+    },
+    {
+      "path": "internal/httpapi/streams_management_test.go",
+      "sha256": "71f6ea015d644b3d00a3f7582bdead1211fe997704d305a7e8726acad5a89247"
+    },
+    {
+      "path": "internal/httpapi/system_update_agent_capability_test.go",
+      "sha256": "ef8af638b290ec4dab26c60a08d07e8cb7220d91aaa0a50719cbba3533d5dc50"
+    },
+    {
+      "path": "internal/httpapi/system_update_agent_onboarding_test.go",
+      "sha256": "bb0e62fdc603238cb69dc2d0407ad99384d22903410c76d5f9a178b84b8a5873"
+    },
+    {
+      "path": "internal/httpapi/system_update_agent_topology.go",
+      "sha256": "94ec9386eb15cb20cae12613002096f61146a0f435de1a8343bc1385e3296fea"
+    },
+    {
+      "path": "internal/httpapi/system_update_approved_policy.go",
+      "sha256": "d6179627085aa50266ccd47d8376e2ef10a7d2073095a07f0af916221ad50c94"
+    },
+    {
+      "path": "internal/httpapi/system_update_capability_projection.go",
+      "sha256": "a296f09e79cf84f5d62019302f0795616fb2121bfb99ffa6dc092fd036b6e231"
+    },
+    {
+      "path": "internal/httpapi/system_update_create_request.go",
+      "sha256": "219f65aae011e4b44d7984f254e5ae565bcf607d93e3fdd3d93cc699e6d3f36e"
+    },
+    {
+      "path": "internal/httpapi/system_update_host_reachability_test.go",
+      "sha256": "2888140760ba30037ff25c2599aa8df466d513916c9c0d8c612b096222f16bba"
+    },
+    {
+      "path": "internal/httpapi/system_update_identity_fences_test.go",
+      "sha256": "d4542941123efcf7c4a85687a7ba79985b4ee3ccbc92ddce54ac90f4e69769a9"
+    },
+    {
+      "path": "internal/httpapi/system_update_inventory_snapshot.go",
+      "sha256": "27fc1235d9e1d9a3ce9c540181c2ce9ee287cab54912c189c30a068364f769a9"
+    },
+    {
+      "path": "internal/httpapi/system_update_port_creation.go",
+      "sha256": "df65a375855c381d056e776cf75ac4f82af5019716a75b769a377827428f8aaa"
+    },
+    {
+      "path": "internal/httpapi/system_update_port_http_test.go",
+      "sha256": "53a8c8b64938dfc0dc4a6a85181563073252ba9dbb3a93a918a36244da494baa"
+    },
+    {
+      "path": "internal/httpapi/system_update_port_v2.go",
+      "sha256": "3dbc57d7159b188c11786dcca21e59e82231ec7d2f28e212e315d641b7fb6f0d"
+    },
+    {
+      "path": "internal/httpapi/system_update_port_v2_test.go",
+      "sha256": "21ff688b93a68eefaf42406f68a88287557637ab55e3315d4d5ddea74d8332e6"
+    },
+    {
+      "path": "internal/httpapi/system_update_pull_ownership_test.go",
+      "sha256": "f34c243cec87faeec66aa64b6709f822b221fa934f763140e7ee415fd2e01b8a"
+    },
+    {
+      "path": "internal/httpapi/system_update_pull_recovery_test.go",
+      "sha256": "a164d7f82b0c0883509a7a753b0f575872fdb4d00e2f9793dfeec05c580bf9a6"
+    },
+    {
+      "path": "internal/httpapi/system_update_recovery_eligibility.go",
+      "sha256": "678982027d607b1573d6b8f36f5757e0219494fe18bd096ac43c90dd9c06e40a"
+    },
+    {
+      "path": "internal/httpapi/system_update_release_fixture_test.go",
+      "sha256": "8373eddff4b8c4ad6c5a9d4f1d06d116b2510f2241198b0442001e845d608546"
+    },
+    {
+      "path": "internal/httpapi/system_update_release_manifest_test.go",
+      "sha256": "7123bed0b331253fe90d1af733ff7ed6a5dabb54e2d27f64b75bf292f63307f0"
+    },
+    {
+      "path": "internal/httpapi/system_update_service_claim.go",
+      "sha256": "2e5e8485f6be549b48cc116f33b9b9adf16c07ee5a4ba069f2905e368d868d62"
+    },
+    {
+      "path": "internal/httpapi/system_update_stream_claim_race_test.go",
+      "sha256": "21ccb5d437bea9a352e3f0ace055ca9d330ec9b6272c5c5c490fe28bd6314f73"
+    },
+    {
+      "path": "internal/httpapi/system_update_v2_adapter.go",
+      "sha256": "e90b872ccb7739db5a42ead8e822f6a504143ff7f500592f2ff453804bcf1fe7"
+    },
+    {
+      "path": "internal/httpapi/system_update_v2_adapter_test.go",
+      "sha256": "2a9c66f566d91bb9334176f25fe456cc46c059713c626b66a459c609047158ff"
+    },
+    {
+      "path": "internal/httpapi/system_update_v2_grants.go",
+      "sha256": "a624b57d84c1c66d807ba00ee8d7a446852c76b07ebcbec864d5f19bef8d66d2"
+    },
+    {
+      "path": "internal/httpapi/system_updates.go",
+      "sha256": "8cc3e9354981a458a198cf430485aa4de707abf4bab1c2e91489b0d1ad3c6773"
+    },
+    {
+      "path": "internal/httpapi/system_updates_test.go",
+      "sha256": "b4ad7a89cd2d11526f3c5ad117244f42040984a12d6a404658348c3d16ff08ce"
+    },
+    {
+      "path": "internal/httpapi/testdata/bundle9-routes.json",
+      "sha256": "09062de6aa02e0a97e220475982800e2199f419d2410210a0791cec13b84a597"
+    },
+    {
+      "path": "internal/httpapi/testmain_test.go",
+      "sha256": "ee356afb0fcfcd46e4d0f459ef8799c72dfb39e05f98c438b35b78337a7e60c4"
+    },
+    {
+      "path": "internal/httpapi/turnstile.go",
+      "sha256": "9e6a7414f0ae27c19400726db65412ee06a82706b9435117d6dfdeb555d4f46f"
+    },
+    {
+      "path": "internal/httpapi/update_agent_permissions_test.go",
+      "sha256": "785b72ca3757617b21b162b354486d2b7481ca56b7be86f999fdf156c39e063c"
+    },
+    {
+      "path": "internal/httpapi/update_host_bootstrap.go",
+      "sha256": "02005d3dc42cf161f4ada62713f11b8bd862cb65a1324bf6460fbbd7e969232a"
+    },
+    {
+      "path": "internal/httpapi/update_host_bootstrap_broker.go",
+      "sha256": "3d19f2368a89e5d551a979b5a3c770e6305920f5762a9597e40762d37d8455e0"
+    },
+    {
+      "path": "internal/httpapi/update_host_bootstrap_broker_test.go",
+      "sha256": "4da73661d323d41b69e0db134ab1eadf5f03caf82208ad35c48143252f0a35a2"
+    },
+    {
+      "path": "internal/httpapi/update_host_bootstrap_test.go",
+      "sha256": "ca0b713a946f6393f77d2b99c1b3408efd410719654e6f610a9a15fb01191367"
+    },
+    {
+      "path": "internal/httpapi/updater_identity_active_job_fence_test.go",
+      "sha256": "8ab1cf7573f40101f34c3dab99b7bc3c4a8444af8b16509237e09f3c5cd2cff7"
+    },
+    {
+      "path": "internal/httpapi/updater_identity_bootstrap_readiness_test.go",
+      "sha256": "a5b59e39b643c3c48464fdc058e174e51824399f57f2e6c3ac316682fafc72c8"
+    },
+    {
+      "path": "internal/httpapi/updater_identity_canonical_alias_test.go",
+      "sha256": "8311aea932fc074540178dc831ab6e7522fa97273a5bcb4d46b10f483682fd28"
+    },
+    {
+      "path": "internal/httpapi/updater_identity_mutation_fixture_test.go",
+      "sha256": "cc3fb63ee771bd22e14132b901bd9cce84012f0b81fb0120e48767e1e7c2905d"
+    },
+    {
+      "path": "internal/httpapi/updater_identity_mutation_test.go",
+      "sha256": "16136f1b4f8777b71c866681d3d62fd35336923929a0962ce5c1715eb46ed0e8"
+    },
+    {
+      "path": "internal/httpapi/updater_identity_readiness_fixture_test.go",
+      "sha256": "0a296b9d52dc345185c37011d63e285ff38a846aa8a6492a0bff4e499491d819"
+    },
+    {
+      "path": "internal/httpapi/updater_policy.go",
+      "sha256": "51607613e8163151a92bc35a109c94d36cf81454acdfb37ea049ac764b987fe0"
+    },
+    {
+      "path": "internal/httpapi/updater_policy_activation_test.go",
+      "sha256": "9532515744102ff03be823a4c3015e6098dbd7431900a856079e3a22cc3789c8"
+    },
+    {
+      "path": "internal/httpapi/updater_policy_pull_mode_test.go",
+      "sha256": "eee4a30b1c89995add0b90f50b481a292af090e8d84a58761a5fcd028259dcc9"
+    },
+    {
+      "path": "internal/httpapi/updater_policy_test_helpers_test.go",
+      "sha256": "d7c034a1eca5eecd198fa83e248cee1cd84943121796ebf59bd5fde2596934d0"
+    },
+    {
+      "path": "internal/httpapi/version_compare_test.go",
+      "sha256": "52152119eb46a9e8c25acdc11fd8685b8e5cde42b8342180aa2b993cccd50f80"
+    },
+    {
+      "path": "internal/httpapi/visual_start_materialization_test.go",
+      "sha256": "1ef6be438446978dfcfa1e957c3ba2783fce94a97a4cdda5853404766a2db624"
+    },
+    {
+      "path": "internal/httpapi/youtube_ingest_health.go",
+      "sha256": "b18048fa9fd978e9d8731cf29718999e74814a6a45a31e74bdbc6df7575b7b78"
+    },
+    {
+      "path": "internal/httpapi/youtube_ingest_health_test.go",
+      "sha256": "197109f7659123af4919f48f61d637652c3b999fb3f7da9f292793f104a7cbb7"
+    },
+    {
+      "path": "internal/httpapi/youtube_prepare_diagnostics_test.go",
+      "sha256": "d7bf3300ae265d56e16b9d4ee075197a05ea248e5adb0371ba45aca0ef14935e"
+    },
+    {
+      "path": "internal/ingesttoken/token.go",
+      "sha256": "3205a6005e83e273270988b6237e15db7368e604b13760410de985a7035dc1c1"
+    },
+    {
+      "path": "internal/ingesttoken/token_test.go",
+      "sha256": "4d6b19c72a3d2d7aaecc21415799d741efb3e4e3d2aa176251bd2951f0f3a286"
+    },
+    {
+      "path": "internal/mediaassets/mediaassets_test.go",
+      "sha256": "06ea1bc2514306ce33bf389fb461aa1bb6d5221da25ae254a84f8356764010da"
+    },
+    {
+      "path": "internal/mediaassets/memory_repository.go",
+      "sha256": "ed30017de09ecdc1eee339a461439e0dce4b3868c723dcc43d21a87b269204a1"
+    },
+    {
+      "path": "internal/mediaassets/processor.go",
+      "sha256": "7e27d79c38416a84a35cc8c4b04cd36c1412766aa2e5a272dcdf0cc36e6bbb33"
+    },
+    {
+      "path": "internal/mediaassets/sql_repository.go",
+      "sha256": "5d5095c6172404e1dc54be598c8530323652fe83d9ed45d73d1b5c0c1292edb4"
+    },
+    {
+      "path": "internal/mediaassets/storage.go",
+      "sha256": "69017ed3a169b7a6f1df831e3037ba95bd40820ba42dc1fcca73607ef937e21e"
+    },
+    {
+      "path": "internal/mediaassets/types.go",
+      "sha256": "56529989e1d8661fee601d53a7ef4fb1b8b7d3af9e8407767dc28be428da9fcf"
+    },
+    {
+      "path": "internal/netpolicy/service_url.go",
+      "sha256": "a4c6c95330dbfb97ad33aea06cd3576ac32ee578de506c5066d5ce29a0b2d37e"
+    },
+    {
+      "path": "internal/netpolicy/service_url_test.go",
+      "sha256": "39d924738f04ad70898a9d56cb623321efa604bc09c2968bea49facdcbad177e"
+    },
+    {
+      "path": "internal/oauthlogin/client.go",
+      "sha256": "b5138e52ac85795ed4c7d6fe9361ed76f3638ea5541b4b3752a270bcd13fa915"
+    },
+    {
+      "path": "internal/oauthlogin/client_test.go",
+      "sha256": "1965c1028fb05e831b02f2fc6bd90c6d3ed809c5a197e36428e1a736021d3044"
+    },
+    {
+      "path": "internal/observability/client.go",
+      "sha256": "a486b33183b50f88cbd08537356733510bf2c209fa58527e58230ef3263b3640"
+    },
+    {
+      "path": "internal/observability/client_test.go",
+      "sha256": "75fbda50e7dfee7f98bdf651e12d1425e856df8d8f648ca208e20fed2702304f"
+    },
+    {
+      "path": "internal/security/actions_runner_test.go",
+      "sha256": "81a4b2296dd7f49a378203cd2a1ce8de40f95ded9efb3a85fedf08e4dd1a3213"
+    },
+    {
+      "path": "internal/security/backup_script_test.go",
+      "sha256": "2fdb5bf91bc35e62272753d5319747395f020146b63d18db05cf9d33bfab3a85"
+    },
+    {
+      "path": "internal/security/installer_scenario_source_test.go",
+      "sha256": "2519383b0fdc0c6d735f19be91f652ea84a2498fc5d30011134b7bd90cc2eeb5"
+    },
+    {
+      "path": "internal/security/password.go",
+      "sha256": "9fb8b3bb45d4cb0ff19a4ec124e5762083fbb96b0b143a42951b2fbb91f79bf6"
+    },
+    {
+      "path": "internal/security/password_test.go",
+      "sha256": "1332e7400f53f60be0f0e9a76de04291b113359b471f60baaad53ea7829d3a57"
+    },
+    {
+      "path": "internal/security/permissions.go",
+      "sha256": "551227f48059fa2ddd36ac27eee9d4909715b06595c01e64612b887a368f0713"
+    },
+    {
+      "path": "internal/security/release_workflow_test.go",
+      "sha256": "368e6d97d09ddf511570643ecad00a5d82201e0c93a4008ef8c8ccfd66dea306"
+    },
+    {
+      "path": "internal/security/service_installer_account_rollback_test.go",
+      "sha256": "685e12d31758c75e03fb16b3191c8cc543f842a6e4f717ffd385f8ac2b73d5e8"
+    },
+    {
+      "path": "internal/security/service_installer_integration_test.go",
+      "sha256": "10995d47bb06c2680f6fb7e31bbc4602957cc4164432026e802dd2a1f25cbcb0"
+    },
+    {
+      "path": "internal/security/service_installer_operatorpaths_test.go",
+      "sha256": "41f1cc328c6c79db3902c1026084392d0a55319e3064b49aad199ec6fdf19e51"
+    },
+    {
+      "path": "internal/security/service_installer_packaging_test.go",
+      "sha256": "5573d9a58f9fa74f93754b9ca6306916a9b4fe598150b158491c25401597874b"
+    },
+    {
+      "path": "internal/security/service_installer_test.go",
+      "sha256": "9cce9cccaea37ec877ccf52260cba251370fcb03f2dc714f5c11d34084fac549"
+    },
+    {
+      "path": "internal/security/service_installer_transactions_test.go",
+      "sha256": "97f39ba6d31ac9ea7d0287d293627dad3c8983aa0f302878578ccf669f0a919f"
+    },
+    {
+      "path": "internal/security/testdata/run-backup-script-root-smoke.sh",
+      "sha256": "a81643b86bd004eb2140f0dbac142c260f230c1a79ddf8aeb98d28cfa85f4b66"
+    },
+    {
+      "path": "internal/security/totp.go",
+      "sha256": "f3cae76f61a0694f5595d4e9e9acb9ac8c7468987f0baea3ef563245224b9416"
+    },
+    {
+      "path": "internal/security/totp_test.go",
+      "sha256": "5d913ede04b0870cdeb83bf54d139d3384dd2ab1ae5ffd2df4f8785deec34b02"
+    },
+    {
+      "path": "internal/security/workflow_test.go",
+      "sha256": "b781e8ff795c2bd7dd5d325ddae363ccb69ed73439bbcae0ada2dcd391573f81"
+    },
+    {
+      "path": "internal/servicecall/archive_wire_test.go",
+      "sha256": "f7d0150919bd119dbd4d8a1847ca36f20536d67351a84c0421675485fa6ec978"
+    },
+    {
+      "path": "internal/servicecall/client.go",
+      "sha256": "ecf5ee865ea4e59c576ea4279c48f22ac3626c25e76d618e513904653e86dc70"
+    },
+    {
+      "path": "internal/servicecall/client_archive_notification_test.go",
+      "sha256": "25ac8252e0e13da8f478fae34363cfe2697f4953241fcbc8d9443c3d5bf0be85"
+    },
+    {
+      "path": "internal/servicecall/client_archive_transfer.go",
+      "sha256": "98130abe4e31fb02be30ec47c15b38288ec809556778be2b1b8c8979737f29bd"
+    },
+    {
+      "path": "internal/servicecall/client_capability_validation.go",
+      "sha256": "78ff26d9245c37258333184615b104aeded6643f4e950a5a5c53cc56f51d874d"
+    },
+    {
+      "path": "internal/servicecall/client_dispatch_auth_test.go",
+      "sha256": "bb2cc804de2d747fd08a52fbcb6ac7fe0f9d7d7b576d85544feb8482baa93099"
+    },
+    {
+      "path": "internal/servicecall/client_json_transport.go",
+      "sha256": "26b44ac512531d56f6e2086aa51f97ca4823ae78e3b80415433cb2cf8f0d0658"
+    },
+    {
+      "path": "internal/servicecall/client_preflight_redaction.go",
+      "sha256": "2fe704ff47672ae83f81f15129b00ce877b3a072c44ff5b6a3017775cfa8db83"
+    },
+    {
+      "path": "internal/servicecall/client_preview_transport.go",
+      "sha256": "9ab9cfef20f77b3ff83134da357bf9bf8dcb02097ddaee6de77662ba625b8834"
+    },
+    {
+      "path": "internal/servicecall/client_runtime_readiness_test.go",
+      "sha256": "68ff3e85bdc8bbfc37807e6ef59add526039551d78ade922f44f59634fd76a61"
+    },
+    {
+      "path": "internal/servicecall/client_runtime_status.go",
+      "sha256": "137e0e4d2e645f473afa3ee1d7473f4acec94b89c7d8107005d387e50a426c17"
+    },
+    {
+      "path": "internal/servicecall/client_runtime_status_test.go",
+      "sha256": "9a5f890cc0e2764eb75c11d012a36ceb8822741368c435094f565dff210ecdff"
+    },
+    {
+      "path": "internal/servicecall/client_service_actions.go",
+      "sha256": "b8294e46b1db4261603e0cfc009966d99c86d6e53da3ba1270d74577f865a828"
+    },
+    {
+      "path": "internal/servicecall/client_start_orchestration.go",
+      "sha256": "ad6b305f022a98f60b6233e6cc627f792574b2d0f81732a4102513c88dd13b21"
+    },
+    {
+      "path": "internal/servicecall/client_start_payload.go",
+      "sha256": "4e46c1a892a0f9d105e609add2ce31092cedb8fa5692a7d3034bd0cb3da8e713"
+    },
+    {
+      "path": "internal/servicecall/client_stop_preview_test.go",
+      "sha256": "3c0988c3b690ed477dae43ae9bffcebdc4e7cf7aace5e5b723985e6584a0fa0f"
+    },
+    {
+      "path": "internal/servicecall/client_test.go",
+      "sha256": "59083e3e6a7c8e3fba396fa6fdfad1b852ecf10fbd8e351a1547f1aaafb102ba"
+    },
+    {
+      "path": "internal/servicecall/client_transport_settings.go",
+      "sha256": "28efba5a658f5f9c5ec4c115dbeffe0fdd8e3b4b6ccf5c458dd84451958be1e7"
+    },
+    {
+      "path": "internal/servicecall/client_worker_response_test.go",
+      "sha256": "8eb9c586f027af6aae5b0371679f3726e26d7ead985fd30a4bcf9d494a4882fa"
+    },
+    {
+      "path": "internal/servicecall/client_worker_video_test.go",
+      "sha256": "1032eb5d4cede6555ff4e461841e7433c610da3cad12db8c922f1d76a505eb5a"
+    },
+    {
+      "path": "internal/servicecall/video_cover.go",
+      "sha256": "ae09ab6def0a29efa5423b5dd6e5705b8b8d76ad437df8e08e14cc1021bf97c0"
+    },
+    {
+      "path": "internal/servicecall/video_cover_dispatch_test.go",
+      "sha256": "01c7453fb25a1c3f125f766235c8e69468d2afc3fbd0f0d956a45765c51edb15"
+    },
+    {
+      "path": "internal/servicecall/visual_runtime.go",
+      "sha256": "b394e4ed15c3398902e9eb662118075c8b43775619a09ff54c4eb37281e36986"
+    },
+    {
+      "path": "internal/servicecall/visual_runtime_test.go",
+      "sha256": "1241650362f3c867894083beb0fdb737b4206924aaff9af17e608d4adfc46783"
+    },
+    {
+      "path": "internal/store/admin.go",
+      "sha256": "17f3e56070217a10bebd8d6c3b2890198c42df892835d55697be36558ad2b536"
+    },
+    {
+      "path": "internal/store/admin_policy_test.go",
+      "sha256": "412c8d46dd469b9b81c8c49ece40b5dcbf6416bc7eb1c294eb3229922f5f9d0d"
+    },
+    {
+      "path": "internal/store/app_settings.go",
+      "sha256": "1def599fe3517d0cfa74b86f24dc04dbde7fadcb097e073bc4842ebf8c070791"
+    },
+    {
+      "path": "internal/store/app_settings_test.go",
+      "sha256": "8144d2811fb8246b76aa263432ba28d121dd684789924ac2d65f6d6ec61e0e9c"
+    },
+    {
+      "path": "internal/store/audit_events_mariadb.go",
+      "sha256": "47e35b9fef6cf78ed32c0266af4431ff472f1f8175fd865cef9be03454cd0857"
+    },
+    {
+      "path": "internal/store/audit_redaction.go",
+      "sha256": "a1af30ba2df914e938c5618cf4160e62481d186f2c98aeca83752fa0262dbfb0"
+    },
+    {
+      "path": "internal/store/audit_redaction_test.go",
+      "sha256": "c962e1967af217cc6b28da1a2eac166667e7fefd0da40bdd3802bfeb239410b8"
+    },
+    {
+      "path": "internal/store/auth.go",
+      "sha256": "0439e3012b9509e92191c7513b09ac6c3ceb1852c47fb5cd7b891510f6590267"
+    },
+    {
+      "path": "internal/store/auth_credential_values.go",
+      "sha256": "1ce5ec905b37b5f792244cf4c07a68f1d56ab98dd7d2f51118280054fff3c82c"
+    },
+    {
+      "path": "internal/store/auth_email_change_mariadb.go",
+      "sha256": "f39daf15aacdb159872f541d237bcd7eda845178a7e139f47e1bf22b7ef38b4e"
+    },
+    {
+      "path": "internal/store/auth_mfa_mariadb.go",
+      "sha256": "e177b3e409bc1216cac4cdf1a793fbcd9ad4d063b5095e4bfbb200288f3dcd94"
+    },
+    {
+      "path": "internal/store/auth_passkeys_mariadb.go",
+      "sha256": "86efdab32c84384230f00d25cefb498ef8d19267a669f09fadc1a42080e72eaa"
+    },
+    {
+      "path": "internal/store/auth_sessions_mariadb.go",
+      "sha256": "152c7ddc29d073df7bc90d849affcd36e9bb49370074134855e1bc09bea237d3"
+    },
+    {
+      "path": "internal/store/auth_user_credentials_mariadb.go",
+      "sha256": "fdefd60d49697c044f80547196d88362e4b68a1421f6dc9fa68386b958811ff7"
+    },
+    {
+      "path": "internal/store/bundle8b_v2_test_fixtures_test.go",
+      "sha256": "3c37c6b6de9e1fafa02cf6f5b2a3cf1b3941fd669e79c50f4e73b6ffc92ead13"
+    },
+    {
+      "path": "internal/store/control_platform_features_test.go",
+      "sha256": "a489737442ab8fcffe542362dcabad9bc2c908104a90dbca6ca4d482de431414"
+    },
+    {
+      "path": "internal/store/database_errors.go",
+      "sha256": "f54ccb4d74347305b261ff7aff6d62337a3e1d647d22a59058deb29fa3d857db"
+    },
+    {
+      "path": "internal/store/discord_target_presets.go",
+      "sha256": "14ba8df3279e76e2d65ccf705de10bc413fec99844f8bdcc2f57d15ac26a2215"
+    },
+    {
+      "path": "internal/store/discord_youtube_live_notification_outbox.go",
+      "sha256": "ab4380c10810f9b525548dccee455eb497b014eeb804ac2368b03ea00856ae8a"
+    },
+    {
+      "path": "internal/store/discord_youtube_live_notification_outbox_test.go",
+      "sha256": "0a87ded39e1ae93ff8d869baa038192cdf43dc73e19bf20b29758ea78e906139"
+    },
+    {
+      "path": "internal/store/integration_drive_mariadb.go",
+      "sha256": "ec4b0412a393fc2c923400db71ff586144a7e49b6f96914961dfd0f464699982"
+    },
+    {
+      "path": "internal/store/integration_drive_memory.go",
+      "sha256": "fca790db287fdcc9aff9df3a547085ed38056c82cb92546dd08f98590fe914c2"
+    },
+    {
+      "path": "internal/store/integration_normalization.go",
+      "sha256": "25cb67514b9add26c1971badf467c92f23764c25910ec2a528a2cd1f1d50ca58"
+    },
+    {
+      "path": "internal/store/integration_oauth_accounts_mariadb.go",
+      "sha256": "5bf6c07eae6dd610de03acb6773ace3a276abe46d2c3e4a39a5feca7ac049d3e"
+    },
+    {
+      "path": "internal/store/integration_oauth_accounts_memory.go",
+      "sha256": "a8cbcc2b53021caeaf26edb72844972e2c160810c9e4da5c450be32d15e06b49"
+    },
+    {
+      "path": "internal/store/integration_oauth_display.go",
+      "sha256": "23a7f4268294702e9d338236723f0677aac836dac5cd6bd98ebc181431fe2532"
+    },
+    {
+      "path": "internal/store/integration_oauth_providers_mariadb.go",
+      "sha256": "64d705a3a73c42d15dd67be75cae33ec88f79622dcea21e4b48c7c56cf9b6785"
+    },
+    {
+      "path": "internal/store/integration_oauth_providers_memory.go",
+      "sha256": "31f8576bd0ee222e684395dab92d7b5ea8b9b3f25e84ee3ebc97beddc413f8f2"
+    },
+    {
+      "path": "internal/store/integration_rows.go",
+      "sha256": "b2b5044ba00a010167cbcf2fb6b03c859150be12bb680fef7214dc1138ea8ea8"
+    },
+    {
+      "path": "internal/store/integration_scalar_values.go",
+      "sha256": "a1ede22b40e1fbca8231939f583519e436424415f24238dc5e94a0144bc13718"
+    },
+    {
+      "path": "internal/store/integrations.go",
+      "sha256": "8c887b151e59aa9468395b2e7ab512dcf2350cedb9d5eec5af4e162a3ad85c1a"
+    },
+    {
+      "path": "internal/store/integrations_test.go",
+      "sha256": "5ab530c7ee5431e2ff9cd7e1e4a671460268ef005a78484ac5a577c59fb8ca34"
+    },
+    {
+      "path": "internal/store/memory.go",
+      "sha256": "e25aa996f064de1330690b6a1433a809a5684223487648f4a596ba893176d3bc"
+    },
+    {
+      "path": "internal/store/memory_admin.go",
+      "sha256": "9b769c92b4764de2ee2c61277ec4cbfd9006fae7f7788b8e258789baa713ae06"
+    },
+    {
+      "path": "internal/store/memory_admin_test.go",
+      "sha256": "e73771d231b3c7d5e7d378f9ab52744829020c3729d9e43c63a1a9e4c8500ff0"
+    },
+    {
+      "path": "internal/store/memory_auth.go",
+      "sha256": "197b16cb293644aa92e8319cdd9f34c1d534a02882c3984277f05325e1f2a9a1"
+    },
+    {
+      "path": "internal/store/memory_service_assignments_events.go",
+      "sha256": "cf8fba5931d5569e5bf3e4654d9ff5c77c262758c5df9cb6ba7416d594cf91d1"
+    },
+    {
+      "path": "internal/store/memory_service_catalog.go",
+      "sha256": "998657a40a7ee97116b6130a1daad306722612131d2bbb502687ecaa2bd702e5"
+    },
+    {
+      "path": "internal/store/memory_service_node_configuration.go",
+      "sha256": "b7d4b573ff2774fe6202682413cc56817858ff66f5a917605a10c7f5a62713fb"
+    },
+    {
+      "path": "internal/store/memory_service_registration.go",
+      "sha256": "307374d06db87008c97fdd7bb4d32943af3d668319ea3d8f947054ab99875ea9"
+    },
+    {
+      "path": "internal/store/memory_service_reports.go",
+      "sha256": "fdb7fc6f6c62c40e451b7e4ed1748511e6d7b490192b304d3cdc599e2ad391fe"
+    },
+    {
+      "path": "internal/store/memory_services.go",
+      "sha256": "46f385f24e0ff570843e5e6cd94f28007c058ac20643d94680d3e78b9dd74284"
+    },
+    {
+      "path": "internal/store/memory_services_auth_replay_test.go",
+      "sha256": "5c490fea6c78af55bf25e8d00fad2e07cf3cb99f80992945dfd38cb97c2385b1"
+    },
+    {
+      "path": "internal/store/memory_services_configure_test.go",
+      "sha256": "7dd5969ea67e829f8e89c0000b1b3b5a1e98f8b1be864fb081c1a4c4221d262d"
+    },
+    {
+      "path": "internal/store/memory_services_emergency_recovery_test.go",
+      "sha256": "b31da33deccf2ccbd3fe4b419a182a0412f3a5b06f2ebcefa3af427d1bd6d54a"
+    },
+    {
+      "path": "internal/store/memory_services_shared_references_test.go",
+      "sha256": "fb94f2e04ba0dc75d3bdf976096ef56e5e8c167deb95fc3e1b26cbe7d20f15d1"
+    },
+    {
+      "path": "internal/store/memory_services_test.go",
+      "sha256": "fb38bf994abf6582666094a00c352d61c342d91c66b9799a9c8a2f011bf05d91"
+    },
+    {
+      "path": "internal/store/memory_services_tokens_test.go",
+      "sha256": "b73bd17dea6ce362a079c4534febc8381b0cd3b4c4e544fd44869d59c1795257"
+    },
+    {
+      "path": "internal/store/memory_stream_artifact_catalog.go",
+      "sha256": "dec328a37fc675c580e07b63dcc0619205c0a081c578d85011187dbf567163ce"
+    },
+    {
+      "path": "internal/store/memory_stream_artifact_shares.go",
+      "sha256": "276cdacf34f043def831607704c463b03583a10729f0e895acd16dcac0385e91"
+    },
+    {
+      "path": "internal/store/memory_stream_log_history.go",
+      "sha256": "04035740722dc49ab3e423232709499eeedd5ca24bb7a3370832f2b63fdd7fc3"
+    },
+    {
+      "path": "internal/store/memory_stream_settings.go",
+      "sha256": "357fbe0e14a0d3a026ef6c5e229b4fea81874d839946e63be333fb4951091b7c"
+    },
+    {
+      "path": "internal/store/memory_stream_start_claim.go",
+      "sha256": "a9b39049d470554ea877e20e192c28fbd4c3a57d053627434c92fb4c69b9e28c"
+    },
+    {
+      "path": "internal/store/memory_stream_youtube_runtime.go",
+      "sha256": "7e0d61fc29197e04615578e515e61f37303733141a4cc8ca37073141226c9948"
+    },
+    {
+      "path": "internal/store/memory_system_updates.go",
+      "sha256": "3176efa360726a336e6aee5c043a7bb6f5ef344d980001e365e458fb0451f390"
+    },
+    {
+      "path": "internal/store/oauth_login.go",
+      "sha256": "e186a5beec899262cffdacefaa1a16c2392d0a1c28aad92d6bcdb2940f6eb7c0"
+    },
+    {
+      "path": "internal/store/passkey_test.go",
+      "sha256": "87fb107ccda07d5b6554494d2356783a490e8d34f84b43909e0905e96fd49113"
+    },
+    {
+      "path": "internal/store/profiles.go",
+      "sha256": "c1d85fabfaf7f9d34dc45ab828f83636f59bf90ccf0ba2e01654d8161f40a054"
+    },
+    {
+      "path": "internal/store/profiles_secret_test.go",
+      "sha256": "835a43b43812fbe1d1bf9f3b7154d2f724f98dd2321c7fbdd3489abd18afaeae"
+    },
+    {
+      "path": "internal/store/remediation_executions.go",
+      "sha256": "49b400df0dd25cde6b5079a0c1e2babd2da53859af4571a7ede62b5b76c4de8f"
+    },
+    {
+      "path": "internal/store/runtime_secret_leases.go",
+      "sha256": "f0bef01f181c7957773e1cfafa1ac7df8b02e4a6de12367ac1b75b91957545e5"
+    },
+    {
+      "path": "internal/store/runtime_secret_leases_test.go",
+      "sha256": "f997ff7c3b675392cb36b4f542c580560639b0b9deb3d4e5a4e9066563fbe3c0"
+    },
+    {
+      "path": "internal/store/runtime_token_lock_order_source_test.go",
+      "sha256": "513d94bf202aaab470e8da64984d703ea5e143d3edf932baaacf12c38052a7ee"
+    },
+    {
+      "path": "internal/store/runtime_token_rotation_activation_mariadb.go",
+      "sha256": "eb54ebdc5ab7db3b281f62ab26266c6c6a53bec0b166174feac86ce1a1dd093c"
+    },
+    {
+      "path": "internal/store/runtime_token_rotation_cancel_ack_mariadb.go",
+      "sha256": "48eec685a9000329b8f0c2f65f36cd8744bfe00943d501a09a72a57d87f7433a"
+    },
+    {
+      "path": "internal/store/runtime_token_rotation_cancel_mariadb_test.go",
+      "sha256": "92c8ddf32b055208a5947308c5da542ced1dfa05a53deb2ec24b604accd38c5b"
+    },
+    {
+      "path": "internal/store/runtime_token_rotation_claim_mariadb.go",
+      "sha256": "c1382e6475cebd39af071f618dabcbfcfe4e122282076ab092006e8443e93983"
+    },
+    {
+      "path": "internal/store/runtime_token_rotation_emergency_fixture_mariadb_test.go",
+      "sha256": "f1af499cb906040a6190352eb3e99057961d1bb5ce7d58abbb477d69e3f08adf"
+    },
+    {
+      "path": "internal/store/runtime_token_rotation_emergency_mariadb.go",
+      "sha256": "579e8018a04761d5b4179b3a896bc5facd582e11145ca8453a9640cd829dae28"
+    },
+    {
+      "path": "internal/store/runtime_token_rotation_emergency_mariadb_test.go",
+      "sha256": "e5d82ee2fcc14c8ea487ca51d3ed2e10f07d406d2a1c894d10ebeeb8ba82a1b2"
+    },
+    {
+      "path": "internal/store/runtime_token_rotation_proof_mariadb.go",
+      "sha256": "6f060159eef3c9492c541902a498952bee61e96839b6371ee3831eb82dd2c5f5"
+    },
+    {
+      "path": "internal/store/runtime_token_rotation_rows_mariadb.go",
+      "sha256": "34746d9b687af12bd2589365f7aba770594085e9f695339afd3659c34077402a"
+    },
+    {
+      "path": "internal/store/runtime_token_rotation_stage_mariadb.go",
+      "sha256": "7a8802f94ab3fa6364d6c43c9087d018b4609123b3025f1deb9d9b31ce1d8aaa"
+    },
+    {
+      "path": "internal/store/security_settings.go",
+      "sha256": "7f8aa75148fc5ad4e685a1e2bd485953b7640bed3320c8efb47c715964cb39d6"
+    },
+    {
+      "path": "internal/store/service_applied_config_state_test.go",
+      "sha256": "37f00ee2be0ddedf99ae50a31c93c708328d780027924332946e684f51ce5b37"
+    },
+    {
+      "path": "internal/store/service_assignment_guard.go",
+      "sha256": "9e1a06be15228c59c7f2e980c8ebd0219d1569217db2e03422a5728f1d5ca579"
+    },
+    {
+      "path": "internal/store/service_assignment_guard_locks_mariadb.go",
+      "sha256": "1351b792e9bea6c0cedbdc06fa307d38003b06f0a0bb8aa93bfe000154bd548d"
+    },
+    {
+      "path": "internal/store/service_assignment_guard_mariadb.go",
+      "sha256": "87a29b3d60300e934bb03654fb10951fda9f1372be8240e5570956097e0f27c6"
+    },
+    {
+      "path": "internal/store/service_assignment_guard_mariadb_test.go",
+      "sha256": "29a6ec6aeceb25b7f435cc06eda8b8c46c7d26f50ea122a48f5a4b098705cb50"
+    },
+    {
+      "path": "internal/store/service_assignment_guard_order_mariadb.go",
+      "sha256": "fd8aaede4f0ab7502ff57f6130e8f87cd9f927d3c27c9c8c7712dc00443d2809"
+    },
+    {
+      "path": "internal/store/service_assignment_guard_rows_mariadb.go",
+      "sha256": "a199ecc8abcf668dac5fe068e3a3d8b297a1e34c907b638c23cd58dce5456571"
+    },
+    {
+      "path": "internal/store/service_assignment_guard_test.go",
+      "sha256": "309214ccaf9ed806513d0719efb95e88a2706060e843f6ec28671d938c7c58c2"
+    },
+    {
+      "path": "internal/store/service_assignment_lock_order_mariadb_test.go",
+      "sha256": "7ce705e13386d5f5bd786b481c14b288f628d8c9300ea90da67ddc3d81c89d94"
+    },
+    {
+      "path": "internal/store/service_assignments_events_mariadb.go",
+      "sha256": "2886f8b21e0806126bc3c65fdf19f71dcec00175d9fcf6ddedfbe60721b48fc5"
+    },
+    {
+      "path": "internal/store/service_catalog_mariadb.go",
+      "sha256": "06d78ff43d289cdfe411f9a69af875e7a1994204b83c16ada8c892fad7e64eed"
+    },
+    {
+      "path": "internal/store/service_events_test.go",
+      "sha256": "2339caf64e9e4f1d86a529bc6f63baef275c59f04c3fcb4c400243529f96a764"
+    },
+    {
+      "path": "internal/store/service_lock_order_source_test.go",
+      "sha256": "4c01e991dc098262c90944a28d78293a4ce74423db3d95b9f4ab16f623ea8098"
+    },
+    {
+      "path": "internal/store/service_metric_history_test.go",
+      "sha256": "126cefc52d78d2800ae995376bb8dfc3acfb713f42c3987e34d9d8757b600ad3"
+    },
+    {
+      "path": "internal/store/service_node_configuration_mariadb.go",
+      "sha256": "cccc6729cfab6b82000677c8a36bb9eae93f3e85648de3f4abab12e7248fd8a9"
+    },
+    {
+      "path": "internal/store/service_registration_mariadb.go",
+      "sha256": "3fb95da28146312748765ad34587266f492b389efe4b87235a5bb2146a2ae25b"
+    },
+    {
+      "path": "internal/store/service_registration_validation.go",
+      "sha256": "344689843a5bea3804867ac0bb8c16f5bd423dceca4d8ae62de4cecd771f0ef2"
+    },
+    {
+      "path": "internal/store/service_reports_mariadb.go",
+      "sha256": "1799bb8365a6549d8c35329afac1ce26d6c6573c17ac6043aec388e3114ef10d"
+    },
+    {
+      "path": "internal/store/service_rows_mariadb.go",
+      "sha256": "fcc6023ab795b28d72f582ec9b1e09d29955d6f1c3dbb7bb85ed3170e1c323a5"
+    },
+    {
+      "path": "internal/store/service_token_lock_order_credential_replay_test.go",
+      "sha256": "6322186cd94b748a80ff5a8a410832727c8870e582eda58fd5b52326764b4d94"
+    },
+    {
+      "path": "internal/store/service_token_lock_order_diagnostic_analysis_test.go",
+      "sha256": "d7e748e3add766f4363f1b47dd9cefeced55e8f024b65acbe217c4e80958e391"
+    },
+    {
+      "path": "internal/store/service_token_lock_order_fix005_cleanup_test.go",
+      "sha256": "952d8aaaa71804506bb03c036e61ae601f683b6ad28cd61e74cfa78fd8eb5a15"
+    },
+    {
+      "path": "internal/store/service_token_lock_order_fix005_mariadb_test.go",
+      "sha256": "6c6bf42e8af95644586157a0733fb7cf0844258f1b21d478d616b41bf27c1bee"
+    },
+    {
+      "path": "internal/store/service_token_lock_order_fix005_ownership_runtime_test.go",
+      "sha256": "38d5e686bc163368451dd6f23d4eca6d508117eecf5e69c7f2314630da9e8e5a"
+    },
+    {
+      "path": "internal/store/service_token_lock_order_fix005_policy_cycles_test.go",
+      "sha256": "e3ac40298c6af370b90a85e97b50959acc547a6a835482da6d535436c682672b"
+    },
+    {
+      "path": "internal/store/service_token_lock_order_fix005_precreate_activation_test.go",
+      "sha256": "0d0bee820e2ee5af27d10ccf5ea7e7ff2afd46f9d3327e83e57ab2ef5a23db30"
+    },
+    {
+      "path": "internal/store/service_token_lock_order_fix005_pull_fixture_test.go",
+      "sha256": "27a6502af491788d77e800cc606b48e7c6ff52277984f688beb57086c643c3a2"
+    },
+    {
+      "path": "internal/store/service_token_lock_order_fix005_runtime_matrix_test.go",
+      "sha256": "c8ac94c3f80752dea0adfa476ecdb7845425c00ef9f459b231d249338e12e475"
+    },
+    {
+      "path": "internal/store/service_token_lock_order_fix007_oracle_inventory_test.go",
+      "sha256": "6e3dc85eab2e77d21b506475c04eeb50e5b7c861bb66e3cc57ce8fa31abf15aa"
+    },
+    {
+      "path": "internal/store/service_token_lock_order_fix007_oracle_test.go",
+      "sha256": "51d71397abe9904f0174c8c1305fbc06daf4e05c2adfccf47b69d8191aabff0b"
+    },
+    {
+      "path": "internal/store/service_token_lock_order_fix007_ownership_comparison_test.go",
+      "sha256": "2c2471c66b2f9163800c12419aa34be8c025e2137aee3747f428372215c4d098"
+    },
+    {
+      "path": "internal/store/service_token_lock_order_fix007_policy_mutation_test.go",
+      "sha256": "79d7afc7682804b5ca61aca7c41c5efefed43a378f27250f6c3d2c1cb1edddf4"
+    },
+    {
+      "path": "internal/store/service_token_lock_order_fix007_runtime_comparison_test.go",
+      "sha256": "447472faed1870948ed36551d34171832ce66546d79f11a64bdb105bca8f2e43"
+    },
+    {
+      "path": "internal/store/service_token_lock_order_fix007_runtime_mutation_test.go",
+      "sha256": "d92f9dc760460a9a5f81d0a28d619559a3382faa32fb2a334c78446644611d70"
+    },
+    {
+      "path": "internal/store/service_token_lock_order_fix007_runtime_snapshot_test.go",
+      "sha256": "6cf69cdc806b947a77f27d990dbeb33939b95f66eddc37d31bae3371a39ca717"
+    },
+    {
+      "path": "internal/store/service_token_lock_order_mariadb_test.go",
+      "sha256": "7c832f1cbce33002bbbf49260e7ef76ab7eacaf4a6e43ff72d18d96caef438e0"
+    },
+    {
+      "path": "internal/store/service_token_lock_order_pair_fixture_test.go",
+      "sha256": "4687e9d3d03ddebfceb1f8df3c64a0b2a01411c674cebc87716342aab2d79536"
+    },
+    {
+      "path": "internal/store/service_token_lock_order_race_fixture_test.go",
+      "sha256": "7375fad61929a8c674f172310f1cca1fc1e8ae389dbd5856ca2f11dc18be4ad4"
+    },
+    {
+      "path": "internal/store/service_token_lock_order_reference_conflict_test.go",
+      "sha256": "39c063b646c7a7770fa20d0f57f0c58a3b314c930efbeeda0ddc8bb38eebed06"
+    },
+    {
+      "path": "internal/store/service_token_lock_order_shared_configuration_test.go",
+      "sha256": "6ed70845a62128013feef6a74ef6a0e41f970d49cae6853a4cd022a358865abd"
+    },
+    {
+      "path": "internal/store/service_token_lock_order_shared_node_fixture_test.go",
+      "sha256": "23ae7284c3b777b95f906542950e3d2f0f004fb7c8dbdf20e21d6bc5220a2112"
+    },
+    {
+      "path": "internal/store/service_token_lock_order_source_contract_test.go",
+      "sha256": "a5715cc38fbaaf70c8d8557628b654b323d62519a130ff0866a040049406907a"
+    },
+    {
+      "path": "internal/store/service_token_references_mariadb.go",
+      "sha256": "921dbccbe95891917edca312d7ac0f518ad6cb7e1d53abb2f281762c8c1ff86f"
+    },
+    {
+      "path": "internal/store/service_tokens_mariadb.go",
+      "sha256": "24994b289575de7e83ce0cf5f4737b7234147c0d53f7d1d0b01794c2aa6b1120"
+    },
+    {
+      "path": "internal/store/services.go",
+      "sha256": "b64e2073097c39316884e93cf81833b90aa1fe15502fa29e424406b162832085"
+    },
+    {
+      "path": "internal/store/services_endpoint_mariadb_test.go",
+      "sha256": "75f110644413c5d8520fdaceb144296fb86d5714b53023b9b46c4356fbf74751"
+    },
+    {
+      "path": "internal/store/session_test.go",
+      "sha256": "52cb3f5b9b1408c1eb3b7536c6d25731d2e428b8c1ec31c5cbac54718e8a1065"
+    },
+    {
+      "path": "internal/store/stream_artifact_catalog_mariadb.go",
+      "sha256": "4993984b18440e0aa705e0d7939bbeba1155921628d588e315a323dc6d69c5f8"
+    },
+    {
+      "path": "internal/store/stream_artifact_reporting_mariadb.go",
+      "sha256": "92b6db5f6bbef3ab62b66d93a2ca94a239034d9615cdbe9fa7055df96c75c036"
+    },
+    {
+      "path": "internal/store/stream_artifact_values.go",
+      "sha256": "467cde9560176322c785648f28525c2017d84026b8c5192cd9a37a968fbb9c66"
+    },
+    {
+      "path": "internal/store/stream_artifacts_mariadb_test.go",
+      "sha256": "e37d3045fe39755c21779708cbd9df6f18b850a6cf22ef4965369f2486269d0f"
+    },
+    {
+      "path": "internal/store/stream_log_history_mariadb.go",
+      "sha256": "98aaff37cf738133e56f196a381b2815d00b97bbc85ac27b4bff788dc2e544fd"
+    },
+    {
+      "path": "internal/store/stream_media_runtime.go",
+      "sha256": "52176c879bfb783a5e1916740ff8466d22f754e662cab9ee9c35aaf2c3b3e64a"
+    },
+    {
+      "path": "internal/store/stream_mutations_mariadb.go",
+      "sha256": "5e99fb304adaa2c5785ada3efbbdd6ebf8100d4f066d14431f36c6cd3cf928b9"
+    },
+    {
+      "path": "internal/store/stream_queries_mariadb.go",
+      "sha256": "56bbe63fde2fe30b8f2c23e257c7c95542bf9fab55d8c72fcd683d8db76c2eae"
+    },
+    {
+      "path": "internal/store/stream_start_claim_mariadb.go",
+      "sha256": "25d228cc388e0576723414b811404716d128812695ea74ed63ad135e7f5a18a5"
+    },
+    {
+      "path": "internal/store/stream_youtube_runtime_mariadb.go",
+      "sha256": "0cedbd9edeb297d30fb96064c5c928001270292f7a0a5f773fc895f55662a45c"
+    },
+    {
+      "path": "internal/store/streams.go",
+      "sha256": "23f400d1ec2e2aae4092a0291b80f4851fb19d6972307b28f71e6f8c815e5b40"
+    },
+    {
+      "path": "internal/store/streams_test.go",
+      "sha256": "7dfadaf3f1a26f036374e2879270020566a76c25fabc041a392c69aabfa6bdc3"
+    },
+    {
+      "path": "internal/store/system_update_active_recovery_fence_test.go",
+      "sha256": "345c07009e3d9c4f26f46b29c3cd8adceb5821e75911a08adcdff5d46bc33e19"
+    },
+    {
+      "path": "internal/store/system_update_claim_mariadb.go",
+      "sha256": "968976ba2e51535fc595bef9ed5e874a3d7b92542b900e2e5a56c52e28e080f4"
+    },
+    {
+      "path": "internal/store/system_update_creation_mariadb.go",
+      "sha256": "79c30b6caf31f43d91548bc93e327af71d8e15a7cde7a68fa01fe2db6b4e30b6"
+    },
+    {
+      "path": "internal/store/system_update_docker_port_reconfiguration.go",
+      "sha256": "b3a50d31d8ae6a6fb0d7c143946d45108cbd0179320e5eeb5a926646032b2445"
+    },
+    {
+      "path": "internal/store/system_update_docker_port_reconfiguration_mariadb_test.go",
+      "sha256": "14c4a99d6a328a6b5eb878915950c078fae7bda6fd1b3c8f414ba3c41e5017a3"
+    },
+    {
+      "path": "internal/store/system_update_docker_port_reconfiguration_test.go",
+      "sha256": "78e0917510dec2b940da0bbe63fc9b2d8cd584292d0c93404351aff82fe8ce5e"
+    },
+    {
+      "path": "internal/store/system_update_execution_hosts.go",
+      "sha256": "d7dfa1ed53e65d724e2dca8a7bc08b39d55a31954de1c417ac70900393735e0b"
+    },
+    {
+      "path": "internal/store/system_update_execution_hosts_mariadb_test.go",
+      "sha256": "26552d26746a108b1c3791c98dd59b9df2b779a646963de304399d12a8b830e3"
+    },
+    {
+      "path": "internal/store/system_update_execution_hosts_test.go",
+      "sha256": "3ce468a5b254f3da68e2443cd34977ed76fc8d62a1449d64f58dd196059fa4d1"
+    },
+    {
+      "path": "internal/store/system_update_host_self_update_grant_memory.go",
+      "sha256": "65464ce3c8bbf70516608f1a2b1bcd3f6c4a72ed00d7529d94dbfb7ba2d8e480"
+    },
+    {
+      "path": "internal/store/system_update_host_self_update_grants_mariadb.go",
+      "sha256": "8a50e681a0a8b28423ca5cde9a57512786873d7c96709fb0c73cbbe90c04bedf"
+    },
+    {
+      "path": "internal/store/system_update_host_self_update_observation_memory.go",
+      "sha256": "c5a7d6f50021fe1a5d1c98af4130166fb315d06bc8749c45a2599bf4fd30ca91"
+    },
+    {
+      "path": "internal/store/system_update_host_self_update_readiness.go",
+      "sha256": "9290f62daff88c045a20bd34a1680680019f545cead654e3f205e0b309ed6721"
+    },
+    {
+      "path": "internal/store/system_update_host_self_updates.go",
+      "sha256": "5c98e36c03ea9d7bd1825beb5feee381185cd0e9e7c36a4337c147c827d8c596"
+    },
+    {
+      "path": "internal/store/system_update_host_self_updates_mariadb.go",
+      "sha256": "b541bbfd474bb2acb31b19194d2bd746d6ee14f85853eca94edb0ec6ab721083"
+    },
+    {
+      "path": "internal/store/system_update_host_self_updates_mariadb_test.go",
+      "sha256": "90c455d778ac57c2beaf6f56d3afaf3afe65e657acf8d89a2b01f287cc53e0c1"
+    },
+    {
+      "path": "internal/store/system_update_host_self_updates_memory.go",
+      "sha256": "88bbe7dfb7cc9c52aed2c636dee987944e5437599962e110c55856f956113bc0"
+    },
+    {
+      "path": "internal/store/system_update_host_self_updates_test.go",
+      "sha256": "7fdf4866db0539062de1e88040ded67bf6364cc0f6fd1e076b88f4e668ed0211"
+    },
+    {
+      "path": "internal/store/system_update_identity_fence_mariadb.go",
+      "sha256": "1e04ef004f5b7e7af903afb13b8f0ce2704f4d874ab3650ade5508db7cdd40b8"
+    },
+    {
+      "path": "internal/store/system_update_mutation_grants.go",
+      "sha256": "226e3a6b19bf21f15a7186c900ab43e9b20274a4adc72ec224dff5eda5aaf4c8"
+    },
+    {
+      "path": "internal/store/system_update_mutation_grants_port_test.go",
+      "sha256": "bf1f774f3369012cf1208f65e79041a607226c0ba3655bed47d4f96b0f1dc484"
+    },
+    {
+      "path": "internal/store/system_update_mutation_grants_test.go",
+      "sha256": "87b95f03d746ddb348ffc6043683010167feb74ecea9ad54febd84546250f314"
+    },
+    {
+      "path": "internal/store/system_update_ownership_fence_test.go",
+      "sha256": "2cb291f5100525c2a39a0aa8a965830f680c8fca4c98f20c2881da2e5475cc8c"
+    },
+    {
+      "path": "internal/store/system_update_port_c11_process_test.go",
+      "sha256": "17b67d613df8c8bb5e24697309902da71a4c8b34397d2cd65d1f25137cc27c4a"
+    },
+    {
+      "path": "internal/store/system_update_port_closure_memory_test.go",
+      "sha256": "c0966d8caf814ff2474d83fd9967d2585e080d5164491b5ea7595800de4fa369"
+    },
+    {
+      "path": "internal/store/system_update_port_commit_observer.go",
+      "sha256": "7ed37dfe07c206f351c9893e2b071bb1b52df3d853e16d62273dc72df685a00e"
+    },
+    {
+      "path": "internal/store/system_update_port_fixture_cleanup_test.go",
+      "sha256": "dcb79ca8efce3b0f24bb80ff1b556befe4670c7d869acb7c0e0e61fc4418e63c"
+    },
+    {
+      "path": "internal/store/system_update_port_host_lane_regression_mariadb_test.go",
+      "sha256": "9a538dcc0b395b436a032eedd198626d44229fced1416f4f4e630a417ebcb798"
+    },
+    {
+      "path": "internal/store/system_update_port_lease_precision_mariadb_test.go",
+      "sha256": "28ea7a62892685643860ccb3c1f794cb46a8e9ff59b39afcfc6e55c48b711346"
+    },
+    {
+      "path": "internal/store/system_update_port_lease_precision_test.go",
+      "sha256": "74518000c82d03b2fc683d5d938ec9bc77dcfb40621f52d7582b99fb23df0e3f"
+    },
+    {
+      "path": "internal/store/system_update_port_lifecycle_matrix_test.go",
+      "sha256": "dba265123619e598a71e9e3642b0b5c40ec8bfaa940fcfc7012117452f18ed84"
+    },
+    {
+      "path": "internal/store/system_update_port_lock_diagnostics_test.go",
+      "sha256": "e53c3289cce62ac42054a8c648e32b9d1913eeacda4cb30477663b7a122da37c"
+    },
+    {
+      "path": "internal/store/system_update_port_reconfiguration.go",
+      "sha256": "d9ca960526cd429a3a46d7612e3060a79dd0a555fc48ae23433590d8e3650905"
+    },
+    {
+      "path": "internal/store/system_update_port_reconfiguration_completion.go",
+      "sha256": "e5bfa47af66f2ba6d7891108377cb94be4fa0333fbec55900fc383f55b04c7d6"
+    },
+    {
+      "path": "internal/store/system_update_port_reconfiguration_coordinator.go",
+      "sha256": "b84a58c9932f8cf427db69de8974ea2b469aa98c0fdb69a9a3a781c0267fbfaa"
+    },
+    {
+      "path": "internal/store/system_update_port_reconfiguration_coordinator_test.go",
+      "sha256": "25e36d6b04038292d7480aa183f08322d913b72713cb13bd984fdce46e6957d2"
+    },
+    {
+      "path": "internal/store/system_update_port_reconfiguration_mariadb_test.go",
+      "sha256": "f59baea3019ef7e8cc91690acdb00eb23f271fc29a1a9c775636e947c1bd2560"
+    },
+    {
+      "path": "internal/store/system_update_port_reconfiguration_test.go",
+      "sha256": "9f7bc7761aa2be17f1b0a741cd6a92ed8b9da6357eb39d52536ef639b3d1ba28"
+    },
+    {
+      "path": "internal/store/system_update_port_snapshot_parity_test.go",
+      "sha256": "fa68410e0c3f9a65a96bdc17f81c48779f71b14581c775f1e277e890b0884871"
+    },
+    {
+      "path": "internal/store/system_update_port_test_exports_test.go",
+      "sha256": "5ab3a9f560ac6097a4d6030e2e681c8694f7294961c419ad7bec8fa466d9f55c"
+    },
+    {
+      "path": "internal/store/system_update_port_v2.go",
+      "sha256": "639fcf91dd1ebd2615ac2da695aa50b021885466b17a7e16b966784290a37d0b"
+    },
+    {
+      "path": "internal/store/system_update_port_v2_mariadb.go",
+      "sha256": "b8509cf97ace3b8a225e113bb4cb80d2eb8e7e4689410d7a7337aaf44f9c1e39"
+    },
+    {
+      "path": "internal/store/system_update_port_v2_mariadb_test.go",
+      "sha256": "60fbaa8e5b6cd3338d49c288c4621aa3bfcc8230cfda82d3e8137181a5200075"
+    },
+    {
+      "path": "internal/store/system_update_port_v2_memory.go",
+      "sha256": "13accf6ef480a90a07b904b82a293ea27a4fc1839988cbebadee76e90944d28f"
+    },
+    {
+      "path": "internal/store/system_update_port_v2_projection.go",
+      "sha256": "ce093c1d60af3aa4949e58f96915e8fbac363fc1900a40b5e4d95a9ee3c35104"
+    },
+    {
+      "path": "internal/store/system_update_port_v2_test.go",
+      "sha256": "2f724eea3765b6981066e41c661e60648af1c2a9ff37ebdafa33265407bad53e"
+    },
+    {
+      "path": "internal/store/system_update_report_mariadb.go",
+      "sha256": "c46b80aef13c4eca7ae59e8f345bebd9689fa17db4a512aa86381318f31a3449"
+    },
+    {
+      "path": "internal/store/system_update_rows_mariadb.go",
+      "sha256": "daea5f4dc35d30078c599e133cfa5e12afea486fac8df7d69056b36d083e4cf9"
+    },
+    {
+      "path": "internal/store/system_update_runtime_token_rotations.go",
+      "sha256": "91a18373e9182541ef5be78fdbf0ce47530b1d44dfe32ed5bcb3556b99c6cbdb"
+    },
+    {
+      "path": "internal/store/system_update_runtime_token_rotations_mariadb.go",
+      "sha256": "1697050966f55f2963fdbeb3bceff5fa9d58dc527f54469fd1a5001880c1ceb4"
+    },
+    {
+      "path": "internal/store/system_update_runtime_token_rotations_mariadb_test.go",
+      "sha256": "5cbb94648902ba58e670d7f12b7b9bbb75c2c4bf18108bf638465053507b6862"
+    },
+    {
+      "path": "internal/store/system_update_runtime_token_rotations_memory.go",
+      "sha256": "f9b8f08bf3baf0506e47643f45caf1738761ac5ac44ba33a946a88c9664f66bc"
+    },
+    {
+      "path": "internal/store/system_update_runtime_token_rotations_test.go",
+      "sha256": "86e1b5578cdb540f725a14a3391c2730023fa8828b4dd46bdf99a4edd5d242e7"
+    },
+    {
+      "path": "internal/store/system_update_validation.go",
+      "sha256": "a6b53f127b3c7d6eb5845e9ef69c20bacd1c38bd3988327c15f88e837847c22f"
+    },
+    {
+      "path": "internal/store/system_updates.go",
+      "sha256": "0449ab03eaef47013158801e9da25909dbb735fda566d3445b046b43c233b257"
+    },
+    {
+      "path": "internal/store/system_updates_mariadb_test.go",
+      "sha256": "79fe20afefc06763f5600b0c6bc702f5f07aac75c0047c72ce410eb4829e960d"
+    },
+    {
+      "path": "internal/store/system_updates_test.go",
+      "sha256": "65af1b6bc07edc85586c678b2ddd2095dd7ea157865e252054cfa6b1c2fc52b2"
+    },
+    {
+      "path": "internal/store/testmain_test.go",
+      "sha256": "25fd971f890c7427f666feee9f1531e7617b0e650123b8b815079482fca35646"
+    },
+    {
+      "path": "internal/store/updater_activation_readiness.go",
+      "sha256": "0daaa58bac388f049ec4ee0f2a7de4fe8870991b6425233ca8a6bd925136a16d"
+    },
+    {
+      "path": "internal/store/updater_ownership_activate_mariadb.go",
+      "sha256": "3eeee6cd73f45f2862744fc152c20f42559449ed92a858945887afd1943d5181"
+    },
+    {
+      "path": "internal/store/updater_ownership_deactivate_mariadb.go",
+      "sha256": "225a0fc11e6b1ac7fed8c6c5c03254180043b00de19ea5a444addf4407df2cb2"
+    },
+    {
+      "path": "internal/store/updater_ownership_locks_mariadb.go",
+      "sha256": "05481d65c5d90d124d31e4748495d0fd6ef5529fe9c10a94b499e303c695af7b"
+    },
+    {
+      "path": "internal/store/updater_policy.go",
+      "sha256": "dceb16c7928c0df52451472863abb1c4d2bf6b228f6c751d840a8e2a7d2be5c2"
+    },
+    {
+      "path": "internal/store/updater_policy_activation_mariadb_test.go",
+      "sha256": "c654bd51a0aef8a91401e83142e6f5703facafd0bb1e5b7786cdad5593573150"
+    },
+    {
+      "path": "internal/store/updater_policy_activation_test.go",
+      "sha256": "a4a94f61086e84d7d8e14207f7f1564982a3adf374b25b985f6545dcb11bb82a"
+    },
+    {
+      "path": "internal/store/updater_policy_configure_binding_mariadb_test.go",
+      "sha256": "cc524d5077f211849d921f2c7fc21cf39f46f512bb3c2a74295ebf28ec91ac96"
+    },
+    {
+      "path": "internal/store/updater_policy_deactivation_test.go",
+      "sha256": "65811500ba94b190b032177b442d4eb1b865daef95b999acbb2308a720e92953"
+    },
+    {
+      "path": "internal/store/updater_policy_mariadb.go",
+      "sha256": "6d32bf263f88f0eb63d9809b2c2886d0e469edfe7ebb033d73b4a237f95143c9"
+    },
+    {
+      "path": "internal/store/updater_policy_memory.go",
+      "sha256": "e629161f2f046c438313acfdca9ddb06bb7d0ff3554a6e5fe6be71978e470fca"
+    },
+    {
+      "path": "internal/store/updater_policy_projections_mariadb.go",
+      "sha256": "bba4cd544c3e281e40473010f79430aceb5a6ee25cc7465fad8ac28307a04528"
+    },
+    {
+      "path": "internal/store/updater_policy_pull_ownership_mariadb_test.go",
+      "sha256": "794ef141d05e6983b0c4f539d64f5fc4cf7e4a92ae6d8ee9ad5b6d60524d06ca"
+    },
+    {
+      "path": "internal/store/updater_policy_pull_ownership_test.go",
+      "sha256": "5b9f173d547c3950ae2ea90db37a21e1fa4fc675987bcedd28adc3c65eaff979"
+    },
+    {
+      "path": "internal/store/updater_policy_pull_test.go",
+      "sha256": "29aff1686b05153973a7d90716189ace54b0e4a630d50995d706781dd4fefdf4"
+    },
+    {
+      "path": "internal/store/updater_policy_snapshot_test.go",
+      "sha256": "0b6a0f7f52f704af0665091e4e42e9cb9782341a849b14b7c8dbe7e6af50c1dd"
+    },
+    {
+      "path": "internal/store/updater_policy_test_helpers_test.go",
+      "sha256": "5e3694a7f98ff87e770a223305f40cdba8e141d10a6b85f9d64ab5ac949221f3"
+    },
+    {
+      "path": "internal/store/user_ui_preferences.go",
+      "sha256": "6e0d4a2e2500874f99a3177fae892f32b48f5ec7df6ddae46c2d23de2d02592e"
+    },
+    {
+      "path": "internal/store/youtube_relay_binding_claims.go",
+      "sha256": "3b888be7fb0b7e186c2af9068f1221cd5418d0d047f1caf1a08f9d31c029568a"
+    },
+    {
+      "path": "internal/store/youtube_relay_binding_claims_mariadb_test.go",
+      "sha256": "a2b88fb01f80baf2bf3ac5c5395aac15298a860dbde5d8aef4d0d359e2952d2f"
+    },
+    {
+      "path": "internal/store/youtube_relay_binding_claims_test.go",
+      "sha256": "28b12bb8f1e410c69426cf924524fe6551f7a4a0778d394bc42aa505a42c9776"
+    },
+    {
+      "path": "internal/store/youtube_relay_claim_lookup_memory.go",
+      "sha256": "14eafd9612c4328421c2aec6b445d23c248345affba14750a60f991c9fcaceb8"
+    },
+    {
+      "path": "internal/store/youtube_relay_claim_preparation_mariadb.go",
+      "sha256": "b57b672d1053dc2b71e6e2bd59c5a62444e94c91a6decf4fe00be10e48f5d38a"
+    },
+    {
+      "path": "internal/store/youtube_relay_claim_preparation_memory.go",
+      "sha256": "ee2ff626386765c28eeef2852e04a5bed6ea624ac6bfef2be13f14cdbfa3c2f1"
+    },
+    {
+      "path": "internal/store/youtube_relay_claim_recovery_mariadb.go",
+      "sha256": "e77d35ed08ce155f78750cb3f18d07f2e0ca375e0c1a8161e984f2f6f8c4d01b"
+    },
+    {
+      "path": "internal/store/youtube_relay_claim_recovery_memory.go",
+      "sha256": "9283f1f93d54c2a4f8a451d1b0e2d153145acefb51eb039622dbb7e9c3487503"
+    },
+    {
+      "path": "internal/store/youtube_relay_claim_release_mariadb.go",
+      "sha256": "32de333c84672ccd5ec51b3fe100231b66658872ff018f4369aaaa4fd2c69a4f"
+    },
+    {
+      "path": "internal/store/youtube_relay_claim_reservation_mariadb.go",
+      "sha256": "af9d55631521c8e8908c53879eb10272d440abc70270dd789bd83e67e2960fee"
+    },
+    {
+      "path": "internal/store/youtube_relay_claim_rows.go",
+      "sha256": "16fcd27b0474d6db0a6731047cb06a3ba4da9b9539b2816aa8585882a37ef1cb"
+    },
+    {
+      "path": "internal/store/youtube_relay_claim_validation.go",
+      "sha256": "c46b7f833cd7be6323fad77157823a77bc257ac43bb634631fde59df43a4ed35"
+    },
+    {
+      "path": "internal/streamvisual/memory.go",
+      "sha256": "4de98aaffbb83d3ff2b3ea7b91b26ec5fa16e2e4e53430d02c5c16f0f0619a0d"
+    },
+    {
+      "path": "internal/streamvisual/repository.go",
+      "sha256": "52b0768e021d98aacc0be01016ffc0813a4211d44a9353e63bc5bedeba85e803"
+    },
+    {
+      "path": "internal/streamvisual/streamvisual_test.go",
+      "sha256": "61bb8b93adc8dbf89dd885915655423ab26b1e1e5452106b7fe474395137e3ee"
+    },
+    {
+      "path": "internal/streamvisual/types.go",
+      "sha256": "b3c69e5d71fafbc315d795d549de195e70afbd6293797c3697c4dbd79769a088"
+    },
+    {
+      "path": "internal/updateradapter/github_release_metadata.go",
+      "sha256": "35d26646e44f8125c4c438ef37dbbb940437b75549d655aeec8d1f0ac02eee3e"
+    },
+    {
+      "path": "internal/updateradapter/policy.go",
+      "sha256": "6d9201cc6eeabedb2072682575606383ec387609faa0bdc732954749e587c807"
+    },
+    {
+      "path": "internal/updateradapter/release.go",
+      "sha256": "be50d0693836087e5fbdb33de1804cc7da6fc122ba61a1500805bc4bfa1e956f"
+    },
+    {
+      "path": "internal/updateradapter/release_asset.go",
+      "sha256": "431aaefdbd8de79a7c02c1960a411607df5f295cba3d119289552ee0fe9c3783"
+    },
+    {
+      "path": "internal/updateradapter/release_provenance.go",
+      "sha256": "3458ee9efc51d41f2fae180528812dfe6a4b689888ed3899cbb3e1ed11224db1"
+    },
+    {
+      "path": "internal/updateradapter/system_update_port_policy_test.go",
+      "sha256": "9507635a9a13bf24ac48b30701b3330fa18bf05e5a6c5157f53b23ecd3274fb5"
+    },
+    {
+      "path": "internal/updateradapter/wire.go",
+      "sha256": "ccccfe73f5c05d35f70bfc5019c21f2f8c69f4b9618a68eab27ca64cb43901f9"
+    },
+    {
+      "path": "internal/version/version.go",
+      "sha256": "b59a8177087b929b301a4e30ce4d98a4a4b7835107231a0efc18abd7d7c78497"
+    },
+    {
+      "path": "internal/videocover/memory.go",
+      "sha256": "a9b9f36df665595bf1094a6392d9609490c517628bcd13e087097a4b3ae75d33"
+    },
+    {
+      "path": "internal/videocover/sql.go",
+      "sha256": "79386abc512db5473dec44656f9247ff4b832a5165146d8a732297ed757acbf5"
+    },
+    {
+      "path": "internal/videocover/types.go",
+      "sha256": "8beb91b2b0cf35c3c14ae46cceffb40ce2a276851ec2bffcc7dc25604f78ea0c"
+    },
+    {
+      "path": "internal/videocover/videocover_test.go",
+      "sha256": "96cf75cb055f28ecc7dd1ed646afc320e19365ec77c9c1ee12d4b9b70ee642c1"
+    },
+    {
+      "path": "internal/youtube/client.go",
+      "sha256": "7c5f0c025ef368f7af5ddb030bffbc3a907e271aa6b814b2e99a8090da9a1472"
+    },
+    {
+      "path": "internal/youtube/client_api_fixture_test.go",
+      "sha256": "2809a520eec873b20d6d6005f5200196b3e70fff7d81946f2ee02d86a3f095b0"
+    },
+    {
+      "path": "internal/youtube/client_live_transition_test.go",
+      "sha256": "6dcc3a24de70459efe431b149a17e1f0c2dfa13147a478f492ba1aac34eea40c"
+    },
+    {
+      "path": "internal/youtube/client_relay_static_test.go",
+      "sha256": "c35fa1caac2758d66ad52f5d3ee6c38eaec4e54d0f3943cb8a3a03aed7849b38"
+    },
+    {
+      "path": "internal/youtube/client_test.go",
+      "sha256": "243083091531feadc2607eb369e65bd02adf04979852019833cda29e48db9af9"
+    },
+    {
+      "path": "migrations/001_init.sql",
+      "sha256": "5b813bad3ee1ef222e4f43d619c0e5647bab2b2748a073393a7a933b872c585d"
+    },
+    {
+      "path": "migrations/004_service_metrics.sql",
+      "sha256": "1023bd948e75a37da8f9200376a26da97c885ff237c4879b6e865aa9e37344fb"
+    },
+    {
+      "path": "migrations/006_mfa.sql",
+      "sha256": "751cfe1280ac1d7e472b338bbe9c234f9b3ea612087897e5682d33ad17f5ff54"
+    },
+    {
+      "path": "migrations/008_service_assignment_roles.sql",
+      "sha256": "35dacf2a793ce8814de9dc913b24cc47115c30dbe2ef68c873f443da7ae795a0"
+    },
+    {
+      "path": "migrations/019_runtime_secret_leases.sql",
+      "sha256": "d0aeb1c04e6677f2d36357a6cdd36f0484f5667e99e37751463a7e611ac67f12"
+    },
+    {
+      "path": "migrations/071_stream_media_runtime.sql",
+      "sha256": "d586841f4bd723252d513346e28811c74a1b5907ee319da89cba62a272ad3c29"
+    },
+    {
+      "path": "release/README.install.md",
+      "sha256": "d4962dff7859b889d5fb80654e650394b3a2a8d9aff82d36356fd96c5c8fac3c"
+    },
+    {
+      "path": "release/autostream-backup-control-panel.example",
+      "sha256": "1eca72c178c2f915f778bfda28d5f425afa0314bf2c6f1330c5deec238c469f7"
+    },
+    {
+      "path": "release/install-autostream-control-panel",
+      "sha256": "bef6f208c0529bf19c8fab647fa5e45267784261c3c61b9d8fdc2d328bd483c0"
+    },
+    {
+      "path": "release/installer-tests/control-panel/account-and-staging-rollback-cases.sh",
+      "sha256": "0bb55639cd139dd4c0eb60609063d6c2a34b0d1eeb7ba3287cdabb7743f57aa7"
+    },
+    {
+      "path": "release/installer-tests/control-panel/archive-fixture-and-validation.sh",
+      "sha256": "df922b8a4578f3e1900b75b8e2186c42ced95bbb94416c18b644b83a56520b29"
+    },
+    {
+      "path": "release/installer-tests/control-panel/fixture-ownership-and-runtime.sh",
+      "sha256": "7c7f7f4b7ecef184e5ae8a2b7a3c5b93bd2a8bb62900016571e6c9b08ac83d1c"
+    },
+    {
+      "path": "release/installer-tests/control-panel/fresh-install-and-legacy-fixture.sh",
+      "sha256": "02a73044f1a6b739240807f83ee36085e49332a9cad4b54ad6facf472f2b6813"
+    },
+    {
+      "path": "release/installer-tests/control-panel/legacy-rollback-cases.sh",
+      "sha256": "0cad8e3c31259d4dd0c3793dfa605e14298ac6097b37ea55341b191de9bd4fe7"
+    },
+    {
+      "path": "release/installer-tests/control-panel/migration-and-runtime-race-cases.sh",
+      "sha256": "3b9f824ab8f7266ad896c40b989e9216031e60ff858506c654e6f7936add890b"
+    },
+    {
+      "path": "release/installer-tests/control-panel/unsafe-input-and-lock-cases.sh",
+      "sha256": "5e746a6ed3ccd2a92a8f19bd9fc39878877cdd3bfef5e38732b95575ae54ceab"
+    },
+    {
+      "path": "release/test-control-platform-migration-contract.sh",
+      "sha256": "4239fc03136864a99323ed6a81506597a7aca611e3f35c5aab155f7088cc77db"
+    },
+    {
+      "path": "release/test-install-autostream-control-panel-integration.sh",
+      "sha256": "dceec3b5f62da18a4a875be21d1207fbceb81a8828aea61355081ef03e5fb7fc"
+    },
+    {
+      "path": "scripts/ci/bundle9-target-index.json",
+      "sha256": "5e289470ed7726f55d3f0bbff6b6a135c6c659fa4fb5f004259694827979df4e"
+    },
+    {
+      "path": "scripts/ci/source_policy.py",
+      "sha256": "157e549c72f6fba8c975a7a43c73f3c1219d58b533ec2cf603b9b3a4ac47d4b3"
+    },
+    {
+      "path": "scripts/ci/verify_bundle9_sources.py",
+      "sha256": "2de1e1b35541c8858b9600897f30440b29b1b3b5ae59e9472b6dce48d1688269"
+    },
+    {
+      "path": "web/next.config.mjs",
+      "sha256": "990d23a1209f730569bf5be5872cebcd263d3612e0755c5743d1638cbab3df76"
+    },
+    {
+      "path": "web/package-lock.json",
+      "sha256": "bd6632f4a912935758cfc8a56678ad9d01f6ea4f3be6ea22eb72e18690ae8217"
+    },
+    {
+      "path": "web/src/components/admin/i18n-provider.tsx",
+      "sha256": "5723e2fdae7a09cdbe83be20717f63c197ba9c8ea81464c3a7489fe8ba638a20"
+    },
+    {
+      "path": "web/src/components/admin/theme-provider.tsx",
+      "sha256": "2b8f25b410e0c14629d58faece767bb2e9b25c0db4da71dd494f9492f9aa3647"
+    },
+    {
+      "path": "web/src/components/foundation/confirmation/confirmation-dialog-frame.ts",
+      "sha256": "30ce8ee2d9515ba78a86a2921eb43f867465371ee3228781417bf16bfdbdc6f3"
+    },
+    {
+      "path": "web/src/components/foundation/confirmation/high-risk-confirmation.ts",
+      "sha256": "224361b3d6f11bea8943366a719b0efb739b8680a4e0453d6bd7418ef154cdb3"
+    },
+    {
+      "path": "web/src/components/foundation/permissions/action-availability-boundary.ts",
+      "sha256": "9e0ee023554d0bc929dd8b284ed8721ce6bef04991c7a8122567b0bee8a3c0de"
+    },
+    {
+      "path": "web/src/components/foundation/remote-state/remote-state-boundary.ts",
+      "sha256": "9fc523b489108789e2590ed8b7cc9a0b04315670446663295275a2d6a9f70c02"
+    },
+    {
+      "path": "web/src/components/foundation/remote-state/remote-state-notice.ts",
+      "sha256": "72845634ab94a953ca2de6831f3c22acb8e19f7c398ca2f339835c3d29782239"
+    },
+    {
+      "path": "web/src/components/foundation/secrets/one-time-secret-reveal.ts",
+      "sha256": "1358acb3a9b923f5f8724a447664813b01291856fb27ea1eb7c36ca04a02beef"
+    },
+    {
+      "path": "web/src/components/foundation/status/domain-status-badge.ts",
+      "sha256": "27763ee2fc44a55f39022e5dc7332d2ecbe54fa13b431416e6b661a3b7abe110"
+    },
+    {
+      "path": "web/src/components/shell/use-shell-session-guard.ts",
+      "sha256": "07f5adae4bfc8708d31a3bca980a98050bd1668ada6e66fb3c1ec849f2b93347"
+    },
+    {
+      "path": "web/src/features/account/ui-preferences.ts",
+      "sha256": "ca2fb6a660e32800df963e63114ce6ad6d6acb4b5b504f9a520a8ccb83e19b44"
+    },
+    {
+      "path": "web/src/features/queries.ts",
+      "sha256": "a9b9c053c5b0c4cd4c9e1ed2175e52971516615679bbffa969ab8a1aa0025181"
+    },
+    {
+      "path": "web/src/lib/api/client.ts",
+      "sha256": "10f1d01500814f24f8c771f152b98c6328cba4d730ec9924f7433cb8e1cfd22f"
+    },
+    {
+      "path": "web/src/lib/auth/permissions.ts",
+      "sha256": "bc7dcae28090d5a1ac2e95256c7c3440ab305d839bb98cdc1ac13c1ed4df5513"
+    },
+    {
+      "path": "web/src/lib/auth/post-login-redirect.ts",
+      "sha256": "e7ddd22d8fd8a0c1d7d32464f4919a8d482c2277b3f8f47e7e8d16f82f5bf200"
+    },
+    {
+      "path": "web/src/lib/bootstrap-envelope.ts",
+      "sha256": "3c5dc234e6e11bfce327df1e72a738ce8e3e2b57df79d19330e6b087252ee58b"
+    },
+    {
+      "path": "web/src/lib/foundation/actions/confirmation-policy.ts",
+      "sha256": "1c5471b62b2178eb1955e8fe205dd8f8d61ae250c231a3d23a04fc21142fd43b"
+    },
+    {
+      "path": "web/src/lib/foundation/actions/confirmation-revalidation.ts",
+      "sha256": "5d63e3d2547d56dbea0be22252956f8bd554484f17c0ba89982e3e76d2163e5b"
+    },
+    {
+      "path": "web/src/lib/foundation/actions/contracts.ts",
+      "sha256": "bd00973f0962b5655c75b19e758db53629237b1ec272f769190bdb23438b206a"
+    },
+    {
+      "path": "web/src/lib/foundation/api-errors/adapter.ts",
+      "sha256": "9793af5f5d6db79ddc31d2267ca60236bf51e366c4003195bc081ce77b06d2b2"
+    },
+    {
+      "path": "web/src/lib/foundation/api-errors/contracts.ts",
+      "sha256": "5fcfe5f00c56c4c39a16e72575d785fc623483ecfaa07bb6259d7458fa79cf10"
+    },
+    {
+      "path": "web/src/lib/foundation/api-errors/registry.ts",
+      "sha256": "7c0654835cadff8a80b224b3d4bba3dd99802a0712681210a61cc7a9cce0d8b6"
+    },
+    {
+      "path": "web/src/lib/foundation/permissions/contracts.ts",
+      "sha256": "75ee11327d3e30a7e4312ee1f937c61059003e03735b27bfd24c75c8224742ee"
+    },
+    {
+      "path": "web/src/lib/foundation/permissions/evaluator.ts",
+      "sha256": "ad1a604cf86d73120fb097ae4e1124e92e075ff8b7a0ee51bb5c038a513d19b4"
+    },
+    {
+      "path": "web/src/lib/foundation/remote-state/aggregate.ts",
+      "sha256": "8cd859af68d7388b33d1845a842e26ae6514b3ae57e08c667a4ead7082e350a1"
+    },
+    {
+      "path": "web/src/lib/foundation/remote-state/contracts.ts",
+      "sha256": "98530f92998fd603a4dba5c876a3381cadd672eb9e3157671f300ca2e2d1dd5a"
+    },
+    {
+      "path": "web/src/lib/foundation/remote-state/internal-error.ts",
+      "sha256": "402e9509e7609ab2e9c6d782aa3543b2d6d97c6aadaf9a5a79d928f87e1bf2cd"
+    },
+    {
+      "path": "web/src/lib/foundation/remote-state/projector.ts",
+      "sha256": "83ac176da97fd4273b8117a0797f4f9f3887920df91ac552bfc13f5628ff3887"
+    },
+    {
+      "path": "web/src/lib/foundation/secrets/contracts.ts",
+      "sha256": "a8e3e3385b79a2cfa061d25713d3b897bf5ac97a05f08bf4e43eb28ba320b4f5"
+    },
+    {
+      "path": "web/src/lib/foundation/secrets/lifecycle-owner.ts",
+      "sha256": "1d07fdfd3c6a95a4bef5422345e985ae513c154a4409e547a46158e54af18daa"
+    },
+    {
+      "path": "web/src/lib/foundation/secrets/timing-policy.ts",
+      "sha256": "7d35cddc6c2aa417c0e44020c64d523198439e580d6fe21eb9edf68cee032526"
+    },
+    {
+      "path": "web/src/lib/foundation/status/aggregate.ts",
+      "sha256": "a601e49f1dc806a12202dc3728f9d4e0029fe71f7c68cad42e12038d1d47ce7d"
+    },
+    {
+      "path": "web/src/lib/foundation/status/contracts.ts",
+      "sha256": "c97f5948ec2c8c0f08a499c2078ac26f6bd014661ac37d49046169b88c9b56a0"
+    },
+    {
+      "path": "web/src/lib/foundation/status/lifecycle-presenters.ts",
+      "sha256": "6c8dfa25abc458781246fd805038b15d4a80a3661b0680b11c6df48c33464937"
+    },
+    {
+      "path": "web/src/lib/foundation/status/node-presenters.ts",
+      "sha256": "ba063bdd3bbf486b95383b266810510ebfedafa216e0e473a577eb862dde5897"
+    },
+    {
+      "path": "web/src/lib/foundation/status/observability-presenters.ts",
+      "sha256": "4e448856cbe5b4c16c226cf61facf1f37347a2978a06a586f64af3a6efa63aa4"
+    },
+    {
+      "path": "web/src/lib/foundation/status/presenter-core.ts",
+      "sha256": "1072d57ab9a5198a362943f30e187055ce53d8cda229fa8e46dfa7bf2a7fea8b"
+    },
+    {
+      "path": "web/src/lib/foundation/status/system-update-presenters.ts",
+      "sha256": "4f8617b6edc61ce5446df660b9d88683f135a9a5280b3413c08bb804522edb78"
+    },
+    {
+      "path": "web/src/lib/google-analytics.ts",
+      "sha256": "78211e97e2f04d89a5ee678c2b652b84efe2a18237f6e2d02e3db2ff0e1ab203"
+    },
+    {
+      "path": "web/src/lib/passkeys.ts",
+      "sha256": "7cc4da2d13a3884f3c5f56747462f30d942b9567ac182033f96c6f4a3e115eb2"
+    },
+    {
+      "path": "web/src/types/domain.ts",
+      "sha256": "d24c46caa22b3a3539eea452d9f3755fad12eb8c65a18cd161268507dedb7d38"
+    },
+    {
+      "path": "web/tests/bundle9-source-composition.test.mts",
+      "sha256": "efb853a4f8139e9bcd1f8d4af0e3abed42997c310d7f0de147ee6fa400a09a8b"
+    },
+    {
+      "path": "web/tests/bundle9-ui-characterization.test.mts",
+      "sha256": "15ec652fe346a398a3ee693204b620b54395e61302ba2ea076acd34b6df08bc0"
+    },
+    {
+      "path": "web/tests/fixtures/bundle9-ui-characterization.json",
+      "sha256": "4328d8e27a45a6158116122f502211597096904f3d8f51505fc356def5a4971a"
+    },
+    {
+      "path": "web/tests/helpers/browser-harness.mts",
+      "sha256": "bd45673d96e20aaea5927fa6b57c1c4d1445c36bb515e8e14758554bfa5ab5de"
+    },
+    {
+      "path": "web/tests/helpers/browser-launch-profile.mts",
+      "sha256": "1d2ac53d0f89cfd3416c4321642a61a20441a7ac7be24b8d8d28257cb02564c8"
+    },
+    {
+      "path": "web/tests/helpers/browser-next-server.mts",
+      "sha256": "8d94b8c80631c123eb0a3bafb1f2da157c571cdf6f24a7bdb5521b2e8f940baf"
+    },
+    {
+      "path": "web/tests/helpers/browser-process-attempt.mts",
+      "sha256": "3ee1ea83d4d83c0b9fbf0a0d611f7a2607fd8be108d0f8414509cba89fdd51f2"
+    },
+    {
+      "path": "web/tests/helpers/browser-request-lifecycle.mts",
+      "sha256": "cf5d12e6935780faaf0a5b0f6a3030e43a2108590a533446b8d038a1c59f7ff0"
+    },
+    {
+      "path": "web/tests/helpers/bundle9-browser-contract.mts",
+      "sha256": "81e3a706146ad4b2ed0b4ea4e63f0e2fa685a8a49971245b636b2b3450043b4e"
+    },
+    {
+      "path": "web/tests/helpers/bundle9-browser-fixtures.mts",
+      "sha256": "2422c9ac29ec2bbaaee561c6f6670e2db5d936730bdffcb0c45b671fc17d3133"
+    },
+    {
+      "path": "web/tests/helpers/bundle9-browser-scenarios.mts",
+      "sha256": "4e28633097e4ccb40e3a7bffe721b2ffb59524b755aa879437c302451d5ba6f6"
+    },
+    {
+      "path": "web/tests/helpers/bundle9-responsibility-composition.mts",
+      "sha256": "2fb9ea658bde716d5c51e47bbdb1a1b5129cfe3cfc429acf0a5e8ea712710926"
+    },
+    {
+      "path": "web/tests/helpers/bundle9-source-characterization.mts",
+      "sha256": "1ab9e2de3449ed9d549b28542d926cdc4c9cce1046ef3bb93186beef850d972f"
+    },
+    {
+      "path": "web/tests/helpers/run-bundle9-ui-comparison.mts",
+      "sha256": "bfc37e55c3be87c6f059771b8f40a089bdb6756b42310352fef73597edc11c39"
+    }
+  ]
+}

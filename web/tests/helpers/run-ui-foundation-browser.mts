@@ -123,11 +123,12 @@ export function isRequiredBrowserTestFileCompletion(
 ) {
   const normalizedName = result.name.replaceAll("\\", "/");
   if (result.nesting !== 0 || typeof result.file !== "string") return false;
+  const resultFile = result.file;
   return requiredBrowserTestFiles.some((candidate) => {
     const expectedPath = resolve(candidateWebRoot, candidate);
     const nameMatches = normalizedName === candidate
       || (isAbsolute(result.name) && resolve(result.name) === expectedPath);
-    return nameMatches && resolve(result.file) === expectedPath;
+    return nameMatches && resolve(resultFile) === expectedPath;
   });
 }
 

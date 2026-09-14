@@ -1,0 +1,718 @@
+{
+  "revision": "b266aabb896f0df9880a0354c1135130d6938e8d",
+  "source": "tracked page.tsx paths in the 017 census; public vs redirect behavior must follow the existing source, not this classification",
+  "routes": [
+    {
+      "path": "web/src/app/admin/account/page.tsx",
+      "route": "/admin/account/",
+      "scope": "admin",
+      "blob": "5d7b4cc4408d3ef4e235aa2f3548fc6a1d7bd14c",
+      "sha256": "c634c03b985d506d7e8f16cff1c00556e3a98a4f62b22cfd4c32cb11d3078f10",
+      "existing_targets": [],
+      "families": [
+        "account"
+      ],
+      "candidate_entry_sha256": "c634c03b985d506d7e8f16cff1c00556e3a98a4f62b22cfd4c32cb11d3078f10"
+    },
+    {
+      "path": "web/src/app/admin/application/page.tsx",
+      "route": "/admin/application/",
+      "scope": "admin",
+      "blob": "74dae7f143cab3cc6f05a3e18c357720384fa041",
+      "sha256": "b153906c037324a194e0e8bc57a0ee6f7cbcdd0d29afdcc989059a5309347c3a",
+      "existing_targets": [],
+      "families": [
+        "system-updates"
+      ],
+      "candidate_entry_sha256": "b153906c037324a194e0e8bc57a0ee6f7cbcdd0d29afdcc989059a5309347c3a"
+    },
+    {
+      "path": "web/src/app/admin/archive/page.tsx",
+      "route": "/admin/archive/",
+      "scope": "admin",
+      "blob": "57f50a1c199e1fa57929b4f2c536bbbde7381cc4",
+      "sha256": "6216d0a2732c6b1bd5a1c2c43a538546a5eed836557c97022701df5720eb4f96",
+      "existing_targets": [],
+      "families": [
+        "archive"
+      ],
+      "candidate_entry_sha256": "6216d0a2732c6b1bd5a1c2c43a538546a5eed836557c97022701df5720eb4f96"
+    },
+    {
+      "path": "web/src/app/admin/archive/player/page.tsx",
+      "route": "/admin/archive/player/",
+      "scope": "admin",
+      "blob": "2a527274d17b05d9c30de4c00b445881acfa5811",
+      "sha256": "22c64f96baa01042453d5fb01f9356692af97619e854e207d303072c1fbe20f0",
+      "existing_targets": [],
+      "families": [
+        "archive"
+      ],
+      "candidate_entry_sha256": "22c64f96baa01042453d5fb01f9356692af97619e854e207d303072c1fbe20f0"
+    },
+    {
+      "path": "web/src/app/admin/audit-logs/page.tsx",
+      "route": "/admin/audit-logs/",
+      "scope": "admin",
+      "blob": "aa167d8321bd5132d7fa5928afac7a258aa8e4f3",
+      "sha256": "d9ded8af22b97beb432afc0b8b52148dfc3f5acec1ac78f93f769a3f70e0ec26",
+      "existing_targets": [],
+      "families": [
+        "audit-logs"
+      ],
+      "candidate_entry_sha256": "d9ded8af22b97beb432afc0b8b52148dfc3f5acec1ac78f93f769a3f70e0ec26"
+    },
+    {
+      "path": "web/src/app/admin/caption/page.tsx",
+      "route": "/admin/caption/",
+      "scope": "admin",
+      "blob": "4234ba8e20ccbd2d910a58580e3b58a43a1e9759",
+      "sha256": "cdae269e093760d34b0b43943aa1bc139856f5abbe128e6ac2844590de21370e",
+      "existing_targets": [],
+      "families": [
+        "captions"
+      ],
+      "candidate_entry_sha256": "cdae269e093760d34b0b43943aa1bc139856f5abbe128e6ac2844590de21370e"
+    },
+    {
+      "path": "web/src/app/admin/diagnostics/page.tsx",
+      "route": "/admin/diagnostics/",
+      "scope": "admin",
+      "blob": "78e13ebc212fbbd9648db06d206e2fb317581071",
+      "sha256": "00c56532bbc849da7d3050d9aa00c43ee7e77e6d773a5d0444541f9485eb6ee6",
+      "existing_targets": [],
+      "families": [
+        "diagnostics"
+      ],
+      "candidate_entry_sha256": "00c56532bbc849da7d3050d9aa00c43ee7e77e6d773a5d0444541f9485eb6ee6"
+    },
+    {
+      "path": "web/src/app/admin/discord/page.tsx",
+      "route": "/admin/discord/",
+      "scope": "admin",
+      "blob": "e7f6906e24c9065ce19f2c6dee678ce94b104de3",
+      "sha256": "1f26f9e0a9b205b1506ad583878828da0748cabb4f1f412d8166b5bc0a4a23bf",
+      "existing_targets": [],
+      "families": [
+        "discord"
+      ],
+      "candidate_entry_sha256": "1f26f9e0a9b205b1506ad583878828da0748cabb4f1f412d8166b5bc0a4a23bf"
+    },
+    {
+      "path": "web/src/app/admin/encoder/page.tsx",
+      "route": "/admin/encoder/",
+      "scope": "admin",
+      "blob": "5c87d39777c5c0c9f743e888f533c1cca0a4bc42",
+      "sha256": "09c76ca42f68c1826bbcd5c6072bbf80e5c1c3f9144d6a78c3cc46a18846b747",
+      "existing_targets": [],
+      "families": [
+        "encoder-profiles"
+      ],
+      "candidate_entry_sha256": "09c76ca42f68c1826bbcd5c6072bbf80e5c1c3f9144d6a78c3cc46a18846b747"
+    },
+    {
+      "path": "web/src/app/admin/incidents/page.tsx",
+      "route": "/admin/incidents/",
+      "scope": "admin",
+      "blob": "2c31259d844350915fdab75359ca9edd7fe3803b",
+      "sha256": "c7b90ef261ec04d1b111a234f4192b354f07107e3939677b334a29f04d05a67e",
+      "existing_targets": [],
+      "families": [
+        "incidents"
+      ],
+      "candidate_entry_sha256": "c7b90ef261ec04d1b111a234f4192b354f07107e3939677b334a29f04d05a67e"
+    },
+    {
+      "path": "web/src/app/admin/integrations/page.tsx",
+      "route": "/admin/integrations/",
+      "scope": "admin",
+      "blob": "5e87e8eda8524ff12b2f5e25cd0e83eb145442d4",
+      "sha256": "1590899b3fac1adf4c7a7ca8d75ac61cd5a4a09e73961c42410d70737f96c199",
+      "existing_targets": [],
+      "families": [
+        "integrations"
+      ],
+      "candidate_entry_sha256": "1590899b3fac1adf4c7a7ca8d75ac61cd5a4a09e73961c42410d70737f96c199"
+    },
+    {
+      "path": "web/src/app/admin/logs/page.tsx",
+      "route": "/admin/logs/",
+      "scope": "admin",
+      "blob": "fc9097a42dac14e1108793f570146b879dbf1628",
+      "sha256": "0f965e9143df4c37e8cdd5e7e87fe1df95dcc710a55c89bfea9a52ac8ca1ad0a",
+      "existing_targets": [],
+      "families": [
+        "audit-logs"
+      ],
+      "candidate_entry_sha256": "0f965e9143df4c37e8cdd5e7e87fe1df95dcc710a55c89bfea9a52ac8ca1ad0a"
+    },
+    {
+      "path": "web/src/app/admin/metrics/page.tsx",
+      "route": "/admin/metrics/",
+      "scope": "admin",
+      "blob": "fe67ee55b6e9002b9e7c4940c111dd13f1c99958",
+      "sha256": "f7d9a2ae65dd29152b3673f81f9cdb03b6e0a901d9829b065110a8a8c154e2c7",
+      "existing_targets": [],
+      "families": [
+        "metrics"
+      ],
+      "candidate_entry_sha256": "f7d9a2ae65dd29152b3673f81f9cdb03b6e0a901d9829b065110a8a8c154e2c7"
+    },
+    {
+      "path": "web/src/app/admin/monitoring/page.tsx",
+      "route": "/admin/monitoring/",
+      "scope": "admin",
+      "blob": "49001935a3b37ab730292ccbeafd6f0ecaa96235",
+      "sha256": "942952430f636d8f6541492530c8bf64ddf13ae6cb2f0117d7d84811c453f037",
+      "existing_targets": [],
+      "families": [
+        "monitoring"
+      ],
+      "candidate_entry_sha256": "942952430f636d8f6541492530c8bf64ddf13ae6cb2f0117d7d84811c453f037"
+    },
+    {
+      "path": "web/src/app/admin/nodes/page.tsx",
+      "route": "/admin/nodes/",
+      "scope": "admin",
+      "blob": "aeb46ab63144ebbaa181a4717a9819d1c9ae8ea4",
+      "sha256": "44f2d4a179f806f04dafd323790322f311ed363ee95a0a9299bd8b5b01ad0394",
+      "existing_targets": [],
+      "families": [
+        "nodes"
+      ],
+      "candidate_entry_sha256": "44f2d4a179f806f04dafd323790322f311ed363ee95a0a9299bd8b5b01ad0394"
+    },
+    {
+      "path": "web/src/app/admin/notifications/page.tsx",
+      "route": "/admin/notifications/",
+      "scope": "admin",
+      "blob": "49ecc81add7724998f0d04cbb96e90e847c4a407",
+      "sha256": "5571d15d5d5feddc011ff4380cfd318166721e6800d68800e0d8e4ae829ade36",
+      "existing_targets": [],
+      "families": [
+        "notifications"
+      ],
+      "candidate_entry_sha256": "5571d15d5d5feddc011ff4380cfd318166721e6800d68800e0d8e4ae829ade36"
+    },
+    {
+      "path": "web/src/app/admin/overlay/page.tsx",
+      "route": "/admin/overlay/",
+      "scope": "admin",
+      "blob": "09f25632bbfd051c419fdf5aa8d4eea9f3cf8fb4",
+      "sha256": "70c5becc0b336bdd851cbe17d5fb53ccc5173a5615561aafdf88ded44263288c",
+      "existing_targets": [],
+      "families": [
+        "watermark"
+      ],
+      "candidate_entry_sha256": "70c5becc0b336bdd851cbe17d5fb53ccc5173a5615561aafdf88ded44263288c"
+    },
+    {
+      "path": "web/src/app/admin/page.tsx",
+      "route": "/admin/",
+      "scope": "admin",
+      "blob": "8ac441b61134df36c225057e7b2d023a01ecef30",
+      "sha256": "76185e865f40e48ae17a833962baf369a0065a173971e94d7bdb51489180c2d9",
+      "existing_targets": [],
+      "families": [
+        "dashboard"
+      ],
+      "candidate_entry_sha256": "76185e865f40e48ae17a833962baf369a0065a173971e94d7bdb51489180c2d9"
+    },
+    {
+      "path": "web/src/app/admin/registered-nodes/page.tsx",
+      "route": "/admin/registered-nodes/",
+      "scope": "admin",
+      "blob": "d1dfb44c185e5aab5c26ff8d7f25843c18600295",
+      "sha256": "8a1553e8905f3bf7af5aef62c4879e6fc3bf676506743c15208b7738d1b98f9b",
+      "existing_targets": [],
+      "families": [
+        "nodes"
+      ],
+      "candidate_entry_sha256": "8a1553e8905f3bf7af5aef62c4879e6fc3bf676506743c15208b7738d1b98f9b"
+    },
+    {
+      "path": "web/src/app/admin/remediation/page.tsx",
+      "route": "/admin/remediation/",
+      "scope": "admin",
+      "blob": "2f21ff22d3922ec2c7d4a7105d24bc51554deabf",
+      "sha256": "8564ce345fb38e353a15b1a48322533a58acf5e37f3c0895c1c219f9a8f577cc",
+      "existing_targets": [],
+      "families": [
+        "remediation"
+      ],
+      "candidate_entry_sha256": "8564ce345fb38e353a15b1a48322533a58acf5e37f3c0895c1c219f9a8f577cc"
+    },
+    {
+      "path": "web/src/app/admin/roles/page.tsx",
+      "route": "/admin/roles/",
+      "scope": "admin",
+      "blob": "1c8e1be0da70368fd1067527eb835946d100d0a1",
+      "sha256": "d7483f96ce2121df00b6ccbda54fa3de9ffbc4f1b1cac508cac728c4a9bab4ea",
+      "existing_targets": [],
+      "families": [
+        "roles"
+      ],
+      "candidate_entry_sha256": "d7483f96ce2121df00b6ccbda54fa3de9ffbc4f1b1cac508cac728c4a9bab4ea"
+    },
+    {
+      "path": "web/src/app/admin/security/page.tsx",
+      "route": "/admin/security/",
+      "scope": "admin",
+      "blob": "dccc2164ca26b5acf8bf32e7f65940f0f6ec193b",
+      "sha256": "9d050619be100841e8a8c0e09d93c107ff07b13e175d633457f1cc7955926e25",
+      "existing_targets": [],
+      "families": [
+        "security-settings"
+      ],
+      "candidate_entry_sha256": "9d050619be100841e8a8c0e09d93c107ff07b13e175d633457f1cc7955926e25"
+    },
+    {
+      "path": "web/src/app/admin/service-health/page.tsx",
+      "route": "/admin/service-health/",
+      "scope": "admin",
+      "blob": "c9ab03391792777c2a56be5e0d48dd2bdf38dfd5",
+      "sha256": "6b1a2907942956a31e4430f50ab59f380c57c6c4741d7091e505452c43ea8fa2",
+      "existing_targets": [],
+      "families": [
+        "service-health"
+      ],
+      "candidate_entry_sha256": "6b1a2907942956a31e4430f50ab59f380c57c6c4741d7091e505452c43ea8fa2"
+    },
+    {
+      "path": "web/src/app/admin/settings/page.tsx",
+      "route": "/admin/settings/",
+      "scope": "admin",
+      "blob": "516a8984aa355002db7aac4a19a48bf6e27ea171",
+      "sha256": "c66fd302c901bf3ff35c1e724ea1e8aad52a9e5636018074556fa71d8dab528e",
+      "existing_targets": [],
+      "families": [
+        "security-settings"
+      ],
+      "candidate_entry_sha256": "c66fd302c901bf3ff35c1e724ea1e8aad52a9e5636018074556fa71d8dab528e"
+    },
+    {
+      "path": "web/src/app/admin/streams/page.tsx",
+      "route": "/admin/streams/",
+      "scope": "admin",
+      "blob": "b91f7ce9a51231e8e48c0f8fe2b3b117351c6bee",
+      "sha256": "c60950c78ec5c398452be74fdd5cafaaa18a388f920f8a2f985dfc238c60b6b2",
+      "existing_targets": [],
+      "families": [
+        "streams-list",
+        "stream-detail",
+        "stream-create-edit"
+      ],
+      "candidate_entry_sha256": "c60950c78ec5c398452be74fdd5cafaaa18a388f920f8a2f985dfc238c60b6b2"
+    },
+    {
+      "path": "web/src/app/admin/users/page.tsx",
+      "route": "/admin/users/",
+      "scope": "admin",
+      "blob": "80ae0be9e3509fefb9666e90760af17fbbaa0acb",
+      "sha256": "332a00886b23e44bd493de42a0f88e49e6591971af57e33a2a1e274b557e7f9b",
+      "existing_targets": [],
+      "families": [
+        "users"
+      ],
+      "candidate_entry_sha256": "332a00886b23e44bd493de42a0f88e49e6591971af57e33a2a1e274b557e7f9b"
+    },
+    {
+      "path": "web/src/app/admin/workers/page.tsx",
+      "route": "/admin/workers/",
+      "scope": "admin",
+      "blob": "b8438782e9a8dfa142f0f440e9bb454cb68422c1",
+      "sha256": "50fcdd3133b678ff8485f51ab317f6bfe0b3d8b7c8ad99d311c8a9bf1f9ea368",
+      "existing_targets": [],
+      "families": [
+        "workers"
+      ],
+      "candidate_entry_sha256": "50fcdd3133b678ff8485f51ab317f6bfe0b3d8b7c8ad99d311c8a9bf1f9ea368"
+    },
+    {
+      "path": "web/src/app/admin/youtube/page.tsx",
+      "route": "/admin/youtube/",
+      "scope": "admin",
+      "blob": "818d583f87b73b0d279aab1c6c91ed2a6df7f8aa",
+      "sha256": "041565189d7499909e4615874759d77fab33b9acb53108062cc13ece1ab0d02d",
+      "existing_targets": [],
+      "families": [
+        "youtube"
+      ],
+      "candidate_entry_sha256": "041565189d7499909e4615874759d77fab33b9acb53108062cc13ece1ab0d02d"
+    },
+    {
+      "path": "web/src/app/application/page.tsx",
+      "route": "/application/",
+      "scope": "public-or-existing-redirect",
+      "blob": "aec0228abd9388048f31e07be0ab63d80439b882",
+      "sha256": "8c80712a0b0d9272d1d6e279fd940f672e56f48ee8bb4bf917fefa9637932c1b",
+      "existing_targets": [],
+      "families": [
+        "system-updates"
+      ],
+      "candidate_entry_sha256": "8c80712a0b0d9272d1d6e279fd940f672e56f48ee8bb4bf917fefa9637932c1b"
+    },
+    {
+      "path": "web/src/app/archive/page.tsx",
+      "route": "/archive/",
+      "scope": "public-or-existing-redirect",
+      "blob": "c867a09b9da6bff7507e364fd2ad8826a81baa00",
+      "sha256": "1ed4f92b4aee873106958bc18148f3b1e6077c4f5d5d10d7a996cccf3e5c448a",
+      "existing_targets": [],
+      "families": [
+        "archive"
+      ],
+      "candidate_entry_sha256": "1ed4f92b4aee873106958bc18148f3b1e6077c4f5d5d10d7a996cccf3e5c448a"
+    },
+    {
+      "path": "web/src/app/archive/share/page.tsx",
+      "route": "/archive/share/",
+      "scope": "public-or-existing-redirect",
+      "blob": "a0489ca8d6b936710a579cc2ef428d3c822638e4",
+      "sha256": "cb4ea1b96d94110f79fe21c1339d3d18f953605757895492fa5effc9f325e02c",
+      "existing_targets": [],
+      "families": [
+        "public-archive-share"
+      ],
+      "candidate_entry_sha256": "cb4ea1b96d94110f79fe21c1339d3d18f953605757895492fa5effc9f325e02c"
+    },
+    {
+      "path": "web/src/app/audit/page.tsx",
+      "route": "/audit/",
+      "scope": "public-or-existing-redirect",
+      "blob": "31fd6374e5e7b8114fd5d4ed4ab3107480dc5ce4",
+      "sha256": "07c797866ab067738e14f9a1bb5b428458f985207b237319eb29816d3afa83c6",
+      "existing_targets": [],
+      "families": [
+        "audit-logs"
+      ],
+      "candidate_entry_sha256": "07c797866ab067738e14f9a1bb5b428458f985207b237319eb29816d3afa83c6"
+    },
+    {
+      "path": "web/src/app/auth/email/confirm/page.tsx",
+      "route": "/auth/email/confirm/",
+      "scope": "public-or-existing-redirect",
+      "blob": "316037da39efcfc26b89e0a192636d4b633b79d4",
+      "sha256": "9639920dcc7c3a62a3dc6b4e4adfbaea030a6e319cf4d27fbe02883f53ccb3a7",
+      "existing_targets": [],
+      "families": [
+        "login"
+      ],
+      "candidate_entry_sha256": "9639920dcc7c3a62a3dc6b4e4adfbaea030a6e319cf4d27fbe02883f53ccb3a7"
+    },
+    {
+      "path": "web/src/app/caption/page.tsx",
+      "route": "/caption/",
+      "scope": "public-or-existing-redirect",
+      "blob": "a2c71ebab4832a58ca32ba6b92f1e2cf785e1d50",
+      "sha256": "3e9f16c918ac4b2ee874b57d5bafe167362a3a2116b58d4802d4d900190b09bd",
+      "existing_targets": [],
+      "families": [
+        "captions"
+      ],
+      "candidate_entry_sha256": "3e9f16c918ac4b2ee874b57d5bafe167362a3a2116b58d4802d4d900190b09bd"
+    },
+    {
+      "path": "web/src/app/dashboard/page.tsx",
+      "route": "/dashboard/",
+      "scope": "public-or-existing-redirect",
+      "blob": "869d97a502022cad0a1713ab961a9dd698c529b2",
+      "sha256": "7e66fbd1149c65a6b580a2511ae4bee45101d2000de3dc835db9fd1c361ba056",
+      "existing_targets": [],
+      "families": [
+        "dashboard"
+      ],
+      "candidate_entry_sha256": "7e66fbd1149c65a6b580a2511ae4bee45101d2000de3dc835db9fd1c361ba056"
+    },
+    {
+      "path": "web/src/app/diagnostics/page.tsx",
+      "route": "/diagnostics/",
+      "scope": "public-or-existing-redirect",
+      "blob": "8f3c0652001ef72d1d52bb77587ada83c995eefa",
+      "sha256": "6a95f65d6247202243aac2bd5590a8a147cc41c0d29bc86c594832376fda06e8",
+      "existing_targets": [],
+      "families": [
+        "diagnostics"
+      ],
+      "candidate_entry_sha256": "6a95f65d6247202243aac2bd5590a8a147cc41c0d29bc86c594832376fda06e8"
+    },
+    {
+      "path": "web/src/app/discord/page.tsx",
+      "route": "/discord/",
+      "scope": "public-or-existing-redirect",
+      "blob": "f25206da5549549a761fbecfd35a0d1d89eedd76",
+      "sha256": "74a8bd89412153bb55b1b18cded0a6264d55f93018c2e845e1ca9d40acb7216f",
+      "existing_targets": [],
+      "families": [
+        "discord"
+      ],
+      "candidate_entry_sha256": "74a8bd89412153bb55b1b18cded0a6264d55f93018c2e845e1ca9d40acb7216f"
+    },
+    {
+      "path": "web/src/app/encoder/page.tsx",
+      "route": "/encoder/",
+      "scope": "public-or-existing-redirect",
+      "blob": "188ae2f8ecc0a22c33f73617bfc4dbd79bbce8f4",
+      "sha256": "8a48f2ee880fb00ccb142265a9b8a1eb6d415f7db4aaa6b30744a75046eafe21",
+      "existing_targets": [],
+      "families": [
+        "encoder-profiles"
+      ],
+      "candidate_entry_sha256": "8a48f2ee880fb00ccb142265a9b8a1eb6d415f7db4aaa6b30744a75046eafe21"
+    },
+    {
+      "path": "web/src/app/incidents/page.tsx",
+      "route": "/incidents/",
+      "scope": "public-or-existing-redirect",
+      "blob": "b7470fa88e5d8cd0af07d7956151c42ad3d069f9",
+      "sha256": "9c624d56d4fd1053e351138b57ef270085ef4ac8528fbdd9537763905a325c01",
+      "existing_targets": [],
+      "families": [
+        "incidents"
+      ],
+      "candidate_entry_sha256": "9c624d56d4fd1053e351138b57ef270085ef4ac8528fbdd9537763905a325c01"
+    },
+    {
+      "path": "web/src/app/integrations/page.tsx",
+      "route": "/integrations/",
+      "scope": "public-or-existing-redirect",
+      "blob": "ca1d4d65acb54252d8a8d688dfd79c3bfd4786e4",
+      "sha256": "16b0c1d5a40c337b3cda2e4954604b3a731d39b911077e612983c4ec4b1916be",
+      "existing_targets": [],
+      "families": [
+        "integrations"
+      ],
+      "candidate_entry_sha256": "16b0c1d5a40c337b3cda2e4954604b3a731d39b911077e612983c4ec4b1916be"
+    },
+    {
+      "path": "web/src/app/login/page.tsx",
+      "route": "/login/",
+      "scope": "public-or-existing-redirect",
+      "blob": "27c474aa7c1c75564d5874772fd2e6f61c9c9b95",
+      "sha256": "0e711b2f1942adf0bf7b375c33c55794d089f3bd71ea7f62e008d2d7eb41da51",
+      "existing_targets": [],
+      "families": [
+        "login"
+      ],
+      "candidate_entry_sha256": "0e711b2f1942adf0bf7b375c33c55794d089f3bd71ea7f62e008d2d7eb41da51"
+    },
+    {
+      "path": "web/src/app/logs/page.tsx",
+      "route": "/logs/",
+      "scope": "public-or-existing-redirect",
+      "blob": "e010de54bd8043ae4a1913104e0db58b028b9904",
+      "sha256": "14a1a83d11219b56401456e439b9a8c7188edbb04eb59c57a86aa526ce19fcbf",
+      "existing_targets": [],
+      "families": [
+        "audit-logs"
+      ],
+      "candidate_entry_sha256": "14a1a83d11219b56401456e439b9a8c7188edbb04eb59c57a86aa526ce19fcbf"
+    },
+    {
+      "path": "web/src/app/metrics/page.tsx",
+      "route": "/metrics/",
+      "scope": "public-or-existing-redirect",
+      "blob": "7c888322446ebc77c4869b6e46d5f69238db95d1",
+      "sha256": "8dc6712a84c098742f8c7266375387b41016a02e416e47b28657575791e6dfe7",
+      "existing_targets": [],
+      "families": [
+        "metrics"
+      ],
+      "candidate_entry_sha256": "8dc6712a84c098742f8c7266375387b41016a02e416e47b28657575791e6dfe7"
+    },
+    {
+      "path": "web/src/app/monitoring/page.tsx",
+      "route": "/monitoring/",
+      "scope": "public-or-existing-redirect",
+      "blob": "2d286c9a04e2b935eadb4f7f1652764a7bc455c9",
+      "sha256": "1bb67735678fcb8d9060ef0c20a7037dd802ab16baa05d7e7c8f1ac73ff898df",
+      "existing_targets": [],
+      "families": [
+        "monitoring"
+      ],
+      "candidate_entry_sha256": "1bb67735678fcb8d9060ef0c20a7037dd802ab16baa05d7e7c8f1ac73ff898df"
+    },
+    {
+      "path": "web/src/app/notifications/page.tsx",
+      "route": "/notifications/",
+      "scope": "public-or-existing-redirect",
+      "blob": "f9f8651b652fef14a2fb9a4653c046a670bad963",
+      "sha256": "2add83f21202b9a402bd2a11e21bc6e78705fe0a9d2bd25945c13ab6f96eb4a1",
+      "existing_targets": [],
+      "families": [
+        "notifications"
+      ],
+      "candidate_entry_sha256": "2add83f21202b9a402bd2a11e21bc6e78705fe0a9d2bd25945c13ab6f96eb4a1"
+    },
+    {
+      "path": "web/src/app/overlay/page.tsx",
+      "route": "/overlay/",
+      "scope": "public-or-existing-redirect",
+      "blob": "dc98c5ec63f9b80984572c14cdda075808e49a15",
+      "sha256": "6a29981d5f77781eef9daee5eaa9748814f2c5b1b2a65109800d2368e5f1bee6",
+      "existing_targets": [],
+      "families": [
+        "watermark"
+      ],
+      "candidate_entry_sha256": "6a29981d5f77781eef9daee5eaa9748814f2c5b1b2a65109800d2368e5f1bee6"
+    },
+    {
+      "path": "web/src/app/page.tsx",
+      "route": "/",
+      "scope": "public-or-existing-redirect",
+      "blob": "c6e619c1a0f474eb85959e87f2d8ef7dab67150d",
+      "sha256": "7cbd90902ce4d508dde20ee476103ea0665de10963530aea63e8d3309e54fca6",
+      "existing_targets": [],
+      "families": [
+        "dashboard"
+      ],
+      "candidate_entry_sha256": "7cbd90902ce4d508dde20ee476103ea0665de10963530aea63e8d3309e54fca6"
+    },
+    {
+      "path": "web/src/app/remediation/page.tsx",
+      "route": "/remediation/",
+      "scope": "public-or-existing-redirect",
+      "blob": "ff7de853a3bf443839656f9508aa38b909ba2723",
+      "sha256": "ba47f45af4cf4352b4c0159f62437aa9c3bcc2100f516990c336f9bbdaec1ceb",
+      "existing_targets": [],
+      "families": [
+        "remediation"
+      ],
+      "candidate_entry_sha256": "ba47f45af4cf4352b4c0159f62437aa9c3bcc2100f516990c336f9bbdaec1ceb"
+    },
+    {
+      "path": "web/src/app/roles/page.tsx",
+      "route": "/roles/",
+      "scope": "public-or-existing-redirect",
+      "blob": "c249fa7c05960ad2ef0acbcb6f0a781f083bbe5d",
+      "sha256": "213d03cc07a05a911415a22887b4f0d7d5a3a5fe29575ef00212091c4a472ec1",
+      "existing_targets": [],
+      "families": [
+        "roles"
+      ],
+      "candidate_entry_sha256": "213d03cc07a05a911415a22887b4f0d7d5a3a5fe29575ef00212091c4a472ec1"
+    },
+    {
+      "path": "web/src/app/security/page.tsx",
+      "route": "/security/",
+      "scope": "public-or-existing-redirect",
+      "blob": "40c53d2a035a1eed9ebfd42a8ca6e6c77875b2ac",
+      "sha256": "3eb514bc02a68138b6db2fc29b32c365524f33b980698b46cc2b42644597f5bc",
+      "existing_targets": [],
+      "families": [
+        "security-settings"
+      ],
+      "candidate_entry_sha256": "3eb514bc02a68138b6db2fc29b32c365524f33b980698b46cc2b42644597f5bc"
+    },
+    {
+      "path": "web/src/app/service-health/page.tsx",
+      "route": "/service-health/",
+      "scope": "public-or-existing-redirect",
+      "blob": "70fb2057ee0d863d41b72a9f8eb5dbf178d0355d",
+      "sha256": "1271f30f65ee27f3713947a69cb8981c65272c1876d14619cef33da108752a5d",
+      "existing_targets": [],
+      "families": [
+        "service-health"
+      ],
+      "candidate_entry_sha256": "1271f30f65ee27f3713947a69cb8981c65272c1876d14619cef33da108752a5d"
+    },
+    {
+      "path": "web/src/app/settings/page.tsx",
+      "route": "/settings/",
+      "scope": "public-or-existing-redirect",
+      "blob": "113a68b2d617307cb4c443c9a3b49be230e1b427",
+      "sha256": "ea9d339262b3967f0102ac4975f185931a0453e80c0364b7a5c79353f47af8a2",
+      "existing_targets": [],
+      "families": [
+        "security-settings"
+      ],
+      "candidate_entry_sha256": "ea9d339262b3967f0102ac4975f185931a0453e80c0364b7a5c79353f47af8a2"
+    },
+    {
+      "path": "web/src/app/setup/page.tsx",
+      "route": "/setup/",
+      "scope": "public-or-existing-redirect",
+      "blob": "a58eb96ecb4096067465550c6c78ce07c1d4d380",
+      "sha256": "34e27923295081972b02b6abc38afef79d5fd7d76658950bc92613e27c0304f6",
+      "existing_targets": [],
+      "families": [
+        "login"
+      ],
+      "candidate_entry_sha256": "34e27923295081972b02b6abc38afef79d5fd7d76658950bc92613e27c0304f6"
+    },
+    {
+      "path": "web/src/app/stream-preview/page.tsx",
+      "route": "/stream-preview/",
+      "scope": "public-or-existing-redirect",
+      "blob": "731b050eea42e97cb7e264edda0815316565c5e3",
+      "sha256": "d899c8fc1ab85133f57eff65be224d604447b0f749f5b1e132391705f18409ea",
+      "existing_targets": [],
+      "families": [
+        "stream-detail"
+      ],
+      "candidate_entry_sha256": "d899c8fc1ab85133f57eff65be224d604447b0f749f5b1e132391705f18409ea"
+    },
+    {
+      "path": "web/src/app/streams/page.tsx",
+      "route": "/streams/",
+      "scope": "public-or-existing-redirect",
+      "blob": "82be964aeb6119fbffe3e6fc13988b75b4489213",
+      "sha256": "a58ac31d862fcb4718d422ecbcb70ec5906909d2cfc2f9ec28fe23497ccd6b69",
+      "existing_targets": [],
+      "families": [
+        "streams-list",
+        "stream-detail",
+        "stream-create-edit"
+      ],
+      "candidate_entry_sha256": "a58ac31d862fcb4718d422ecbcb70ec5906909d2cfc2f9ec28fe23497ccd6b69"
+    },
+    {
+      "path": "web/src/app/tokens/page.tsx",
+      "route": "/tokens/",
+      "scope": "public-or-existing-redirect",
+      "blob": "be34a56f9ba9c231dd192035c58c4967b45bad60",
+      "sha256": "a59ed287a9d1e335200f3ebabd783138a8915eaffc974277d27337fe387e42f8",
+      "existing_targets": [],
+      "families": [
+        "security-settings"
+      ],
+      "candidate_entry_sha256": "a59ed287a9d1e335200f3ebabd783138a8915eaffc974277d27337fe387e42f8"
+    },
+    {
+      "path": "web/src/app/users/page.tsx",
+      "route": "/users/",
+      "scope": "public-or-existing-redirect",
+      "blob": "012258ef943f0894a859997835f51b16b6a4a502",
+      "sha256": "bf4c2615bb546b307efe70030bbae1b6c2cf0816ac0a7f3fde630661f80151d2",
+      "existing_targets": [],
+      "families": [
+        "users"
+      ],
+      "candidate_entry_sha256": "bf4c2615bb546b307efe70030bbae1b6c2cf0816ac0a7f3fde630661f80151d2"
+    },
+    {
+      "path": "web/src/app/workers/page.tsx",
+      "route": "/workers/",
+      "scope": "public-or-existing-redirect",
+      "blob": "3fcf8c2e9b76dc718a2266f24cf85f03e11ecf08",
+      "sha256": "9d757a0c33942db84e5d7d1b6a2e38974cfe75555cbc7ff5516c7cae7c413210",
+      "existing_targets": [],
+      "families": [
+        "workers"
+      ],
+      "candidate_entry_sha256": "9d757a0c33942db84e5d7d1b6a2e38974cfe75555cbc7ff5516c7cae7c413210"
+    },
+    {
+      "path": "web/src/app/youtube/page.tsx",
+      "route": "/youtube/",
+      "scope": "public-or-existing-redirect",
+      "blob": "eb51262b79e47772cb427fce6dbdf47db11928f3",
+      "sha256": "114e8353c2e6c96b0e93ed63913671f5071bb4fe7b07f20fa765993ed55ce889",
+      "existing_targets": [],
+      "families": [
+        "youtube"
+      ],
+      "candidate_entry_sha256": "114e8353c2e6c96b0e93ed63913671f5071bb4fe7b07f20fa765993ed55ce889"
+    }
+  ]
+}

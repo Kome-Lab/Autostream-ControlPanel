@@ -1,4 +1,8 @@
 "use client";
+import { useUICopy } from "@/lib/i18n/ui-v2/use-ui-copy";
+
+
+import { useNonSecretDraft } from "@/components/forms/draft-exit";
 
 import { useState } from "react";
 import { Textarea } from "@/components/ui/textarea";
@@ -9,6 +13,7 @@ import { TextField, NumberField, FormActions, SelectField, Field, SwitchField } 
 import { useRegisteredNodeOptions, useOAuthAccountOptions } from "./resource-form-queries";
 
 export function EncoderProfileForm({ disabled, submit, initial, submitLabel }: { disabled: boolean; submit: SubmitResource; initial?: ResourceRow; submitLabel?: string }) {
+  const uiText = useUICopy();
   const row = initial || {};
   const [name, setName] = useState(() => rowString(row, ["name"]) || "1080p60");
   const [width, setWidth] = useState(() => rowString(row, ["width", "config.width"]) || "1920");
@@ -16,6 +21,8 @@ export function EncoderProfileForm({ disabled, submit, initial, submitLabel }: {
   const [fps, setFps] = useState(() => rowString(row, ["fps", "config.fps"]) || "60");
   const [videoBitrate, setVideoBitrate] = useState(() => rowString(row, ["video_bitrate_kbps", "bitrate_kbps", "config.video_bitrate_kbps", "config.bitrate_kbps"]) || "8000");
   const [audioBitrate, setAudioBitrate] = useState(() => rowString(row, ["audio_bitrate_kbps", "config.audio_bitrate_kbps"]) || "192");
+
+  useNonSecretDraft([name, width, height, fps, videoBitrate, audioBitrate]);
 
   return (
     <form
@@ -35,12 +42,12 @@ export function EncoderProfileForm({ disabled, submit, initial, submitLabel }: {
       }}
     >
       <div className="grid gap-3 md:grid-cols-2">
-        <TextField label="プロファイル名" value={name} onChange={setName} required />
-        <NumberField label="映像ビットレート (kbps)" value={videoBitrate} onChange={setVideoBitrate} min={1} required />
-        <NumberField label="横解像度" value={width} onChange={setWidth} min={1} required />
-        <NumberField label="縦解像度" value={height} onChange={setHeight} min={1} required />
-        <NumberField label="フレームレート" value={fps} onChange={setFps} min={1} required />
-        <NumberField label="音声ビットレート (kbps)" value={audioBitrate} onChange={setAudioBitrate} min={1} required />
+        <TextField label={uiText("プロファイル名")} value={name} onChange={setName} required />
+        <NumberField label={uiText("映像ビットレート (kbps)")} value={videoBitrate} onChange={setVideoBitrate} min={1} required />
+        <NumberField label={uiText("横解像度")} value={width} onChange={setWidth} min={1} required />
+        <NumberField label={uiText("縦解像度")} value={height} onChange={setHeight} min={1} required />
+        <NumberField label={uiText("フレームレート")} value={fps} onChange={setFps} min={1} required />
+        <NumberField label={uiText("音声ビットレート (kbps)")} value={audioBitrate} onChange={setAudioBitrate} min={1} required />
       </div>
       <FormActions label={submitLabel} disabled={disabled} />
     </form>
@@ -48,6 +55,7 @@ export function EncoderProfileForm({ disabled, submit, initial, submitLabel }: {
 }
 
 export function DiscordConfigForm({ disabled, submit, initial, submitLabel }: { disabled: boolean; submit: SubmitResource; initial?: ResourceRow; submitLabel?: string }) {
+  const uiText = useUICopy();
   const row = initial || {};
   const discordNodes = useRegisteredNodeOptions("discord_bot");
   const [name, setName] = useState(() => rowString(row, ["name"]) || "main-discord-bot");
@@ -55,6 +63,8 @@ export function DiscordConfigForm({ disabled, submit, initial, submitLabel }: { 
   const [botToken, setBotToken] = useState("");
   const [reconnectMaxAttempts, setReconnectMaxAttempts] = useState(() => rowString(row, ["reconnect_max_attempts", "config.reconnect_max_attempts"]) || "5");
   const effectiveServiceID = serviceID === noneValue && discordNodes[0]?.value ? discordNodes[0].value : serviceID;
+
+  useNonSecretDraft([name, serviceID, reconnectMaxAttempts]);
 
   return (
     <form
@@ -77,25 +87,26 @@ export function DiscordConfigForm({ disabled, submit, initial, submitLabel }: { 
       }}
     >
       <div className="grid gap-3 md:grid-cols-2">
-        <TextField label="BOT設定名" value={name} onChange={setName} required />
+        <TextField label={uiText("BOT設定名")} value={name} onChange={setName} required />
         <SelectField
           key={discordNodes.map((node) => node.value).join("|") || "no-discord-nodes"}
           label="Discord BOT Node"
           value={effectiveServiceID}
           onChange={setServiceID}
-          options={[{ value: noneValue, label: "未選択" }, ...discordNodes]}
+          options={[{ value: noneValue, label: uiText("未選択") }, ...discordNodes]}
         />
-        <TextField label="Bot Token" value={botToken} onChange={setBotToken} type="password" description="入力した場合のみ保存します。" />
-        <NumberField label="再接続最大回数" value={reconnectMaxAttempts} onChange={setReconnectMaxAttempts} min={0} />
+        <TextField label="Bot Token" value={botToken} onChange={setBotToken} type="password" description={uiText("入力した場合のみ保存します。")} />
+        <NumberField label={uiText("再接続最大回数")} value={reconnectMaxAttempts} onChange={setReconnectMaxAttempts} min={0} />
       </div>
-      {discordNodes.length === 0 ? <p className="text-sm text-muted-foreground">先にNode登録でDiscord Bot Nodeを登録してください。</p> : null}
-      <div className="rounded-md border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">音声転送と自動再接続は常に有効です。</div>
+      {discordNodes.length === 0 ? <p className="text-sm text-muted-foreground">{uiText("先にNode登録でDiscord Bot Nodeを登録してください。")}</p> : null}
+      <div className="rounded-md border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">{uiText("音声転送と自動再接続は常に有効です。")}</div>
       <FormActions label={submitLabel} disabled={disabled || effectiveServiceID === noneValue} />
     </form>
   );
 }
 
 export function DiscordTargetPresetForm({ disabled, submit, initial, submitLabel }: { disabled: boolean; submit: SubmitResource; initial?: ResourceRow; submitLabel?: string }) {
+  const uiText = useUICopy();
   const row = initial || {};
   const [name, setName] = useState(() => rowString(row, ["name"]) || "main-target");
   const [guildID, setGuildID] = useState(() => rowString(row, ["guild_id"]));
@@ -103,6 +114,8 @@ export function DiscordTargetPresetForm({ disabled, submit, initial, submitLabel
   const [voiceChannelID, setVoiceChannelID] = useState(() => rowString(row, ["voice_channel_id"]));
   const input = { name, guildID, textChannelID, voiceChannelID, ...(initial ? { revision: numberValue(rowString(row, ["revision"]), 0) } : {}) };
   const ready = validDiscordTargetPreset(input);
+
+  useNonSecretDraft([name, guildID, textChannelID, voiceChannelID]);
 
   return (
     <form
@@ -114,18 +127,19 @@ export function DiscordTargetPresetForm({ disabled, submit, initial, submitLabel
       }}
     >
       <div className="grid gap-3 md:grid-cols-2">
-        <TextField label="プリセット名" value={name} onChange={setName} required />
-        <TextField label="DiscordサーバーID" value={guildID} onChange={setGuildID} required />
-        <TextField label="チャットチャンネルID" value={textChannelID} onChange={setTextChannelID} required />
-        <TextField label="ボイスチャンネルID" value={voiceChannelID} onChange={setVoiceChannelID} required />
+        <TextField label={uiText("プリセット名")} value={name} onChange={setName} required />
+        <TextField label={uiText("DiscordサーバーID")} value={guildID} onChange={setGuildID} required />
+        <TextField label={uiText("チャットチャンネルID")} value={textChannelID} onChange={setTextChannelID} required />
+        <TextField label={uiText("ボイスチャンネルID")} value={voiceChannelID} onChange={setVoiceChannelID} required />
       </div>
-      {!ready ? <p role="status" className="text-sm text-amber-700 dark:text-amber-300">名前と、32桁以内の数字だけで構成された3つのDiscord IDを入力してください。</p> : null}
+      {!ready ? <p role="status" className="text-sm text-amber-700 dark:text-amber-300">{uiText("名前と、32桁以内の数字だけで構成された3つのDiscord IDを入力してください。")}</p> : null}
       <FormActions label={submitLabel} disabled={disabled || !ready} />
     </form>
   );
 }
 
 export function YouTubeOutputForm({ disabled, submit, initial, submitLabel }: { disabled: boolean; submit: SubmitResource; initial?: ResourceRow; submitLabel?: string }) {
+  const uiText = useUICopy();
   const row = initial || {};
   const oauthAccounts = useOAuthAccountOptions("youtube");
   const [name, setName] = useState(() => rowString(row, ["name"]) || "public-live");
@@ -147,16 +161,18 @@ export function YouTubeOutputForm({ disabled, submit, initial, submitLabel }: { 
   const staticRelayMode = mode === "live_api_relay_static";
   const configuredLiveAPIKeyMode = mode === "live_api" && useConfiguredStreamKey;
   const outputModeOptions = [
-    { value: "live_api", label: "YouTube Live API（本番・通常）", description: "通常はこちら。Control Panelが配信枠を作成し、EncoderからYouTubeへ直接送信します。固定Relayは不要です。" },
-    { value: "live_api_dry_run", label: "YouTube Live API（検証）", description: "接続確認用です。実際に配信を開始する場合は本番・通常を選択してください。" },
-    { value: "stream_key", label: "ストリームキー（従来方式）", description: "既存のストリームキー設定を使う場合だけ選択します。新規設定では本番・通常を推奨します。" },
+    { value: "live_api", label: uiText("YouTube Live API（本番・通常）"), description: uiText("通常はこちら。Control Panelが配信枠を作成し、EncoderからYouTubeへ直接送信します。固定Relayは不要です。") },
+    { value: "live_api_dry_run", label: uiText("YouTube Live API（検証）"), description: uiText("接続確認用です。実際に配信を開始する場合は本番・通常を選択してください。") },
+    { value: "stream_key", label: uiText("ストリームキー（従来方式）"), description: uiText("既存のストリームキー設定を使う場合だけ選択します。新規設定では本番・通常を推奨します。") },
     ...(staticRelayMode
-      ? [{ value: "live_api_relay_static", label: "YouTube Live API（固定Relay・既存互換）", description: "既存の固定Relay設定を編集する場合だけ使用します。新規作成では選択できません。" }]
+      ? [{ value: "live_api_relay_static", label: uiText("YouTube Live API（固定Relay・既存互換）"), description: uiText("既存の固定Relay設定を編集する場合だけ使用します。新規作成では選択できません。") }]
       : []),
   ];
   const requiresOAuth = mode === "live_api" || mode === "live_api_dry_run" || staticRelayMode;
   const effectiveOAuthAccountID = requiresOAuth && oauthAccountID === noneValue && oauthAccounts[0]?.value ? oauthAccounts[0].value : oauthAccountID;
   const staticRelayReady = relayBindingID.trim() !== "" && reusableLiveStreamID.trim() !== "";
+
+  useNonSecretDraft([name, mode, oauthAccountID, privacyStatus, latencyPreference, titleTemplate, description, useConfiguredStreamKey, relayBindingID, reusableLiveStreamID, autoStart, autoStop, completeOnStop]);
 
   return (
     <form
@@ -191,80 +207,79 @@ export function YouTubeOutputForm({ disabled, submit, initial, submitLabel }: { 
       }}
     >
       <div className="grid gap-3 md:grid-cols-2">
-        <TextField label="出力名" value={name} onChange={setName} required />
+        <TextField label={uiText("出力名")} value={name} onChange={setName} required />
         <SelectField
-          label="出力方式"
+          label={uiText("出力方式")}
           value={mode}
           onChange={setMode}
           options={outputModeOptions}
         />
         {!staticRelayMode ? <TextField label="RTMP URL" value={rtmpURL} onChange={setRTMPURL} required /> : null}
-        <SelectField label="接続済みGoogleアカウント" value={effectiveOAuthAccountID} onChange={setOAuthAccountID} options={[{ value: noneValue, label: "未選択" }, ...oauthAccounts]} />
+        <SelectField label={uiText("接続済みGoogleアカウント")} value={effectiveOAuthAccountID} onChange={setOAuthAccountID} options={[{ value: noneValue, label: uiText("未選択") }, ...oauthAccounts]} />
         {staticRelayMode ? (
           <>
-            <TextField label="固定RelayバインディングID" value={relayBindingID} onChange={setRelayBindingID} description="管理済みの固定Relayを識別する非秘密IDです。配信キーは入力しません。" required />
-            <TextField label="再利用するYouTube Live Stream ID" value={reusableLiveStreamID} onChange={setReusableLiveStreamID} description="固定Relayが配信する既存のYouTube Live Stream IDを入力します。URLやストリームキーは入力しません。" required />
+            <TextField label={uiText("固定RelayバインディングID")} value={relayBindingID} onChange={setRelayBindingID} description={uiText("管理済みの固定Relayを識別する非秘密IDです。配信キーは入力しません。")} required />
+            <TextField label={uiText("再利用するYouTube Live Stream ID")} value={reusableLiveStreamID} onChange={setReusableLiveStreamID} description={uiText("固定Relayが配信する既存のYouTube Live Stream IDを入力します。URLやストリームキーは入力しません。")} required />
             <div className="rounded-md border bg-muted/30 px-3 py-2 text-sm text-muted-foreground md:col-span-2">
-              <div className="font-medium text-foreground">固定Relayの同時配信制約</div>
-              <p className="mt-1">1つの固定Relayは同時に1配信枠だけを処理できます。Relayの設定と同じバインディングID・Live Stream IDを指定してください。</p>
+              <div className="font-medium text-foreground">{uiText("固定Relayの同時配信制約")}</div>
+              <p className="mt-1">{uiText("1つの固定Relayは同時に1配信枠だけを処理できます。Relayの設定と同じバインディングID・Live Stream IDを指定してください。")}</p>
             </div>
           </>
         ) : mode === "stream_key" || configuredLiveAPIKeyMode ? (
           <TextField
-            label="ストリームキー"
+            label={uiText("ストリームキー")}
             value={streamKey}
             onChange={setStreamKey}
             type="password"
             description={configuredLiveAPIKeyMode
-              ? "YouTube Studioで作成した再利用可能なカスタムキーを入力します。保存済みなら空欄のままで構いません。"
-              : "既存ストリームキー方式で使うキーを入力します。"}
+              ? uiText("YouTube Studioで作成した再利用可能なカスタムキーを入力します。保存済みなら空欄のままで構いません。")
+              : uiText("既存ストリームキー方式で使うキーを入力します。")}
           />
         ) : null}
-        {mode === "stream_key" ? <TextField label="YouTube視聴URL" value={watchURL} onChange={setWatchURL} placeholder="https://www.youtube.com/watch?v=..." description="配信開始時のDiscord通知に使用します。" required /> : null}
-        <TextField label="番組タイトルテンプレート" value={titleTemplate} onChange={setTitleTemplate} />
+        {mode === "stream_key" ? <TextField label={uiText("YouTube視聴URL")} value={watchURL} onChange={setWatchURL} placeholder="https://www.youtube.com/watch?v=..." description={uiText("配信開始時のDiscord通知に使用します。")} required /> : null}
+        <TextField label={uiText("番組タイトルテンプレート")} value={titleTemplate} onChange={setTitleTemplate} />
         <SelectField
-          label="公開範囲"
+          label={uiText("公開範囲")}
           value={privacyStatus}
           onChange={setPrivacyStatus}
           options={[
-            { value: "public", label: "公開" },
-            { value: "unlisted", label: "限定公開" },
-            { value: "private", label: "非公開" },
+            { value: "public", label: uiText("公開") },
+            { value: "unlisted", label: uiText("限定公開") },
+            { value: "private", label: uiText("非公開") },
           ]}
         />
         <SelectField
-          label="遅延設定"
+          label={uiText("遅延設定")}
           value={latencyPreference}
           onChange={setLatencyPreference}
           options={[
-            { value: "normal", label: "標準" },
-            { value: "low", label: "低遅延" },
-            { value: "ultra_low", label: "超低遅延" },
+            { value: "normal", label: uiText("標準") },
+            { value: "low", label: uiText("低遅延") },
+            { value: "ultra_low", label: uiText("超低遅延") },
           ]}
         />
       </div>
-      <Field label="説明">
+      <Field label={uiText("説明")}>
         <Textarea value={description} onChange={(event) => setDescription(event.target.value)} className="min-h-24" />
       </Field>
       <div className="grid gap-3 md:grid-cols-3">
         {mode === "live_api" ? (
-          <SwitchField label="Studioのカスタムキーを固定利用" checked={useConfiguredStreamKey} onCheckedChange={setUseConfiguredStreamKey} />
+          <SwitchField label={uiText("Studioのカスタムキーを固定利用")} checked={useConfiguredStreamKey} onCheckedChange={setUseConfiguredStreamKey} />
         ) : null}
-        <SwitchField label="自動開始" checked={autoStart} onCheckedChange={setAutoStart} />
-        <SwitchField label="自動停止" checked={autoStop} onCheckedChange={setAutoStop} />
+        <SwitchField label={uiText("自動開始")} checked={autoStart} onCheckedChange={setAutoStart} />
+        <SwitchField label={uiText("自動停止")} checked={autoStop} onCheckedChange={setAutoStop} />
         {staticRelayMode ? (
           <div className="rounded-md border bg-muted/30 px-3 py-2 text-sm">
-            <div className="font-medium">停止時に完了扱い: 常に有効</div>
-            <p className="mt-1 text-xs text-muted-foreground">固定Relayモードでは停止時にYouTube配信を必ず完了扱いにします。</p>
+            <div className="font-medium">{uiText("停止時に完了扱い: 常に有効")}</div>
+            <p className="mt-1 text-xs text-muted-foreground">{uiText("固定Relayモードでは停止時にYouTube配信を必ず完了扱いにします。")}</p>
           </div>
-        ) : <SwitchField label="停止時に完了扱い" checked={completeOnStop} onCheckedChange={setCompleteOnStop} />}
+        ) : <SwitchField label={uiText("停止時に完了扱い")} checked={completeOnStop} onCheckedChange={setCompleteOnStop} />}
       </div>
       {configuredLiveAPIKeyMode ? (
         <div className="rounded-md border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
-          YouTube Studioでカスタムキーの解像度を手動1080p60、デュアルストリームをOFFに設定してください。1つのキーを同時に複数枠へ割り当てることはできません。Control Panelは配信枠を自動作成し、このキーのLiveStreamへバインドします。
-        </div>
+          {uiText("YouTube Studioでカスタムキーの解像度を手動1080p60、デュアルストリームをOFFに設定してください。1つのキーを同時に複数枠へ割り当てることはできません。Control Panelは配信枠を自動作成し、このキーのLiveStreamへバインドします。")}</div>
       ) : null}
-      {requiresOAuth && oauthAccounts.length === 0 ? <p className="text-sm text-muted-foreground">YouTube Live APIを使うには、YouTube Live用途でGoogleアカウントを接続してください。</p> : null}
+      {requiresOAuth && oauthAccounts.length === 0 ? <p className="text-sm text-muted-foreground">{uiText("YouTube Live APIを使うには、YouTube Live用途でGoogleアカウントを接続してください。")}</p> : null}
       <FormActions label={submitLabel} disabled={disabled || (requiresOAuth && effectiveOAuthAccountID === noneValue) || (staticRelayMode && !staticRelayReady)} />
     </form>
   );

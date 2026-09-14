@@ -1,8 +1,10 @@
 "use client";
 
 import { useMemo } from "react";
+import { oauthAccountName } from "@/lib/i18n/ui-v2/presentation-copy";
+import { useUICopy } from "@/lib/i18n/ui-v2/use-ui-copy";
 import { useResourceData } from "@/features/queries";
-import { oauthAccountDisplayName, oauthAccountSupportsPurpose, type OAuthAccountPurpose } from "@/lib/oauth-account";
+import { oauthAccountSupportsPurpose, type OAuthAccountPurpose } from "@/lib/oauth-account";
 import { normalizeRows, rowString, firstNonEmpty } from "./resource-values";
 import { oauthAccountOptionDescription, compactList } from "./resource-presentation";
 
@@ -28,6 +30,7 @@ export function useResourceOptions(path: string, valueKeys: string[], labelKeys:
 }
 
 export function useOAuthAccountOptions(purpose: OAuthAccountPurpose) {
+  const uiText = useUICopy();
   const rows = useResourceRows("/integrations/oauth-accounts");
   return useMemo(
     () =>
@@ -37,12 +40,12 @@ export function useOAuthAccountOptions(purpose: OAuthAccountPurpose) {
           const value = rowString(row, ["id"]);
           return {
             value,
-            label: oauthAccountDisplayName(row),
-            description: oauthAccountOptionDescription(row),
+            label: oauthAccountName(row, uiText),
+            description: oauthAccountOptionDescription(row, uiText),
           };
         })
         .filter((option) => option.value),
-    [purpose, rows],
+    [purpose, rows, uiText],
   );
 }
 

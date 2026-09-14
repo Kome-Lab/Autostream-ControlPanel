@@ -1,0 +1,1414 @@
+{
+  "basis": "UI Renewal implementation 001 sections 6-9; naming addendum 002",
+  "widths": [
+    390,
+    430,
+    768,
+    1024,
+    1280,
+    1440,
+    1920
+  ],
+  "modes": [
+    "light",
+    "dark"
+  ],
+  "locales": [
+    "ja",
+    "en"
+  ],
+  "themes": [
+    "autostream",
+    "slate",
+    "ocean",
+    "cyan",
+    "indigo",
+    "violet",
+    "magenta",
+    "rose",
+    "crimson",
+    "amber",
+    "emerald",
+    "monochrome"
+  ],
+  "surfaces": [
+    {
+      "id": "dashboard",
+      "route": "/admin/",
+      "primary": "/streams",
+      "source": "web/src/features/dashboard/dashboard-view.tsx",
+      "stage": "page",
+      "states": {
+        "initial-loading": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/dashboard/dashboard-view.tsx"
+        },
+        "empty": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/dashboard/dashboard-view.tsx"
+        },
+        "blocking-error": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/dashboard/dashboard-view.tsx"
+        },
+        "permission-denied": {
+          "applicable": false,
+          "contract": "This page is available to any authenticated account; child operation/read permissions are covered by current action and GET-zero parity, not a page-level denial.",
+          "source": "web/src/features/dashboard/dashboard-view.tsx"
+        },
+        "background-refresh": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/dashboard/dashboard-view.tsx"
+        },
+        "partial": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/dashboard/dashboard-view.tsx"
+        },
+        "stale": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/dashboard/dashboard-view.tsx"
+        },
+        "unknown": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/dashboard/dashboard-view.tsx"
+        }
+      },
+      "fixture": "Shell"
+    },
+    {
+      "id": "streams-list",
+      "route": "/admin/streams/",
+      "primary": "/streams",
+      "source": "web/src/features/streams/streams-view.tsx",
+      "stage": "page",
+      "states": {
+        "initial-loading": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/streams/streams-view.tsx"
+        },
+        "empty": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/streams/streams-view.tsx"
+        },
+        "blocking-error": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/streams/streams-view.tsx"
+        },
+        "permission-denied": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/streams/streams-view.tsx"
+        },
+        "background-refresh": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/streams/streams-view.tsx"
+        },
+        "partial": {
+          "applicable": false,
+          "contract": "The displayed primary result is one query; no aggregate partial-result contract. Its blocking error and retained-data refresh failure are tested separately.",
+          "source": "web/src/features/streams/streams-view.tsx"
+        },
+        "stale": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/streams/streams-view.tsx"
+        },
+        "unknown": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/streams/streams-view.tsx"
+        }
+      },
+      "fixture": "Table"
+    },
+    {
+      "id": "stream-detail",
+      "route": "/admin/streams/",
+      "primary": "/streams",
+      "source": "web/src/features/streams/stream-details-dialog.tsx",
+      "stage": "detail",
+      "states": {
+        "initial-loading": {
+          "applicable": false,
+          "contract": "Detail receives a selected loaded Stream object; no separate detail-query or collection state. Preview and action failure/refresh are covered by the inherited visual-settings and confirmation cases.",
+          "source": "web/src/features/streams/stream-details-dialog.tsx"
+        },
+        "empty": {
+          "applicable": false,
+          "contract": "Detail receives a selected loaded Stream object; no separate detail-query or collection state. Preview and action failure/refresh are covered by the inherited visual-settings and confirmation cases.",
+          "source": "web/src/features/streams/stream-details-dialog.tsx"
+        },
+        "blocking-error": {
+          "applicable": false,
+          "contract": "Detail receives a selected loaded Stream object; no separate detail-query or collection state. Preview and action failure/refresh are covered by the inherited visual-settings and confirmation cases.",
+          "source": "web/src/features/streams/stream-details-dialog.tsx"
+        },
+        "permission-denied": {
+          "applicable": false,
+          "contract": "Detail receives a selected loaded Stream object; no separate detail-query or collection state. Preview and action failure/refresh are covered by the inherited visual-settings and confirmation cases.",
+          "source": "web/src/features/streams/stream-details-dialog.tsx"
+        },
+        "background-refresh": {
+          "applicable": false,
+          "contract": "Detail receives a selected loaded Stream object; no separate detail-query or collection state. Preview and action failure/refresh are covered by the inherited visual-settings and confirmation cases.",
+          "source": "web/src/features/streams/stream-details-dialog.tsx"
+        },
+        "partial": {
+          "applicable": false,
+          "contract": "Detail receives a selected loaded Stream object; no separate detail-query or collection state. Preview and action failure/refresh are covered by the inherited visual-settings and confirmation cases.",
+          "source": "web/src/features/streams/stream-details-dialog.tsx"
+        },
+        "stale": {
+          "applicable": false,
+          "contract": "Detail receives a selected loaded Stream object; no separate detail-query or collection state. Preview and action failure/refresh are covered by the inherited visual-settings and confirmation cases.",
+          "source": "web/src/features/streams/stream-details-dialog.tsx"
+        },
+        "unknown": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/streams/stream-details-dialog.tsx"
+        }
+      },
+      "fixture": "Detail"
+    },
+    {
+      "id": "stream-create-edit",
+      "route": "/admin/streams/#create-stream",
+      "primary": "/streams",
+      "source": "web/src/features/streams/stream-slot-form.tsx",
+      "stage": "form",
+      "states": {
+        "initial-loading": {
+          "applicable": false,
+          "contract": "The draft form is always a locally owned input, not a remote collection. Denied/pending/403/409 and input preservation are exercised by inherited STR-01/02/03 regressions and current browser parity.",
+          "source": "web/src/features/streams/stream-slot-form.tsx"
+        },
+        "empty": {
+          "applicable": false,
+          "contract": "The draft form is always a locally owned input, not a remote collection. Denied/pending/403/409 and input preservation are exercised by inherited STR-01/02/03 regressions and current browser parity.",
+          "source": "web/src/features/streams/stream-slot-form.tsx"
+        },
+        "blocking-error": {
+          "applicable": false,
+          "contract": "The draft form is always a locally owned input, not a remote collection. Denied/pending/403/409 and input preservation are exercised by inherited STR-01/02/03 regressions and current browser parity.",
+          "source": "web/src/features/streams/stream-slot-form.tsx"
+        },
+        "permission-denied": {
+          "applicable": false,
+          "contract": "The draft form is always a locally owned input, not a remote collection. Denied/pending/403/409 and input preservation are exercised by inherited STR-01/02/03 regressions and current browser parity.",
+          "source": "web/src/features/streams/stream-slot-form.tsx"
+        },
+        "background-refresh": {
+          "applicable": false,
+          "contract": "The draft form is always a locally owned input, not a remote collection. Denied/pending/403/409 and input preservation are exercised by inherited STR-01/02/03 regressions and current browser parity.",
+          "source": "web/src/features/streams/stream-slot-form.tsx"
+        },
+        "partial": {
+          "applicable": false,
+          "contract": "The draft form is always a locally owned input, not a remote collection. Denied/pending/403/409 and input preservation are exercised by inherited STR-01/02/03 regressions and current browser parity.",
+          "source": "web/src/features/streams/stream-slot-form.tsx"
+        },
+        "stale": {
+          "applicable": false,
+          "contract": "The draft form is always a locally owned input, not a remote collection. Denied/pending/403/409 and input preservation are exercised by inherited STR-01/02/03 regressions and current browser parity.",
+          "source": "web/src/features/streams/stream-slot-form.tsx"
+        },
+        "unknown": {
+          "applicable": false,
+          "contract": "The draft form is always a locally owned input, not a remote collection. Denied/pending/403/409 and input preservation are exercised by inherited STR-01/02/03 regressions and current browser parity.",
+          "source": "web/src/features/streams/stream-slot-form.tsx"
+        }
+      },
+      "fixture": "Form"
+    },
+    {
+      "id": "service-health",
+      "route": "/admin/service-health/",
+      "primary": "/service-health",
+      "source": "web/src/features/resources/resource-page.tsx",
+      "stage": "page",
+      "states": {
+        "initial-loading": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "empty": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "blocking-error": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "permission-denied": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "background-refresh": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "partial": {
+          "applicable": false,
+          "contract": "The displayed primary result is one query; no aggregate partial-result contract. Its blocking error and retained-data refresh failure are tested separately.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "stale": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "unknown": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        }
+      }
+    },
+    {
+      "id": "workers",
+      "route": "/admin/workers/",
+      "primary": "/workers",
+      "source": "web/src/features/workers/workers-view.tsx",
+      "stage": "page",
+      "states": {
+        "initial-loading": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/workers/workers-view.tsx"
+        },
+        "empty": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/workers/workers-view.tsx"
+        },
+        "blocking-error": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/workers/workers-view.tsx"
+        },
+        "permission-denied": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/workers/workers-view.tsx"
+        },
+        "background-refresh": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/workers/workers-view.tsx"
+        },
+        "partial": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/workers/workers-view.tsx"
+        },
+        "stale": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/workers/workers-view.tsx"
+        },
+        "unknown": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/workers/workers-view.tsx"
+        }
+      },
+      "fixture": "Confirmation"
+    },
+    {
+      "id": "encoder-profiles",
+      "route": "/admin/encoder/",
+      "primary": "/profiles/encoder",
+      "source": "web/src/features/resources/resource-page.tsx",
+      "stage": "page",
+      "states": {
+        "initial-loading": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "empty": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "blocking-error": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "permission-denied": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "background-refresh": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "partial": {
+          "applicable": false,
+          "contract": "The displayed primary result is one query; no aggregate partial-result contract. Its blocking error and retained-data refresh failure are tested separately.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "stale": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "unknown": {
+          "applicable": false,
+          "contract": "No finite lifecycle/health status projection is defined for this display; unavailable data is a loading/error state.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        }
+      }
+    },
+    {
+      "id": "discord",
+      "route": "/admin/discord/",
+      "primary": "/discord/configs",
+      "source": "web/src/features/resources/resource-page.tsx",
+      "stage": "page",
+      "states": {
+        "initial-loading": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "empty": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "blocking-error": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "permission-denied": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "background-refresh": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "partial": {
+          "applicable": false,
+          "contract": "The displayed primary result is one query; no aggregate partial-result contract. Its blocking error and retained-data refresh failure are tested separately.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "stale": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "unknown": {
+          "applicable": false,
+          "contract": "No finite lifecycle/health status projection is defined for this display; unavailable data is a loading/error state.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        }
+      }
+    },
+    {
+      "id": "youtube",
+      "route": "/admin/youtube/",
+      "primary": "/youtube/outputs",
+      "source": "web/src/features/resources/resource-page.tsx",
+      "stage": "page",
+      "states": {
+        "initial-loading": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "empty": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "blocking-error": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "permission-denied": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "background-refresh": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "partial": {
+          "applicable": false,
+          "contract": "The displayed primary result is one query; no aggregate partial-result contract. Its blocking error and retained-data refresh failure are tested separately.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "stale": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "unknown": {
+          "applicable": false,
+          "contract": "No finite lifecycle/health status projection is defined for this display; unavailable data is a loading/error state.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        }
+      }
+    },
+    {
+      "id": "captions",
+      "route": "/admin/caption/",
+      "primary": "/profiles/caption",
+      "source": "web/src/features/resources/resource-page.tsx",
+      "stage": "page",
+      "states": {
+        "initial-loading": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "empty": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "blocking-error": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "permission-denied": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "background-refresh": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "partial": {
+          "applicable": false,
+          "contract": "The displayed primary result is one query; no aggregate partial-result contract. Its blocking error and retained-data refresh failure are tested separately.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "stale": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "unknown": {
+          "applicable": false,
+          "contract": "No finite lifecycle/health status projection is defined for this display; unavailable data is a loading/error state.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        }
+      }
+    },
+    {
+      "id": "watermark",
+      "route": "/admin/overlay/",
+      "primary": "/profiles/overlay",
+      "source": "web/src/features/resources/resource-page.tsx",
+      "stage": "page",
+      "states": {
+        "initial-loading": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "empty": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "blocking-error": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "permission-denied": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "background-refresh": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "partial": {
+          "applicable": false,
+          "contract": "The displayed primary result is one query; no aggregate partial-result contract. Its blocking error and retained-data refresh failure are tested separately.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "stale": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "unknown": {
+          "applicable": false,
+          "contract": "No finite lifecycle/health status projection is defined for this display; unavailable data is a loading/error state.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        }
+      }
+    },
+    {
+      "id": "archive",
+      "route": "/admin/archive/",
+      "primary": "/archive/streams",
+      "source": "web/src/features/archive/archive-view.tsx",
+      "stage": "page",
+      "states": {
+        "initial-loading": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/archive/archive-view.tsx"
+        },
+        "empty": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/archive/archive-view.tsx"
+        },
+        "blocking-error": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/archive/archive-view.tsx"
+        },
+        "permission-denied": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/archive/archive-view.tsx"
+        },
+        "background-refresh": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/archive/archive-view.tsx"
+        },
+        "partial": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/archive/archive-view.tsx"
+        },
+        "stale": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/archive/archive-view.tsx"
+        },
+        "unknown": {
+          "applicable": false,
+          "contract": "No finite lifecycle/health status projection is defined for this display; unavailable data is a loading/error state.",
+          "source": "web/src/features/archive/archive-view.tsx"
+        }
+      }
+    },
+    {
+      "id": "monitoring",
+      "route": "/admin/monitoring/",
+      "primary": "/streams",
+      "source": "web/src/features/monitoring/monitoring-view.tsx",
+      "stage": "page",
+      "states": {
+        "initial-loading": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/monitoring/monitoring-view.tsx"
+        },
+        "empty": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/monitoring/monitoring-view.tsx"
+        },
+        "blocking-error": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/monitoring/monitoring-view.tsx"
+        },
+        "permission-denied": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/monitoring/monitoring-view.tsx"
+        },
+        "background-refresh": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/monitoring/monitoring-view.tsx"
+        },
+        "partial": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/monitoring/monitoring-view.tsx"
+        },
+        "stale": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/monitoring/monitoring-view.tsx"
+        },
+        "unknown": {
+          "applicable": false,
+          "contract": "No finite lifecycle/health status projection is defined for this display; unavailable data is a loading/error state.",
+          "source": "web/src/features/monitoring/monitoring-view.tsx"
+        }
+      }
+    },
+    {
+      "id": "incidents",
+      "route": "/admin/incidents/",
+      "primary": "/observability/incidents",
+      "source": "web/src/features/resources/resource-page.tsx",
+      "stage": "page",
+      "states": {
+        "initial-loading": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "empty": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "blocking-error": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "permission-denied": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "background-refresh": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "partial": {
+          "applicable": false,
+          "contract": "The displayed primary result is one query; no aggregate partial-result contract. Its blocking error and retained-data refresh failure are tested separately.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "stale": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "unknown": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        }
+      }
+    },
+    {
+      "id": "diagnostics",
+      "route": "/admin/diagnostics/",
+      "primary": "/observability/diagnostics",
+      "source": "web/src/features/resources/resource-page.tsx",
+      "stage": "page",
+      "states": {
+        "initial-loading": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "empty": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "blocking-error": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "permission-denied": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "background-refresh": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "partial": {
+          "applicable": false,
+          "contract": "The displayed primary result is one query; no aggregate partial-result contract. Its blocking error and retained-data refresh failure are tested separately.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "stale": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "unknown": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        }
+      }
+    },
+    {
+      "id": "metrics",
+      "route": "/admin/metrics/",
+      "primary": "/observability/metrics",
+      "source": "web/src/features/metrics/metrics-view.tsx",
+      "stage": "page",
+      "states": {
+        "initial-loading": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/metrics/metrics-view.tsx"
+        },
+        "empty": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/metrics/metrics-view.tsx"
+        },
+        "blocking-error": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/metrics/metrics-view.tsx"
+        },
+        "permission-denied": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/metrics/metrics-view.tsx"
+        },
+        "background-refresh": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/metrics/metrics-view.tsx"
+        },
+        "partial": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/metrics/metrics-view.tsx"
+        },
+        "stale": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/metrics/metrics-view.tsx"
+        },
+        "unknown": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/metrics/metrics-view.tsx"
+        }
+      }
+    },
+    {
+      "id": "remediation",
+      "route": "/admin/remediation/",
+      "primary": "/observability/remediation-actions",
+      "source": "web/src/features/resources/resource-page.tsx",
+      "stage": "page",
+      "states": {
+        "initial-loading": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "empty": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "blocking-error": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "permission-denied": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "background-refresh": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "partial": {
+          "applicable": false,
+          "contract": "The displayed primary result is one query; no aggregate partial-result contract. Its blocking error and retained-data refresh failure are tested separately.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "stale": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "unknown": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        }
+      }
+    },
+    {
+      "id": "notifications",
+      "route": "/admin/notifications/",
+      "primary": "/observability/notification-deliveries",
+      "source": "web/src/features/resources/resource-page.tsx",
+      "stage": "page",
+      "states": {
+        "initial-loading": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "empty": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "blocking-error": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "permission-denied": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "background-refresh": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "partial": {
+          "applicable": false,
+          "contract": "The displayed primary result is one query; no aggregate partial-result contract. Its blocking error and retained-data refresh failure are tested separately.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "stale": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "unknown": {
+          "applicable": false,
+          "contract": "No finite lifecycle/health status projection is defined for this display; unavailable data is a loading/error state.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        }
+      }
+    },
+    {
+      "id": "audit-logs",
+      "route": "/admin/audit-logs/",
+      "primary": "/audit-logs",
+      "source": "web/src/features/audit/audit-logs-view.tsx",
+      "stage": "page",
+      "states": {
+        "initial-loading": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/audit/audit-logs-view.tsx"
+        },
+        "empty": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/audit/audit-logs-view.tsx"
+        },
+        "blocking-error": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/audit/audit-logs-view.tsx"
+        },
+        "permission-denied": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/audit/audit-logs-view.tsx"
+        },
+        "background-refresh": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/audit/audit-logs-view.tsx"
+        },
+        "partial": {
+          "applicable": false,
+          "contract": "The displayed primary result is one query; no aggregate partial-result contract. Its blocking error and retained-data refresh failure are tested separately.",
+          "source": "web/src/features/audit/audit-logs-view.tsx"
+        },
+        "stale": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/audit/audit-logs-view.tsx"
+        },
+        "unknown": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/audit/audit-logs-view.tsx"
+        }
+      }
+    },
+    {
+      "id": "nodes",
+      "route": "/admin/nodes/",
+      "primary": "/nodes",
+      "source": "web/src/features/nodes/node-registration-view.tsx",
+      "stage": "page",
+      "states": {
+        "initial-loading": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/nodes/node-registration-view.tsx"
+        },
+        "empty": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/nodes/node-registration-view.tsx"
+        },
+        "blocking-error": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/nodes/node-registration-view.tsx"
+        },
+        "permission-denied": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/nodes/node-registration-view.tsx"
+        },
+        "background-refresh": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/nodes/node-registration-view.tsx"
+        },
+        "partial": {
+          "applicable": false,
+          "contract": "The displayed primary result is one query; no aggregate partial-result contract. Its blocking error and retained-data refresh failure are tested separately.",
+          "source": "web/src/features/nodes/node-registration-view.tsx"
+        },
+        "stale": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/nodes/node-registration-view.tsx"
+        },
+        "unknown": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/nodes/node-registration-view.tsx"
+        }
+      }
+    },
+    {
+      "id": "system-updates",
+      "route": "/admin/application/",
+      "primary": "/system-updates",
+      "source": "web/src/features/application/application-info-view.tsx",
+      "stage": "page",
+      "states": {
+        "initial-loading": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/application/application-info-view.tsx"
+        },
+        "empty": {
+          "applicable": false,
+          "contract": "This API returns a singleton object, not an empty collection; missing/error has a separate contract.",
+          "source": "web/src/features/application/application-info-view.tsx"
+        },
+        "blocking-error": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/application/application-info-view.tsx"
+        },
+        "permission-denied": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/application/application-info-view.tsx"
+        },
+        "background-refresh": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/application/application-info-view.tsx"
+        },
+        "partial": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/application/application-info-view.tsx"
+        },
+        "stale": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/application/application-info-view.tsx"
+        },
+        "unknown": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/application/application-info-view.tsx"
+        }
+      }
+    },
+    {
+      "id": "integrations",
+      "route": "/admin/integrations/",
+      "primary": "/integrations/oauth-providers",
+      "source": "web/src/features/resources/resource-page.tsx",
+      "stage": "page",
+      "states": {
+        "initial-loading": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "empty": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "blocking-error": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "permission-denied": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "background-refresh": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "partial": {
+          "applicable": false,
+          "contract": "The displayed primary result is one query; no aggregate partial-result contract. Its blocking error and retained-data refresh failure are tested separately.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "stale": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "unknown": {
+          "applicable": false,
+          "contract": "No finite lifecycle/health status projection is defined for this display; unavailable data is a loading/error state.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        }
+      }
+    },
+    {
+      "id": "users",
+      "route": "/admin/users/",
+      "primary": "/users",
+      "source": "web/src/features/resources/resource-page.tsx",
+      "stage": "page",
+      "states": {
+        "initial-loading": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "empty": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "blocking-error": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "permission-denied": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "background-refresh": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "partial": {
+          "applicable": false,
+          "contract": "The displayed primary result is one query; no aggregate partial-result contract. Its blocking error and retained-data refresh failure are tested separately.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "stale": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "unknown": {
+          "applicable": false,
+          "contract": "No finite lifecycle/health status projection is defined for this display; unavailable data is a loading/error state.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        }
+      }
+    },
+    {
+      "id": "roles",
+      "route": "/admin/roles/",
+      "primary": "/roles",
+      "source": "web/src/features/resources/resource-page.tsx",
+      "stage": "page",
+      "states": {
+        "initial-loading": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "empty": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "blocking-error": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "permission-denied": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "background-refresh": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "partial": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "stale": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "unknown": {
+          "applicable": false,
+          "contract": "No finite lifecycle/health status projection is defined for this display; unavailable data is a loading/error state.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        }
+      }
+    },
+    {
+      "id": "security-settings",
+      "route": "/admin/security/",
+      "primary": "/security/settings",
+      "source": "web/src/features/resources/resource-page.tsx",
+      "stage": "page",
+      "states": {
+        "initial-loading": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "empty": {
+          "applicable": false,
+          "contract": "This API returns a singleton object, not an empty collection; missing/error has a separate contract.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "blocking-error": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "permission-denied": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "background-refresh": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "partial": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "stale": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        },
+        "unknown": {
+          "applicable": false,
+          "contract": "No finite lifecycle/health status projection is defined for this display; unavailable data is a loading/error state.",
+          "source": "web/src/features/resources/resource-page.tsx"
+        }
+      }
+    },
+    {
+      "id": "account",
+      "route": "/admin/account/",
+      "primary": "/auth/mfa/status",
+      "source": "web/src/features/account/account-view.tsx",
+      "stage": "page",
+      "states": {
+        "initial-loading": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/account/account-view.tsx"
+        },
+        "empty": {
+          "applicable": false,
+          "contract": "This API returns a singleton object, not an empty collection; missing/error has a separate contract.",
+          "source": "web/src/features/account/account-view.tsx"
+        },
+        "blocking-error": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/account/account-view.tsx"
+        },
+        "permission-denied": {
+          "applicable": false,
+          "contract": "This page is available to any authenticated account; child operation/read permissions are covered by current action and GET-zero parity, not a page-level denial.",
+          "source": "web/src/features/account/account-view.tsx"
+        },
+        "background-refresh": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/account/account-view.tsx"
+        },
+        "partial": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/account/account-view.tsx"
+        },
+        "stale": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/account/account-view.tsx"
+        },
+        "unknown": {
+          "applicable": false,
+          "contract": "No finite lifecycle/health status projection is defined for this display; unavailable data is a loading/error state.",
+          "source": "web/src/features/account/account-view.tsx"
+        }
+      }
+    },
+    {
+      "id": "login",
+      "route": "/login/",
+      "primary": "/auth/oauth/providers",
+      "source": "web/src/components/auth/auth-card.tsx",
+      "stage": "page",
+      "states": {
+        "initial-loading": {
+          "applicable": false,
+          "contract": "Login is a local credential ceremony, not a permission-gated remote record collection. Authentication failures/session expiry/return URL and pending are covered by the inherited login browser cases.",
+          "source": "web/src/components/auth/auth-card.tsx"
+        },
+        "empty": {
+          "applicable": false,
+          "contract": "Login is a local credential ceremony, not a permission-gated remote record collection. Authentication failures/session expiry/return URL and pending are covered by the inherited login browser cases.",
+          "source": "web/src/components/auth/auth-card.tsx"
+        },
+        "blocking-error": {
+          "applicable": false,
+          "contract": "Login is a local credential ceremony, not a permission-gated remote record collection. Authentication failures/session expiry/return URL and pending are covered by the inherited login browser cases.",
+          "source": "web/src/components/auth/auth-card.tsx"
+        },
+        "permission-denied": {
+          "applicable": false,
+          "contract": "Login is a local credential ceremony, not a permission-gated remote record collection. Authentication failures/session expiry/return URL and pending are covered by the inherited login browser cases.",
+          "source": "web/src/components/auth/auth-card.tsx"
+        },
+        "background-refresh": {
+          "applicable": false,
+          "contract": "Login is a local credential ceremony, not a permission-gated remote record collection. Authentication failures/session expiry/return URL and pending are covered by the inherited login browser cases.",
+          "source": "web/src/components/auth/auth-card.tsx"
+        },
+        "partial": {
+          "applicable": false,
+          "contract": "Login is a local credential ceremony, not a permission-gated remote record collection. Authentication failures/session expiry/return URL and pending are covered by the inherited login browser cases.",
+          "source": "web/src/components/auth/auth-card.tsx"
+        },
+        "stale": {
+          "applicable": false,
+          "contract": "Login is a local credential ceremony, not a permission-gated remote record collection. Authentication failures/session expiry/return URL and pending are covered by the inherited login browser cases.",
+          "source": "web/src/components/auth/auth-card.tsx"
+        },
+        "unknown": {
+          "applicable": false,
+          "contract": "Login is a local credential ceremony, not a permission-gated remote record collection. Authentication failures/session expiry/return URL and pending are covered by the inherited login browser cases.",
+          "source": "web/src/components/auth/auth-card.tsx"
+        }
+      }
+    },
+    {
+      "id": "public-archive-share",
+      "route": "/archive/share/?token=ui-synthetic-share",
+      "primary": "/archive-shares/ui-synthetic-share",
+      "source": "web/src/features/archive/archive-share-player-view.tsx",
+      "stage": "page",
+      "states": {
+        "initial-loading": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/archive/archive-share-player-view.tsx"
+        },
+        "empty": {
+          "applicable": false,
+          "contract": "This API returns a singleton object, not an empty collection; missing/error has a separate contract.",
+          "source": "web/src/features/archive/archive-share-player-view.tsx"
+        },
+        "blocking-error": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/archive/archive-share-player-view.tsx"
+        },
+        "permission-denied": {
+          "applicable": true,
+          "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
+          "source": "web/src/features/archive/archive-share-player-view.tsx"
+        },
+        "background-refresh": {
+          "applicable": false,
+          "contract": "Public capability query has retry false and exposes no refresh control; expiration/revocation are explicit failed reads.",
+          "source": "web/src/features/archive/archive-share-player-view.tsx"
+        },
+        "partial": {
+          "applicable": false,
+          "contract": "The displayed primary result is one query; no aggregate partial-result contract. Its blocking error and retained-data refresh failure are tested separately.",
+          "source": "web/src/features/archive/archive-share-player-view.tsx"
+        },
+        "stale": {
+          "applicable": false,
+          "contract": "Public capability query has retry false and exposes no refresh control; expiration/revocation are explicit failed reads.",
+          "source": "web/src/features/archive/archive-share-player-view.tsx"
+        },
+        "unknown": {
+          "applicable": false,
+          "contract": "No finite lifecycle/health status projection is defined for this display; unavailable data is a loading/error state.",
+          "source": "web/src/features/archive/archive-share-player-view.tsx"
+        }
+      }
+    }
+  ],
+  "visual_status": "NOT_REVIEWED"
+}

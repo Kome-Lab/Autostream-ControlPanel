@@ -83,7 +83,8 @@ test("page framing components preserve headings, breadcrumb semantics, and actio
   assert.match(pageActions, /data-slot="page-actions-secondary"/);
   assert.match(pageActions, /data-slot="page-actions-overflow"/);
   assert.match(pageActions, /data-slot="page-actions-high-risk"/);
-  assert.match(pageActions, /aria-label="その他の操作"/);
+  // UI renewal 001 section 6.4: the same overflow action has JA/EN accessible names.
+  assert.match(pageActions, /aria-label=\{locale === "ja" \? "その他の操作" : "More actions"\}/);
 
   const dashboard = readFileSync(join(sourceRoot, "features", "dashboard", "dashboard-view.tsx"), "utf8");
   assert.match(dashboard, /<PageHeader/);

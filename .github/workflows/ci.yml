@@ -724,6 +724,8 @@ jobs:
           ref: ${{ steps.status-authority.outputs.contracts_sha }}
           path: status-authority-contracts
           persist-credentials: false
+      - name: Strict check current UI and directly imported test closure
+        run: npm run typecheck:ui-regression
       - name: Verify unchanged status vocabularies against current raw source locators
         run: node --no-warnings --test tests/ui-foundation-status.test.mts
       - name: Test Bundle 4 Web semantic witnesses
@@ -749,27 +751,12 @@ jobs:
       - run: npm run test:stream-regressions
       - run: npm run lint
       - run: npm run build
-      - name: Characterize Bundle 9 UI source responsibilities
-        run: npm run test:bundle9-ui-characterization && npm run test:bundle9-source-composition
-      - name: Test Bundle 9 browser comparison contracts
-        run: npm run test:bundle9-browser-contracts
-      - name: Test Bundle 9 Fetch generation diagnostics
-        timeout-minutes: 2
-        run: node --no-warnings --test tests/helpers/browser-fetch-generation-diagnostics.test.mts
-      - name: Compare Bundle 9 fixed before and actual after
-        timeout-minutes: 35
-        env:
-          AUTOSTREAM_BROWSER_PATH: /usr/bin/google-chrome
-          AUTOSTREAM_BUNDLE9_BROWSER_OUTPUT: ${{ runner.temp }}/bundle9-ui-comparison
-        run: npm run test:bundle9-ui-comparison
-      - name: Upload Bundle 9 separate before and after observations
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: bundle9-ui-comparison-${{ github.sha }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/bundle9-ui-comparison/
-          if-no-files-found: error
-          retention-days: 14
+      - name: Test current UI components
+        run: npm run test:ui-regression:components
+      - name: Test current route and action parity
+        run: npm run test:ui-regression:parity
+      - name: Test current browser inventory and failure guards
+        run: npm run test:ui-regression:browser-contracts
       - name: Download actual ST-PORT GET evidence from the same source set
         if: always() && !cancelled()
         uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
@@ -785,10 +772,13 @@ jobs:
           AUTOSTREAM_ST_PORT_EXPECTED_SOURCE_SET: ${{ needs.go.outputs.st_port_source_set }}
         run: npm run test:st-port-get-browser
 
+  ui-regression:
+    uses: ./.github/workflows/ui-regression.yml
+
   overall:
     name: overall
     if: always()
-    needs: [service-installer, go, release-rehearsal, observability_proxy_race_pre_fix, observability_proxy_race_current, web]
+    needs: [service-installer, go, release-rehearsal, observability_proxy_race_pre_fix, observability_proxy_race_current, web, ui-regression]
     runs-on: ubuntu-24.04
     steps:
       - name: Require every blocking job
@@ -799,6 +789,7 @@ jobs:
           OBSERVABILITY_PROXY_RACE_PRE_FIX_RESULT: ${{ needs.observability_proxy_race_pre_fix.result }}
           OBSERVABILITY_PROXY_RACE_CURRENT_RESULT: ${{ needs.observability_proxy_race_current.result }}
           WEB_RESULT: ${{ needs.web.result }}
+          UI_REGRESSION_RESULT: ${{ needs.ui-regression.result }}
         run: |
           set -euo pipefail
           [[ "${SERVICE_INSTALLER_RESULT}" == success ]]
@@ -807,3 +798,4 @@ jobs:
           [[ "${OBSERVABILITY_PROXY_RACE_PRE_FIX_RESULT}" == success ]]
           [[ "${OBSERVABILITY_PROXY_RACE_CURRENT_RESULT}" == success ]]
           [[ "${WEB_RESULT}" == success ]]
+          [[ "${UI_REGRESSION_RESULT}" == success ]]

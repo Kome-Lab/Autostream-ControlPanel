@@ -1,4 +1,8 @@
 "use client";
+import { useUICopy } from "@/lib/i18n/ui-v2/use-ui-copy";
+
+
+import { useNonSecretDraft } from "@/components/forms/draft-exit";
 
 import { useState } from "react";
 import { type SubmitResource, type ResourceRow, noneValue } from "./resource-form-types";
@@ -7,6 +11,7 @@ import { rowString, rowValue, compactRecord, numberValue } from "./resource-valu
 import { TextField, SelectField, NumberField, SwitchField, FormActions } from "./resource-input-fields";
 
 export function ArchiveProfileForm({ disabled, submit, initial, submitLabel }: { disabled: boolean; submit: SubmitResource; initial?: ResourceRow; submitLabel?: string }) {
+  const uiText = useUICopy();
   const row = initial || {};
   const driveDestinations = useResourceOptions("/archive/destinations", ["id"], ["name", "id"]);
   const [name, setName] = useState(() => rowString(row, ["name"]) || "shared-drive");
@@ -15,6 +20,8 @@ export function ArchiveProfileForm({ disabled, submit, initial, submitLabel }: {
   const [uploadEnabled, setUploadEnabled] = useState(() => rowValue(row, ["upload_enabled", "config.upload_enabled"]) !== false);
   const [driveDestinationID, setDriveDestinationID] = useState(() => rowString(row, ["drive_destination_id", "config.drive_destination_id"]) || noneValue);
   const effectiveDriveDestinationID = uploadEnabled && driveDestinationID === noneValue && driveDestinations[0]?.value ? driveDestinations[0].value : driveDestinationID;
+
+  useNonSecretDraft([name, format, retentionDays, uploadEnabled, driveDestinationID]);
 
   return (
     <form
@@ -33,9 +40,9 @@ export function ArchiveProfileForm({ disabled, submit, initial, submitLabel }: {
       }}
     >
       <div className="grid gap-3 md:grid-cols-2">
-        <TextField label="プロファイル名" value={name} onChange={setName} required />
+        <TextField label={uiText("プロファイル名")} value={name} onChange={setName} required />
         <SelectField
-          label="録画形式"
+          label={uiText("録画形式")}
           value={format}
           onChange={setFormat}
           options={[
@@ -43,16 +50,17 @@ export function ArchiveProfileForm({ disabled, submit, initial, submitLabel }: {
             { value: "mkv", label: "MKV" },
           ]}
         />
-        <NumberField label="保存期間 (日)" value={retentionDays} onChange={setRetentionDays} min={1} required />
-        <SelectField label="Drive保存先" value={effectiveDriveDestinationID} onChange={setDriveDestinationID} options={[{ value: noneValue, label: "未選択" }, ...driveDestinations]} />
+        <NumberField label={uiText("保存期間 (日)")} value={retentionDays} onChange={setRetentionDays} min={1} required />
+        <SelectField label={uiText("Drive保存先")} value={effectiveDriveDestinationID} onChange={setDriveDestinationID} options={[{ value: noneValue, label: uiText("未選択") }, ...driveDestinations]} />
       </div>
-      <SwitchField label="録画後に保存先へアップロード" checked={uploadEnabled} onCheckedChange={setUploadEnabled} />
+      <SwitchField label={uiText("録画後に保存先へアップロード")} checked={uploadEnabled} onCheckedChange={setUploadEnabled} />
       <FormActions label={submitLabel} disabled={disabled} />
     </form>
   );
 }
 
 export function DriveDestinationForm({ disabled, submit, initial, submitLabel }: { disabled: boolean; submit: SubmitResource; initial?: ResourceRow; submitLabel?: string }) {
+  const uiText = useUICopy();
   const row = initial || {};
   const oauthAccounts = useOAuthAccountOptions("drive");
   const [name, setName] = useState(() => rowString(row, ["name"]) || "archive-drive");
@@ -60,6 +68,8 @@ export function DriveDestinationForm({ disabled, submit, initial, submitLabel }:
   const [folderID, setFolderID] = useState(() => rowString(row, ["folder_id"]));
   const [sharedDrive, setSharedDrive] = useState(() => rowValue(row, ["shared_drive"]) === true);
   const effectiveOAuthAccountID = oauthAccountID === noneValue && oauthAccounts[0]?.value ? oauthAccounts[0].value : oauthAccountID;
+
+  useNonSecretDraft([name, oauthAccountID, folderID, sharedDrive]);
 
   return (
     <form
@@ -78,12 +88,12 @@ export function DriveDestinationForm({ disabled, submit, initial, submitLabel }:
       }}
     >
       <div className="grid gap-3 md:grid-cols-2">
-        <TextField label="保存先名" value={name} onChange={setName} required />
-        <SelectField label="OAuthアカウント" value={effectiveOAuthAccountID} onChange={setOAuthAccountID} options={[{ value: noneValue, label: "未選択" }, ...oauthAccounts]} />
-        <TextField label={sharedDrive ? "共有ドライブ配下のフォルダID" : "DriveフォルダID"} value={folderID} onChange={setFolderID} required description="URLのfolders/以降にあるIDを入力します。" />
+        <TextField label={uiText("保存先名")} value={name} onChange={setName} required />
+        <SelectField label={uiText("OAuthアカウント")} value={effectiveOAuthAccountID} onChange={setOAuthAccountID} options={[{ value: noneValue, label: uiText("未選択") }, ...oauthAccounts]} />
+        <TextField label={sharedDrive ? uiText("共有ドライブ配下のフォルダID") : uiText("DriveフォルダID")} value={folderID} onChange={setFolderID} required description={uiText("URLのfolders/以降にあるIDを入力します。")} />
       </div>
-      <SwitchField label="共有ドライブを使う" checked={sharedDrive} onCheckedChange={setSharedDrive} />
-      {oauthAccounts.length === 0 ? <p className="text-sm text-muted-foreground">Drive保存用途でGoogleアカウントを接続してください。</p> : null}
+      <SwitchField label={uiText("共有ドライブを使う")} checked={sharedDrive} onCheckedChange={setSharedDrive} />
+      {oauthAccounts.length === 0 ? <p className="text-sm text-muted-foreground">{uiText("Drive保存用途でGoogleアカウントを接続してください。")}</p> : null}
       <FormActions label={submitLabel} disabled={disabled || effectiveOAuthAccountID === noneValue} />
     </form>
   );

@@ -1,5 +1,9 @@
 "use client";
 
+import { useState } from "react";
+import { DraftExitContext, useDraftExit } from "@/components/forms/draft-exit";
+import { resourceCopy } from "@/lib/i18n/ui-v2/resource-copy";
+import { PageHeader } from "@/components/shell/page-header";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useI18n } from "@/components/admin/i18n-provider";
 import { useCurrentUser } from "@/features/queries";
@@ -10,26 +14,25 @@ import { ServiceHealthResourcePanel } from "./service-health-resource-panel";
 import { GenericResourcePanel } from "./generic-resource-panel";
 
 export function ResourcePage({ pageId }: { pageId: ResourcePageId }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const currentUser = useCurrentUser();
   const page = resourcePages[pageId];
   const defaultTab = page.resources[0]?.path || "";
+  const [tab, setTab] = useState(defaultTab);
+  const draftExit = useDraftExit({ enabled: Boolean(currentUser.data?.user), pending: false });
 
   return (
-    <div className="space-y-6">
-      <section>
-        <h1 className="text-2xl font-semibold tracking-normal">{t(page.titleKey)}</h1>
-        <p className="mt-2 max-w-3xl text-sm text-muted-foreground">{page.description}</p>
-      </section>
+    <DraftExitContext.Provider value={draftExit}><div className="space-y-5" data-screen-family={pageId}>
+      <PageHeader title={t(page.titleKey)} description={locale === "ja" ? page.description : page.resources.map((resource) => resourceCopy(resource, locale).description).join(" ")} breadcrumbs={[{ label: t("dashboard"), href: "/admin/" }, { label: t(page.titleKey) }]} />
 
       {page.resources.length === 1 ? (
         <ResourcePanel resource={page.resources[0]} currentUser={currentUser.data} />
       ) : (
-        <Tabs defaultValue={defaultTab} className="space-y-4">
+        <Tabs value={tab} onValueChange={(value) => draftExit.request(() => setTab(value))} className="space-y-4">
           <TabsList className="max-w-full flex-wrap justify-start">
             {page.resources.map((resource) => (
               <TabsTrigger key={resource.path} value={resource.path}>
-                {resource.title}
+                {resourceCopy(resource, locale).title}
               </TabsTrigger>
             ))}
           </TabsList>
@@ -40,7 +43,7 @@ export function ResourcePage({ pageId }: { pageId: ResourcePageId }) {
           ))}
         </Tabs>
       )}
-    </div>
+    </div></DraftExitContext.Provider>
   );
 }
 

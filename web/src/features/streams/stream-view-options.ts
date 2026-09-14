@@ -1,16 +1,18 @@
 "use client";
+import { japaneseCopy, type UICopy } from "@/lib/i18n/ui-v2/copy";
+
 
 import { useMemo } from "react";
+import { useUICopy } from "@/lib/i18n/ui-v2/use-ui-copy";
+import { fixedPresentationText, oauthAccountName, serviceAssignmentPresentation } from "@/lib/i18n/ui-v2/presentation-copy";
 
 import { useResourceData, useServiceHealth } from "@/features/queries";
 import {
-  oauthAccountDisplayName as oauthAccountLabel,
   oauthAccountPurposeLabel,
   oauthAccountSupportsPurpose,
   oauthProviderTypeLabel as providerTypeLabel,
   type OAuthAccountPurpose,
 } from "@/lib/oauth-account";
-import { streamServiceAssignmentOption } from "@/lib/stream-create";
 import { safeDisplayURL } from "@/lib/stream-presentation";
 import type { Stream } from "@/types/domain";
 
@@ -36,6 +38,7 @@ export function useResourceOptions(path: string, labelKeys: string[], detailKeys
 }
 
 export function useOAuthAccountOptions(purpose: OAuthAccountPurpose) {
+  const uiText = useUICopy();
   const query = useResourceData<unknown>("/integrations/oauth-accounts");
   const rows = useMemo(() => normalizeRows(query.data), [query.data]);
   return useMemo(
@@ -46,16 +49,17 @@ export function useOAuthAccountOptions(purpose: OAuthAccountPurpose) {
         const provider = rowString(row, ["provider_type"]);
         return {
           value,
-          label: oauthAccountLabel(row),
-          description: compactList([provider ? providerTypeLabel(provider) : "", oauthAccountPurposeLabel(row)]).join(" / "),
+          label: oauthAccountName(row, uiText),
+          description: compactList([provider ? providerTypeLabel(provider) : "", fixedPresentationText(oauthAccountPurposeLabel(row), uiText)]).join(" / "),
         };
       })
       .filter((option) => option.value),
-    [purpose, rows],
+    [purpose, rows, uiText],
   );
 }
 
 export function useServiceOptions(serviceType: string, editingStreamID?: string) {
+  const uiText = useUICopy();
   const query = useServiceHealth();
   const rows = useMemo(() => query.data || [], [query.data]);
   return useMemo(
@@ -64,10 +68,10 @@ export function useServiceOptions(serviceType: string, editingStreamID?: string)
       .map((row) => {
         const value = row.service_id || row.id;
         const label = firstNonEmpty(row.service_name, row.service_id || row.id);
-        return streamServiceAssignmentOption({ value, label, currentStreamID: row.current_stream_id }, editingStreamID);
+        return serviceAssignmentPresentation({ value, label, currentStreamID: row.current_stream_id }, editingStreamID, uiText);
       })
       .filter((option) => option.value),
-    [editingStreamID, rows, serviceType],
+    [editingStreamID, rows, serviceType, uiText],
   );
 }
 
@@ -85,11 +89,11 @@ export function compactList(values: Array<string | undefined>) {
   return values.map((value) => value?.trim() || "").filter(Boolean);
 }
 
-export function streamInputPresentation(stream: Stream) {
+export function streamInputPresentation(stream: Stream, uiText: UICopy = japaneseCopy) {
   const configured = safeDisplayURL(stream.encoder_input_url || stream.input_source);
   if (configured) return configured;
-  if (stream.assigned_encoder_id) return "Node側で開始時に自動生成";
-  return "入力未設定";
+  if (stream.assigned_encoder_id) return uiText("Node側で開始時に自動生成");
+  return uiText("入力未設定");
 }
 
 export function normalizeRows(data: unknown): StreamResourceRow[] {

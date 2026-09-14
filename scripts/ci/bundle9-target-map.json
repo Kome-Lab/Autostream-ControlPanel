@@ -214,9 +214,17 @@
       },
       {
         "path": "web/tests/helpers/browser-harness.mts",
-        "sha256": "bd45673d96e20aaea5927fa6b57c1c4d1445c36bb515e8e14758554bfa5ab5de",
-        "symbols": [],
-        "physical_lines": 691
+        "sha256": "27996f457c56c94de29e02d8bc302c8cbe28502c11eab2023a0c07ec8f669a02",
+        "symbols": [
+          "BrowserHarness",
+          "createCommandSender",
+          "removeOwnedBrowserDirectory",
+          "resolveBrowserPath",
+          "terminateChildProcess",
+          "waitForChildExit",
+          "waitForMapCount"
+        ],
+        "physical_lines": 700
       },
       {
         "path": "web/tests/helpers/browser-lifecycle-source-paths.mts",
@@ -1257,12 +1265,13 @@
       },
       {
         "path": "web/tests/system-updates-node-authority-cases.mts",
-        "sha256": "dddde20d18eb01cd962b411542afe330bef1023eef711ecd132e753cb5818ff6",
+        "sha256": "56f0b2ee2cc5301e6ac248cae7227fa398c819cdc0d4c45606006865bd10063c",
         "symbols": [
           "assertEndpointlessNode",
-          "assertEndpointlessResponse"
+          "assertEndpointlessResponse",
+          "registerNodeAuthorityCases"
         ],
-        "physical_lines": 277
+        "physical_lines": 283
       },
       {
         "path": "web/tests/system-updates-ownership-cases.mts",
@@ -1327,9 +1336,17 @@
     "destinations": [
       {
         "path": "web/tests/helpers/browser-harness.mts",
-        "sha256": "bd45673d96e20aaea5927fa6b57c1c4d1445c36bb515e8e14758554bfa5ab5de",
-        "symbols": [],
-        "physical_lines": 691
+        "sha256": "27996f457c56c94de29e02d8bc302c8cbe28502c11eab2023a0c07ec8f669a02",
+        "symbols": [
+          "BrowserHarness",
+          "createCommandSender",
+          "removeOwnedBrowserDirectory",
+          "resolveBrowserPath",
+          "terminateChildProcess",
+          "waitForChildExit",
+          "waitForMapCount"
+        ],
+        "physical_lines": 700
       },
       {
         "path": "web/tests/helpers/browser-next-server.mts",
@@ -1354,9 +1371,10 @@
       },
       {
         "path": "web/tests/ui-browser-fixture.mts",
-        "sha256": "09c4e86d6c80955b125f875938ff1286cb2f570d4ca4ece5c3851c6908a00af6",
+        "sha256": "a7e7ada0a5063101f9fee5ee6d23a744ad7f2883b0892b946485a27acf7c8dfd",
         "symbols": [
           "controlPlatformCoverState",
+          "createBrowserRouteFixture",
           "escapeRegExp",
           "normalizePath",
           "permissionUser",
@@ -1364,7 +1382,7 @@
           "versionResponse",
           "workerConfiguration"
         ],
-        "physical_lines": 243
+        "physical_lines": 245
       },
       {
         "path": "web/tests/ui-browser-navigation-helpers.mts",
@@ -4993,9 +5011,11 @@
       },
       {
         "path": "web/src/features/application/updater-bootstrap-credential-form.tsx",
-        "sha256": "310d003714df9359a316b4ff80fc964a52c944d7c84cc35b3df4fef7d58bd749",
-        "symbols": [],
-        "physical_lines": 141
+        "sha256": "1e806655a9f2763f03b13d1e21fc432135157070f154b609ed2969169cc3a26e",
+        "symbols": [
+          "BootstrapCredentialForm"
+        ],
+        "physical_lines": 143
       },
       {
         "path": "web/src/features/application/updater-bootstrap-job-state.ts",
@@ -5009,19 +5029,23 @@
       },
       {
         "path": "web/src/features/application/updater-bootstrap-presentation.ts",
-        "sha256": "e5dfeee236b9d89e5c06e6631d063cc35dc55a87b5e9d1535eba8f38f2069618",
+        "sha256": "fe53b8a8d3e8a53ba9dfe2d24a484cf5a995832af9a89e6a026581a12969bc51",
         "symbols": [
           "bootstrapBadgeTone",
           "bootstrapResultSafeMessage",
           "eligibilityStatus"
         ],
-        "physical_lines": 43
+        "physical_lines": 45
       },
       {
         "path": "web/src/features/application/updater-bootstrap-status-sections.tsx",
-        "sha256": "5b619cfe9103334e1af98a18346a300afa0279faa95e2b974ca615a9e05370af",
-        "symbols": [],
-        "physical_lines": 125
+        "sha256": "472249ef6915acbc064cf42217b0a79aadc72b67077648e67298197592a6b711",
+        "symbols": [
+          "BootstrapFeedback",
+          "BootstrapHostResults",
+          "BootstrapSetupHeading"
+        ],
+        "physical_lines": 129
       },
       {
         "path": "web/src/features/application/updater-bootstrap-submission-preflight.ts",
@@ -5031,7 +5055,7 @@
       },
       {
         "path": "web/src/features/application/updater-host-bootstrap-panel.tsx",
-        "sha256": "23f069a4f7b530a64c1b5597189a1a7263cf81696b8580b0979f4fd642f4f5f2",
+        "sha256": "ce4570271aade28c76eb7ee4585f166e1753c3285bc89b7d2d0500c34f618e93",
         "symbols": [
           "UpdaterHostBootstrapPanel",
           "clearPlaintext",
@@ -5040,7 +5064,7 @@
           "operationStillCurrent",
           "submitBootstrap"
         ],
-        "physical_lines": 386
+        "physical_lines": 390
       },
       {
         "path": "web/src/features/application/use-bootstrap-job-mutations.ts",
@@ -5061,7 +5085,7 @@
     "destinations": [
       {
         "path": "web/tests/helpers/browser-harness.mts",
-        "sha256": "bd45673d96e20aaea5927fa6b57c1c4d1445c36bb515e8e14758554bfa5ab5de",
+        "sha256": "27996f457c56c94de29e02d8bc302c8cbe28502c11eab2023a0c07ec8f669a02",
         "symbols": [
           "BrowserHarness",
           "assertNoFatalError",
@@ -5107,7 +5131,7 @@
           "waitForRequestHandlersIdle",
           "waitForResponseCount"
         ],
-        "physical_lines": 691
+        "physical_lines": 700
       },
       {
         "path": "web/tests/helpers/browser-next-server.mts",
@@ -5242,9 +5266,17 @@
       },
       {
         "path": "web/tests/helpers/browser-harness.mts",
-        "sha256": "bd45673d96e20aaea5927fa6b57c1c4d1445c36bb515e8e14758554bfa5ab5de",
-        "symbols": [],
-        "physical_lines": 691
+        "sha256": "27996f457c56c94de29e02d8bc302c8cbe28502c11eab2023a0c07ec8f669a02",
+        "symbols": [
+          "BrowserHarness",
+          "createCommandSender",
+          "removeOwnedBrowserDirectory",
+          "resolveBrowserPath",
+          "terminateChildProcess",
+          "waitForChildExit",
+          "waitForMapCount"
+        ],
+        "physical_lines": 700
       },
       {
         "path": "web/tests/helpers/browser-next-server.mts",
@@ -5354,19 +5386,23 @@
     "destinations": [
       {
         "path": "web/src/features/nodes/node-configuration-card.tsx",
-        "sha256": "7caca63f06f406aa7ffe55b423a94f51269e211a546ca8df649041a59f19d335",
-        "symbols": [],
-        "physical_lines": 163
+        "sha256": "e0f89f6cde5a91a8217386afa98a92d436e0b44fba651a8fe496ece6b7f8a4f1",
+        "symbols": [
+          "NodeConfigurationCard"
+        ],
+        "physical_lines": 157
       },
       {
         "path": "web/src/features/nodes/node-edit-dialog.tsx",
-        "sha256": "b391c2be3c0c8d0d4c30531b06d584d98f0384f6d8cffe8462ec214ab4de89fb",
-        "symbols": [],
-        "physical_lines": 94
+        "sha256": "506f0e93b4d0b02d6466ed158a13b5d8065a69b716bc34ba367ac66d624c3484",
+        "symbols": [
+          "NodeEditDialog"
+        ],
+        "physical_lines": 95
       },
       {
         "path": "web/src/features/nodes/node-registration-view.tsx",
-        "sha256": "8c0cae526270934d817414187be6d056d21b47b9e532ff946d0292563ee5deb7",
+        "sha256": "3a5683b8da64fd38ab1f88eac4837e9904d3473b1af9e80036b961c4784aaed7",
         "symbols": [
           "LegacyNodeRegistrationView",
           "NodeRegistrationView",
@@ -5376,13 +5412,15 @@
           "openEditNode",
           "submitEditNode"
         ],
-        "physical_lines": 351
+        "physical_lines": 359
       },
       {
         "path": "web/src/features/nodes/registered-node-columns.tsx",
-        "sha256": "cd8b2ad59aa0ec0862ba519baf59137ade331e4c6e3a973c9bdc340c0e531f3c",
-        "symbols": [],
-        "physical_lines": 174
+        "sha256": "b560dc7ba0427922e71619eccdcc9d319c96cc612ea42e19173cc5a7c6ed19e5",
+        "symbols": [
+          "createRegisteredNodeColumns"
+        ],
+        "physical_lines": 179
       },
       {
         "path": "web/src/features/nodes/use-node-registration-mutations.ts",
@@ -5403,33 +5441,39 @@
     "destinations": [
       {
         "path": "web/src/features/application/updater-bootstrap-hosts-section.tsx",
-        "sha256": "aed0d96086cb6414bb33511edcec3d4f6154a5d1b56bc89b224dbe3cbf794d13",
-        "symbols": [],
+        "sha256": "05ccd7ce3d079df41de5ab3f772c67905c9beb8e5df558cb49ac8550adf91593",
+        "symbols": [
+          "UpdaterBootstrapHostsSection"
+        ],
         "physical_lines": 156
       },
       {
         "path": "web/src/features/application/updater-release-token-section.tsx",
-        "sha256": "9bfb762190338c8d5f1242dd4f7e43447339fec70ce3f874a540a352acfe1498",
-        "symbols": [],
-        "physical_lines": 75
+        "sha256": "4639fa4268f7570da2cc6d081a56ba58ef9e69ef2efe21478cd68f77d90376d7",
+        "symbols": [
+          "UpdaterReleaseTokenSection"
+        ],
+        "physical_lines": 76
       },
       {
         "path": "web/src/features/application/updater-runtime-settings-section.tsx",
-        "sha256": "8240ba2a250cf66067e087a7c03a70b75901173fcf424ddc9a9fb21b040ca5da",
-        "symbols": [],
-        "physical_lines": 87
+        "sha256": "d03261853509753af7295f7b2b69d6975e8f223b1e6cd20b787cb477bfd481b1",
+        "symbols": [
+          "UpdaterRuntimeSettingsSection"
+        ],
+        "physical_lines": 89
       },
       {
         "path": "web/src/features/application/updater-settings-field.tsx",
-        "sha256": "1aa9f063a47dcf42257b60ff81f9d3968235bc0a4459a4caebe53385a896b97d",
+        "sha256": "f22dad9b170f8f9d07c608c414ebbcc998d1c1679f6af6613c69510bb0263a58",
         "symbols": [
           "Field"
         ],
-        "physical_lines": 12
+        "physical_lines": 14
       },
       {
         "path": "web/src/features/application/updater-settings-form.tsx",
-        "sha256": "2c63358700298494965bb507b856909c13607d4e17392fca1edd48c9d57cd3d6",
+        "sha256": "333afa17f4e5be301c5d6668d4af26af934dec9c3cfae6c61a7bcd2ee7a50173",
         "symbols": [
           "OwnershipStateItem",
           "UpdaterSettingsForm",
@@ -5438,15 +5482,35 @@
           "removeHost",
           "selectTarget",
           "updateHost",
-          "updateTarget"
+          "updateTarget",
+          "updaterDraftValues"
         ],
-        "physical_lines": 313
+        "physical_lines": 343
       },
       {
         "path": "web/src/features/application/updater-targets-settings-section.tsx",
-        "sha256": "ac33258832f45b90bc54958e4a15ee3fdd998f5587b3309f43c00e76ceff5fa1",
-        "symbols": [],
-        "physical_lines": 175
+        "sha256": "bf6aa2b20890965c51618ff62b57f30bfdafb3cf97cdf10dfd416bf373d90dee",
+        "symbols": [
+          "UpdaterTargetsSettingsSection"
+        ],
+        "physical_lines": 177
+      },
+      {
+        "path": "web/src/components/forms/form-footer.tsx",
+        "sha256": "a084001deff2b112f4e26daf38fa3a44940b0a697d98ab210ca08f59178e57fe",
+        "symbols": [
+          "FormFooter"
+        ],
+        "physical_lines": 8
+      },
+      {
+        "path": "web/src/components/layout/detail-section.tsx",
+        "sha256": "5490bd9851a96f2d8fcfaec392f3a584dd5f8b10351407b8e1bda94e36b66dc0",
+        "symbols": [
+          "DetailSection",
+          "SectionNavigation"
+        ],
+        "physical_lines": 32
       }
     ]
   },
@@ -5461,12 +5525,13 @@
     "destinations": [
       {
         "path": "web/src/features/application/application-action-renderers.tsx",
-        "sha256": "b7d12b31c52d205d3aebc1e875b75ad1071ec13b787090208b625b9eb6211b5d",
+        "sha256": "c1d89dd5298ab188efc4cab299babe1a77113f8aa6bfa132d9947ba365697f5d",
         "symbols": [
+          "createApplicationActionRenderers",
           "renderCancelAction",
           "renderTargetAction"
         ],
-        "physical_lines": 83
+        "physical_lines": 85
       },
       {
         "path": "web/src/features/application/application-authority-readers.ts",
@@ -5480,7 +5545,7 @@
       },
       {
         "path": "web/src/features/application/application-info-view.tsx",
-        "sha256": "79dca7f9ee843551d218c87d11d8932541a9cc9d0a8a5d73ef7501e3b0169582",
+        "sha256": "3b89b7dfc27ed25855ebbe8250c28d608d85b36073152d9527816c4c181471d6",
         "symbols": [
           "ApplicationInfoView",
           "clearTerminalSelfUpdate",
@@ -5490,9 +5555,10 @@
           "executePortReconfigure",
           "executeTarget",
           "refreshInformation",
-          "refreshPortAuthority"
+          "refreshPortAuthority",
+          "refreshed"
         ],
-        "physical_lines": 380
+        "physical_lines": 385
       }
     ]
   },
@@ -5513,7 +5579,7 @@
       },
       {
         "path": "web/src/features/streams/stream-preview.tsx",
-        "sha256": "1510f6efa168f5e41e9ad474c0e31a1e5f8b0fdbd5e87c6654e9b925635a2136",
+        "sha256": "aafedffe258eb6b4a6c1dc30e154d2ae6a3152a9adbed90934ce01dc93165954",
         "symbols": [
           "ParticipantAccessibilityList",
           "PreviewStatus",
@@ -5523,7 +5589,7 @@
           "refreshParticipants",
           "resolvePreviewParticipantsURL"
         ],
-        "physical_lines": 274
+        "physical_lines": 277
       },
       {
         "path": "web/src/features/streams/use-stream-preview-playback.ts",
@@ -5557,37 +5623,55 @@
     "destinations": [
       {
         "path": "web/src/features/application/updater-bootstrap-hosts-section.tsx",
-        "sha256": "aed0d96086cb6414bb33511edcec3d4f6154a5d1b56bc89b224dbe3cbf794d13",
-        "symbols": [],
+        "sha256": "05ccd7ce3d079df41de5ab3f772c67905c9beb8e5df558cb49ac8550adf91593",
+        "symbols": [
+          "UpdaterBootstrapHostsSection"
+        ],
         "physical_lines": 156
       },
       {
         "path": "web/src/features/application/updater-release-token-section.tsx",
-        "sha256": "9bfb762190338c8d5f1242dd4f7e43447339fec70ce3f874a540a352acfe1498",
-        "symbols": [],
-        "physical_lines": 75
+        "sha256": "4639fa4268f7570da2cc6d081a56ba58ef9e69ef2efe21478cd68f77d90376d7",
+        "symbols": [
+          "UpdaterReleaseTokenSection"
+        ],
+        "physical_lines": 76
       },
       {
         "path": "web/src/features/application/updater-runtime-settings-section.tsx",
-        "sha256": "8240ba2a250cf66067e087a7c03a70b75901173fcf424ddc9a9fb21b040ca5da",
-        "symbols": [],
-        "physical_lines": 87
+        "sha256": "d03261853509753af7295f7b2b69d6975e8f223b1e6cd20b787cb477bfd481b1",
+        "symbols": [
+          "UpdaterRuntimeSettingsSection"
+        ],
+        "physical_lines": 89
       },
       {
         "path": "web/src/features/application/updater-settings-field.tsx",
-        "sha256": "1aa9f063a47dcf42257b60ff81f9d3968235bc0a4459a4caebe53385a896b97d",
-        "symbols": [],
-        "physical_lines": 12
+        "sha256": "f22dad9b170f8f9d07c608c414ebbcc998d1c1679f6af6613c69510bb0263a58",
+        "symbols": [
+          "Field"
+        ],
+        "physical_lines": 14
       },
       {
         "path": "web/src/features/application/updater-settings-form.tsx",
-        "sha256": "2c63358700298494965bb507b856909c13607d4e17392fca1edd48c9d57cd3d6",
-        "symbols": [],
-        "physical_lines": 313
+        "sha256": "333afa17f4e5be301c5d6668d4af26af934dec9c3cfae6c61a7bcd2ee7a50173",
+        "symbols": [
+          "OwnershipStateItem",
+          "UpdaterSettingsForm",
+          "copyClientPublicKey",
+          "refreshSettingsActionAuthority",
+          "removeHost",
+          "selectTarget",
+          "updateHost",
+          "updateTarget",
+          "updaterDraftValues"
+        ],
+        "physical_lines": 343
       },
       {
         "path": "web/src/features/application/updater-settings-panel.tsx",
-        "sha256": "3bb38f3f47dcd87d4fdf0ac325779db5d685f0616d30c5428177b34040c64542",
+        "sha256": "46a6f34cc10d675b4b8fe83563d33754a8db0d4c43220945f5eac15dc37c3a78",
         "symbols": [
           "UpdaterSettingsPanel",
           "currentFoundationAuthority",
@@ -5596,13 +5680,15 @@
           "requestOwnershipDeactivation",
           "setDialogOpen"
         ],
-        "physical_lines": 371
+        "physical_lines": 374
       },
       {
         "path": "web/src/features/application/updater-targets-settings-section.tsx",
-        "sha256": "ac33258832f45b90bc54958e4a15ee3fdd998f5587b3309f43c00e76ceff5fa1",
-        "symbols": [],
-        "physical_lines": 175
+        "sha256": "bf6aa2b20890965c51618ff62b57f30bfdafb3cf97cdf10dfd416bf373d90dee",
+        "symbols": [
+          "UpdaterTargetsSettingsSection"
+        ],
+        "physical_lines": 177
       },
       {
         "path": "web/src/features/application/use-pull-ownership-mutations.ts",

@@ -14,7 +14,8 @@ import {
 import { CanvasRenderer } from "echarts/renderers";
 import type { ComposeOption } from "echarts/core";
 import type { BarSeriesOption, LineSeriesOption, PieSeriesOption } from "echarts/charts";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { DetailSection } from "@/components/layout/detail-section";
+import { useI18n } from "@/components/admin/i18n-provider";
 
 echarts.use([BarChart, LineChart, PieChart, GridComponent, LegendComponent, TooltipComponent, CanvasRenderer]);
 
@@ -28,6 +29,7 @@ export type ChartOption = ComposeOption<
 >;
 
 export function EChartsPanel({ title, option, height = 260 }: { title: string; option: ChartOption; height?: number }) {
+  const { locale } = useI18n();
   const ref = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<echarts.EChartsType | null>(null);
 
@@ -48,17 +50,23 @@ export function EChartsPanel({ title, option, height = 260 }: { title: string; o
   }, []);
 
   useEffect(() => {
-    chartRef.current?.setOption(option, { notMerge: false, lazyUpdate: true });
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const motion = option as Pick<LineSeriesOption, "animation" | "animationDuration" | "animationDurationUpdate">;
+    const apply = () => {
+      chartRef.current?.setOption({ ...option, animation: reduced.matches ? false : motion.animation ?? true, animationDuration: reduced.matches ? 0 : motion.animationDuration ?? 1000, animationDurationUpdate: reduced.matches ? 0 : motion.animationDurationUpdate ?? 500 }, { notMerge: false, lazyUpdate: true });
+      if (ref.current) ref.current.dataset.chartMotion = reduced.matches ? "reduced" : "normal";
+    };
+    apply();
+    reduced.addEventListener("change", apply);
+    return () => reduced.removeEventListener("change", apply);
   }, [option]);
 
   return (
-    <Card>
-      <CardHeader className="pb-2">
-        <CardTitle className="text-base">{title}</CardTitle>
-      </CardHeader>
-      <CardContent>
-        <div ref={ref} style={{ height }} className="w-full" />
-      </CardContent>
-    </Card>
+    <DetailSection title={title}>
+      <figure className="min-w-0">
+        <div ref={ref} role="img" aria-label={title} style={{ height }} className="w-full" />
+        <figcaption className="text-xs leading-6 text-muted-foreground">{locale === "ja" ? "系列名は凡例、単位は軸とツールチップに表示します。値と更新時刻は下の最新メトリクス一覧でも確認できます。" : "Legend names identify series; axes and tooltips show units. Values and timestamps are also available in the latest-metrics table below."}</figcaption>
+      </figure>
+    </DetailSection>
   );
 }

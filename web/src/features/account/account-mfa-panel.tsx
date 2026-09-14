@@ -1,4 +1,7 @@
 "use client";
+import { useUICopy } from "@/lib/i18n/ui-v2/use-ui-copy";
+import { japaneseCopy, type UICopy } from "@/lib/i18n/ui-v2/copy";
+
 
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import Image from "next/image";
@@ -43,6 +46,7 @@ export function MFAPanel({
   refreshAuthority: () => Promise<AccountAuthoritySnapshot>;
   accountResourceID: string;
 }) {
+  const uiText = useUICopy();
   const { t } = useI18n();
   const pathname = usePathname();
   const previousPathname = useRef(pathname);
@@ -64,7 +68,7 @@ export function MFAPanel({
   const totpEnrollmentAvailable = Boolean(status?.available && policyMode !== "passkey");
   const canStartEnrollment = totpEnrollmentAvailable && !loading && (!status?.enabled || currentCode.length >= 6);
   const typedIntent = (id: "AUTH-15" | "AUTH-17" | "AUTH-18"): AccountActionIntent => ({ id, resourceId: accountResourceID, publicUsername: username });
-  const outcomeUnknown = () => setNotice({ tone: "error", text: "MFA操作の結果を確認できません。再送せず、セッション状態または監査ログを確認してください。" });
+  const outcomeUnknown = () => setNotice({ tone: "error", text: uiText("MFA操作の結果を確認できません。再送せず、セッション状態または監査ログを確認してください。") });
 
   useEffect(() => () => { secretOwner.dispose(); }, [secretOwner]);
   useEffect(() => {
@@ -94,14 +98,14 @@ export function MFAPanel({
       if (result.kind === "succeeded") {
         setRegistrationInProgress(false);
         setVerifyCode("");
-        setNotice({ tone: "success", text: "MFAを有効化しました。発行済みの情報は確認後に破棄してください。" });
+        setNotice({ tone: "success", text: uiText("MFAを有効化しました。発行済みの情報は確認後に破棄してください。") });
         refresh();
       } else if (result.kind === "failed") {
         setNotice({ tone: "error", text: t(result.error.messageKey) });
       } else if (result.kind === "outcome_unknown") {
         outcomeUnknown();
       } else {
-        setNotice({ tone: "error", text: "最新のセッションを確認できないため、MFA確認を送信しませんでした。" });
+        setNotice({ tone: "error", text: uiText("最新のセッションを確認できないため、MFA確認を送信しませんでした。") });
       }
     } finally {
       setVerifyPending(false);
@@ -113,24 +117,23 @@ export function MFAPanel({
       <CardHeader>
         <CardTitle className="flex items-center gap-2 text-lg">
           <ShieldCheck className="size-5" />
-          多要素認証
-        </CardTitle>
-        <CardDescription>確認コードとリカバリーコードでログインを保護します。</CardDescription>
+          {uiText("多要素認証")}</CardTitle>
+        <CardDescription>{uiText("確認コードとリカバリーコードでログインを保護します。")}</CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="flex flex-wrap items-center gap-2">
-          <Badge variant={status?.enabled ? "default" : "secondary"}>{loading ? "確認中" : status?.enabled ? "有効" : "無効"}</Badge>
-          <span className="text-sm text-muted-foreground">認証方式 {mfaPolicyLabel(policyMode)}</span>
-          {status?.required ? <Badge variant="outline">必須</Badge> : null}
-          {status?.pending_enrollment ? <Badge variant="outline">確認待ち</Badge> : null}
-          {status?.recovery_code_count !== undefined && status.enabled ? <Badge variant="secondary">リカバリーコード残り {status.recovery_code_count}</Badge> : null}
+          <Badge variant={status?.enabled ? "default" : "secondary"}>{loading ? uiText("確認中") : status?.enabled ? uiText("有効") : uiText("無効")}</Badge>
+          <span className="text-sm text-muted-foreground">{uiText("認証方式")}{mfaPolicyLabel(policyMode, uiText)}</span>
+          {status?.required ? <Badge variant="outline">{uiText("必須")}</Badge> : null}
+          {status?.pending_enrollment ? <Badge variant="outline">{uiText("確認待ち")}</Badge> : null}
+          {status?.recovery_code_count !== undefined && status.enabled ? <Badge variant="secondary">{uiText("リカバリーコード残り")}{status.recovery_code_count}</Badge> : null}
         </div>
-        {!loading && !totpEnrollmentAvailable ? <div className="rounded-md border bg-muted/35 px-3 py-2 text-sm text-muted-foreground">{mfaUnavailableMessage(status)}</div> : null}
+        {!loading && !totpEnrollmentAvailable ? <div className="rounded-md border bg-muted/35 px-3 py-2 text-sm text-muted-foreground">{mfaUnavailableMessage(status, uiText)}</div> : null}
         {totpEnrollmentAvailable && status?.enabled ? (
           <div className="space-y-2 rounded-md border p-3">
-            <label className="text-sm font-medium">TOTPを再登録する場合の本人確認コード</label>
-            <Input inputMode="numeric" placeholder="現在のMFAコード" value={currentCode} onChange={(event) => setCurrentCode(event.target.value)} />
-            <p className="text-xs text-muted-foreground">再登録すると新しいQRコードとリカバリーコードを発行します。現在のMFAコードが必要です。</p>
+            <label className="text-sm font-medium">{uiText("TOTPを再登録する場合の本人確認コード")}</label>
+            <Input inputMode="numeric" placeholder={uiText("現在のMFAコード")} value={currentCode} onChange={(event) => setCurrentCode(event.target.value)} />
+            <p className="text-xs text-muted-foreground">{uiText("再登録すると新しいQRコードとリカバリーコードを発行します。現在のMFAコードが必要です。")}</p>
           </div>
         ) : null}
         {totpEnrollmentAvailable ? (
@@ -139,7 +142,7 @@ export function MFAPanel({
             intent={typedIntent("AUTH-15")}
             authority={authority}
             refreshAuthority={refreshAuthority}
-            label={status?.enabled ? "TOTPを再登録" : status?.pending_enrollment ? "TOTP登録をやり直す" : "TOTP登録を開始"}
+            label={status?.enabled ? uiText("TOTPを再登録") : status?.pending_enrollment ? uiText("TOTP登録をやり直す") : uiText("TOTP登録を開始")}
             icon={<QrCode className="size-4" />}
             className="w-full"
             disabled={!canStartEnrollment}
@@ -148,7 +151,7 @@ export function MFAPanel({
               const result = value as { enrollmentPending?: boolean; recoveryCodeCount?: number };
               setRegistrationInProgress(result.enrollmentPending === true);
               setRecoveryOnlyResult(result.enrollmentPending !== true && Number(result.recoveryCodeCount) > 0);
-              setNotice({ tone: "success", text: "MFA登録情報を受信しました。明示的に表示して確認してください。" });
+              setNotice({ tone: "success", text: uiText("MFA登録情報を受信しました。明示的に表示して確認してください。") });
               refresh();
             }}
             onOutcomeUnknown={outcomeUnknown}
@@ -167,12 +170,12 @@ export function MFAPanel({
                     {registrationInProgress ? (
                       <div className="grid gap-3 md:grid-cols-[180px_1fr]">
                         <div className="flex min-h-44 items-center justify-center rounded-md border bg-white p-3">
-                          {qrImage ? <Image src={qrImage} alt="TOTP登録用QRコード" width={160} height={160} unoptimized /> : <div className="text-center text-sm text-muted-foreground">QRコードを生成できませんでした。手動入力キーを使ってください。</div>}
+                          {qrImage ? <Image src={qrImage} alt={uiText("TOTP登録用QRコード")} width={160} height={160} unoptimized /> : <div className="text-center text-sm text-muted-foreground">{uiText("QRコードを生成できませんでした。手動入力キーを使ってください。")}</div>}
                         </div>
                         <div className="space-y-3">
                           <div>
-                            <div className="text-sm font-medium">1. 認証アプリでQRコードを読み取る</div>
-                            <p className="mt-1 text-xs text-muted-foreground">TOTP対応アプリで読み取ります。</p>
+                            <div className="text-sm font-medium">{uiText("1. 認証アプリでQRコードを読み取る")}</div>
+                            <p className="mt-1 text-xs text-muted-foreground">{uiText("TOTP対応アプリで読み取ります。")}</p>
                           </div>
                           {revealed.mfaSecret ? <Input readOnly value={revealed.mfaSecret} aria-label="TOTP secret" className="font-mono" /> : null}
                           {revealed.provisioningURI ? <Textarea readOnly value={revealed.provisioningURI} rows={2} aria-label="Provisioning URI" className="font-mono text-xs" /> : null}
@@ -197,12 +200,11 @@ export function MFAPanel({
             />
             {registrationInProgress ? (
               <div className="space-y-2 rounded-md border bg-muted/20 p-3">
-                <label className="text-sm font-medium">2. アプリに表示された6桁コードで有効化</label>
+                <label className="text-sm font-medium">{uiText("2. アプリに表示された6桁コードで有効化")}</label>
                 <div className="flex flex-col gap-2 sm:flex-row">
-                  <Input inputMode="numeric" placeholder="確認コード" value={verifyCode} onChange={(event) => setVerifyCode(event.target.value)} />
+                  <Input inputMode="numeric" placeholder={uiText("確認コード")} value={verifyCode} onChange={(event) => setVerifyCode(event.target.value)} />
                   <Button onClick={() => { void verifyEnrollment(); }} disabled={verifyCode.length < 6 || verifyPending}>
-                    有効化
-                  </Button>
+                    {uiText("有効化")}</Button>
                 </div>
               </div>
             ) : null}
@@ -213,16 +215,15 @@ export function MFAPanel({
             <div className="space-y-2 rounded-md border p-3">
               <div className="flex items-center gap-2 text-sm font-medium">
                 <RefreshCcw className="size-4" />
-                リカバリーコード再発行
-              </div>
-              <p className="text-xs text-muted-foreground">新しいリカバリーコードを発行します。発行後、古いリカバリーコードは使えません。</p>
-              <Input inputMode="numeric" placeholder="現在のMFAコード" value={recoveryCode} onChange={(event) => setRecoveryCode(event.target.value)} />
+                {uiText("リカバリーコード再発行")}</div>
+              <p className="text-xs text-muted-foreground">{uiText("新しいリカバリーコードを発行します。発行後、古いリカバリーコードは使えません。")}</p>
+              <Input inputMode="numeric" placeholder={uiText("現在のMFAコード")} value={recoveryCode} onChange={(event) => setRecoveryCode(event.target.value)} />
               <AccountActionConfirmation
                 controller={actionController}
                 intent={typedIntent("AUTH-18")}
                 authority={authority}
                 refreshAuthority={refreshAuthority}
-                label="リカバリーコードを再発行"
+                label={uiText("リカバリーコードを再発行")}
                 className="w-full"
                 disabled={recoveryCode.length < 6}
                 handler={async () => adoptOneTimeOutput(await apiPost<{ recovery_codes: string[] }>("/auth/recovery-codes/regenerate", { code: recoveryCode }))}
@@ -230,7 +231,7 @@ export function MFAPanel({
                   setRegistrationInProgress(false);
                   setRecoveryOnlyResult(true);
                   setRecoveryCode("");
-                  setNotice({ tone: "success", text: "新しいリカバリーコードを受信しました。明示的に表示して確認してください。" });
+                  setNotice({ tone: "success", text: uiText("新しいリカバリーコードを受信しました。明示的に表示して確認してください。") });
                   refresh();
                 }}
                 onOutcomeUnknown={outcomeUnknown}
@@ -239,16 +240,15 @@ export function MFAPanel({
             <div className="space-y-2 rounded-md border border-red-200 bg-red-50/50 p-3">
               <div className="flex items-center gap-2 text-sm font-medium text-red-700">
                 <ShieldOff className="size-4" />
-                MFAを無効化
-              </div>
-              <p className="text-xs text-red-700/80">無効化すると次回ログイン時のTOTP確認が不要になります。現在のMFAコードで確認してください。</p>
-              <Input inputMode="numeric" placeholder="現在のMFAコード" value={disableCode} onChange={(event) => setDisableCode(event.target.value)} />
+                {uiText("MFAを無効化")}</div>
+              <p className="text-xs text-red-700/80">{uiText("無効化すると次回ログイン時のTOTP確認が不要になります。現在のMFAコードで確認してください。")}</p>
+              <Input inputMode="numeric" placeholder={uiText("現在のMFAコード")} value={disableCode} onChange={(event) => setDisableCode(event.target.value)} />
               <AccountActionConfirmation
                 controller={actionController}
                 intent={typedIntent("AUTH-17")}
                 authority={authority}
                 refreshAuthority={refreshAuthority}
-                label="MFAを無効化"
+                label={uiText("MFAを無効化")}
                 variant="destructive"
                 className="w-full"
                 disabled={disableCode.length < 6}
@@ -258,7 +258,7 @@ export function MFAPanel({
                   setDisableCode("");
                   setRegistrationInProgress(false);
                   setRecoveryOnlyResult(false);
-                  setNotice({ tone: "success", text: "MFAを無効化しました。" });
+                  setNotice({ tone: "success", text: uiText("MFAを無効化しました。") });
                   refresh();
                 }}
                 onOutcomeUnknown={outcomeUnknown}
@@ -272,11 +272,12 @@ export function MFAPanel({
 }
 
 function RecoveryCodesBlock({ codes, recoveryOnly }: { codes: readonly string[]; recoveryOnly: boolean }) {
+  const uiText = useUICopy();
   return (
     <div className="space-y-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-amber-950">
       <div>
-        <div className="text-sm font-semibold">{recoveryOnly ? "再発行されたリカバリーコード" : "リカバリーコード"}</div>
-        <p className="mt-1 text-xs text-amber-800">MFAアプリを使えない時のログインに使います。この一時表示を確認後に破棄してください。</p>
+        <div className="text-sm font-semibold">{recoveryOnly ? uiText("再発行されたリカバリーコード") : uiText("リカバリーコード")}</div>
+        <p className="mt-1 text-xs text-amber-800">{uiText("MFAアプリを使えない時のログインに使います。この一時表示を確認後に破棄してください。")}</p>
       </div>
       <div className="grid gap-2 sm:grid-cols-2">
         {codes.map((code) => (
@@ -289,26 +290,26 @@ function RecoveryCodesBlock({ codes, recoveryOnly }: { codes: readonly string[];
   );
 }
 
-function mfaPolicyLabel(mode: string) {
+function mfaPolicyLabel(mode: string, uiText: UICopy = japaneseCopy) {
   switch (mode) {
     case "totp":
       return "TOTP";
     case "passkey":
       return "Passkey";
     case "disabled":
-      return "無効";
+      return uiText("無効");
     default:
       return mode || "-";
   }
 }
 
-function mfaUnavailableMessage(status?: MFAStatus) {
+function mfaUnavailableMessage(status?: MFAStatus, uiText: UICopy = japaneseCopy) {
   if (!status?.available) {
-    return "MFAストアが構成されていないため、TOTP登録は利用できません。";
+    return uiText("MFAストアが構成されていないため、TOTP登録は利用できません。");
   }
   if (status.policy_mode === "passkey") {
-    return "現在のMFA方式はPasskeyです。Passkey欄から端末やセキュリティキーを登録してください。";
+    return uiText("現在のMFA方式はPasskeyです。Passkey欄から端末やセキュリティキーを登録してください。");
   }
-  if (status.policy_mode === "disabled") return "このアカウントでは任意でTOTPを登録できます。登録後のログインでは2FAが必要になります。";
-  return "現在のMFAポリシーではTOTP登録を利用できません。";
+  if (status.policy_mode === "disabled") return uiText("このアカウントでは任意でTOTPを登録できます。登録後のログインでは2FAが必要になります。");
+  return uiText("現在のMFAポリシーではTOTP登録を利用できません。");
 }

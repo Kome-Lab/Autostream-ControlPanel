@@ -1,4 +1,6 @@
 "use client";
+import { japaneseCopy, type UICopy } from "@/lib/i18n/ui-v2/copy";
+
 
 import { formatDateTimeInTimeZone } from "@/lib/timezone";
 
@@ -11,31 +13,31 @@ export function formatDateTime(value: string, timezone?: string) {
   return formatDateTimeInTimeZone(value, timezone, { dateStyle: "short", timeStyle: "short" });
 }
 
-export function accountStatusLabel(status?: string) {
+export function accountStatusLabel(status?: string, uiText: UICopy = japaneseCopy) {
   switch (status) {
     case "active":
-      return "有効";
+      return uiText("有効");
     case "locked":
-      return "ロック中";
+      return uiText("ロック中");
     case "disabled":
-      return "無効";
+      return uiText("無効");
     case "pending_password_change":
-      return "初回設定待ち";
+      return uiText("初回設定待ち");
     default:
-      return status || "確認中";
+      return status || uiText("確認中");
   }
 }
 
-export function roleLabel(role: string) {
+export function roleLabel(role: string, uiText: UICopy = japaneseCopy) {
   switch (role) {
     case "super_admin":
-      return "システム管理者";
+      return uiText("システム管理者");
     case "admin":
-      return "管理者";
+      return uiText("管理者");
     case "operator":
-      return "配信担当者";
+      return uiText("配信担当者");
     case "viewer":
-      return "閲覧者";
+      return uiText("閲覧者");
     default:
       return role.replaceAll("_", " ");
   }

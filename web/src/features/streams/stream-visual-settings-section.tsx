@@ -1,5 +1,10 @@
 "use client";
+import { fixedPresentationText } from "@/lib/i18n/ui-v2/presentation-copy";
+import { useUICopy } from "@/lib/i18n/ui-v2/use-ui-copy";
+import { japaneseCopy, type UICopy } from "@/lib/i18n/ui-v2/copy";
 
+
+import { useExistingDraft } from "@/components/forms/draft-exit";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ImageUp, LoaderCircle, RefreshCcw, Save } from "lucide-react";
 
@@ -39,6 +44,7 @@ export type StreamCreateVisualState = Readonly<{
   extension: Record<string, unknown>;
   ready: boolean;
   discordTargetReady: boolean;
+  acknowledgeSubmitted?: () => void;
 }>;
 
 type Props = {
@@ -48,6 +54,7 @@ type Props = {
 };
 
 export function StreamVisualSettingsSection({ stream, canUpdate, onCreateState }: Props) {
+  const uiText = useUICopy();
   const { locale, t } = useI18n();
   const queryClient = useQueryClient();
   const editing = Boolean(stream);
@@ -72,6 +79,11 @@ export function StreamVisualSettingsSection({ stream, canUpdate, onCreateState }
   const [saving, setSaving] = useState(false);
   const [needsRefresh, setNeedsRefresh] = useState(false);
   const [message, setMessage] = useState("");
+  // Comparison markers belong to this visual owner; they hold no input or upload credentials.
+  const [createRevision, setCreateRevision] = useState(0);
+  const currentCreateRevision = useRef(0);
+  const savedCreateRevision = useRef(0);
+  const draftExit = useExistingDraft(() => editing ? dirtySections.size > 0 : currentCreateRevision.current !== savedCreateRevision.current, Boolean(uploading) || saving);
   const initialized = useRef(false);
   const previewOwner = useMemo(() => createStreamVisualPreviewOwner((url) => URL.revokeObjectURL(url)), []);
 
@@ -86,12 +98,17 @@ export function StreamVisualSettingsSection({ stream, canUpdate, onCreateState }
   const createState = useMemo<StreamCreateVisualState>(() => ({
     extension: buildStreamCreateVisualExtension(draft),
     ready: validation.ready,
+    acknowledgeSubmitted: () => {
+      if (editing || currentCreateRevision.current !== createRevision) return;
+      savedCreateRevision.current = createRevision;
+      setDirtySections(new Set());
+    },
     discordTargetReady: draft.discordTargetMode === "preset"
       ? draft.discordTargetPresetID.trim() !== "" && draft.discordTargetPresetRevision > 0
       : draft.discordTargetMode === "manual"
         ? [draft.discordGuildID, draft.discordTextChannelID, draft.discordVoiceChannelID].every((value) => value.trim() !== "")
         : false,
-  }), [draft, validation.ready]);
+  }), [createRevision, draft, editing, validation.ready]);
   useEffect(() => { if (!editing) onCreateState(createState); }, [createState, editing, onCreateState]);
 
   const discordRows = useMemo(() => normalizeRows(discordPresets.data), [discordPresets.data]);
@@ -115,9 +132,10 @@ export function StreamVisualSettingsSection({ stream, canUpdate, onCreateState }
     mutate: (request) => apiPut<StreamVisualSettings>(`/streams/${encodeURIComponent(stream?.id || "")}/visual-settings`, request),
   }), [queryClient, queryKey, stream?.id]);
   const update = useCallback((section: StreamVisualSection, fields: Partial<StreamVisualDraft>) => {
+    if (!editing) { currentCreateRevision.current += 1; setCreateRevision(currentCreateRevision.current); }
     setDirtySections((current) => new Set([...current, section]));
     setDraft((current) => ({ ...current, ...fields }));
-  }, []);
+  }, [editing]);
 
   const upload = async (kind: "background" | "cover", file?: File) => {
     if (!file || uploading) return;
@@ -163,7 +181,7 @@ export function StreamVisualSettingsSection({ stream, canUpdate, onCreateState }
       setNeedsRefresh(true);
       setMessage(t(result.error.messageKey));
     } else {
-      setMessage(visualBlockedMessage(result.reason, locale));
+      setMessage(visualBlockedMessage(result.reason, locale, uiText));
     }
   };
   const refresh = async () => {
@@ -211,10 +229,10 @@ export function StreamVisualSettingsSection({ stream, canUpdate, onCreateState }
           <p className="text-xs text-muted-foreground">Base / Worker scene → Video Cover → Watermark → Encode → tee</p>
         </VisualGroup>
       </div>
-      {[...validation.issues, ...capabilityWarnings].map((issue) => <p key={issue} role="status" className="rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900 dark:bg-amber-950/30 dark:text-amber-200">{issue}</p>)}
+      {[...validation.issues, ...capabilityWarnings].map((issue) => <p key={issue} role="status" className="rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900 dark:bg-amber-950/30 dark:text-amber-200">{fixedPresentationText(issue, uiText)}</p>)}
       {message ? <p aria-live="polite" className="text-sm text-muted-foreground">{message}</p> : null}
       {editing ? <div className="flex flex-wrap justify-end gap-2">
-        <Button type="button" variant="outline" onClick={() => void refresh()} disabled={visual.isFetching}><RefreshCcw className="size-4" />{locale === "ja" ? "最新設定を再読込" : "Reload latest"}</Button>
+        <Button type="button" variant="outline" onClick={() => { if (draftExit) draftExit.request(() => void refresh()); else void refresh(); }} disabled={visual.isFetching}><RefreshCcw className="size-4" />{locale === "ja" ? "最新設定を再読込" : "Reload latest"}</Button>
         <ConfirmationDialogFrame trigger={<Button type="button" disabled={saveDisabled}><Save className="size-4" />{locale === "ja" ? "ビジュアル設定を保存" : "Save visual settings"}</Button>} title={locale === "ja" ? "ビジュアル設定を保存" : "Save visual settings"} description={locale === "ja" ? "開始時のシーン、Discord snapshot、Cover設定が変わります。現在の配信中には適用されません。" : "This changes the next-start scene, Discord snapshot, and cover settings; it does not alter the active stream."} cancelLabel={locale === "ja" ? "キャンセル" : "Cancel"} actionLabel={locale === "ja" ? "保存" : "Save"} actionClosesDialog onConfirm={() => void save()} />
       </div> : null}
     </fieldset>
@@ -239,7 +257,7 @@ function visualStateSnapshot(queryClient: ReturnType<typeof useQueryClient>, key
   const freshness = state?.fetchStatus === "fetching" ? "refreshing" : state?.status === "error" && current ? "stale" : state?.status === "success" && current ? "fresh" : "unavailable";
   return current ? { kind: "ready", freshness, revision: current.revision, fingerprint: visualSettingsFingerprint(current) } : { kind: "unknown", freshness };
 }
-function visualBlockedMessage(reason: string, locale: "ja" | "en") {
+function visualBlockedMessage(reason: string, locale: "ja" | "en", uiText: UICopy = japaneseCopy) {
   if (locale === "en") return reason === "authority-changed" ? "The settings changed. Reload before saving." : reason === "reconciliation-required" ? "Reload the latest state before another save." : "The visual settings cannot be saved with the current authority state.";
-  return reason === "authority-changed" ? "設定が変わりました。再読込してから保存してください。" : reason === "reconciliation-required" ? "再操作せず、最新状態を再読込してください。" : "現在の権限または状態ではビジュアル設定を保存できません。";
+  return reason === "authority-changed" ? uiText("設定が変わりました。再読込してから保存してください。") : reason === "reconciliation-required" ? uiText("再操作せず、最新状態を再読込してください。") : uiText("現在の権限または状態ではビジュアル設定を保存できません。");
 }

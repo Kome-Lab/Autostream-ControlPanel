@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "protected_fixture_sha256": "cd9a25bad28720244b8c9b9ec8c5ed5c08df1914800fd6b7831f5efcd3459ae8",
+  "protectedDeltas": [
+    {
+      "path": "web/src/components/shell/use-shell-session-guard.ts",
+      "original_sha256": "07f5adae4bfc8708d31a3bca980a98050bd1668ada6e66fb3c1ec849f2b93347",
+      "transform": "session-redirect-notices-only",
+      "reason": "Notify immediately before the four existing redirect calls; retain every predicate and existing statement."
+    },
+    {
+      "path": "web/tests/helpers/browser-harness.mts",
+      "original_sha256": "bd45673d96e20aaea5927fa6b57c1c4d1445c36bb515e8e14758554bfa5ab5de",
+      "transform": "add-closed-press-tab-only",
+      "reason": "One closed Tab direction API; all existing class members and native-key contracts remain fixed."
+    }
+  ],
+  "runnerTypeDelta": {
+    "path": "web/tests/helpers/run-ui-foundation-browser.mts",
+    "original_sha256": "31eaadac62a427fedb59be8fca91b23b995c7cf5d93da014159b634ad221d3e3",
+    "transform": "capture-narrowed-result-file-only"
+  }
+}

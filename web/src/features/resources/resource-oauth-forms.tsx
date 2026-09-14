@@ -1,4 +1,10 @@
 "use client";
+import { fixedPresentationText } from "@/lib/i18n/ui-v2/presentation-copy";
+
+import { useUICopy } from "@/lib/i18n/ui-v2/use-ui-copy";
+
+
+import { useNonSecretDraft } from "@/components/forms/draft-exit";
 
 import { useMemo, useState } from "react";
 import { Textarea } from "@/components/ui/textarea";
@@ -9,6 +15,7 @@ import { rowString, rowValue, stringListSetting, splitList, firstNonEmpty } from
 import { SelectField, TextField, Field, SwitchField, CheckboxList, FormActions } from "./resource-input-fields";
 
 export function OAuthProviderForm({ disabled, submit, initial, submitLabel }: { disabled: boolean; submit: SubmitResource; initial?: ResourceRow; submitLabel?: string }) {
+  const uiText = useUICopy();
   const roles = useResourceOptions("/roles", ["id"], ["name", "id"], ["permissions"]);
   const defaultRedirectURI = typeof window === "undefined" ? "https://control.example.jp/auth/oauth/callback" : `${window.location.origin}/auth/oauth/callback`;
   const [providerType, setProviderType] = useState(() => rowString(initial || {}, ["provider_type"]) || "google");
@@ -22,6 +29,8 @@ export function OAuthProviderForm({ disabled, submit, initial, submitLabel }: { 
   const [defaultRoleIDs, setDefaultRoleIDs] = useState<string[]>(() => stringListSetting(rowValue(initial || {}, ["default_role_ids"])));
   const editing = Boolean(initial);
   const secretConfigured = rowValue(initial || {}, ["client_secret_configured"]) === true;
+
+  useNonSecretDraft([providerType, name, enabled, clientID, redirectURI, allowedDomains, autoProvision, defaultRoleIDs]);
 
   return (
     <form
@@ -46,7 +55,7 @@ export function OAuthProviderForm({ disabled, submit, initial, submitLabel }: { 
     >
       <div className="grid gap-3 md:grid-cols-2">
         <SelectField
-          label="プロバイダ"
+          label={uiText("プロバイダ")}
           value={providerType}
           onChange={setProviderType}
           options={[
@@ -55,33 +64,34 @@ export function OAuthProviderForm({ disabled, submit, initial, submitLabel }: { 
             { value: "discord", label: "Discord" },
           ]}
         />
-        <TextField label="表示名" value={name} onChange={setName} required />
+        <TextField label={uiText("表示名")} value={name} onChange={setName} required />
         <TextField label="Client ID" value={clientID} onChange={setClientID} required />
-        <TextField label="Client Secret" value={clientSecret} onChange={setClientSecret} type="password" description={editing ? (secretConfigured ? "空欄のまま更新すると現在のClient Secretを保持します。差し替える時だけ入力してください。" : "保存済みClient Secretはありません。") : "入力値は保存後に再表示しません。"} />
+        <TextField label="Client Secret" value={clientSecret} onChange={setClientSecret} type="password" description={editing ? (secretConfigured ? uiText("空欄のまま更新すると現在のClient Secretを保持します。差し替える時だけ入力してください。") : uiText("保存済みClient Secretはありません。")) : uiText("入力値は保存後に再表示しません。")} />
         <TextField label="Redirect URI" value={redirectURI} onChange={setRedirectURI} required />
       </div>
       <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
-        <div className="font-medium">Google Cloud Consoleに登録するリダイレクトURI</div>
-        <p className="mt-1 text-xs text-amber-800">ログイン、OAuthアカウント連携、YouTube/Drive接続は保存済みのRedirect URIを共用します。Google OAuthクライアントの「承認済みのリダイレクトURI」に下の値を登録してください。</p>
+        <div className="font-medium">{uiText("Google Cloud Consoleに登録するリダイレクトURI")}</div>
+        <p className="mt-1 text-xs text-amber-800">{uiText("ログイン、OAuthアカウント連携、YouTube/Drive接続は保存済みのRedirect URIを共用します。Google OAuthクライアントの「承認済みのリダイレクトURI」に下の値を登録してください。")}</p>
         <div className="mt-2 space-y-1 font-mono text-xs">
           <div className="rounded bg-white px-2 py-1">{redirectURI}</div>
         </div>
-        <p className="mt-2 text-xs text-amber-800">`redirect_uri_mismatch` が出る場合は、Google側の値とここに保存した値がスキーム、ホスト、パスまで完全一致しているか確認してください。</p>
+        <p className="mt-2 text-xs text-amber-800">{uiText("`redirect_uri_mismatch` が出る場合は、Google側の値とここに保存した値がスキーム、ホスト、パスまで完全一致しているか確認してください。")}</p>
       </div>
-      <Field label="許可ドメイン" description="複数ある場合は改行またはカンマで区切ります。空なら制限しません。">
+      <Field label={uiText("許可ドメイン")} description={uiText("複数ある場合は改行またはカンマで区切ります。空なら制限しません。")}>
         <Textarea value={allowedDomains} onChange={(event) => setAllowedDomains(event.target.value)} className="min-h-20" placeholder="example.jp" />
       </Field>
       <div className="grid gap-3 md:grid-cols-2">
-        <SwitchField label="有効化" checked={enabled} onCheckedChange={setEnabled} />
-        <SwitchField label="初回ログイン時に自動ユーザー作成" checked={autoProvision} onCheckedChange={setAutoProvision} />
+        <SwitchField label={uiText("有効化")} checked={enabled} onCheckedChange={setEnabled} />
+        <SwitchField label={uiText("初回ログイン時に自動ユーザー作成")} checked={autoProvision} onCheckedChange={setAutoProvision} />
       </div>
-      {autoProvision ? <CheckboxList label="自動作成ユーザーのロール" values={defaultRoleIDs} onChange={setDefaultRoleIDs} items={roles} emptyText="ロールがありません。" /> : null}
+      {autoProvision ? <CheckboxList label={uiText("自動作成ユーザーのロール")} values={defaultRoleIDs} onChange={setDefaultRoleIDs} items={roles} emptyText={uiText("ロールがありません。")} /> : null}
       <FormActions label={submitLabel} disabled={disabled || (autoProvision && defaultRoleIDs.length === 0)} />
     </form>
   );
 }
 
 export function OAuthAccountConnectForm({ disabled, submit }: { disabled: boolean; submit: SubmitResource }) {
+  const uiText = useUICopy();
   const providerRows = useResourceRows("/integrations/oauth-providers");
   const providerOptions = useMemo(
     () =>
@@ -115,33 +125,34 @@ export function OAuthAccountConnectForm({ disabled, submit }: { disabled: boolea
           {
             path: "/integrations/oauth-accounts/start",
             invalidatePath: "/integrations/oauth-accounts",
-            successMessage: "OAuth認可画面へ移動します。",
+            successMessage: uiText("OAuth認可画面へ移動します。"),
             redirectToAuthorizationURL: true,
           },
         );
       }}
     >
       <div className="grid gap-3 md:grid-cols-2">
-        <SelectField label="Google OAuthプロバイダ" value={effectiveProviderID} onChange={setProviderID} options={[{ value: noneValue, label: "未選択" }, ...providerOptions]} />
-        <TextField label="アカウント表示名" value={accountLabel} onChange={setAccountLabel} required />
+        <SelectField label={uiText("Google OAuthプロバイダ")} value={effectiveProviderID} onChange={setProviderID} options={[{ value: noneValue, label: uiText("未選択") }, ...providerOptions]} />
+        <TextField label={uiText("アカウント表示名")} value={accountLabel} onChange={setAccountLabel} required />
         <SelectField
-          label="接続用途"
+          label={uiText("接続用途")}
           value={accountPurpose}
           onChange={setAccountPurpose}
           options={[
-            { value: "drive_youtube", label: "YouTube Live・Drive保存" },
-            { value: "youtube", label: "YouTube Liveのみ" },
-            { value: "drive", label: "Drive保存のみ" },
+            { value: "drive_youtube", label: uiText("YouTube Live・Drive保存") },
+            { value: "youtube", label: uiText("YouTube Liveのみ") },
+            { value: "drive", label: uiText("Drive保存のみ") },
           ]}
         />
       </div>
-      {providerOptions.length === 0 ? <p className="text-sm text-muted-foreground">先にOAuthログインプロバイダでGoogleプロバイダを登録し、有効化してください。</p> : null}
-      <FormActions label="OAuth接続を開始" disabled={disabled || effectiveProviderID === noneValue} />
+      {providerOptions.length === 0 ? <p className="text-sm text-muted-foreground">{uiText("先にOAuthログインプロバイダでGoogleプロバイダを登録し、有効化してください。")}</p> : null}
+      <FormActions label={uiText("OAuth接続を開始")} disabled={disabled || effectiveProviderID === noneValue} />
     </form>
   );
 }
 
 export function OAuthAccountRenameForm({ disabled, submit, initial, submitLabel }: { disabled: boolean; submit: SubmitResource; initial: ResourceRow; submitLabel?: string }) {
+  const uiText = useUICopy();
   const [accountLabel, setAccountLabel] = useState(() => oauthAccountConfiguredName(initial));
   const providerType = rowString(initial, ["provider_type"]);
   const email = rowString(initial, ["email"]);
@@ -155,13 +166,13 @@ export function OAuthAccountRenameForm({ disabled, submit, initial, submitLabel 
       }}
     >
       <div className="grid gap-3 md:grid-cols-2">
-        <TextField label="アカウント表示名" value={accountLabel} onChange={setAccountLabel} placeholder="例: 広報 YouTube" description="配信枠や保存先の選択肢に表示する、識別しやすい名前です。" required />
+        <TextField label={uiText("アカウント表示名")} value={accountLabel} onChange={setAccountLabel} placeholder={uiText("例: 広報 YouTube")} description={uiText("配信枠や保存先の選択肢に表示する、識別しやすい名前です。")} required />
         <div className="rounded-md border bg-muted/20 px-3 py-2 text-sm">
-          <div className="text-muted-foreground">接続情報</div>
+          <div className="text-muted-foreground">{uiText("接続情報")}</div>
           <div className="mt-1 space-y-1">
-            <div>{providerType || "プロバイダ未設定"}</div>
-            <div>{oauthAccountPurposeLabel(initial)}</div>
-            <div className="truncate text-muted-foreground">{email || "メール未取得"}</div>
+            <div>{providerType || uiText("プロバイダ未設定")}</div>
+            <div>{fixedPresentationText(oauthAccountPurposeLabel(initial), uiText)}</div>
+            <div className="truncate text-muted-foreground">{email || uiText("メール未取得")}</div>
           </div>
         </div>
       </div>

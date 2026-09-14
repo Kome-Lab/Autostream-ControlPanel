@@ -1,8 +1,13 @@
 "use client";
+import { useUICopy } from "@/lib/i18n/ui-v2/use-ui-copy";
 
+
+import { useDraftExit, useNonSecretDraft, useExistingDraft } from "@/components/forms/draft-exit";
 import { useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, KeyRound, RotateCw, Server } from "lucide-react";
+import { PageHeader } from "@/components/shell/page-header";
+import { NodeWorkspaceNavigation } from "./node-workspace-navigation";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -36,7 +41,8 @@ export function NodeRegistrationView({ mode = "registration" }: { mode?: NodeReg
 }
 
 function LegacyNodeRegistrationView({ mode = "registration" }: { mode?: NodeRegistrationViewMode }) {
-  const { t } = useI18n();
+  const uiText = useUICopy();
+  const { t, locale } = useI18n();
   const currentUser = useCurrentUser();
   const appSettings = useAppSettings();
   const registeredNodes = useNodes();
@@ -109,8 +115,12 @@ function LegacyNodeRegistrationView({ mode = "registration" }: { mode?: NodeRegi
     ]);
   };
   const { createToken, loadConfiguration, regenerateConfigureToken, rotateRuntimeToken, updateNode, deleteNode } = useNodeRegistrationMutations({
-    registrationDraft, invalidateNodeQueries, setConfiguration, setCreateOpen, setEditingNode,
+    registrationDraft, invalidateNodeQueries, setConfiguration, setCreateOpen: (open) => { if (!open) createDraft.saved(); setCreateOpen(open); }, setEditingNode,
   });
+  const createDraftExit = useDraftExit({ enabled: createOpen && canCreateNode, pending: createToken.isPending });
+  const createDraft = useNonSecretDraft([nodeType, nodeID, name, host, port, sslEnabled, executionHostID, description, allowRuntimeSecrets, allowRemediation], createDraftExit);
+  const editDraftExit = useDraftExit({ enabled: editingNode !== null && allowed, pending: updateNode.isPending });
+  useExistingDraft(Boolean(editingNode) && JSON.stringify(editForm) !== JSON.stringify(editingNode ? nodeEditDefaults(editingNode) : editForm), updateNode.isPending, editDraftExit);
   const createError = nodeRegistrationErrorMessage(createToken.error);
   const actionError = nodeRegistrationErrorMessage(updateNode.error || deleteNode.error || loadConfiguration.error || regenerateConfigureToken.error || rotateRuntimeToken.error);
   const registeredRows = registeredNodes.data || [];
@@ -138,8 +148,7 @@ function LegacyNodeRegistrationView({ mode = "registration" }: { mode?: NodeRegi
   };
 
   const openEditNode = (node: WorkerNode) => {
-    setEditingNode(node);
-    setEditForm(nodeEditDefaults(node));
+    editDraftExit.request(() => { setEditingNode(node); setEditForm(nodeEditDefaults(node)); });
   };
 
   const submitEditNode = () => {
@@ -163,24 +172,27 @@ function LegacyNodeRegistrationView({ mode = "registration" }: { mode?: NodeRegi
   const registeredColumns = createRegisteredNodeColumns({
     t, copyValue, copied, timezone, allowed, canRevokeRuntimeToken, canResolveRuntimeSecrets, canExecuteSystemUpdates, canDeleteNode,
     actions: { loadConfiguration, regenerateConfigureToken, rotateRuntimeToken, deleteNode }, openEditNode,
-  });
+  }, uiText);
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-5" data-screen-family={mode === "registered" ? "registered-nodes" : "nodes"}>
+      <PageHeader title={mode === "registered" ? t("registeredNodes") : t("nodeRegistration")}
+        description={locale === "ja" ? "登録、接続、担当配信、更新処理を分けて確認します。" : "Review registration, connectivity, stream assignment and updates separately."} />
+      <NodeWorkspaceNavigation active={mode === "registered" ? "registered" : "registration"} canRegister={allowed}
+        canOperate={allowed || hasPermission(currentUser.data, "workers.read") || hasPermission(currentUser.data, "service_health.read")} />
       {showRegistration ? (
         <div className="flex justify-end">
           <Button onClick={() => setCreateOpen(true)} disabled={!allowed}>
             <Server className="size-4" />
-            Nodeを新規作成
-          </Button>
+            {uiText("Nodeを新規作成")}</Button>
         </div>
       ) : null}
       {showRegistration ? (
-        <Dialog open={createOpen} onOpenChange={setCreateOpen}>
+        <Dialog open={createOpen} onOpenChange={(open) => { if (open) setCreateOpen(true); else createDraftExit.request(() => setCreateOpen(false)); }}>
           <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
             <DialogHeader>
               <DialogTitle>{t("nodeRegistration")}</DialogTitle>
-              <DialogDescription>PanelでNodeを作成し、Node Agentへ配置する設定ファイルを発行します。</DialogDescription>
+              <DialogDescription>{uiText("PanelでNodeを作成し、Node Agentへ配置する設定ファイルを発行します。")}</DialogDescription>
             </DialogHeader>
             <div className="space-y-4">
           <div className="grid gap-2">
@@ -213,8 +225,7 @@ function LegacyNodeRegistrationView({ mode = "registration" }: { mode?: NodeRegi
                 <label className="text-sm font-medium">Execution Host ID</label>
                 <Input value={executionHostID} onChange={(event) => setExecutionHostID(event.target.value)} />
                 <p className="text-xs text-muted-foreground">
-                  物理ホストごとに一意のIDです。Host AgentはControl Panelへ外向き接続するため、APIポート・SSL・SSH設定は不要です。
-                </p>
+                  {uiText("物理ホストごとに一意のIDです。Host AgentはControl Panelへ外向き接続するため、APIポート・SSL・SSH設定は不要です。")}</p>
               </div>
             </div>
           ) : null}
@@ -232,29 +243,27 @@ function LegacyNodeRegistrationView({ mode = "registration" }: { mode?: NodeRegi
               </div>
               <label className="flex items-center gap-2 text-sm">
                 <Checkbox checked={sslEnabled} onCheckedChange={(value) => setSslEnabled(value === true)} />
-                SSLを有効化してHTTPSを使用
-              </label>
+                {uiText("SSLを有効化してHTTPSを使用")}</label>
               <div className="rounded-md border bg-muted/40 p-3 text-sm">
                 <div className="font-medium">Node Agent API URL</div>
-                <div className="mt-1 break-all text-muted-foreground">{nodeApiUrl || "Hostと1024〜65535のPortを入力してください"}</div>
+                <div className="mt-1 break-all text-muted-foreground">{nodeApiUrl || uiText("Hostと1024〜65535のPortを入力してください")}</div>
               </div>
             </>
           ) : (
             <div className="rounded-md border border-blue-500/30 bg-blue-500/10 p-3 text-sm text-muted-foreground">
-              受信listenerは作成しません。登録・Heartbeat・Policy取得はControl Panelの既存HTTPS APIを使用します。
-            </div>
+              {uiText("受信listenerは作成しません。登録・Heartbeat・Policy取得はControl Panelの既存HTTPS APIを使用します。")}</div>
           )}
           <div className="grid gap-2">
-            <label className="text-sm font-medium">説明</label>
+            <label className="text-sm font-medium">{uiText("説明")}</label>
             <Textarea value={description} onChange={(event) => setDescription(event.target.value)} rows={3} />
           </div>
           <div className="grid gap-2 rounded-md border bg-muted/30 p-3 text-sm">
-            <div className="font-medium">Node Agentが自動報告する項目</div>
-            <div className="text-muted-foreground">バージョン、OS、ArchitectureはConfigure実行時または起動後のHeartbeatで報告されます。CapabilityとメトリクスはHeartbeatで更新されます。</div>
+            <div className="font-medium">{uiText("Node Agentが自動報告する項目")}</div>
+            <div className="text-muted-foreground">{uiText("バージョン、OS、ArchitectureはConfigure実行時または起動後のHeartbeatで報告されます。CapabilityとメトリクスはHeartbeatで更新されます。")}</div>
           </div>
           <label className="flex items-center gap-2 text-sm">
             <Checkbox checked={runtimeSecretsRequired || allowRuntimeSecrets} disabled={runtimeSecretsRequired} onCheckedChange={(value) => setAllowRuntimeSecrets(value === true)} />
-            {runtimeSecretsRequired ? "実行時シークレットを自動付与（Encoder / Recorder必須）" : t("runtimeSecrets")}
+            {runtimeSecretsRequired ? uiText("実行時シークレットを自動付与（Encoder / Recorder必須）") : t("runtimeSecrets")}
           </label>
           <label className="flex items-center gap-2 text-sm">
             <Checkbox checked={allowRemediation} onCheckedChange={(value) => setAllowRemediation(value === true)} />
@@ -262,17 +271,17 @@ function LegacyNodeRegistrationView({ mode = "registration" }: { mode?: NodeRegi
           </label>
           <Button className="w-full" disabled={!canCreateNode || !createFormValid || createToken.isPending} onClick={() => createToken.mutate()}>
             <KeyRound className="size-4" />
-            {createToken.isPending ? "Node設定を発行中..." : "Nodeを作成して設定を発行"}
+            {createToken.isPending ? uiText("Node設定を発行中...") : uiText("Nodeを作成して設定を発行")}
           </Button>
           {!allowed ? <p className="text-sm text-red-600">{t("roleLimited")}</p> : null}
-          {allowed && createIncludesManagedSecret && !canResolveRuntimeSecrets ? <p className="text-sm text-red-600">Worker / Encoderの署名鍵または実行時シークレットを発行するには、シークレット更新権限が必要です。</p> : null}
-          {allowed && nodeType === "update_agent" && !canResolveRuntimeSecrets ? <p className="text-sm text-red-600">Updaterの登録とRuntime Tokenの発行には、secrets.update 権限が必要です。</p> : null}
-          {allowed && nodeType === "update_agent" && !canExecuteSystemUpdates ? <p className="text-sm text-red-600">Updaterの登録と更新用scopeの発行には、system_updates.execute 権限が必要です。</p> : null}
+          {allowed && createIncludesManagedSecret && !canResolveRuntimeSecrets ? <p className="text-sm text-red-600">{uiText("Worker / Encoderの署名鍵または実行時シークレットを発行するには、シークレット更新権限が必要です。")}</p> : null}
+          {allowed && nodeType === "update_agent" && !canResolveRuntimeSecrets ? <p className="text-sm text-red-600">{uiText("Updaterの登録とRuntime Tokenの発行には、secrets.update 権限が必要です。")}</p> : null}
+          {allowed && nodeType === "update_agent" && !canExecuteSystemUpdates ? <p className="text-sm text-red-600">{uiText("Updaterの登録と更新用scopeの発行には、system_updates.execute 権限が必要です。")}</p> : null}
           {createError ? (
             <div className="flex gap-2 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700" role="alert" aria-live="polite">
               <AlertCircle className="mt-0.5 size-4 shrink-0" />
               <div>
-                <div className="font-medium">Node設定を発行できませんでした</div>
+                <div className="font-medium">{uiText("Node設定を発行できませんでした")}</div>
                 <div className="mt-1">{createError}</div>
               </div>
             </div>
@@ -295,12 +304,12 @@ function LegacyNodeRegistrationView({ mode = "registration" }: { mode?: NodeRegi
         <CardHeader>
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div>
-              <CardTitle>登録済みNode</CardTitle>
-              <CardDescription>作成済みNode、Configure実行状況、最終Heartbeatを確認できます。</CardDescription>
+              <CardTitle>{uiText("登録済みNode")}</CardTitle>
+              <CardDescription>{uiText("作成済みNode、Configure実行状況、最終Heartbeatを確認できます。")}</CardDescription>
             </div>
             <Button variant="outline" size="sm" onClick={() => registeredNodes.refetch()} disabled={registeredNodes.isFetching}>
               <RotateCw className="size-4" />
-              {registeredNodes.isFetching ? "更新中" : "更新"}
+              {registeredNodes.isFetching ? uiText("更新中") : uiText("更新")}
             </Button>
           </div>
         </CardHeader>
@@ -310,29 +319,28 @@ function LegacyNodeRegistrationView({ mode = "registration" }: { mode?: NodeRegi
           ) : null}
           {createToken.data?.node ? (
             <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800" role="status">
-              {createToken.data.node.service_name} を登録しました。一覧に表示されない場合は「更新」を押してください。
-            </div>
+              {createToken.data.node.service_name} {uiText("を登録しました。一覧に表示されない場合は「更新」を押してください。")}</div>
           ) : null}
           {actionError ? (
             <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700" role="alert" aria-live="polite">
               {actionError}
             </div>
           ) : null}
-          <div className="text-sm text-muted-foreground">登録済み: {registeredRows.length} Node</div>
+          <div className="text-sm text-muted-foreground">{uiText("登録済み:")}{registeredRows.length} Node</div>
           <div className="grid gap-4">
             <RegisteredNodeGroup
-              title="Nodeサービス"
-              description="Worker、Encoder / Recorder、Discord BOT、Observabilityの登録・稼働情報"
+              title={uiText("Nodeサービス")}
+              description={uiText("Worker、Encoder / Recorder、Discord BOT、Observabilityの登録・稼働情報")}
               rows={operationalRegisteredRows}
               columns={registeredColumns}
             />
             {updaterRegisteredRows.length > 0 ? (
               <RegisteredNodeGroup
                 title="Updater / Host Agent"
-                description="ホスト単位の更新専用。通常のNodeサービスとは別の管理経路です。"
+                description={uiText("ホスト単位の更新専用。通常のNodeサービスとは別の管理経路です。")}
                 rows={updaterRegisteredRows}
                 columns={registeredColumns}
-                filterPlaceholder="Updater名、Host ID、状態で検索"
+                filterPlaceholder={uiText("Updater名、Host ID、状態で検索")}
               />
             ) : null}
           </div>
@@ -341,7 +349,7 @@ function LegacyNodeRegistrationView({ mode = "registration" }: { mode?: NodeRegi
       ) : null}
       {showRegistered ? (
       <NodeEditDialog
-        editingNode={editingNode} setEditingNode={setEditingNode} editForm={editForm} setEditForm={setEditForm}
+        editingNode={editingNode} setEditingNode={(node) => editDraftExit.request(() => setEditingNode(node))} editForm={editForm} setEditForm={setEditForm}
         editingPullHostAgent={editingPullHostAgent} allowed={allowed} editFormValid={editFormValid}
         updatePending={updateNode.isPending} submitEditNode={submitEditNode} t={t}
       />

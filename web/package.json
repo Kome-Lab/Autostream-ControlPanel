@@ -6,6 +6,10 @@
     "lint": "eslint . --max-warnings=0",
     "typecheck": "node ./node_modules/@typescript/native/bin/tsc --noEmit",
     "test:i18n": "node scripts/test-i18n.mjs",
+    "test:ui-regression:components": "node --no-warnings --test --test-concurrency=1 tests/ui-regression/table-components.test.mts tests/ui-regression/form-components.test.mts tests/ui-regression/table-state.test.mts tests/ui-regression/table-location.test.mts tests/ui-regression/dashboard-components.test.mts tests/ui-regression/resource-components.test.mts tests/ui-regression/draft-exit.test.mts tests/ui-regression/stream-detail.test.mts tests/ui-regression/current-copy.test.mts tests/ui-regression/current-bindings.test.mts tests/ui-regression/draft-flow.test.mts",
+    "test:ui-regression:parity": "node --no-warnings --test tests/ui-regression/parity.test.mts",
+    "test:ui-regression:browser-contracts": "node --no-warnings --test --test-concurrency=1 tests/ui-regression/browser-contracts.test.mts tests/ui-regression/comparison-core.test.mts tests/ui-regression/fetch-diagnostics-core.test.mts tests/ui-regression/capture-contracts.test.mts tests/ui-regression/observer-regressions.test.mts tests/ui-regression/state-input-regressions.test.mts tests/ui-regression/effect-regressions.test.mts tests/ui-regression/form-content-driver.test.mts tests/ui-regression/keyboard-navigation.test.mts",
+    "test:ui-regression:browser": "node --no-warnings tests/ui-regression/run-browser.mts",
     "test:metrics": "node --no-warnings --test tests/metric-classification.test.mts",
     "test:oauth-account": "node --no-warnings --test tests/oauth-account.test.mts",
     "test:auth-redirect": "node --no-warnings --test tests/post-login-redirect.test.mts",
@@ -30,7 +34,9 @@
     "test:bundle6-witnesses": "node --no-warnings --test tests/bundle6-witness-gate.test.mts && node --no-warnings tests/helpers/run-bundle6-witnesses.mts",
     "test:stream-create": "node --no-warnings --test tests/stream-create.test.mts",
     "test:preview": "node --no-warnings --test tests/stream-preview.test.mts",
-    "test:stream-regressions": "node --no-warnings --test tests/stream-create.test.mts tests/stream-preview.test.mts tests/archive-artifact-refresh.test.mts tests/resource-page-observability-actions.test.mts tests/stream-static-relay-recovery.test.mts tests/youtube-output-static-relay.test.mts tests/navigation-section.test.mts tests/service-health.test.mts"
+    "test:stream-regressions": "node --no-warnings --test tests/stream-create.test.mts tests/stream-preview.test.mts tests/archive-artifact-refresh.test.mts tests/resource-page-observability-actions.test.mts tests/stream-static-relay-recovery.test.mts tests/youtube-output-static-relay.test.mts tests/navigation-section.test.mts tests/service-health.test.mts",
+    "test:ui-regression:history": "node --no-warnings --test tests/ui-regression/residual-history.test.mts",
+    "typecheck:ui-regression": "node ../scripts/ci/ui-regression/typecheck.mjs"
   },
   "dependencies": {
     "@radix-ui/react-alert-dialog": "^1.1.23",

@@ -1,4 +1,5 @@
 "use client";
+import { notifyDraftSessionExit } from "@/lib/ui-v2/draft-navigation-lifecycle";
 
 import { useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
@@ -38,6 +39,7 @@ export function useShellSessionGuard(currentUser: CurrentUserQueryState) {
         .catch((error) => {
           if (error instanceof APIError && error.status === 401) {
             clearCSRFToken();
+            notifyDraftSessionExit();
             window.location.replace(loginPathForLocation(window.location, true));
           }
         })
@@ -61,16 +63,16 @@ export function useShellSessionGuard(currentUser: CurrentUserQueryState) {
     if (!currentUser.isError) return;
     if (sessionExpired) clearCSRFToken();
     if (authenticatedSessionSeen.current) {
-      if (sessionExpired) window.location.replace(loginPathForLocation(window.location, true));
+      if (sessionExpired) { notifyDraftSessionExit(); window.location.replace(loginPathForLocation(window.location, true)); }
       return;
     }
     let active = true;
     apiGet<SetupStatus>("/setup/status")
       .then((status) => {
-        if (active) router.replace(status.setup_required ? "/setup" : loginPathForLocation(window.location));
+        if (active) { notifyDraftSessionExit(); router.replace(status.setup_required ? "/setup" : loginPathForLocation(window.location)); }
       })
       .catch(() => {
-        if (active) router.replace(loginPathForLocation(window.location));
+        if (active) { notifyDraftSessionExit(); router.replace(loginPathForLocation(window.location)); }
       });
     return () => {
       active = false;

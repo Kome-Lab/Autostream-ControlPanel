@@ -76,15 +76,28 @@ export const navigationSections: NavigationSection[] = [
     items: [
       navItem("/admin/", "dashboard", barChartIcon, [], "待機枠、配信中、要対応、基盤状態をまとめて確認", "Review waiting slots, live streams, action items, and platform health"),
       navItem("/admin/streams/", "streams", playSquareIcon, ["streams.read"], "Discord VC連動の待機枠、開始、停止、録画設定", "Manage Discord VC-triggered slots, start, stop, and recording"),
-      navItem("/admin/service-health/", "serviceHealth", activityIcon, ["service_health.read"], "Nodeとサービスの接続状態を確認", "Review node and service availability"),
-      navItem("/admin/incidents/", "incidents", alertTriangleIcon, ["incidents.read"], "障害の検知、確認、解決を追跡", "Track detection, acknowledgement, and resolution"),
       navItem("/admin/archive/", "archive", archiveIcon, ["archives.read", "archive_profiles.read", "integrations.read"], "録画成果物の確認、保存、ダウンロード", "Manage recordings, retention, and downloads"),
       navItem("/admin/logs/", "logs", fileTextIcon, ["logs.read"], "配信枠ごとの記録を確認", "Inspect records for each stream slot"),
     ],
   },
   {
+    key: "navMonitoring",
+    items: [
+      navItem("/admin/service-health/", "serviceHealth", activityIcon, ["service_health.read"], "Nodeとサービスの接続状態を確認", "Review node and service availability"),
+      navItem("/admin/monitoring/", "monitoring", lineChartIcon, ["incidents.read", "service_health.read"], "運用状況と障害を横断監視", "Monitor operations and incidents"),
+      navItem("/admin/incidents/", "incidents", alertTriangleIcon, ["incidents.read"], "障害の検知、確認、解決を追跡", "Track detection, acknowledgement, and resolution"),
+      navItem("/admin/diagnostics/", "diagnostics", wrenchIcon, ["diagnostics.read"], "配信経路とサービスの診断結果", "Review stream-path and service diagnostics"),
+      navItem("/admin/metrics/", "metrics", barChartIcon, ["metrics.read"], "Nodeと配信基盤の時系列指標", "Inspect time-series platform metrics"),
+      navItem("/admin/remediation/", "remediation", hardDriveIcon, ["remediation.read"], "承認制の復旧操作", "Review and approve recovery actions"),
+      navItem("/admin/notifications/", "notifications", bellIcon, ["notification_channels.read"], "通知履歴と連絡先", "Manage delivery history and destinations"),
+      navItem("/admin/audit-logs/", "auditLogs", clipboardListIcon, ["audit_logs.read"], "誰が何をしたかを確認", "Review who changed what and when"),
+    ],
+  },
+  {
     key: "navProfiles",
     items: [
+      navItem("/admin/nodes/", "nodeRegistration", networkIcon, ["api_tokens.create"], "新しいNodeと登録トークンを発行", "Issue nodes and registration tokens"),
+      navItem("/admin/registered-nodes/", "registeredNodes", serverCogIcon, ["api_tokens.create"], "登録済みNodeを編集・削除", "Edit and remove registered nodes"),
       navItem("/admin/workers/", "workers", serverCogIcon, ["workers.read", "service_health.read", "api_tokens.create"], "Worker・EncoderとNodeサービスの状態・操作", "Operate Workers, Encoders, and Node services"),
       navItem("/admin/encoder/", "encoder", gaugeIcon, ["encoder_profiles.read"], "配信品質の標準設定", "Standardize encoding quality"),
       navItem("/admin/discord/", "discord", messageCircleIcon, ["discord_configs.read"], "配信起動に使うDiscord BOT", "Configure Discord bots used for stream automation"),
@@ -94,27 +107,14 @@ export const navigationSections: NavigationSection[] = [
     ],
   },
   {
-    key: "navMonitoring",
-    items: [
-      navItem("/admin/monitoring/", "monitoring", lineChartIcon, ["incidents.read", "service_health.read"], "運用状況と障害を横断監視", "Monitor operations and incidents"),
-      navItem("/admin/diagnostics/", "diagnostics", wrenchIcon, ["diagnostics.read"], "配信経路とサービスの診断結果", "Review stream-path and service diagnostics"),
-      navItem("/admin/remediation/", "remediation", hardDriveIcon, ["remediation.read"], "承認制の復旧操作", "Review and approve recovery actions"),
-      navItem("/admin/notifications/", "notifications", bellIcon, ["notification_channels.read"], "通知履歴と連絡先", "Manage delivery history and destinations"),
-      navItem("/admin/metrics/", "metrics", barChartIcon, ["metrics.read"], "Nodeと配信基盤の時系列指標", "Inspect time-series platform metrics"),
-      navItem("/admin/audit-logs/", "auditLogs", clipboardListIcon, ["audit_logs.read"], "誰が何をしたかを確認", "Review who changed what and when"),
-    ],
-  },
-  {
     key: "navAdministration",
     items: [
+      navItem("/admin/integrations/", "integrations", plugIcon, ["integrations.read"], "OAuthと外部サービス接続", "Manage OAuth and external connections"),
       navItem("/admin/users/", "users", usersIcon, ["users.read"], "担当者アカウントと利用状態", "Manage operator accounts and access state"),
       navItem("/admin/roles/", "roles", shieldIcon, ["roles.read"], "役割ごとの操作権限", "Manage role-based permissions"),
-      navItem("/admin/integrations/", "integrations", plugIcon, ["integrations.read"], "OAuthと外部サービス接続", "Manage OAuth and external connections"),
       navItem("/admin/security/", "security", keyRoundIcon, ["secrets.read_status", "system_settings.read"], "ログイン・MFA・シークレット設定", "Manage login, MFA, and secret settings"),
-      navItem("/admin/nodes/", "nodeRegistration", networkIcon, ["api_tokens.create"], "新しいNodeと登録トークンを発行", "Issue nodes and registration tokens"),
-      navItem("/admin/registered-nodes/", "registeredNodes", serverCogIcon, ["api_tokens.create"], "登録済みNodeを編集・削除", "Edit and remove registered nodes"),
-      navItem("/admin/application/", "applicationInfo", infoIcon, ["system_settings.read", "system_updates.read"], "各サービスのバージョンと更新状況を確認", "Review service versions and updates"),
       navItem("/admin/settings/", "settings", settingsIcon, ["system_settings.read"], "表示、時刻、メールサーバー設定", "Manage display, time, and mail settings"),
+      navItem("/admin/application/", "applicationInfo", infoIcon, ["system_settings.read", "system_updates.read"], "各サービスのバージョンと更新状況を確認", "Review service versions and updates"),
     ],
   },
 ];

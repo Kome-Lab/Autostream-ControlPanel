@@ -1,4 +1,6 @@
 "use client";
+import { useUICopy } from "@/lib/i18n/ui-v2/use-ui-copy";
+
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Check, Copy, ExternalLink, Link2, LoaderCircle, MonitorPlay } from "lucide-react";
@@ -34,6 +36,7 @@ type PreviewParticipantFeed = {
 };
 
 export function StreamPreview({ stream, controller }: { stream: Stream; controller: StreamActionController }) {
+  const uiText = useUICopy();
   const { t } = useI18n();
   const streamRef = useRef(stream);
   useEffect(() => {
@@ -185,7 +188,7 @@ export function StreamPreview({ stream, controller }: { stream: Stream; controll
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <MonitorPlay className="size-4" />
-          <h3 className="text-sm font-semibold">Encoderプレビュー</h3>
+          <h3 className="text-sm font-semibold">{uiText("Encoderプレビュー")}</h3>
         </div>
         <PreviewStatus state={playbackState} />
       </div>
@@ -193,17 +196,16 @@ export function StreamPreview({ stream, controller }: { stream: Stream; controll
         <video ref={videoRef} className="h-full w-full object-contain" controls muted autoPlay playsInline preload="metadata" />
       </div>
       <ParticipantAccessibilityList participants={participants} />
-      {sceneCapabilityUnavailable ? <p className="text-sm text-destructive" role="alert">v2 scene capabilityが未適用のため、参加者表示の準備が完了していません。</p> : null}
-      {participantFeedError ? <p className="text-xs text-amber-600 dark:text-amber-400" role="status">VC参加者情報を更新できません。映像の再生は継続します。</p> : null}
+      {sceneCapabilityUnavailable ? <p className="text-sm text-destructive" role="alert">{uiText("v2 scene capabilityが未適用のため、参加者表示の準備が完了していません。")}</p> : null}
+      {participantFeedError ? <p className="text-xs text-amber-600 dark:text-amber-400" role="status">{uiText("VC参加者情報を更新できません。映像の再生は継続します。")}</p> : null}
       <div className="grid gap-2 sm:flex sm:flex-wrap sm:items-center">
         <Button type="button" variant="outline" size="sm" className="w-full sm:w-auto" onClick={() => void issuePreviewLink()} disabled={issuePending}>
           {issuePending ? <LoaderCircle className="size-4 animate-spin" /> : <Link2 className="size-4" />}
-          ネットワーク再生URLを発行
-        </Button>
+          {uiText("ネットワーク再生URLを発行")}</Button>
         {previewLink ? (
           <div className="flex w-full min-w-0 items-center gap-2 sm:flex-1">
-            <Input className="min-w-0 flex-1 font-mono text-xs" value={displayURL} readOnly aria-label="プレビューURL" />
-            <Button type="button" variant="outline" size="icon-sm" onClick={() => void copyPreviewLink()} aria-label="ネットワーク再生URLをコピー">
+            <Input className="min-w-0 flex-1 font-mono text-xs" value={displayURL} readOnly aria-label={uiText("プレビューURL")} />
+            <Button type="button" variant="outline" size="icon-sm" onClick={() => void copyPreviewLink()} aria-label={uiText("ネットワーク再生URLをコピー")}>
               {copied ? <Check className="size-4" /> : <Copy className="size-4" />}
             </Button>
             <Button type="button" variant="outline" size="icon-sm" asChild aria-label="Open preview player">
@@ -212,24 +214,24 @@ export function StreamPreview({ stream, controller }: { stream: Stream; controll
           </div>
         ) : null}
         <Button type="button" variant="ghost" size="sm" onClick={() => void issuePreviewLink()} disabled={issuePending}>
-          再試行
-        </Button>
+          {uiText("再試行")}</Button>
       </div>
-      {previewLink ? <p className="text-xs text-muted-foreground">有効期限: {new Date(previewLink.expires_at).toLocaleString("ja-JP")}</p> : null}
+      {previewLink ? <p className="text-xs text-muted-foreground">{uiText("有効期限:")}{new Date(previewLink.expires_at).toLocaleString("ja-JP")}</p> : null}
       {previewLinkError ? <p className="text-sm text-destructive" role="alert">{previewLinkError}</p> : null}
       {playbackError ? <p className="text-sm text-destructive" role="alert">{playbackError}</p> : null}
-      {playbackError && playbackDetail ? <p className="text-xs text-muted-foreground" role="status">詳細: {playbackDetail}</p> : null}
+      {playbackError && playbackDetail ? <p className="text-xs text-muted-foreground" role="status">{uiText("詳細:")}{playbackDetail}</p> : null}
     </section>
   );
 }
 
 function PreviewStatus({ state }: { state: PlaybackState }) {
-  if (state === "ready") return <span className="text-xs font-medium text-emerald-600 dark:text-emerald-400">再生中</span>;
-  if (state === "error") return <span className="text-xs font-medium text-destructive">再生失敗</span>;
+  const uiText = useUICopy();
+  if (state === "ready") return <span className="text-xs font-medium text-emerald-600 dark:text-emerald-400">{uiText("再生中")}</span>;
+  if (state === "error") return <span className="text-xs font-medium text-destructive">{uiText("再生失敗")}</span>;
   return (
     <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
       <LoaderCircle className="size-3 animate-spin" />
-      {state === "retrying" ? "再接続中" : "準備中"}
+      {state === "retrying" ? uiText("再接続中") : uiText("準備中")}
     </span>
   );
 }
@@ -245,14 +247,15 @@ function isPreviewLink(value: unknown): value is PreviewLink {
 }
 
 function ParticipantAccessibilityList({ participants }: { participants: PreviewParticipant[] }) {
+  const uiText = useUICopy();
   if (participants.length === 0) return null;
   return (
-    <div className="sr-only" aria-live="polite" aria-label="VC参加者">
+    <div className="sr-only" aria-live="polite" aria-label={uiText("VC参加者")}>
       {participants.map((participant) => (
         <span key={participant.user_id}>
           {participant.display_name || participant.user_id}
           {participant.is_bot ? "（BOT）" : ""}
-          {participant.speaking ? "（発言中）" : ""}
+          {participant.speaking ? uiText("（発言中）") : ""}
         </span>
       ))}
     </div>

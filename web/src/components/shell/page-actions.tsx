@@ -2,6 +2,7 @@
 
 import type { ReactNode } from "react";
 import { MoreHorizontal } from "lucide-react";
+import { useI18n } from "@/components/admin/i18n-provider";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
@@ -15,6 +16,7 @@ type PageActionsProps = {
 };
 
 export function PageActions({ primary, secondary, overflow, highRisk, className }: PageActionsProps) {
+  const { locale } = useI18n();
   if (!primary && !secondary && !overflow && !highRisk) return null;
 
   return (
@@ -26,7 +28,7 @@ export function PageActions({ primary, secondary, overflow, highRisk, className 
           <div data-slot="page-actions-overflow" className="flex shrink-0 items-center">
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button variant="outline" size="icon-sm" className="size-11 sm:size-8" aria-label="その他の操作">
+                <Button variant="outline" size="icon-sm" className="size-11 sm:size-8" aria-label={locale === "ja" ? "その他の操作" : "More actions"}>
                   <MoreHorizontal />
                 </Button>
               </DropdownMenuTrigger>

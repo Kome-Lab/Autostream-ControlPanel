@@ -8,6 +8,7 @@ import test from "node:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createElement } from "react";
 import ts from "typescript";
+import type { StatusMappingFixture } from "./helpers/status-authority-types.mts";
 
 import { assertStatusFoundationBoundaries, statusProductionConsumers } from "./helpers/ui-foundation-status-imports.mts";
 import {
@@ -64,7 +65,20 @@ const { DomainStatusBadge } = await import("../src/components/foundation/status/
 const { translate } = await import("../src/lib/i18n.ts");
 
 const webRoot = fileURLToPath(new URL("..", import.meta.url));
-const fixture = JSON.parse(readFileSync(join(webRoot, "tests", "fixtures", "ui-foundation-status-mappings.json"), "utf8"));
+const fixture: unknown = JSON.parse(readFileSync(join(webRoot, "tests", "fixtures", "ui-foundation-status-mappings.json"), "utf8"));
+function assertMappingFixture(value: unknown): asserts value is StatusMappingFixture {
+  assert.ok(value !== null && typeof value === "object" && "authorityHead" in value && "domains" in value && "mappings" in value);
+  assert.equal(typeof value.authorityHead, "string");
+  assert.ok(Array.isArray(value.domains) && value.domains.every(domain => typeof domain === "string"));
+  assert.ok(Array.isArray(value.mappings));
+  for (const row of value.mappings) {
+    assert.ok(row !== null && typeof row === "object");
+    for (const key of ["domain", "wireValue", "labelKey", "tone", "icon"]) assert.equal(typeof Reflect.get(row, key), "string");
+    if ("detailKey" in row) assert.equal(typeof row.detailKey, "string");
+  }
+}
+function required<T>(value: T | undefined): T { assert.ok(value !== undefined); return value; }
+assertMappingFixture(fixture);
 const authority = readStatusAuthority(webRoot);
 const presenters = Object.freeze({
   "stream-lifecycle": presentStreamLifecycleStatus,
@@ -82,6 +96,8 @@ const presenters = Object.freeze({
   "archive-share": presentArchiveShareStatus,
   "audit-result": presentAuditResultStatus,
 });
+
+function isPresenterDomain(value: string): value is keyof typeof presenters { return Object.hasOwn(presenters, value); }
 
 test("source-derived authority exactly owns every mapping value and every mapping executes production", () => {
   assert.equal(fixture.authorityHead, "4c98b1ed611d69c6a77bf4e74e5aca18a9b1ae3b");
@@ -104,6 +120,7 @@ test("source-derived authority exactly owns every mapping value and every mappin
   );
   assert.deepEqual(Object.keys(presenters), fixture.domains);
   for (const mapping of fixture.mappings) {
+    assert.ok(isPresenterDomain(mapping.domain), "mapping domain must own a production presenter");
     const presentation = presenters[mapping.domain](mapping.wireValue);
     assert.deepEqual(presentation, {
       known: true,
@@ -122,16 +139,16 @@ test("source-derived authority exactly owns every mapping value and every mappin
 });
 
 test("mechanical authority oracle rejects omissions, inventions, duplicates, wrong domains and provenance drift", () => {
-  const mutations = [
+  const mutations: Array<[string, (candidate: StatusMappingFixture) => void]> = [
     ["remove created", (candidate) => { candidate.mappings = candidate.mappings.filter((row) => !(row.domain === "stream-lifecycle" && row.wireValue === "created")); }],
     ["invent stream error", (candidate) => { candidate.mappings.push({ domain: "stream-lifecycle", wireValue: "error", labelKey: "statusFailed", tone: "critical", icon: "circle-alert" }); }],
     ["remove investigating", (candidate) => { candidate.mappings = candidate.mappings.filter((row) => !(row.domain === "incident" && row.wireValue === "investigating")); }],
     ["invent incident closed", (candidate) => { candidate.mappings.push({ domain: "incident", wireValue: "closed", labelKey: "statusIncidentResolved", tone: "neutral", icon: "circle-check" }); }],
-    ["replace evaluated with success", (candidate) => { candidate.mappings.find((row) => row.domain === "diagnostic" && row.wireValue === "evaluated").wireValue = "success"; }],
+    ["replace evaluated with success", (candidate) => { required(candidate.mappings.find((row) => row.domain === "diagnostic" && row.wireValue === "evaluated")).wireValue = "success"; }],
     ["remove remediation disabled", (candidate) => { candidate.mappings = candidate.mappings.filter((row) => !(row.domain === "remediation" && row.wireValue === "disabled")); }],
     ["invent remediation skipped", (candidate) => { candidate.mappings.push({ domain: "remediation", wireValue: "skipped", labelKey: "statusRemediationBlocked", tone: "neutral", icon: "circle-slash" }); }],
-    ["duplicate canonical value", (candidate) => { candidate.mappings.push({ ...candidate.mappings.find((row) => row.domain === "stream-lifecycle" && row.wireValue === "created") }); }],
-    ["move value to wrong domain", (candidate) => { candidate.mappings.find((row) => row.domain === "stream-lifecycle" && row.wireValue === "created").domain = "incident"; }],
+    ["duplicate canonical value", (candidate) => { candidate.mappings.push({ ...required(candidate.mappings.find((row) => row.domain === "stream-lifecycle" && row.wireValue === "created")) }); }],
+    ["move value to wrong domain", (candidate) => { required(candidate.mappings.find((row) => row.domain === "stream-lifecycle" && row.wireValue === "created")).domain = "incident"; }],
   ];
   for (const [name, mutate] of mutations) {
     const candidate = structuredClone(fixture);
@@ -140,7 +157,7 @@ test("mechanical authority oracle rejects omissions, inventions, duplicates, wro
   }
 
   const changedSourceDigest = structuredClone(authority);
-  changedSourceDigest.authorities.find(({ id }) => id === "control-panel-domain").sourceSha256 = "0".repeat(64);
+  required(changedSourceDigest.authorities.find(({ id }) => id === "control-panel-domain")).sourceSha256 = "0".repeat(64);
   assert.throws(() => verifyStatusAuthoritySources(webRoot, changedSourceDigest), /source digest/);
   const changedSnapshot = structuredClone(authority);
   changedSnapshot.vocabularies[0].excerpt += "\n// invented";
@@ -209,7 +226,7 @@ test("coverage and node-positive summaries exclude unknown and keep ownership se
   const coverage = summarizeStatusCoverage(source);
   assert.deepEqual(coverage, { total: 3, known: 2, unknown: 1 });
   assert.equal(Object.isFrozen(coverage), true);
-  assert.deepEqual(summarizeStatusCoverage({ length: 3 }), { total: 0, known: 0, unknown: 0 });
+  assert.deepEqual(Reflect.apply(summarizeStatusCoverage, undefined, [{ length: 3 }]), { total: 0, known: 0, unknown: 0 });
   assert.deepEqual(summarizePositiveNodeHealth(source), { total: 3, positive: 1 });
   assert.equal(source[2].labelKey, "statusNodeAssigned");
 });
@@ -314,9 +331,16 @@ test("shared badge renders localized text, icon and semantic tone without raw or
 test("AST boundaries reject action authority, arbitrary colors, mutable registries, barrels and cycles", () => {
   assert.deepEqual(assertStatusFoundationBoundaries(webRoot), { pureFileCount: 6, componentFileCount: 1 });
   assert.deepEqual(statusProductionConsumers(webRoot), [
+    "src/features/audit/audit-logs-view.tsx",
+    "src/features/dashboard/dashboard-panels.tsx",
+    "src/features/dashboard/dashboard-streams.tsx",
+    "src/features/nodes/node-state-details.tsx",
+    "src/features/resources/resource-table.tsx",
+    "src/features/streams/stream-details-dialog.tsx",
+    "src/features/streams/streams-view.tsx",
     "src/features/workers/workers-status-presenter.ts",
     "src/features/workers/workers-view.tsx",
-  ], "B07 must have no production consumer outside the Worker pilot");
+  ], "UI renewal 001 sections 6.1 and 7: exact presentation consumers; no action authority");
 });
 
 test("status type negative matrix reports TS2578 when malformed input becomes valid", () => {

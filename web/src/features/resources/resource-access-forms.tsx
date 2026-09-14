@@ -1,4 +1,8 @@
 "use client";
+import { useUICopy } from "@/lib/i18n/ui-v2/use-ui-copy";
+
+
+import { useNonSecretDraft } from "@/components/forms/draft-exit";
 
 import { useMemo, useState } from "react";
 import { Switch } from "@/components/ui/switch";
@@ -11,6 +15,7 @@ import { TextField, CheckboxList, FormActions, GroupedCheckboxList } from "./res
 import { permissionOptionFromRow } from "./resource-permissions";
 
 export function UserForm({ disabled, submit, initial, submitLabel }: { disabled: boolean; submit: SubmitResource; initial?: ResourceRow; submitLabel?: string }) {
+  const uiText = useUICopy();
   const row = initial || {};
   const editing = Boolean(initial);
   const currentUser = useCurrentUser();
@@ -26,6 +31,8 @@ export function UserForm({ disabled, submit, initial, submitLabel }: { disabled:
   const canAssignRoles = hasPermission(currentUser.data, "roles.assign");
   const editingSelf = editing && resourceRowID(row) === currentUser.data?.user.id;
   const roleSelectionUnavailable = editing && initialRoleNames.length > 0 && initialRoleIDs.length === 0;
+
+  useNonSecretDraft([username, email, roleIDs, rolesChanged, sendWelcomeEmail]);
 
   return (
     <form
@@ -44,41 +51,43 @@ export function UserForm({ disabled, submit, initial, submitLabel }: { disabled:
       }}
     >
       <div className="grid gap-3 md:grid-cols-2">
-        <TextField label="ユーザー名" value={username} onChange={setUsername} required />
-        <TextField label="メールアドレス" value={email} onChange={setEmail} type="email" description="登録完了メールと本人確認用の連絡先です。" required />
-        {!editing ? <TextField label="初期パスワード" value={temporaryPassword} onChange={setTemporaryPassword} type="password" required description="ログイン後に変更してもらう一時パスワードです。" /> : null}
+        <TextField label={uiText("ユーザー名")} value={username} onChange={setUsername} required />
+        <TextField label={uiText("メールアドレス")} value={email} onChange={setEmail} type="email" description={uiText("登録完了メールと本人確認用の連絡先です。")} required />
+        {!editing ? <TextField label={uiText("初期パスワード")} value={temporaryPassword} onChange={setTemporaryPassword} type="password" required description={uiText("ログイン後に変更してもらう一時パスワードです。")} /> : null}
       </div>
       {!editing ? (
         <label className="flex items-center gap-2 text-sm">
           <Switch checked={sendWelcomeEmail} onCheckedChange={setSendWelcomeEmail} />
-          登録完了メールを送る
-        </label>
+          {uiText("登録完了メールを送る")}</label>
       ) : null}
       <CheckboxList
-        label="付与するロール"
+        label={uiText("付与するロール")}
         values={roleIDs}
         onChange={(values) => {
           setRoleIDs(values);
           setRolesChanged(true);
         }}
         items={roles}
-        emptyText="ロールがありません。"
+        emptyText={uiText("ロールがありません。")}
         disabled={!canAssignRoles || editingSelf || roleSelectionUnavailable}
       />
-      {!canAssignRoles ? <p className="text-xs text-muted-foreground">ロールの変更には「ロールを割り当て」権限が必要です。ユーザー名とメールアドレスは更新できます。</p> : null}
-      {editingSelf ? <p className="text-xs text-muted-foreground">ログイン中のユーザー自身のロールは変更できません。ユーザー名とメールアドレスは更新できます。</p> : null}
-      {roleSelectionUnavailable ? <p className="text-xs text-muted-foreground">既存ロール: {initialRoleNames.join("、")}。ロールIDを取得できないため、ロール変更は無効です。</p> : null}
+      {!canAssignRoles ? <p className="text-xs text-muted-foreground">{uiText("ロールの変更には「ロールを割り当て」権限が必要です。ユーザー名とメールアドレスは更新できます。")}</p> : null}
+      {editingSelf ? <p className="text-xs text-muted-foreground">{uiText("ログイン中のユーザー自身のロールは変更できません。ユーザー名とメールアドレスは更新できます。")}</p> : null}
+      {roleSelectionUnavailable ? <p className="text-xs text-muted-foreground">{uiText("既存ロール:")}{initialRoleNames.join("、")}{uiText("。ロールIDを取得できないため、ロール変更は無効です。")}</p> : null}
       <FormActions label={submitLabel} disabled={disabled || username.trim() === "" || email.trim() === "" || (!editing && temporaryPassword === "")} />
     </form>
   );
 }
 
 export function RoleForm({ disabled, submit, initial, submitLabel }: { disabled: boolean; submit: SubmitResource; initial?: ResourceRow; submitLabel?: string }) {
+  const uiText = useUICopy();
   const row = initial || {};
   const permissionRows = useResourceRows("/permissions");
-  const permissionOptions = useMemo(() => permissionRows.map(permissionOptionFromRow).filter((option) => option.value), [permissionRows]);
+  const permissionOptions = useMemo(() => permissionRows.map((uiValue0) => permissionOptionFromRow(uiValue0, uiText)).filter((option) => option.value), [permissionRows, uiText]);
   const [name, setName] = useState(() => rowString(row, ["name"]) || "operator");
   const [permissions, setPermissions] = useState<string[]>(() => stringListSetting(rowValue(row, ["permissions"])).length ? stringListSetting(rowValue(row, ["permissions"])) : ["streams.read", "streams.start", "streams.stop"]);
+
+  useNonSecretDraft([name, permissions]);
 
   return (
     <form
@@ -88,8 +97,8 @@ export function RoleForm({ disabled, submit, initial, submitLabel }: { disabled:
         submit({ name, permissions });
       }}
     >
-      <TextField label="ロール名" value={name} onChange={setName} required />
-      <GroupedCheckboxList label="許可する操作" values={permissions} onChange={setPermissions} items={permissionOptions} emptyText="権限一覧を取得できませんでした。" />
+      <TextField label={uiText("ロール名")} value={name} onChange={setName} required />
+      <GroupedCheckboxList label={uiText("許可する操作")} values={permissions} onChange={setPermissions} items={permissionOptions} emptyText={uiText("権限一覧を取得できませんでした。")} />
       <FormActions label={submitLabel} disabled={disabled || permissions.length === 0} />
     </form>
   );

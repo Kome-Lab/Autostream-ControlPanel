@@ -1,10 +1,16 @@
 "use client";
+import { fixedPresentationText } from "@/lib/i18n/ui-v2/presentation-copy";
+
+import { useUICopy } from "@/lib/i18n/ui-v2/use-ui-copy";
+
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Activity, Download, LoaderCircle, RefreshCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { PageHeader } from "@/components/shell/page-header";
+import { DetailSection, SectionNavigation } from "@/components/layout/detail-section";
+import { useI18n } from "@/components/admin/i18n-provider";
 import { useAppSettings, useCurrentUser, useNodes, useServiceHealth, useSystemUpdates, useVersion } from "@/features/queries";
 import { UpdaterActionConfirmation } from "@/features/application/updater-action-confirmation";
 import { createUpdaterActionController, type UpdaterActionAuthority, type UpdaterActionIntent } from "@/features/application/updater-action-policy";
@@ -30,6 +36,9 @@ import { createApplicationAuthorityReaders, refreshApplicationPortAuthority } fr
 import { createApplicationActionRenderers } from "./application-action-renderers";
 
 export function ApplicationInfoView() {
+  const uiText = useUICopy();
+  const { locale } = useI18n();
+  const ja = locale === "ja";
   const currentUser = useCurrentUser();
   const appSettings = useAppSettings();
   const appVersion = useVersion();
@@ -71,9 +80,9 @@ export function ApplicationInfoView() {
   );
   const selfUpdateJob = jobs.find((job) => job.id === selfUpdateJobID);
   const reconnecting = Boolean(selfUpdateJobID) && (systemUpdates.isError || !selfUpdateJob || systemUpdateMayDisconnectPanel(selfUpdateJob.status));
-  const terminalSelfUpdateFeedback = selfUpdateTerminalFeedback(selfUpdateJob);
+  const terminalSelfUpdateFeedback = selfUpdateTerminalFeedback(selfUpdateJob, uiText);
   const recoveredPortFeedback: Feedback | null = recoveredAmbiguousPortJob
-    ? { tone: "success", message: `${recoveredAmbiguousPortJob.target_id}: 応答を確認できなかったポート変更ジョブを履歴から確認しました。` }
+    ? { tone: "success", message: uiText("{0}: 応答を確認できなかったポート変更ジョブを履歴から確認しました。", recoveredAmbiguousPortJob.target_id) }
     : null;
   const visibleFeedback = terminalSelfUpdateFeedback || recoveredPortFeedback || feedback;
 
@@ -111,10 +120,10 @@ export function ApplicationInfoView() {
     mutationFn: async (job) => systemUpdateJobFromResponse(await apiPost<unknown>(`/system-updates/${encodeURIComponent(job.id)}/cancel`)),
     onSuccess: async (job) => {
       mergeSystemUpdateJob(queryClient.getQueryData<SystemUpdatesResponse>(["system-updates"]), job, queryClient);
-      setFeedback({ tone: "success", message: "更新ジョブをキャンセルしました。" });
+      setFeedback({ tone: "success", message: uiText("更新ジョブをキャンセルしました。") });
       await queryClient.invalidateQueries({ queryKey: ["system-updates"] });
     },
-    onError: (error) => setFeedback({ tone: "error", message: systemUpdateErrorMessage(error, "更新ジョブをキャンセルできませんでした。") }),
+    onError: (error) => setFeedback({ tone: "error", message: fixedPresentationText(systemUpdateErrorMessage(error, uiText("更新ジョブをキャンセルできませんでした。")), uiText) }),
   });
 
   const createPortReconfigure = useMutation<SystemUpdateJob, Error, PortReconfigureOperation>({
@@ -140,11 +149,11 @@ export function ApplicationInfoView() {
     setFeedback(null);
     try {
       const job = await createUpdate.mutateAsync({ target, idempotencyKey: newIdempotencyKey(target.target_id) });
-      const suffix = systemUpdateStrategyForTarget(target) === "when_idle" ? "配信終了後に更新を開始します。" : "更新ジョブを受け付けました。";
+      const suffix = systemUpdateStrategyForTarget(target) === "when_idle" ? uiText("配信終了後に更新を開始します。") : uiText("更新ジョブを受け付けました。");
       setFeedback({ tone: "success", message: `${target.name || target.target_id}: ${suffix}` });
       return job;
     } catch (error) {
-      setFeedback({ tone: "error", message: systemUpdateErrorMessage(error) });
+      setFeedback({ tone: "error", message: fixedPresentationText(systemUpdateErrorMessage(error), uiText) });
       throw error;
     }
   };
@@ -163,11 +172,11 @@ export function ApplicationInfoView() {
         setBatchProgress({ completed, total: batchTargets.length });
         return job;
       });
-      setFeedback({ tone: "success", message: `${batchTargets.length}件の更新ジョブを順番に受け付けました。` });
+      setFeedback({ tone: "success", message: uiText("{0}件の更新ジョブを順番に受け付けました。", batchTargets.length) });
       return accepted;
     } catch (error) {
-      const targetName = currentTarget?.name || currentTarget?.target_id || "不明な対象";
-      setFeedback({ tone: "error", message: `${completed}/${batchTargets.length}件を受付済みです。${targetName} の受付で停止しました。${systemUpdateErrorMessage(error)}` });
+      const targetName = currentTarget?.name || currentTarget?.target_id || uiText("不明な対象");
+      setFeedback({ tone: "error", message: uiText("{0}/{1}件を受付済みです。{2} の受付で停止しました。{3}", completed, batchTargets.length, targetName, fixedPresentationText(systemUpdateErrorMessage(error), uiText)) });
       if (completed > 0) throw new Error("system_update_batch_partially_accepted", { cause: error });
       throw error;
     } finally {
@@ -194,11 +203,11 @@ export function ApplicationInfoView() {
     setFeedback(null);
     try {
       await createPortReconfigure.mutateAsync({ request });
-      setFeedback({ tone: "success", message: `${request.target_id}: ポート変更ジョブを受け付けました。現在適用中のendpointが更新されるまでお待ちください。` });
+      setFeedback({ tone: "success", message: uiText("{0}: ポート変更ジョブを受け付けました。現在適用中のendpointが更新されるまでお待ちください。", request.target_id) });
     } catch (error) {
       if (error instanceof SystemUpdateRequestAmbiguousError) {
         setAmbiguousPortRequest(error.request);
-        setFeedback({ tone: "error", message: "ポート変更要求の結果を確認できません。安全のため同じ対象への再送を停止し、更新履歴を自動確認します。" });
+        setFeedback({ tone: "error", message: uiText("ポート変更要求の結果を確認できません。安全のため同じ対象への再送を停止し、更新履歴を自動確認します。") });
         throw error;
       }
       if (isSystemUpdateEndpointRevisionConflict(error)) {
@@ -209,12 +218,12 @@ export function ApplicationInfoView() {
         setFeedback({
           tone: "error",
           message: refreshed
-            ? "Endpoint revisionが変わったため送信しませんでした。最新のNode状態を再取得しました。内容を確認してからやり直してください。"
-            : "Endpoint revisionが変わったため送信しませんでした。Node状態を再取得できなかったため、手動で再取得してからやり直してください。",
+            ? uiText("Endpoint revisionが変わったため送信しませんでした。最新のNode状態を再取得しました。内容を確認してからやり直してください。")
+            : uiText("Endpoint revisionが変わったため送信しませんでした。Node状態を再取得できなかったため、手動で再取得してからやり直してください。"),
         });
         throw error;
       }
-      setFeedback({ tone: "error", message: systemUpdateErrorMessage(error, "ポート変更ジョブを開始できませんでした。") });
+      setFeedback({ tone: "error", message: fixedPresentationText(systemUpdateErrorMessage(error, uiText("ポート変更ジョブを開始できませんでした。")), uiText) });
       throw error;
     } finally {
       activePortRequestTargets.current.delete(targetID);
@@ -253,7 +262,7 @@ export function ApplicationInfoView() {
     updaterActionController, currentUpdaterAuthority, updates: systemUpdates.data,
     refreshTargetAuthority, executeTarget, creating: createUpdate.isPending, canExecuteSystemUpdates,
     refreshCancelAuthority, executeCancel, cancelling: cancelUpdate.isPending, cancellingJobID: cancelUpdate.variables?.id,
-  });
+  }, uiText);
 
   const refreshInformation = () => {
     void appVersion.refetch();
@@ -261,17 +270,13 @@ export function ApplicationInfoView() {
   };
 
   return (
-    <div className="min-w-0 space-y-4">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-normal">アプリケーション情報</h1>
-          <p className="text-sm text-muted-foreground">Control Panelと登録済みサービスのバージョン確認、更新、進捗確認を行います。</p>
-        </div>
-        <div className="flex flex-wrap gap-2">
+    <div className="min-w-0 space-y-5" data-screen-family="application">
+      <PageHeader title={ja ? "アプリケーション情報" : "Application"}
+        description={ja ? "release bundle、各component、Host Agent、更新ジョブ、endpointの希望・適用・報告を分けて確認します。" : "Review release bundles, components, Host Agents, jobs, and desired, applied and reported endpoints separately."}
+        actions={<div className="flex flex-wrap gap-2">
           <Button variant="outline" size="sm" onClick={refreshInformation} disabled={appVersion.isFetching || systemUpdates.isFetching}>
             <RefreshCcw className="size-4" />
-            更新情報を再確認
-          </Button>
+            {uiText("更新情報を再確認")}</Button>
           <Button
             variant="outline"
             size="sm"
@@ -282,17 +287,21 @@ export function ApplicationInfoView() {
             disabled={!canViewNodeInfo || nodesFetching}
           >
             <RefreshCcw className="size-4" />
-            情報を再取得
-          </Button>
-        </div>
-      </div>
+            {uiText("情報を再取得")}</Button>
+        </div>} />
+      <SectionNavigation label={ja ? "アプリケーションのセクション" : "Application sections"} items={[
+        { id: "application-overview", label: "Overview" },
+        { id: "system-update-targets", label: ja ? "更新対象・Host Agent" : "Targets / Host Agents" },
+        { id: "system-update-history", label: ja ? "ジョブ履歴" : "Job history" },
+        { id: "registered-services", label: ja ? "サービス・ポート" : "Services / ports" },
+      ]} />
 
       {reconnecting ? (
         <div className="flex items-start gap-3 rounded-lg border border-blue-300 bg-blue-50 p-4 text-sm text-blue-950 dark:border-blue-900 dark:bg-blue-950/35 dark:text-blue-100" role="status">
           <LoaderCircle className="mt-0.5 size-4 shrink-0 animate-spin" />
           <div>
-            <div className="font-medium">Control Panelを更新しています。再接続中です。</div>
-            <div className="mt-1 text-xs opacity-80">再起動中は一時的にAPIへ接続できません。この画面は自動的に再確認します。</div>
+            <div className="font-medium">{uiText("Control Panelを更新しています。再接続中です。")}</div>
+            <div className="mt-1 text-xs opacity-80">{uiText("再起動中は一時的にAPIへ接続できません。この画面は自動的に再確認します。")}</div>
           </div>
         </div>
       ) : null}
@@ -326,7 +335,7 @@ export function ApplicationInfoView() {
             authority={currentUpdaterAuthority(batchAuthoritySnapshot.applicable, batchAuthoritySnapshot.fingerprint)}
             refreshAuthority={refreshBatchAuthority}
             handler={() => executeBatch(availableTargets)}
-            label={batchProgress ? `${batchProgress.completed}/${batchProgress.total} 受付中` : `更新可能なものを順次受付（ホストごと並行）${availableTargets.length ? ` (${availableTargets.length})` : ""}`}
+            label={batchProgress ? uiText("{0}/{1} 受付中", batchProgress.completed, batchProgress.total) : uiText("更新可能なものを順次受付（ホストごと並行）{0}", availableTargets.length ? ` (${availableTargets.length})` : "")}
             icon={createUpdate.isPending || batchProgress ? <LoaderCircle className="size-4 animate-spin" /> : <Download className="size-4" />}
             className="h-auto max-w-full whitespace-normal text-left sm:h-8 sm:whitespace-nowrap"
             disabled={createUpdate.isPending || Boolean(batchProgress) || availableTargets.length === 0}
@@ -337,22 +346,17 @@ export function ApplicationInfoView() {
       />
 
       <div className="grid min-w-0 gap-4">
-        <Card className="min-w-0">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2"><Activity className="size-5" />Control Panel</CardTitle>
-            <CardDescription>管理画面とAPIサーバーのビルド情報です。</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
+        <DetailSection id="application-overview" title={<span className="flex items-center gap-2"><Activity aria-hidden="true" className="size-5" />Control Panel</span>} description={ja ? "管理画面とAPIサーバーのビルド情報です。" : "Build information for the panel and API server."}>
             <div className="grid gap-3 sm:grid-cols-2">
-              <InfoItem label="バージョン" value={appVersion.data?.version || "dev"} />
-              <InfoItem label="コミット" value={shortCommit(appVersion.data?.commit)} monospace />
-              <InfoItem label="ビルド日時" value={formatOptionalDate(appVersion.data?.build_date, timezone)} />
-              <InfoItem label="更新確認" value={<UpdateStatusBadge state={controlPanelUpdateState(appVersion.data)} />} />
+              <InfoItem label={uiText("バージョン")} value={appVersion.data?.version || "dev"} />
+              <InfoItem label={uiText("コミット")} value={shortCommit(appVersion.data?.commit)} monospace />
+              <InfoItem label={uiText("ビルド日時")} value={formatOptionalDate(appVersion.data?.build_date, timezone)} />
+              <InfoItem label={uiText("更新確認")} value={<UpdateStatusBadge state={controlPanelUpdateState(appVersion.data, uiText)} />} />
             </div>
-            {appVersion.data?.update_check_error ? <p className="text-sm text-amber-700">更新確認エラー: {appVersion.data.update_check_error}</p> : null}
-          </CardContent>
-        </Card>
+            {appVersion.data?.update_check_error ? <p className="text-sm text-amber-700">{uiText("更新確認エラー:")}{appVersion.data.update_check_error}</p> : null}
+        </DetailSection>
 
+        <section id="registered-services" tabIndex={-1} className="min-w-0 scroll-mt-24" aria-label={ja ? "サービスとendpoint" : "Services and endpoints"}>
         <RegisteredServicesCard
           canViewNodeInfo={canViewNodeInfo}
           nodesError={nodesError}
@@ -373,6 +377,7 @@ export function ApplicationInfoView() {
           onRefreshPortAuthority={refreshPortAuthority}
           onRefresh={() => { if (canReadRegisteredNodes) void registeredNodes.refetch(); if (canReadServiceHealth) void serviceHealth.refetch(); }}
         />
+        </section>
       </div>
 
     </div>

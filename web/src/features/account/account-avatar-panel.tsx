@@ -1,4 +1,6 @@
 "use client";
+import { useUICopy } from "@/lib/i18n/ui-v2/use-ui-copy";
+
 
 import { useEffect, useRef, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
@@ -45,6 +47,7 @@ export function AvatarPanel({
   refreshAuthority: () => Promise<AccountAuthoritySnapshot>;
   accountResourceID: string;
 }) {
+  const uiText = useUICopy();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [previewURL, setPreviewURL] = useState("");
@@ -65,36 +68,36 @@ export function AvatarPanel({
     mutationFn: (file: File) => apiPutBinary<AvatarResponse>("/auth/avatar", file),
     onSuccess: async () => {
       clearSelection();
-      setNotice({ tone: "success", text: "アカウントアイコンを更新しました。" });
+      setNotice({ tone: "success", text: uiText("アカウントアイコンを更新しました。") });
       await refresh();
     },
-    onError: (error) => onError(error, "アカウントアイコンを更新できませんでした"),
+    onError: (error) => onError(error, uiText("アカウントアイコンを更新できませんでした")),
   });
   const remove = useMutation({
     mutationFn: () => apiDelete<void>("/auth/avatar"),
     onSuccess: async () => {
       clearSelection();
-      setNotice({ tone: "success", text: "アカウントアイコンを削除しました。" });
+      setNotice({ tone: "success", text: uiText("アカウントアイコンを削除しました。") });
       await refresh();
     },
-    onError: (error) => onError(error, "アカウントアイコンを削除できませんでした"),
+    onError: (error) => onError(error, uiText("アカウントアイコンを削除できませんでした")),
   });
 
   const selectFile = async (file?: File) => {
     if (!file) return;
     clearSelection();
     if (!(["image/jpeg", "image/png"] as string[]).includes(file.type)) {
-      setNotice({ tone: "error", text: "JPEGまたはPNG画像を選択してください。" });
+      setNotice({ tone: "error", text: uiText("JPEGまたはPNG画像を選択してください。") });
       return;
     }
     if (file.size > maxAvatarBytes) {
-      setNotice({ tone: "error", text: "画像は768 KB以下にしてください。" });
+      setNotice({ tone: "error", text: uiText("画像は768 KB以下にしてください。") });
       return;
     }
     try {
       const nextDimensions = await readImageDimensions(file);
       if (nextDimensions.width < minAvatarDimension || nextDimensions.height < minAvatarDimension || nextDimensions.width > maxAvatarDimension || nextDimensions.height > maxAvatarDimension) {
-        setNotice({ tone: "error", text: "画像の縦横は32〜2048 pxにしてください。" });
+        setNotice({ tone: "error", text: uiText("画像の縦横は32〜2048 pxにしてください。") });
         return;
       }
       const nextURL = URL.createObjectURL(file);
@@ -103,23 +106,23 @@ export function AvatarPanel({
       setDimensions(nextDimensions);
       setNotice(null);
     } catch {
-      setNotice({ tone: "error", text: "画像を読み込めませんでした。別の画像を選択してください。" });
+      setNotice({ tone: "error", text: uiText("画像を読み込めませんでした。別の画像を選択してください。") });
     }
   };
 
   return (
     <Card className="h-fit">
       <CardHeader>
-        <CardTitle className="flex items-center gap-2 text-lg"><Camera className="size-5" />アカウントアイコン</CardTitle>
-        <CardDescription>ヘッダーとアカウントメニューに表示する画像です。</CardDescription>
+        <CardTitle className="flex items-center gap-2 text-lg"><Camera className="size-5" />{uiText("アカウントアイコン")}</CardTitle>
+        <CardDescription>{uiText("ヘッダーとアカウントメニューに表示する画像です。")}</CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="flex flex-col items-center gap-4 rounded-md border bg-muted/20 p-4 text-center sm:flex-row sm:text-left">
-          <AccountAvatar name={username} src={previewURL || currentAvatarURL} alt={previewURL ? "選択したアカウントアイコンのプレビュー" : `${username}のアカウントアイコン`} className="size-24" sizes="96px" />
+          <AccountAvatar name={username} src={previewURL || currentAvatarURL} alt={previewURL ? uiText("選択したアカウントアイコンのプレビュー") : uiText("{0}のアカウントアイコン", username)} className="size-24" sizes="96px" />
           <div className="min-w-0 flex-1 space-y-2">
             <div>
-              <div className="text-sm font-medium">{previewURL ? "変更後のプレビュー" : currentAvatarURL ? "現在のアイコン" : "アイコン未設定"}</div>
-              <div className="mt-1 text-xs text-muted-foreground">JPEG / PNG、768 KB以下、32〜2048 px</div>
+              <div className="text-sm font-medium">{previewURL ? uiText("変更後のプレビュー") : currentAvatarURL ? uiText("現在のアイコン") : uiText("アイコン未設定")}</div>
+              <div className="mt-1 text-xs text-muted-foreground">{uiText("JPEG / PNG、768 KB以下、32〜2048 px")}</div>
             </div>
             {selectedFile ? (
               <div className="text-xs text-muted-foreground">
@@ -134,19 +137,18 @@ export function AvatarPanel({
           type="file"
           accept="image/png,image/jpeg"
           className="sr-only"
-          aria-label="アカウントアイコン画像を選択"
+          aria-label={uiText("アカウントアイコン画像を選択")}
           onChange={(event) => void selectFile(event.target.files?.[0])}
         />
         <div className="flex flex-wrap gap-2">
           <Button type="button" variant="outline" onClick={() => fileInputRef.current?.click()} disabled={upload.isPending || remove.isPending}>
-            <Upload />画像を選択
-          </Button>
+            <Upload />{uiText("画像を選択")}</Button>
           {selectedFile ? (
             <>
               <Button type="button" onClick={() => upload.mutate(selectedFile)} disabled={upload.isPending}>
-                <Save />{upload.isPending ? "保存中" : "この画像を保存"}
+                <Save />{upload.isPending ? uiText("保存中") : uiText("この画像を保存")}
               </Button>
-              <Button type="button" variant="ghost" size="icon" aria-label="画像の選択を取り消す" onClick={clearSelection} disabled={upload.isPending}>
+              <Button type="button" variant="ghost" size="icon" aria-label={uiText("画像の選択を取り消す")} onClick={clearSelection} disabled={upload.isPending}>
                 <X />
               </Button>
             </>
@@ -157,7 +159,7 @@ export function AvatarPanel({
               intent={{ id: "AUTH-10", resourceId: accountResourceID, authorityRevision: authority.revision }}
               authority={authority}
               refreshAuthority={refreshAuthority}
-              label="削除"
+              label={uiText("削除")}
               icon={<Trash2 />}
               variant="outline"
               disabled={remove.isPending}

@@ -42,6 +42,7 @@ export function AppShell({ children }: { children: ReactNode }) {
     retry: false,
     onSettled: () => {
       clearCSRFToken();
+      globalThis.dispatchEvent?.(new Event("autostream:draft-session-exit"));
       router.replace("/login");
     },
   });
@@ -64,7 +65,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const versionLabel = formatVersion(appVersion.data?.version);
   const activeItem = activeNavigationItem(pathname);
   const accountPage = pathname.startsWith("/admin/account");
-  const pageSection = accountPage ? t("profileSection") : t("liveOperations");
+  const pageSection = accountPage ? t("profileSection") : activeSectionKey ? t(activeSectionKey) : t("liveOperations");
   const pageTitle = accountPage ? t("accountSettings") : activeItem ? t(activeItem.key) : t("dashboard");
   const pageDescription = accountPage ? t("accountDescription") : activeItem?.description[locale];
   const canCreateStream = superAdmin || hasPermission(currentUser.data, "streams.create");
@@ -95,7 +96,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         sectionState={synchronizedNavigationSectionsState}
         onToggleSection={toggleNavigationSectionByKey}
       />
-      <div className="min-w-0 lg:pl-[15.5rem]">
+      <div className="min-w-0 xl:pl-[15.5rem]">
         <TopBar
           mobileNavigation={mobileNavigation}
           pageSection={pageSection}
@@ -109,7 +110,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           onLogout={handleLogout}
           logoutPending={logoutPending}
         />
-        <main className="mx-auto w-full max-w-[1600px] min-w-0 space-y-5 p-4 md:p-5 xl:p-6">{children}</main>
+        <main id="main-content" className="mx-auto w-full min-w-0 space-y-6 p-4 md:p-5 xl:p-6">{children}</main>
       </div>
     </div>
   );

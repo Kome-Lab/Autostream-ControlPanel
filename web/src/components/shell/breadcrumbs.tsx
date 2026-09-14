@@ -1,3 +1,6 @@
+"use client";
+
+import { useI18n } from "@/components/admin/i18n-provider";
 import Link from "next/link";
 import { ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -7,11 +10,12 @@ export type BreadcrumbItem = {
   href?: string;
 };
 
-export function Breadcrumbs({ items, ariaLabel = "パンくず", className }: { items: readonly BreadcrumbItem[]; ariaLabel?: string; className?: string }) {
+export function Breadcrumbs({ items, ariaLabel, className }: { items: readonly BreadcrumbItem[]; ariaLabel?: string; className?: string }) {
+  const { locale } = useI18n();
   if (items.length === 0) return null;
 
   return (
-    <nav aria-label={ariaLabel} className={cn("min-w-0", className)}>
+    <nav aria-label={ariaLabel ?? (locale === "ja" ? "パンくず" : "Breadcrumbs")} className={cn("min-w-0", className)}>
       <ol className="flex min-w-0 flex-wrap items-center gap-x-1 gap-y-0.5 text-xs text-muted-foreground">
         {items.map((item, index) => {
           const current = index === items.length - 1;

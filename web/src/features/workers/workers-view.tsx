@@ -1,4 +1,6 @@
 "use client";
+import { useUICopy } from "@/lib/i18n/ui-v2/use-ui-copy";
+
 
 import {
   createContext,
@@ -18,6 +20,10 @@ import { Check, Copy, FileCode2, Link, RotateCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { DataTable } from "@/components/tables/data-table";
+import { DetailSection } from "@/components/layout/detail-section";
+import { PageHeader } from "@/components/shell/page-header";
+import { NodeWorkspaceNavigation } from "@/features/nodes/node-workspace-navigation";
+import { NodeStateDetails } from "@/features/nodes/node-state-details";
 import { MetricCard } from "@/components/admin/metric-card";
 import { HighRiskConfirmation, type ConfirmationDialogState } from "@/components/foundation/confirmation/high-risk-confirmation";
 import { ActionAvailabilityBoundary } from "@/components/foundation/permissions/action-availability-boundary";
@@ -65,6 +71,7 @@ type WorkerActionsContextValue = Readonly<{
 const WorkerActionsContext = createContext<WorkerActionsContextValue | null>(null);
 
 export function WorkersView() {
+  const uiText = useUICopy();
   const { t, locale } = useI18n();
   const currentUser = useCurrentUser();
   const canReadWorkers = hasPermission(currentUser.data, "workers.read");
@@ -167,6 +174,7 @@ export function WorkersView() {
   const columns: ColumnDef<WorkerNode>[] = [
     {
       accessorKey: "service_name",
+      meta: { required: true, priority: 0 },
       header: t("name"),
       cell: ({ row }) => {
         const nodeID = row.original.service_id || row.original.id;
@@ -185,6 +193,7 @@ export function WorkersView() {
     { accessorKey: "service_type", header: t("nodeType"), cell: ({ row }) => serviceTypeLabel(row.original.service_type) },
     {
       id: "endpoint",
+      meta: { priority: 2 },
       header: t("workerEndpoint"),
       cell: ({ row }) => {
         const node = row.original;
@@ -212,8 +221,10 @@ export function WorkersView() {
         />
       ),
     },
+    { id: "assignment", header: locale === "ja" ? "接続・担当・ジョブ" : "Connection / assignment / jobs", meta: { priority: 1 }, cell: ({ row }) => <NodeStateDetails node={row.original} /> },
     {
       id: "reported",
+      meta: { priority: 2 },
       header: t("workerReportedInformation"),
       cell: ({ row }) => (
         <div className="text-sm">
@@ -228,15 +239,15 @@ export function WorkersView() {
     {
       accessorKey: "heartbeat_age_sec",
       header: t("workerHeartbeat"),
-      cell: ({ row }) => formatWorkerHeartbeat(row.original),
+      cell: ({ row }) => formatWorkerHeartbeat(row.original, undefined, uiText),
     },
     {
       id: "load",
       header: t("workerLoad"),
       cell: ({ row }) => (
         <div className="text-sm">
-          <div>CPU {formatNodeMetricPercent(row.original.metrics, "cpu")}</div>
-          <div className="text-muted-foreground">MEM {formatNodeMetricPercent(row.original.metrics, "memory")}</div>
+          <div>CPU {formatNodeMetricPercent(row.original.metrics, "cpu", uiText)}</div>
+          <div className="text-muted-foreground">MEM {formatNodeMetricPercent(row.original.metrics, "memory", uiText)}</div>
         </div>
       ),
     },
@@ -248,7 +259,14 @@ export function WorkersView() {
   ];
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-5" data-screen-family="workers">
+      <PageHeader title={t("workers")} description={t("workerPageDescription")}
+        actions={<Button variant="outline" disabled={workers.isFetching || registeredNodes.isFetching || serviceHealth.isFetching} onClick={() => {
+          if (canReadWorkers) void workers.refetch();
+          if (canReadRegisteredNodes) void registeredNodes.refetch();
+          if (canReadServiceHealth) void serviceHealth.refetch();
+        }}><RotateCw aria-hidden="true" />{locale === "ja" ? "更新" : "Refresh"}</Button>} />
+      <NodeWorkspaceNavigation active="workers" canRegister={canReadRegisteredNodes} canOperate={canReadWorkers || canReadServiceHealth || canReadRegisteredNodes} />
       <section className="grid gap-4 md:grid-cols-3">
         <MetricCard title={t("onlineNodes")} value={onlineValue} detail={summaryConfirmed ? t("statusNodeHealthy") : unknownSummaryDetail} tone={summaryConfirmed && warning === 0 ? "ok" : "warning"} />
         <MetricCard title={t("workerActiveJobs")} value={activeJobs} detail={t("workerCurrentlyProcessing")} />
@@ -297,18 +315,12 @@ export function WorkersView() {
         </Card>
       ) : null}
 
-      <Card className="min-w-0">
-        <CardHeader>
-          <CardTitle>{t("workers")}</CardTitle>
-          <p className="text-sm text-muted-foreground">{t("workerPageDescription")}</p>
-        </CardHeader>
-        <CardContent>
+      <DetailSection title={locale === "ja" ? "登録・稼働・担当" : "Registration, health and assignment"} description={locale === "ja" ? "接続・プロセス稼働・担当・ジョブを個別に確認してください。再起動の影響は既存の確認画面に表示します。" : "Review connection, process health, assignments and jobs separately. Restart impact is shown in the confirmation."}>
           {remoteState.kind !== "ready" || remoteState.freshness.kind !== "fresh" ? <div className="mb-3"><RemainingStateNotice state={remoteState} consumer="workers" /></div> : null}
           <WorkerActionsContext.Provider value={workerActionsContextValue}>
             <DataTable columns={columns} data={rows} filterPlaceholder={t("workerFilterPlaceholder")} getRowId={(row) => row.service_id || row.id} minTableWidthClass="min-w-[980px]" />
           </WorkerActionsContext.Provider>
-        </CardContent>
-      </Card>
+      </DetailSection>
     </div>
   );
 }
@@ -370,7 +382,7 @@ function WorkerActionsCell({ row }: CellContext<WorkerNode, unknown>) {
         <ActionAvailabilityBoundary
           evaluation={restartEvaluation}
           translate={translate}
-          reasonPresentation="sr-only"
+          reasonPresentation="inline"
           reasonId={`worker-restart-reason-${encodeURIComponent(nodeID)}`}
         >
           {(availabilityProps) => (

@@ -1,0 +1,2872 @@
+{
+  "purpose": "Current UI import/owner/display binding, separate from immutable residual history",
+  "files": [
+    {
+      "path": "web/src/features/streams/streams-view.tsx",
+      "binding": {
+        "keys": [
+          "Discord VCの開始条件、入力、出力、録画を設定します。",
+          "Discord未設定",
+          "VC参加で自動開始",
+          "VC参加で自動開始",
+          "{0} のWorkerテストを実行",
+          "{0} の固定Relay回復を実行",
+          "{0} の設定を更新しました。開始前に担当Nodeと出力先を確認してください。",
+          "{0} の開始準備を再確認",
+          "{0} を作成しました。稼働中の配信を保護するためNode割り当ては変更していません。開始前にこの配信枠を編集し、担当Nodeを明示的に割り当ててください。",
+          "{0} を停止",
+          "{0} を削除",
+          "{0} を強制停止",
+          "{0} を編集",
+          "{0} を開始",
+          "{0} ライブ調整",
+          "{0} 再送せず、最新状態を確認してください。",
+          "{0}の{1}を受け付けました。最新状態を確認してください。",
+          "フォルダー",
+          "ライブ調整",
+          "保存先未設定",
+          "再試行",
+          "出力未設定",
+          "待機中または終了済みの配信枠の設定を変更します。",
+          "手動開始",
+          "手動開始",
+          "操作結果を確認できません。再送せず、配信枠の最新状態または監査ログを確認してください。",
+          "未割当",
+          "未割当",
+          "設定済み",
+          "通信状態を確認して再試行してください。新しい操作は一覧が更新されてから行ってください。",
+          "配信IDをコピー",
+          "配信先はv2 snapshotで管理",
+          "配信枠",
+          "配信枠を作成",
+          "配信枠を取得できませんでした",
+          "配信枠を編集"
+        ],
+        "hooks": [
+          "uiText"
+        ],
+        "defaults": [],
+        "imports": [
+          "@/lib/i18n/ui-v2/presentation-copy",
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/streams/stream-slot-form.tsx",
+      "binding": {
+        "keys": [
+          "Discord BOT設定",
+          "Discord VCの開始条件、配信経路、録画保存先を設定します。Node割り当ては作成後に明示的に行います。",
+          "Discord VCへの参加を検知して自動開始",
+          "Encoderライブ調整",
+          "Encoder音量は -60 dB から +24 dB の範囲で指定してください。",
+          "Encoder音量（dB）",
+          "Nodeを割り当てる権限がありません。管理者に依頼し、サービス稼働画面で割り当てを確認してください。",
+          "YouTube出力",
+          "YouTube開始予定",
+          "{0} のライブ設定を停止せず反映しました。",
+          "{0} の設定を更新しました。",
+          "{0} を配信枠として作成しました。",
+          "で録画プロファイルと保存先を作成してください。",
+          "ウォーターマークを使う場合は、ウォーターマーク設定を選択してください。",
+          "ウォーターマークを使用",
+          "ウォーターマーク設定",
+          "エンコード設定",
+          "ライブ設定を反映",
+          "ライブ設定を反映",
+          "例: 商品発表会 メイン配信",
+          "出力と録画",
+          "基本情報",
+          "字幕設定",
+          "待機中または終了済みの枠設定を編集します。",
+          "担当Encoder Node",
+          "担当Worker Node",
+          "新規作成では既存配信のNode割り当てを変更しません。作成後に配信枠を編集し、開始前に担当Nodeを割り当ててください。",
+          "日時はこのブラウザのタイムゾーンで扱います。既存の予定を消して保存すると、次回の開始は即時になります。",
+          "未選択",
+          "未選択",
+          "未選択",
+          "未選択",
+          "未選択",
+          "未選択",
+          "未選択",
+          "空欄なら、配信開始時にYouTubeの枠をすぐ開始します。日時を指定した場合だけ予定配信になります。",
+          "自動開始する配信枠には、担当Encoder Nodeと担当Worker Nodeを選択してください。",
+          "自動開始に使うDiscord。担当Nodeは作成後の編集で割り当てます。",
+          "自動開始に使うDiscordと担当Node",
+          "自動開始を使うには、Discord BOT設定とv2 Discord配信先を指定してください。",
+          "視聴先と事前登録した録画設定",
+          "設定を保存",
+          "設定を保存",
+          "運用中に識別する配信枠名",
+          "配信を止めずにEncoder音量とウォーターマークを変更できます。",
+          "配信枠を作成",
+          "配信枠を作成",
+          "配信枠を作成",
+          "配信枠を作成する権限がありません。",
+          "配信枠を更新する権限がありません。",
+          "配信枠を編集",
+          "配信枠名",
+          "録画しない",
+          "録画する場合は、先に",
+          "録画プロファイル",
+          "録画・アーカイブ",
+          "開始予定（任意）",
+          "開始条件",
+          "音量とウォーターマークは配信中でも停止せず反映されます。"
+        ],
+        "hooks": [
+          "uiText"
+        ],
+        "defaults": [],
+        "imports": [
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/archive/archive-view.tsx",
+      "binding": {
+        "keys": [
+          "DL許可",
+          "Encoderで録画成果物を生成・報告しています。完了すると下の選択肢に自動で追加されます。",
+          "この配信枠のローカル録画アーカイブはまだ報告されていません。",
+          "アーカイブの処理状況を取得できませんでした。完成済み成果物の一覧は引き続き利用できます。",
+          "アーカイブ処理中",
+          "アーカイブ名",
+          "ダウンロード",
+          "ダウンロード",
+          "ダウンロード許可",
+          "ファイル名に / または \\\\ は使えません。",
+          "ブラウザへのダウンロード引き渡しを開始しました。転送完了はブラウザで確認してください。",
+          "メタデータ",
+          "リネーム",
+          "リネームしました。",
+          "ログ",
+          "ログインセッションが切れています。再ログインしてから再試行してください。",
+          "ローカル録画アーカイブはまだありません。",
+          "今回作成した共有URL",
+          "件",
+          "停止処理中",
+          "共有を停止",
+          "共有リンクを作成しました。明示的に表示した場合だけ確認できます。",
+          "共有リンクを停止しました。",
+          "共有リンク作成",
+          "共有期限は1時間から720時間の範囲で入力してください。",
+          "共有期限時間",
+          "再生",
+          "再生のみ",
+          "再試行",
+          "再試行",
+          "再試行",
+          "削除",
+          "削除しました。",
+          "字幕",
+          "完了直後は成果物の生成と報告に時間がかかるため、最初の約1分間は5秒ごと、その後も30秒ごとに自動更新します。",
+          "完成済みのローカル録画アーカイブはまだありません。処理完了後に自動で表示されます。",
+          "従来形式",
+          "従来形式",
+          "成果物の報告待ち",
+          "成果物作成",
+          "操作結果を確認できません。再送せず、最新状態または監査ログを確認してください。",
+          "文字起こし",
+          "時間有効",
+          "更新",
+          "更新",
+          "更新に失敗したため、取得済みの録画成果物を表示しています。",
+          "最新の権限または状態を確認できないため、ダウンロードを開始しませんでした。",
+          "最新の権限または状態を確認できないため、操作を送信しませんでした。",
+          "有効な共有リンクはありません。",
+          "期限:",
+          "状態不明",
+          "表示",
+          "要確認",
+          "配信回別保存",
+          "配信枠が見つかりません。配信枠一覧を更新してから再試行してください。",
+          "配信枠を取得できませんでした。通信状態を確認して再試行してください。",
+          "配信開始",
+          "配信開始",
+          "録画",
+          "録画成果物を取得できませんでした。Control PanelまたはMariaDBの状態を確認して再試行してください。",
+          "録画成果物を取得できませんでした。最新状態を確認して再試行してください。",
+          "録画成果物を取得できませんでした。通信状態を確認して再試行してください。",
+          "録画成果物を確認する権限がありません。管理者に「録画の閲覧」権限を依頼してください。",
+          "録画成果物を表示する権限がありません。管理者に権限を確認してください。",
+          "開く",
+          "（枠削除済み）"
+        ],
+        "hooks": [
+          "uiText",
+          "uiText",
+          "uiText",
+          "uiText",
+          "uiText"
+        ],
+        "defaults": [
+          "japaneseCopy",
+          "japaneseCopy",
+          "japaneseCopy"
+        ],
+        "imports": [
+          "@/lib/i18n/ui-v2/copy",
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/monitoring/monitoring-view.tsx",
+      "binding": {
+        "keys": [
+          "Control Panelに接続中",
+          "Encoder事前診断",
+          "Google Drive接続",
+          "Monitoringは障害対応と稼働状況を確認する画面です。CPUやメモリなどの時系列分析はMetricsで確認します。",
+          "Nodeの稼働状況を取得できませんでした。",
+          "Node監視",
+          "Node要確認",
+          "heartbeatまたは登録状態",
+          "{0}件は判定不能",
+          "{0}件は判定不能",
+          "{0}件は状態不明",
+          "{0}件を分母から除外",
+          "{0}分前",
+          "{0}時間前",
+          "{0}秒前",
+          "インシデント",
+          "インシデント",
+          "インシデント",
+          "オンラインNode",
+          "一部の情報を取得できません",
+          "優先対応が必要な項目はありません。",
+          "再試行",
+          "再試行",
+          "再試行",
+          "対応または確認が必要",
+          "映像生成イベント",
+          "更新に失敗しました。直前に取得したNode状態を表示しています。",
+          "更新に失敗しました。直前のインシデントを表示しています。",
+          "更新に失敗しました。直前の診断結果を表示しています。",
+          "最終更新:",
+          "未取得",
+          "未登録の対象",
+          "未解決インシデント",
+          "状態",
+          "現在の問題を取得できませんでした。",
+          "現在の問題・Node稼働・診断を分けて確認",
+          "現在検知されている問題はありません。",
+          "登録済みNodeがありません。",
+          "監視情報は正常に取得済み",
+          "直近の疎通・配信前確認",
+          "確認対象",
+          "管理者向け要約",
+          "自動更新: Nodeは10秒ごと",
+          "診断",
+          "診断結果",
+          "診断結果はまだありません。",
+          "診断結果を取得できませんでした。",
+          "診断警告",
+          "配信",
+          "音声状態"
+        ],
+        "hooks": [
+          "uiText",
+          "uiText",
+          "uiText",
+          "uiText",
+          "uiText",
+          "uiText",
+          "uiText"
+        ],
+        "defaults": [
+          "japaneseCopy",
+          "japaneseCopy",
+          "japaneseCopy"
+        ],
+        "imports": [
+          "@/lib/i18n/ui-v2/copy",
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/metrics/metrics-view.tsx",
+      "binding": {
+        "keys": [
+          "CPUコア数",
+          "CPU・メモリ・ディスクは使用率、ネットワークは送受信量を表示します。高負荷のNodeは下のグラフと一覧で切り分けてください。",
+          "CPU使用率",
+          "CPU使用率",
+          "CPU使用率",
+          "Discord音声転送",
+          "Encoder 出力ビットレート",
+          "Encoderプロセス",
+          "GC pause累計秒数",
+          "Heap使用量",
+          "Nodeなし",
+          "Node別サマリー",
+          "Observability goroutine数",
+          "Observability heap object数",
+          "Observability heap予約量",
+          "Observability heap使用量",
+          "Observability稼働秒数",
+          "Worker CPU使用率",
+          "Worker メモリ使用率",
+          "Worker 実行中ジョブ",
+          "root inode使用率",
+          "root inode空き数",
+          "root inode総数",
+          "rootディスク",
+          "rootディスク使用率",
+          "rootディスク使用量",
+          "rootディスク空き容量",
+          "rootディスク総量",
+          "{0} の",
+          "{0}{1}: データなし",
+          "{0}{1}: 危険",
+          "{0}{1}: 正常",
+          "{0}{1}: 注意",
+          "まだメトリクスを受信していません。",
+          "オフライン",
+          "オンライン",
+          "ディスク",
+          "ディスク使用率",
+          "ディスク使用率",
+          "データなし",
+          "ネットワーク",
+          "ネットワーク",
+          "ネットワーク受信 kbps",
+          "ネットワーク受信累計",
+          "ネットワーク受信量",
+          "ネットワーク送信 kbps",
+          "ネットワーク送信累計",
+          "ネットワーク送信量",
+          "ネットワーク送受信",
+          "プロセス goroutine数",
+          "プロセス heap object数",
+          "プロセス heap予約量",
+          "プロセス heap使用量",
+          "プロセス稼働秒数",
+          "メトリクス",
+          "メトリクスを取得できませんでした。",
+          "メトリクスを報告中",
+          "メモリ",
+          "メモリ",
+          "メモリ buffers",
+          "メモリ cached",
+          "メモリ使用率",
+          "メモリ使用率",
+          "メモリ使用率",
+          "メモリ使用量",
+          "メモリ利用可能容量",
+          "メモリ空き容量",
+          "メモリ総量",
+          "ロードアベレージ 15分",
+          "ロードアベレージ 1分",
+          "ロードアベレージ 5分",
+          "不明",
+          "値",
+          "再試行",
+          "処理・ランタイム指標",
+          "取得中",
+          "取得失敗",
+          "受信Node",
+          "指標",
+          "指標",
+          "更新",
+          "更新失敗（取得済みデータ）",
+          "最新メトリクス",
+          "最終更新:",
+          "未取得",
+          "未確認",
+          "未設定",
+          "正常",
+          "注意",
+          "状態",
+          "直近15分",
+          "直近1時間",
+          "直近30分",
+          "直近3時間",
+          "管理者向け要約",
+          "自動更新: 10秒ごと",
+          "表示中: {0}",
+          "送受信スループット",
+          "配信基盤の負荷と通信を確認",
+          "（更新中）"
+        ],
+        "hooks": [
+          "uiText",
+          "uiText",
+          "uiText"
+        ],
+        "defaults": [
+          "japaneseCopy",
+          "japaneseCopy",
+          "japaneseCopy",
+          "japaneseCopy",
+          "japaneseCopy",
+          "japaneseCopy",
+          "japaneseCopy",
+          "japaneseCopy"
+        ],
+        "imports": [
+          "@/lib/i18n/ui-v2/copy",
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/audit/audit-logs-view.tsx",
+      "binding": {
+        "keys": [
+          "Discord BOT設定",
+          "Drive保存先",
+          "Node / Host Agentの登録、Heartbeat、設定参照、Observability Signals送信の記録です。",
+          "Node ID・シグナル・結果",
+          "Node報告・通信",
+          "Node報告・通信",
+          "OAuthプロバイダ",
+          "OAuth接続アカウント",
+          "YouTube出力",
+          "」に一致する履歴を表示しています。",
+          "すべての結果",
+          "シークレット",
+          "プロファイル",
+          "ユーザー",
+          "ロール",
+          "共有リンク",
+          "失敗",
+          "対象IDをコピー",
+          "成功",
+          "担当者とシステムによる変更・操作の記録です。",
+          "操作履歴",
+          "操作履歴",
+          "操作結果",
+          "検索",
+          "監査ログ",
+          "監査ログの検索語",
+          "終了日時",
+          "通知先",
+          "配信枠",
+          "配信枠ID・操作名・ユーザー",
+          "録画ファイル",
+          "開始日時"
+        ],
+        "hooks": [
+          "uiText"
+        ],
+        "defaults": [
+          "japaneseCopy"
+        ],
+        "imports": [
+          "@/lib/i18n/ui-v2/copy",
+          "@/lib/i18n/ui-v2/presentation-copy",
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/nodes/node-registration-view.tsx",
+      "binding": {
+        "keys": [
+          "Hostと1024〜65535のPortを入力してください",
+          "Node Agentが自動報告する項目",
+          "Nodeを作成して設定を発行",
+          "Nodeを新規作成",
+          "Nodeサービス",
+          "Node設定を発行できませんでした",
+          "Node設定を発行中...",
+          "PanelでNodeを作成し、Node Agentへ配置する設定ファイルを発行します。",
+          "SSLを有効化してHTTPSを使用",
+          "Updaterの登録とRuntime Tokenの発行には、secrets.update 権限が必要です。",
+          "Updaterの登録と更新用scopeの発行には、system_updates.execute 権限が必要です。",
+          "Updater名、Host ID、状態で検索",
+          "Worker / Encoderの署名鍵または実行時シークレットを発行するには、シークレット更新権限が必要です。",
+          "Worker、Encoder / Recorder、Discord BOT、Observabilityの登録・稼働情報",
+          "を登録しました。一覧に表示されない場合は「更新」を押してください。",
+          "バージョン、OS、ArchitectureはConfigure実行時または起動後のHeartbeatで報告されます。CapabilityとメトリクスはHeartbeatで更新されます。",
+          "ホスト単位の更新専用。通常のNodeサービスとは別の管理経路です。",
+          "作成済みNode、Configure実行状況、最終Heartbeatを確認できます。",
+          "受信listenerは作成しません。登録・Heartbeat・Policy取得はControl Panelの既存HTTPS APIを使用します。",
+          "実行時シークレットを自動付与（Encoder / Recorder必須）",
+          "更新",
+          "更新中",
+          "物理ホストごとに一意のIDです。Host AgentはControl Panelへ外向き接続するため、APIポート・SSL・SSH設定は不要です。",
+          "登録済み:",
+          "登録済みNode",
+          "説明"
+        ],
+        "hooks": [
+          "uiText"
+        ],
+        "defaults": [],
+        "imports": [
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/application/application-info-view.tsx",
+      "binding": {
+        "keys": [
+          "Control Panelを更新しています。再接続中です。",
+          "Endpoint revisionが変わったため送信しませんでした。Node状態を再取得できなかったため、手動で再取得してからやり直してください。",
+          "Endpoint revisionが変わったため送信しませんでした。最新のNode状態を再取得しました。内容を確認してからやり直してください。",
+          "{0}/{1} 受付中",
+          "{0}/{1}件を受付済みです。{2} の受付で停止しました。{3}",
+          "{0}: ポート変更ジョブを受け付けました。現在適用中のendpointが更新されるまでお待ちください。",
+          "{0}: 応答を確認できなかったポート変更ジョブを履歴から確認しました。",
+          "{0}件の更新ジョブを順番に受け付けました。",
+          "コミット",
+          "バージョン",
+          "ビルド日時",
+          "ポート変更ジョブを開始できませんでした。",
+          "ポート変更要求の結果を確認できません。安全のため同じ対象への再送を停止し、更新履歴を自動確認します。",
+          "不明な対象",
+          "再起動中は一時的にAPIへ接続できません。この画面は自動的に再確認します。",
+          "情報を再取得",
+          "更新ジョブをキャンセルしました。",
+          "更新ジョブをキャンセルできませんでした。",
+          "更新ジョブを受け付けました。",
+          "更新可能なものを順次受付（ホストごと並行）{0}",
+          "更新情報を再確認",
+          "更新確認",
+          "更新確認エラー:",
+          "配信終了後に更新を開始します。"
+        ],
+        "hooks": [
+          "uiText"
+        ],
+        "defaults": [],
+        "imports": [
+          "@/lib/i18n/ui-v2/presentation-copy",
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/account/account-view.tsx",
+      "binding": {
+        "keys": [
+          "{0}のアカウントアイコン",
+          "メールアドレス未設定",
+          "ロール未設定"
+        ],
+        "hooks": [
+          "uiText"
+        ],
+        "defaults": [],
+        "imports": [
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/components/auth/auth-card.tsx",
+      "binding": {
+        "keys": [
+          "2FAコード",
+          "2FAコードを入力してください。",
+          "2FAコードを入力してください。",
+          "2FAコードを確認してください。",
+          "2FAコードを確認してください。",
+          "2FA確認",
+          "2FA確認の有効期限が切れています。もう一度ログインしてください。",
+          "BOT確認に失敗しました。もう一度お試しください。",
+          "BOT確認を利用できません。時間をおいて再試行してください。",
+          "BOT確認を完了してください。",
+          "BOT確認設定が未完了です。管理者に確認してください。",
+          "OAuthログイン",
+          "OAuthログインのMFA確認を完了してください。",
+          "OAuthログインを開始できませんでした。",
+          "Passkeyでログイン",
+          "Passkeyでログインできませんでした。",
+          "Passkeyログインの有効期限が切れています。もう一度お試しください。",
+          "Passkeyログインはまだ構成されていません。",
+          "Passkeyログインを開始できませんでした。",
+          "Passkeyログイン設定を確認してください。",
+          "Passkey認証の応答がありません。",
+          "このOAuthプロバイダはログインに利用できません。",
+          "このアカウントは2FA登録が必要です。管理者に確認してください。",
+          "このアカウントはPasskeyログインが必要です。",
+          "このアカウントはPasskey登録が必要です。管理者に確認してください。",
+          "このブラウザではPasskeyを利用できません。",
+          "このブラウザではPasskeyログインを利用できません。",
+          "へ進んでください。",
+          "を完了してください。",
+          "セッションの有効期限が切れました。もう一度ログインしてください。",
+          "メールアドレスを変更しました。",
+          "メールアドレス変更URLの有効期限が切れています。",
+          "メールアドレス変更確認",
+          "ユーザー名またはパスワードを確認してください。",
+          "ログインできませんでした。ユーザー名とパスワードを確認してください。",
+          "ログインへ戻る",
+          "ログインページ",
+          "ワンタイムURLの確認を完了します。",
+          "初回だけ管理者ユーザーを作成します。",
+          "初回管理者が未作成です。先に",
+          "初期作成",
+          "初期作成の結果を確認できません。再送せず、ログイン可能か確認してください。",
+          "初期作成は無効です。`AUTOSTREAM_SETUP_TOKEN` を設定して再起動してください。",
+          "初期管理者は作成済みです。",
+          "初期管理者を作成しました。ログインページへ進みます。",
+          "変更結果を確認できません。再送せず、ログイン後のアカウント状態を確認してください。",
+          "確認する",
+          "確認トークンがありません。"
+        ],
+        "hooks": [
+          "uiText",
+          "uiText",
+          "uiText"
+        ],
+        "defaults": [
+          "japaneseCopy"
+        ],
+        "imports": [
+          "@/lib/i18n/ui-v2/copy",
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/archive/archive-share-player-view.tsx",
+      "binding": {
+        "keys": [
+          "このファイルはブラウザー再生に対応していません。",
+          "ネットワークまたはサーバーの応答を確認してください。",
+          "メタデータ",
+          "ログ",
+          "共有アーカイブを表示できません",
+          "共有リンクのトークンが指定されていません。",
+          "共有リンクの期限が切れています。",
+          "共有リンクは停止済みです。",
+          "共有リンクまたはアーカイブが見つかりません。",
+          "共有リンクを確認してください。",
+          "共有リンクを確認してください。",
+          "字幕",
+          "文字起こし",
+          "許可されている場合はダウンロードして確認してください。",
+          "録画"
+        ],
+        "hooks": [
+          "uiText",
+          "uiText",
+          "uiText"
+        ],
+        "defaults": [
+          "japaneseCopy",
+          "japaneseCopy"
+        ],
+        "imports": [
+          "@/lib/i18n/ui-v2/copy",
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/settings/settings-view.tsx",
+      "binding": {
+        "keys": [
+          "G-から始まるMeasurement IDを入力してください。",
+          "GA4データストリームの「拡張計測機能」はOFFにしてください。ONのままでは、履歴変更のpage_viewやサイト内検索などがGoogle側から別途自動送信されます。",
+          "IANA time zone nameを直接入力できます。",
+          "STARTTLSを使用する",
+          "Turnstileを使う場合は有効化してSite keyとSecret keyを保存してください。",
+          "アプリ名",
+          "タイムゾーン",
+          "タイムゾーンID",
+          "テストメールを送信しました。",
+          "テスト送信",
+          "テスト送信先",
+          "メールサーバー",
+          "メール送信を使う場合は有効化してSMTP情報を保存してください。",
+          "ユーザー登録完了、メール変更確認、運用通知に使います。",
+          "ログインとメール変更確認のBOT確認に使います。",
+          "ログイン画面と管理画面のページ閲覧だけをGA4へ送信します。AutoStreamが送るイベントには検索条件、ユーザー情報、配信内容を含めません。",
+          "保存しました。",
+          "保存前の表示名とタイムゾーン変換結果を確認できます。",
+          "候補から選択",
+          "基本設定",
+          "手入力",
+          "手入力: {0}",
+          "有効なIANA time zone nameを入力してください。",
+          "有効化するまでGoogleのスクリプトや計測通信は読み込まれません。",
+          "未確認",
+          "現在時刻",
+          "管理画面の名前と、システム内の時刻表示に使う基準タイムゾーンです。",
+          "表示プレビュー",
+          "設定済み",
+          "設定済み"
+        ],
+        "hooks": [
+          "uiText"
+        ],
+        "defaults": [],
+        "imports": [
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/streams/stream-action-feedback.ts",
+      "binding": {
+        "keys": [
+          "Workerテスト",
+          "この操作を実行する権限がありません。",
+          "プレビューURL発行",
+          "ライブ設定更新",
+          "作成",
+          "停止",
+          "削除",
+          "前回の結果を確認できないため再送を抑止しています。最新状態または監査ログを確認してください。",
+          "同じ操作を処理中です。",
+          "固定Relay回復",
+          "対象の状態が変更されたため送信しませんでした。最新状態を確認してください。",
+          "強制停止",
+          "最新の権限または配信状態を確認できないため、操作を送信しませんでした。",
+          "設定更新",
+          "開始",
+          "開始準備確認"
+        ],
+        "hooks": [],
+        "defaults": [
+          "japaneseCopy",
+          "japaneseCopy"
+        ],
+        "imports": [
+          "@/lib/i18n/ui-v2/copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/streams/stream-summary.tsx",
+      "binding": {
+        "keys": [
+          "配信状態の集計"
+        ],
+        "hooks": [
+          "uiText"
+        ],
+        "defaults": [],
+        "imports": [
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/streams/stream-view-options.ts",
+      "binding": {
+        "keys": [
+          "Node側で開始時に自動生成",
+          "入力未設定"
+        ],
+        "hooks": [
+          "uiText",
+          "uiText"
+        ],
+        "defaults": [
+          "japaneseCopy"
+        ],
+        "imports": [
+          "@/lib/i18n/ui-v2/copy",
+          "@/lib/i18n/ui-v2/presentation-copy",
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/streams/stream-preview.tsx",
+      "binding": {
+        "keys": [
+          "Encoderプレビュー",
+          "VC参加者",
+          "VC参加者情報を更新できません。映像の再生は継続します。",
+          "v2 scene capabilityが未適用のため、参加者表示の準備が完了していません。",
+          "ネットワーク再生URLをコピー",
+          "ネットワーク再生URLを発行",
+          "プレビューURL",
+          "再接続中",
+          "再生中",
+          "再生失敗",
+          "再試行",
+          "有効期限:",
+          "準備中",
+          "詳細:",
+          "（発言中）"
+        ],
+        "hooks": [
+          "uiText",
+          "uiText",
+          "uiText"
+        ],
+        "defaults": [],
+        "imports": [
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/streams/stream-visual-settings-section.tsx",
+      "binding": {
+        "keys": [
+          "再操作せず、最新状態を再読込してください。",
+          "現在の権限または状態ではビジュアル設定を保存できません。",
+          "設定が変わりました。再読込してから保存してください。"
+        ],
+        "hooks": [
+          "uiText"
+        ],
+        "defaults": [
+          "japaneseCopy"
+        ],
+        "imports": [
+          "@/lib/i18n/ui-v2/copy",
+          "@/lib/i18n/ui-v2/presentation-copy",
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/resources/resource-permissions.tsx",
+      "binding": {
+        "keys": [
+          "Discord設定",
+          "Nodeヘルス",
+          "Worker管理",
+          "YouTube出力",
+          "{0}に関する操作権限です。",
+          "{0}の割り当て解除",
+          "{0}の状態を見る",
+          "{0}をダウンロード",
+          "{0}を作成",
+          "{0}を停止",
+          "{0}を再起動",
+          "{0}を削除",
+          "{0}を割り当て",
+          "{0}を失効",
+          "{0}を書き出し",
+          "{0}を無効化",
+          "{0}を編集",
+          "{0}を見る",
+          "{0}を開始",
+          "この操作には「{0}」権限が必要です。管理者に権限付与を依頼してください。",
+          "この操作を実行する権限がありません。管理者に権限付与を依頼してください。",
+          "すべての操作を許可",
+          "その他",
+          "インシデント",
+          "インシデントを確認済みにする",
+          "インシデントを解決済みにする",
+          "ウォーターマーク設定",
+          "エンコーダー設定",
+          "サービス割り当て",
+          "システム更新",
+          "システム更新を実行",
+          "システム設定",
+          "シークレット",
+          "メトリクス",
+          "ユーザーにパスワード変更を要求",
+          "ユーザーのMFAを管理",
+          "ユーザーのパスワードを再設定",
+          "ユーザー管理",
+          "ログ",
+          "ロール管理",
+          "全画面と全操作を許可します。管理者ロールだけに付与します。",
+          "外部連携",
+          "字幕/STT設定",
+          "復旧操作",
+          "復旧操作を実行",
+          "復旧操作を承認",
+          "監査ログ",
+          "管理者",
+          "診断",
+          "診断を実行",
+          "通知テストを送信",
+          "通知設定",
+          "配信運用",
+          "録画/アーカイブ設定",
+          "録画アップロードを再試行",
+          "録画ファイル"
+        ],
+        "hooks": [],
+        "defaults": [
+          "japaneseCopy",
+          "japaneseCopy",
+          "japaneseCopy",
+          "japaneseCopy",
+          "japaneseCopy",
+          "japaneseCopy",
+          "japaneseCopy"
+        ],
+        "imports": [
+          "@/lib/i18n/ui-v2/copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/resources/service-health-resource-panel.tsx",
+      "binding": {
+        "keys": [
+          "参照"
+        ],
+        "hooks": [
+          "uiText"
+        ],
+        "defaults": [],
+        "imports": [
+          "@/lib/i18n/ui-v2/resource-copy",
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/resources/generic-resource-panel.tsx",
+      "binding": {
+        "keys": [
+          "さらに過去の履歴を読み込む",
+          "削除しました。",
+          "参照",
+          "操作結果を確認できません。再送せず、最新状態または監査ログを確認してください。",
+          "最新の権限または状態を確認できないため、操作を送信しませんでした。",
+          "状態が更新されたため操作を再送しませんでした。最新状態を確認してください。",
+          "過去の履歴を取得できませんでした。通信状態を確認して再試行してください。"
+        ],
+        "hooks": [
+          "uiText"
+        ],
+        "defaults": [],
+        "imports": [
+          "@/lib/i18n/ui-v2/resource-copy",
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/workers/node-operational-display.ts",
+      "binding": {
+        "keys": [
+          "未取得",
+          "未報告"
+        ],
+        "hooks": [],
+        "defaults": [
+          "japaneseCopy",
+          "japaneseCopy"
+        ],
+        "imports": [
+          "@/lib/i18n/ui-v2/copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/nodes/node-foundation-artifact.tsx",
+      "binding": {
+        "keys": [
+          "Node削除",
+          "Node更新"
+        ],
+        "hooks": [
+          "uiText"
+        ],
+        "defaults": [],
+        "imports": [
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/nodes/node-configuration-card.tsx",
+      "binding": {
+        "keys": [
+          "/ 報告バージョン:",
+          "Applied Node Agent API URL（後方互換）",
+          "Configure Tokenと実行手順は再表示されません。一覧の鍵ボタンから新しいTokenを発行すると、この画面に対象サービスの初期設定手順が一度だけ表示されます。",
+          "Configure Tokenは1回限りの初期設定用、Node Runtime TokenはPanelとNode Agent間の通常通信認証用です。Host Agentの実行対象とpolicyは「アプリケーション情報」で設定します。",
+          "Configure Tokenを再生成してください",
+          "Configure Token期限:",
+          "Discord VC空室時の自動停止を有効化",
+          "Host Agentの初期設定",
+          "Node Agentの初期設定",
+          "Nodeを作成、または登録済みNodeのConfiguration・Token再生成を実行するとここに表示されます。",
+          "Node種別に応じた設定ファイルと、生成直後だけ表示されるTokenを安全にNodeへ反映してください。",
+          "Token運用",
+          "Updater / Host AgentのPanel接続情報を更新する場合はConfigure Tokenを再生成し、表示された手順を対象サービスを稼働させるホストで実行します。",
+          "コマンド自体にConfigure Tokenは含まれず、実行時にTTYまたは標準入力から読み取ります。 設定処理が失敗または結果不確定の場合は、対象サービスを再起動しないでください。Configurationで新しいConfigure Tokenを発行し、同じtoken-free commandを新しいTokenで再実行してください。",
+          "報告済み",
+          "接続状態",
+          "既存のDiscord Botでは、ここでConfigure Tokenを再生成し、表示された設定をBotホストへ適用してからサービスを再起動してください。 この権限追加の対象になる、更新前に発行した未使用のConfigure Tokenは使えないため、再発行が必要です。実行完了時にだけ、既存の",
+          "未取得",
+          "未取得",
+          "権限が新しいNode Runtime Tokenへ追加されます。Tokenを発行しただけでは切り替わりません。",
+          "権限へ対応する",
+          "表示されたコマンドを対象ホストで1回実行すると、Panel接続情報を安全に初期設定します。",
+          "表示された手順を、このHost Agentを稼働させる対象ホストで1回実行すると、Control Panelへの外向き接続を初期設定します。受信API endpointや専用portは作成しません。",
+          "選択中のNode"
+        ],
+        "hooks": [
+          "uiText"
+        ],
+        "defaults": [],
+        "imports": [
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/nodes/node-edit-dialog.tsx",
+      "binding": {
+        "keys": [
+          "Host Pull Agentは受信endpointを持ちません。Execution Host IDとtransport ownershipは別の移行操作で管理されます。",
+          "Hostと1024〜65535のPortを入力してください",
+          "Node IDとNode typeは変更できません。接続先を変えた場合は必要に応じてNode Agent側の設定も更新してください。",
+          "Nodeを編集",
+          "SSLを有効化してHTTPSを使用",
+          "保存",
+          "保存中",
+          "説明"
+        ],
+        "hooks": [
+          "uiText"
+        ],
+        "defaults": [],
+        "imports": [
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/nodes/registered-node-columns.tsx",
+      "binding": {
+        "keys": [
+          "Configurationを表示",
+          "Configurationを表示",
+          "Configure Tokenを再生成",
+          "Configure Tokenを再生成",
+          "Configure Tokenを再生成する権限がありません。",
+          "Configure Token再生成には api_tokens.create 権限が必要です。",
+          "Configure Token再生成には api_tokens.revoke 権限が必要です。",
+          "Node IDをコピー",
+          "Node IDをコピー",
+          "Nodeを削除",
+          "Nodeを削除",
+          "Nodeを編集",
+          "Nodeを編集",
+          "Node登録、割り当て、Runtime Tokenを無効化します。この操作は取り消せません。",
+          "Runtime Tokenを再生成",
+          "Runtime Tokenを再生成",
+          "Runtime Token再生成には api_tokens.create と api_tokens.revoke 権限が必要です。",
+          "UpdaterのConfigure Token再生成には secrets.update 権限が必要です。",
+          "UpdaterのConfigure Token再生成には system_updates.execute 権限が必要です。",
+          "UpdaterのRuntime Token再生成には secrets.update 権限が必要です。",
+          "UpdaterのRuntime Token再生成には system_updates.execute 権限が必要です。",
+          "Worker / EncoderのConfigure Token再生成には secrets.update 権限が必要です。",
+          "{0} のRuntime Tokenを再生成しますか",
+          "{0} を削除しますか",
+          "再生成",
+          "初期化",
+          "削除",
+          "削除",
+          "報告 / 負荷",
+          "既存のRuntime Tokenは無効になります。Node Agentへ新しいconfig.ymlまたはTokenを反映してください。",
+          "既存のRuntime Tokenは無効になります。通常はこの操作ではなくConfigure Tokenを再生成し、表示された手順をこのHost Agentを稼働させる対象ホストで実行してください。",
+          "最終Heartbeat",
+          "状態 / 登録",
+          "編集",
+          "設定"
+        ],
+        "hooks": [],
+        "defaults": [
+          "japaneseCopy"
+        ],
+        "imports": [
+          "@/lib/i18n/ui-v2/copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/application/system-update-job-presentation.tsx",
+      "binding": {
+        "keys": [
+          "Control Panelの更新が完了しました。新しい管理画面へ再読み込みします。",
+          "Control Panelの更新は完了しませんでした。{0}",
+          "local {0} → {1} / 広告 {2} → {3}",
+          "ソフトウェア更新",
+          "ポート変更",
+          "広告 {0} → {1} / published {2} → {3} / container {4} → {5}",
+          "配信終了待ち"
+        ],
+        "hooks": [],
+        "defaults": [
+          "japaneseCopy",
+          "japaneseCopy",
+          "japaneseCopy",
+          "japaneseCopy",
+          "japaneseCopy"
+        ],
+        "imports": [
+          "@/lib/i18n/ui-v2/copy",
+          "@/lib/i18n/ui-v2/presentation-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/application/system-updates-card.tsx",
+      "binding": {
+        "keys": [
+          "Control Panelで更新ジョブを作成し、各ホストのHost Agentがoutbound通信で受け取って安全に適用します。",
+          "Docker配備では、Docker Bundleのバージョンと各サービスのバージョンは別に管理されます。表示が異なっていても異常ではなく、対象ホストのHost AgentがBundle設定を照合して更新します。 pull_v2ではHost AgentからControl Panelへ接続するため、Control Panelから各ホストへのSSH接続やUpdater用TCP受信ポートは使いません。",
+          "Host Agentが登録されていません。更新ジョブは開始できません。",
+          "pull_v2 Host Agentは各ホストからControl Panelへoutbound接続して更新ジョブを受け取ります。",
+          "{0} の更新進捗",
+          "システム更新",
+          "バージョン / ポート",
+          "ホスト未設定",
+          "メッセージ",
+          "メンテナンス更新",
+          "不明",
+          "件の更新ジョブを受付済みです。",
+          "依頼者 / 日時",
+          "再取得",
+          "再試行",
+          "反映情報:",
+          "実行方法",
+          "対象 / 操作",
+          "対象ホスト",
+          "接続エラー:",
+          "接続状態",
+          "操作",
+          "更新の実行には system_updates.execute 権限が必要です。",
+          "更新エージェントが新しい設定を反映中です。反映済みになるまでお待ちください。",
+          "更新エージェントの設定が未設定です。設定を保存してください。",
+          "更新エージェントの設定反映に失敗しています。設定画面でエラーを確認してください。",
+          "更新先",
+          "更新対象が未設定です。各ホストのHost Agentと対象サービスを登録してください。pull_v2ではSSH設定やUpdater用TCP受信ポートは不要です。",
+          "更新対象と履歴を確認するには「system_updates.read」権限が必要です。",
+          "更新対象を取得できませんでした。Control Panelと各Host AgentのHeartbeatを確認してください。",
+          "更新対象を読み込み中です。",
+          "更新履歴はまだありません。",
+          "更新条件を満たしていません。",
+          "最終Heartbeat:",
+          "最終接続確認",
+          "未報告",
+          "未登録",
+          "未確認",
+          "状態",
+          "現在",
+          "現在は更新不要です。",
+          "確認エラー:",
+          "空き次第（配信 {0} の終了後）",
+          "進捗"
+        ],
+        "hooks": [
+          "uiText",
+          "uiText",
+          "uiText"
+        ],
+        "defaults": [],
+        "imports": [
+          "@/lib/i18n/ui-v2/presentation-copy",
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/application/service-endpoint-summary.tsx",
+      "binding": {
+        "keys": [
+          "Host Agent（受信ポートなし）",
+          "Node報告endpoint",
+          "{0} のUpdater transport状態",
+          "{0} のendpoint状態",
+          "使用不可",
+          "使用不可",
+          "受信ポートなし（Outbound HTTPS）",
+          "実行ホスト:",
+          "実行ホスト:",
+          "希望endpoint（未適用を含む）",
+          "未割り当て",
+          "未割り当て",
+          "未報告",
+          "未報告",
+          "未報告",
+          "未報告",
+          "未報告",
+          "未設定",
+          "現在適用中のendpoint",
+          "通常のNode endpointとは別の更新管理経路",
+          "非対応transport"
+        ],
+        "hooks": [
+          "uiText",
+          "uiText"
+        ],
+        "defaults": [],
+        "imports": [
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/application/service-update-presentation.tsx",
+      "binding": {
+        "keys": [
+          "報告バージョン {0} をSemVerとして比較できません。",
+          "報告バージョンが新しい",
+          "更新あり {0}",
+          "更新あり {0}",
+          "更新なし",
+          "更新なし",
+          "更新なし",
+          "更新候補 {0}",
+          "更新確認なし",
+          "更新確認なし",
+          "更新確認なし",
+          "未報告",
+          "未確認",
+          "比較不能",
+          "確認ソース未設定",
+          "確認中",
+          "確認失敗",
+          "確認失敗",
+          "確認失敗"
+        ],
+        "hooks": [],
+        "defaults": [
+          "japaneseCopy",
+          "japaneseCopy",
+          "japaneseCopy"
+        ],
+        "imports": [
+          "@/lib/i18n/ui-v2/copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/application/registered-services-card.tsx",
+      "binding": {
+        "keys": [
+          "Endpoint / ポート変更",
+          "Endpoint / ポート変更",
+          "Nodeサービス",
+          "Nodeサービス",
+          "Nodeサービスは登録されていません。",
+          "Worker、Encoder / Recorder、その他のサービス",
+          "Worker、Encoder / Recorder、その他のサービス",
+          "「現在適用中」が実際の接続先です。「希望」は未適用の値を含み、Node報告と異なる場合があります。",
+          "サービス",
+          "ホスト単位の更新専用",
+          "ホスト単位の更新専用。通常のNode endpointとは別に管理します。",
+          "再試行",
+          "報告バージョンと、希望・適用・Node報告のendpointを区別して表示します。",
+          "未報告",
+          "未報告",
+          "状態",
+          "状態",
+          "登録済みNodeがありません。Node登録ページで作成したNodeがある場合は、ページを更新してください。",
+          "登録済みNodeの情報を取得できませんでした。通信状態とControl Panelのログを確認してください。",
+          "登録済みNodeの情報を確認する権限がありません。管理者にNode情報の閲覧権限を依頼してください。",
+          "登録済みサービス",
+          "種別 / バージョン",
+          "種別 / バージョン",
+          "読み込み中"
+        ],
+        "hooks": [
+          "uiText",
+          "uiText"
+        ],
+        "defaults": [],
+        "imports": [
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/application/application-action-renderers.tsx",
+      "binding": {
+        "keys": [
+          "system_updates.execute 権限が必要です。",
+          "system_updates.execute 権限が必要です。",
+          "キャンセル",
+          "更新",
+          "空き次第更新"
+        ],
+        "hooks": [],
+        "defaults": [
+          "japaneseCopy"
+        ],
+        "imports": [
+          "@/lib/i18n/ui-v2/copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/account/appearance-panel.tsx",
+      "binding": {
+        "keys": [
+          "システム",
+          "ダーク",
+          "テーマ",
+          "ライト",
+          "保存されたテーマを安全に表示できないため、AutoStream / システムで表示しています。DB値は自動変更していません。",
+          "保存中",
+          "保存済みの表示設定を読み込めませんでした。再読み込みしてください。",
+          "別の画面で更新されました。再読み込みしてから選び直してください。",
+          "外観",
+          "表示モード",
+          "表示設定を保存",
+          "表示設定を保存",
+          "表示設定を保存しました。",
+          "表示設定を保存できなかったため、直前の保存状態へ戻しました。",
+          "配色テーマと明るさを選択します。状態の意味を示す色は、どのテーマでも変わりません。"
+        ],
+        "hooks": [
+          "uiText"
+        ],
+        "defaults": [
+          "japaneseCopy"
+        ],
+        "imports": [
+          "@/lib/i18n/ui-v2/copy",
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/account/account-presentation.tsx",
+      "binding": {
+        "keys": [
+          "システム管理者",
+          "ロック中",
+          "初回設定待ち",
+          "有効",
+          "無効",
+          "確認中",
+          "管理者",
+          "配信担当者",
+          "閲覧者"
+        ],
+        "hooks": [],
+        "defaults": [
+          "japaneseCopy",
+          "japaneseCopy"
+        ],
+        "imports": [
+          "@/lib/i18n/ui-v2/copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/account/account-avatar-panel.tsx",
+      "binding": {
+        "keys": [
+          "JPEG / PNG、768 KB以下、32〜2048 px",
+          "JPEGまたはPNG画像を選択してください。",
+          "{0}のアカウントアイコン",
+          "この画像を保存",
+          "アイコン未設定",
+          "アカウントアイコン",
+          "アカウントアイコンを削除しました。",
+          "アカウントアイコンを削除できませんでした",
+          "アカウントアイコンを更新しました。",
+          "アカウントアイコンを更新できませんでした",
+          "アカウントアイコン画像を選択",
+          "ヘッダーとアカウントメニューに表示する画像です。",
+          "保存中",
+          "削除",
+          "変更後のプレビュー",
+          "現在のアイコン",
+          "画像の縦横は32〜2048 pxにしてください。",
+          "画像の選択を取り消す",
+          "画像は768 KB以下にしてください。",
+          "画像を読み込めませんでした。別の画像を選択してください。",
+          "画像を選択",
+          "選択したアカウントアイコンのプレビュー"
+        ],
+        "hooks": [
+          "uiText"
+        ],
+        "defaults": [],
+        "imports": [
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/account/account-security-panels.tsx",
+      "binding": {
+        "keys": [
+          "OAuth連携を解除",
+          "OAuth連携を解除しました。",
+          "{0}を連携",
+          "アカウントメール",
+          "パスワード",
+          "パスワードを変更しました。再ログインしてください。",
+          "メール・OAuth連携",
+          "利用可能なOAuthプロバイダはありません。",
+          "変更して再ログイン",
+          "変更すると新しい宛先へ確認メールを送信します。メール内のワンタイムURLを開くまで変更は完了しません。",
+          "変更後は現在のセッションを含めてログアウトします。",
+          "変更結果を確認できません。再送せず、再ログインまたは監査ログで確認してください。",
+          "操作結果を確認できません。再送せず、アカウント状態または監査ログを確認してください。",
+          "新しいパスワード",
+          "新しいパスワード",
+          "新しいパスワードが一致していません。",
+          "新しいパスワードを再入力",
+          "新しいパスワードを再入力",
+          "現在のパスワード",
+          "現在のパスワード",
+          "確認メールを送信しました。メール内のワンタイムURLを開くまで変更は完了しません。",
+          "確認メール送信",
+          "読み込み中",
+          "読み込み中",
+          "通知や本人確認に使うメールとログイン連携を管理します。",
+          "連携済みログイン",
+          "連携済みログインはありません。"
+        ],
+        "hooks": [
+          "uiText",
+          "uiText"
+        ],
+        "defaults": [],
+        "imports": [
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/account/account-mfa-panel.tsx",
+      "binding": {
+        "keys": [
+          "1. 認証アプリでQRコードを読み取る",
+          "2. アプリに表示された6桁コードで有効化",
+          "MFAを有効化しました。発行済みの情報は確認後に破棄してください。",
+          "MFAを無効化",
+          "MFAを無効化",
+          "MFAを無効化しました。",
+          "MFAアプリを使えない時のログインに使います。この一時表示を確認後に破棄してください。",
+          "MFAストアが構成されていないため、TOTP登録は利用できません。",
+          "MFA操作の結果を確認できません。再送せず、セッション状態または監査ログを確認してください。",
+          "MFA登録情報を受信しました。明示的に表示して確認してください。",
+          "QRコードを生成できませんでした。手動入力キーを使ってください。",
+          "TOTPを再登録",
+          "TOTPを再登録する場合の本人確認コード",
+          "TOTP対応アプリで読み取ります。",
+          "TOTP登録をやり直す",
+          "TOTP登録を開始",
+          "TOTP登録用QRコード",
+          "このアカウントでは任意でTOTPを登録できます。登録後のログインでは2FAが必要になります。",
+          "リカバリーコード",
+          "リカバリーコードを再発行",
+          "リカバリーコード再発行",
+          "リカバリーコード残り",
+          "再発行されたリカバリーコード",
+          "再登録すると新しいQRコードとリカバリーコードを発行します。現在のMFAコードが必要です。",
+          "多要素認証",
+          "必須",
+          "新しいリカバリーコードを受信しました。明示的に表示して確認してください。",
+          "新しいリカバリーコードを発行します。発行後、古いリカバリーコードは使えません。",
+          "最新のセッションを確認できないため、MFA確認を送信しませんでした。",
+          "有効",
+          "有効化",
+          "無効",
+          "無効",
+          "無効化すると次回ログイン時のTOTP確認が不要になります。現在のMFAコードで確認してください。",
+          "現在のMFAコード",
+          "現在のMFAコード",
+          "現在のMFAコード",
+          "現在のMFAポリシーではTOTP登録を利用できません。",
+          "現在のMFA方式はPasskeyです。Passkey欄から端末やセキュリティキーを登録してください。",
+          "確認コード",
+          "確認コードとリカバリーコードでログインを保護します。",
+          "確認中",
+          "確認待ち",
+          "認証方式"
+        ],
+        "hooks": [
+          "uiText",
+          "uiText"
+        ],
+        "defaults": [
+          "japaneseCopy",
+          "japaneseCopy"
+        ],
+        "imports": [
+          "@/lib/i18n/ui-v2/copy",
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/account/account-passkey-panel.tsx",
+      "binding": {
+        "keys": [
+          "Passkeyを削除",
+          "Passkeyを削除しました。",
+          "Passkeyを登録しました。",
+          "Passkey名",
+          "Passkey操作の結果を確認できません。再送せず、登録一覧または監査ログを確認してください。",
+          "最終使用",
+          "登録",
+          "登録済みPasskeyはありません。",
+          "端末の生体認証やセキュリティキーを登録します。",
+          "読み込み中"
+        ],
+        "hooks": [
+          "uiText"
+        ],
+        "defaults": [],
+        "imports": [
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/resources/resource-values.tsx",
+      "binding": {
+        "keys": [
+          "この項目"
+        ],
+        "hooks": [],
+        "defaults": [
+          "japaneseCopy"
+        ],
+        "imports": [
+          "@/lib/i18n/ui-v2/copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/resources/resource-presentation.tsx",
+      "binding": {
+        "keys": [
+          "Access Token最終自動更新",
+          "BOT設定",
+          "Discord BOT設定",
+          "Discord BOT設定",
+          "Discord BOT設定",
+          "Driveアップロードを再試行",
+          "Drive保存先",
+          "Drive保存先",
+          "Drive保存先",
+          "Drive保存先あり",
+          "Encoder / Recorderを再起動",
+          "Encoder / Recorderを再起動",
+          "Folder未設定",
+          "Folder設定済み",
+          "MFAポリシー",
+          "MFAポリシー",
+          "MFA対象ロール",
+          "Node名",
+          "Node名",
+          "Node設定",
+          "OAuth tokenあり",
+          "OAuth token未接続",
+          "OAuth接続アカウント",
+          "Observability連携",
+          "Passkey状態",
+          "Passkey状態",
+          "Refresh Token登録/更新",
+          "VC参加で自動開始",
+          "Workerを再起動",
+          "Workerを切り替え",
+          "YouTube Live API（固定Relay・既存互換）",
+          "YouTube Live API（本番・通常）",
+          "YouTube Live API（検証）",
+          "YouTube出力",
+          "YouTube出力",
+          "YouTube出力",
+          "{0}日保持",
+          "その他",
+          "なし",
+          "ほか",
+          "アイドルタイムアウト",
+          "アイドル期限(分)",
+          "アーカイブ変換を再試行",
+          "イベント",
+          "イベント",
+          "インシデント更新",
+          "インシデント発生",
+          "インシデント解決",
+          "エラー",
+          "エラー",
+          "オフライン",
+          "オンライン",
+          "サービス状態を更新",
+          "システム通知",
+          "スキップ",
+          "ストリームキー（直接送信／従来Relay）",
+          "タイトル",
+          "チェック",
+          "パスワードハッシュ",
+          "プロバイダ",
+          "プロバイダ",
+          "プロバイダに一時的に接続できません",
+          "プロバイダのクライアント設定が無効です",
+          "プロバイダ応答がタイムアウトしました",
+          "プロバイダ応答を利用できません",
+          "プロバイダ設定を利用できません",
+          "ヘルス",
+          "マイドライブ",
+          "メール",
+          "メールサーバー SMTPパスワード",
+          "メール取得済み",
+          "メール未取得",
+          "ユーザー名",
+          "レベル",
+          "ログイン保護",
+          "ロックまでの失敗回数",
+          "ロックまでの失敗回数",
+          "ロール",
+          "下書き",
+          "不要",
+          "件",
+          "作成日時",
+          "保存先",
+          "保留",
+          "値",
+          "停止",
+          "停止中",
+          "公開",
+          "公開",
+          "共有ドライブ",
+          "内容",
+          "内容",
+          "再接続 {0}回",
+          "再試行中",
+          "再連携:",
+          "出力設定",
+          "分類",
+          "分類",
+          "利用可能な用途",
+          "利用可能な用途",
+          "原因を安全に分類できませんでした",
+          "原因を安全に分類できませんでした",
+          "参照名",
+          "古い警告を解除",
+          "右上",
+          "右下",
+          "名前",
+          "失敗",
+          "失敗",
+          "失敗分類:",
+          "失敗状態:",
+          "字幕プロファイル",
+          "字幕生成",
+          "安全な自動実行",
+          "完了",
+          "実行済み",
+          "実行結果",
+          "実行者",
+          "対応MFA",
+          "対象",
+          "対象",
+          "対象外",
+          "左上",
+          "左下",
+          "形式",
+          "待機中",
+          "待機中",
+          "待機中",
+          "復旧モード",
+          "復旧実行",
+          "復旧承認待ち",
+          "必要",
+          "情報",
+          "成功",
+          "手動承認",
+          "手動開始",
+          "承認待ち",
+          "承認済み",
+          "指紋",
+          "接続情報を利用できません",
+          "接続済み",
+          "接続設定",
+          "提案",
+          "提案のみ",
+          "操作",
+          "方式",
+          "方式",
+          "日時",
+          "更新日時",
+          "最小パスワード長",
+          "最小パスワード長",
+          "最終Heartbeat",
+          "最終ログイン",
+          "最終失敗:",
+          "最終試行:",
+          "有効",
+          "有効",
+          "有効",
+          "有効",
+          "未分類シークレット",
+          "未実行",
+          "未実行",
+          "未対応",
+          "未対応",
+          "未接続",
+          "未登録",
+          "未記録（既存連携では不明）",
+          "検知ルール",
+          "権限",
+          "正常",
+          "注意",
+          "無効",
+          "無効",
+          "無効",
+          "無効",
+          "無効",
+          "状態",
+          "状態",
+          "用途",
+          "画像あり",
+          "異常",
+          "登録済み",
+          "監視",
+          "確認先",
+          "確認済み",
+          "確認済み",
+          "種別",
+          "種別",
+          "管理操作",
+          "終了",
+          "絶対セッション期限",
+          "絶対期限(時間)",
+          "自動フィット",
+          "自動再接続: 常時有効",
+          "自動更新の状態",
+          "自動開始",
+          "表示名",
+          "表示名",
+          "表示名",
+          "表示名未設定",
+          "表示名設定済み",
+          "解決済み",
+          "解決済み",
+          "言語",
+          "設定 > Turnstile",
+          "設定 > メールサーバー",
+          "設定あり",
+          "設定内容",
+          "設定済み",
+          "設定済み",
+          "診断を再評価",
+          "診断作成",
+          "診断内容",
+          "診断内容",
+          "認可のやり直しが必要です",
+          "説明",
+          "警告",
+          "送信日時",
+          "通知するイベント",
+          "通知する重要度",
+          "通知先",
+          "通知先",
+          "通知先",
+          "通知先メール",
+          "通知先メール",
+          "連携 > OAuth接続アカウント",
+          "遅延 {0}ms",
+          "配信中",
+          "配信枠",
+          "配信枠ID",
+          "配信枠削除日時",
+          "重大",
+          "重要度",
+          "録画アーカイブ",
+          "開始中",
+          "開始条件",
+          "関連する設定画面",
+          "限定公開",
+          "非公開",
+          "音声 {0}kbps",
+          "音声転送: 常時有効"
+        ],
+        "hooks": [
+          "uiText"
+        ],
+        "defaults": [
+          "japaneseCopy",
+          "japaneseCopy",
+          "japaneseCopy",
+          "japaneseCopy",
+          "japaneseCopy",
+          "japaneseCopy",
+          "japaneseCopy",
+          "japaneseCopy",
+          "japaneseCopy",
+          "japaneseCopy",
+          "japaneseCopy",
+          "japaneseCopy",
+          "japaneseCopy",
+          "japaneseCopy",
+          "japaneseCopy",
+          "japaneseCopy",
+          "japaneseCopy",
+          "japaneseCopy"
+        ],
+        "imports": [
+          "@/lib/i18n/ui-v2/copy",
+          "@/lib/i18n/ui-v2/presentation-copy",
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/resources/resource-notices.tsx",
+      "binding": {
+        "keys": [
+          "この項目を",
+          "する権限がありません。",
+          "データを取得できませんでした。",
+          "更新を再試行",
+          "通信状態とログイン状態を確認して、もう一度お試しください。"
+        ],
+        "hooks": [
+          "uiText",
+          "uiText"
+        ],
+        "defaults": [],
+        "imports": [
+          "@/lib/i18n/ui-v2/resource-copy",
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/resources/resource-table.tsx",
+      "binding": {
+        "keys": [
+          "IDをコピー",
+          "{0} へテスト送信",
+          "テスト送信",
+          "テスト送信しました。",
+          "データがありません。"
+        ],
+        "hooks": [
+          "uiText",
+          "uiText"
+        ],
+        "defaults": [],
+        "imports": [
+          "@/lib/i18n/ui-v2/presentation-copy",
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/resources/resource-action-feedback.tsx",
+      "binding": {
+        "keys": [
+          "Control PanelとObservabilityのNode Runtime Tokenが一致していません。Observabilityのconfig.ymlを再発行して反映してください。",
+          "Control PanelとObservabilityのRuntime Tokenが一致していません。Nodeのconfig.ymlを再発行して反映してください。",
+          "Control PanelとObservabilityの認証設定を確認してください。",
+          "Control PanelのNodeサービス登録を利用できません。Control Panelの設定とログを確認してください。",
+          "Control Panelのシークレット暗号化キーが未設定です。Control Panelの設定を確認してください。",
+          "Control Panelのシークレット暗号化キーが未設定です。設定を確認してください。",
+          "Googleから更新トークンを取得できませんでした。認可画面でアカウントを選び直してください。",
+          "OAuthアカウントが見つかりません。画面を更新してください。",
+          "OAuthアカウントを更新する権限がありません。",
+          "OAuthコールバックURLが設定されていません。プロバイダ設定を確認してください。",
+          "OAuthプロバイダが無効または未設定です。プロバイダ設定を確認してください。",
+          "Observability Nodeに別のサービス種別のRuntime Tokenが設定されています。Nodeのconfig.ymlを再発行して反映してください。",
+          "Observability NodeのRuntime TokenがControl Panelに登録されていません。Node登録とRuntime Tokenを確認してください。",
+          "Observability NodeのRuntime Tokenにメール送信権限がありません。Control PanelでRuntime Tokenを再生成し、Observabilityのconfig.ymlへ反映してサービスを再起動してください。",
+          "ObservabilityからControl Panelへ接続するRuntime Tokenが設定されていません。Nodeのconfig.ymlを再発行して反映してください。",
+          "Observabilityが一時的に利用できません。",
+          "Observabilityが一時的に利用できません。Node状態とObservabilityのログを確認してください。",
+          "Observabilityが通知先設定を受け付けませんでした。入力内容を確認してください。",
+          "Observabilityの秘密情報暗号化キーが未設定です。AUTOSTREAM_SECRET_ENCRYPTION_KEYを設定してObservabilityを再起動してください。",
+          "Observabilityへのリクエストが集中しています。少し待ってから再実行してください。",
+          "Observabilityへ接続できません。Nodeの公開URL、通信経路、サービスログを確認してください。",
+          "Observabilityへ接続できませんでした。Node状態を確認してください。",
+          "Webhook URLを利用できません。通知方式に対応した正規HTTPS URLを指定してください。",
+          "super_adminロールを付与できるのはsuper_adminだけです。",
+          "{0}できませんでした。入力内容、権限、ログイン状態を確認して再実行してください。",
+          "この設定を変更する権限がありません。",
+          "テストメールを送信できませんでした。メールサーバー設定とログを確認してください。",
+          "テスト通知を送信できませんでした。通知先設定とログを確認してください。",
+          "メールサーバーのTLS設定を有効にしてください。",
+          "メールサーバーの認証に失敗しました。認証設定を確認してください。",
+          "メールサーバーへ接続できませんでした。設定と稼働状態を確認してください。",
+          "メール送信に失敗しました。メールサーバー設定とログを確認してください。",
+          "ユーザーを作成できませんでした。ユーザー名やメールアドレスの重複を確認してください。",
+          "ユーザーを更新できませんでした。ユーザー名やメールアドレスの形式・重複を確認してください。",
+          "ログイン中のユーザー自身のロールは変更できません。ユーザー名またはメールアドレスだけを更新してください。",
+          "ログイン状態が古くなっています。画面を再読み込みしてから再実行してください。",
+          "ログイン状態が古くなっています。画面を再読み込みしてから再実行してください。",
+          "ログイン状態が古くなっています。画面を再読み込みしてから再試行してください。",
+          "ロールを変更する権限がありません。",
+          "共通SMTP設定を利用できません。送信先と「設定 > メールサーバー」の構成を確認してください。",
+          "共通SMTP設定を読み込めませんでした。Control Panelの設定とログを確認してください。",
+          "再連携を開始できませんでした。OAuthプロバイダ設定とログイン状態を確認してください。",
+          "再連携を開始できませんでした。通信状態を確認して再試行してください。",
+          "別のGoogleアカウントが選択されました。元のアカウントを選んで再試行してください。",
+          "字幕設定は保存されましたが、配信中のWorkerへの即時反映に失敗しました。Workerのバージョン、割り当て、接続状態を確認してから設定を再保存してください。",
+          "対象アカウントとOAuthプロバイダが一致しません。画面を更新してください。",
+          "接続用途に必要な権限が許可されませんでした。認可画面で必要な権限を許可してください。",
+          "最後の有効なsuper_adminからロールを外すことはできません。",
+          "登録済みNode情報を取得できませんでした。Control Panelのログを確認してください。",
+          "登録済みのObservability Nodeが見つかりません。",
+          "登録済みのObservability Nodeが見つかりません。Node登録、公開URL、config.yml、Service Healthを確認してください。",
+          "自分が持っていない権限を含むロールは付与できません。",
+          "設定 > メールサーバーで有効なSMTP設定を保存してください。",
+          "送信内容を確認できませんでした。入力内容を見直してください。",
+          "通知が集中しています。少し待ってから再実行してください。",
+          "通知テストが集中しています。少し待ってから再実行してください。",
+          "通知テストを送信する権限がありません。",
+          "通知テストを送信できませんでした。",
+          "通知テストを送信できませんでした。通信状態を確認してください。",
+          "通知先が見つかりません。画面を更新してください。",
+          "通知先の必須項目が不足しています。通知方式ごとの入力内容を確認してください。",
+          "選択したロールに利用できない権限が含まれています。",
+          "選択したロールを割り当てられません。ロール一覧を更新して再選択してください。"
+        ],
+        "hooks": [],
+        "defaults": [
+          "japaneseCopy",
+          "japaneseCopy",
+          "japaneseCopy"
+        ],
+        "imports": [
+          "@/lib/i18n/ui-v2/copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/resources/resource-observability-actions.tsx",
+      "binding": {
+        "keys": [
+          "{0}を実行しました。",
+          "診断を再評価しました。",
+          "診断を再評価しましたが、保存済みのシグナルでは結論を更新できませんでした。"
+        ],
+        "hooks": [],
+        "defaults": [
+          "japaneseCopy",
+          "japaneseCopy"
+        ],
+        "imports": [
+          "@/lib/i18n/ui-v2/copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/resources/resource-security-editor.tsx",
+      "binding": {
+        "keys": [
+          "Argon2id / Remember me無効 / Passkey利用可能",
+          "Argon2idで保存します。Remember meは無効です。",
+          "MFAを要求するロール",
+          "MFAポリシー",
+          "MFAポリシー有効時にロールを未選択で保存すると、全ユーザーが対象になります。",
+          "Passkeyを要求",
+          "Passkeyを要求",
+          "TOTPを要求",
+          "TOTPを要求",
+          "{0}回失敗でロック",
+          "{0}文字以上",
+          "アイドルタイムアウト (分)",
+          "セキュリティ設定を保存しました。",
+          "セッション",
+          "パスワード",
+          "ログイン保護、セッション期限、MFA適用範囲を保存できます。パスワードハッシュはArgon2id固定です。",
+          "ロックまでの失敗回数",
+          "ロックアウト",
+          "ロールがまだ登録されていません。空のまま保存すると全ユーザーにMFAを要求します。",
+          "ロール一覧を取得できませんでした。取得済みの設定は保持しています。",
+          "保存",
+          "保存後に作成されるログインセッションへ適用します。",
+          "全ユーザー",
+          "固定ポリシー",
+          "対象: {0}",
+          "最小パスワード長",
+          "無効",
+          "無効",
+          "無操作{0}分 / 最大{1}時間",
+          "現在は要求しません。",
+          "絶対セッション期限 (時間)",
+          "設定を変更",
+          "連続ログイン失敗時の保護です。"
+        ],
+        "hooks": [
+          "uiText"
+        ],
+        "defaults": [
+          "japaneseCopy"
+        ],
+        "imports": [
+          "@/lib/i18n/ui-v2/copy",
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/resources/create-resource-form.tsx",
+      "binding": {
+        "keys": [
+          "OAuth認可URLを取得できませんでした。プロバイダ設定を確認してください。",
+          "OAuth認可URLを取得できませんでした。プロバイダ設定を確認してください。",
+          "作成しました。",
+          "必要項目を入力します。作成後も一覧から確認・編集できます。",
+          "必要項目を入力します。秘密情報はAPI側のシークレットストアに保存されます。"
+        ],
+        "hooks": [
+          "uiText"
+        ],
+        "defaults": [],
+        "imports": [
+          "@/lib/i18n/ui-v2/resource-copy",
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/nodes/node-endpoint-state-view.tsx",
+      "binding": {
+        "keys": [
+          "Endpoint状態: {0}。{1}",
+          "Host Pull Agent transport情報",
+          "Node endpoint migration状態",
+          "Node報告",
+          "{0} endpointをコピー",
+          "{0} のUpdater transport情報",
+          "反映済み",
+          "反映済み (legacy)",
+          "受信ポートなし（Outbound HTTPS）",
+          "受信ポートなし（Outbound HTTPS）",
+          "希望値",
+          "未報告",
+          "未報告",
+          "未報告",
+          "未報告",
+          "未報告",
+          "未報告",
+          "未報告",
+          "未報告",
+          "管理endpoint:",
+          "通常のNode endpointではなく、ホスト単位の更新経路です。",
+          "非対応transport"
+        ],
+        "hooks": [
+          "uiText",
+          "uiText",
+          "uiText"
+        ],
+        "defaults": [],
+        "imports": [
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/nodes/node-metrics-summary.tsx",
+      "binding": {
+        "keys": [
+          "Arch未取得",
+          "Arch未取得（Configure待ち）",
+          "OS未取得",
+          "OS未取得（Configure待ち）",
+          "{0}項目",
+          "{0}項目",
+          "未受信",
+          "未受信"
+        ],
+        "hooks": [
+          "uiText"
+        ],
+        "defaults": [
+          "japaneseCopy"
+        ],
+        "imports": [
+          "@/lib/i18n/ui-v2/copy",
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/nodes/node-configuration-secret-block.tsx",
+      "binding": {
+        "keys": [
+          "コピー",
+          "コピー済み"
+        ],
+        "hooks": [
+          "uiText"
+        ],
+        "defaults": [],
+        "imports": [
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/nodes/node-status-summary.tsx",
+      "binding": {
+        "keys": [
+          "Configure未実行",
+          "Configure済み",
+          "Host Agent報告",
+          "Nodeサービス",
+          "ホスト単位の更新専用。通常のNode通信とは別の管理経路です。",
+          "更新実行状態はシステム情報で確認",
+          "未報告",
+          "未報告"
+        ],
+        "hooks": [
+          "uiText",
+          "uiText",
+          "uiText"
+        ],
+        "defaults": [],
+        "imports": [
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/application/updater-settings-panel.tsx",
+      "binding": {
+        "keys": [
+          "Host Agentの更新実行権限をCASで切り替えます。observer状態では更新を実行しません。",
+          "Host Agentへ切り替え",
+          "Updater設定を取得できませんでした。",
+          "Updater設定を読み込んでいます。",
+          "system_updates.execute 権限が必要です。",
+          "system_updates.execute 権限が必要です。",
+          "{0} の設定",
+          "このホストで管理するサービスをControl Panel上で設定します。Host Agentが外向き接続で設定を取得します。",
+          "の設定",
+          "切替には system_updates.execute 権限が必要です。",
+          "切替可能",
+          "切替結果を最新状態で確認しました。Host Agentが更新実行権限を所有しています。",
+          "反映情報:",
+          "反映済みRevision:",
+          "実行ホスト",
+          "実行権限を解除",
+          "実行権限解除",
+          "実行権限解除を最新状態で確認しました。Host Agentはobserver epoch 0です。",
+          "更新実行権限の切替",
+          "未割当",
+          "未報告",
+          "未報告",
+          "未報告",
+          "未報告",
+          "未報告",
+          "未報告",
+          "未報告",
+          "状態だけ再取得",
+          "現在のOwner",
+          "現在のOwnership epoch",
+          "解除可能",
+          "設定",
+          "設定Revision:"
+        ],
+        "hooks": [
+          "uiText"
+        ],
+        "defaults": [],
+        "imports": [
+          "@/lib/i18n/ui-v2/presentation-copy",
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/application/port-reconfigure-control.tsx",
+      "binding": {
+        "keys": [
+          "Docker published portは127.0.0.1固定です。公開originやreverse proxy設定は自動変更しません。広告endpointを別のportにする場合は、既存proxyの転送先を別途確認してください。",
+          "Docker詳細設定を開く",
+          "Host、TLS、URLのpathは維持します。広告だけの変更はできません。",
+          "Hostの127.0.0.1でDockerが公開するport",
+          "Nodeプロセスがcontainer内でlistenするport",
+          "container待受",
+          "container待受ポート",
+          "local listenerと広告endpoint",
+          "local listenerのみ",
+          "localhost publishedポート",
+          "localhost公開",
+          "· 広告endpoint:",
+          "サービスのポート変更",
+          "ポート変更",
+          "変更する範囲",
+          "変更不要か確認",
+          "広告endpoint",
+          "広告endpointポート",
+          "新しいlocal listenerポート",
+          "未報告",
+          "未報告",
+          "現在のsnapshotを固定して送信します。同じ値の場合も実状態を確認してから結果を表示します。",
+          "直近のポート変更結果:",
+          "詳細設定を閉じる"
+        ],
+        "hooks": [
+          "uiText"
+        ],
+        "defaults": [],
+        "imports": [
+          "@/lib/i18n/ui-v2/presentation-copy",
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/resources/edit-resource-button.tsx",
+      "binding": {
+        "keys": [
+          "{0} を編集",
+          "を編集",
+          "ユーザー名、メールアドレス、割り当てロールを更新します。",
+          "作成済みの設定をフォームで更新します。秘密情報は空欄のまま更新すると既存値を保持する項目があります。",
+          "更新",
+          "更新しました。",
+          "更新しました。",
+          "更新しました。",
+          "閉じる"
+        ],
+        "hooks": [
+          "uiText"
+        ],
+        "defaults": [],
+        "imports": [
+          "@/lib/i18n/ui-v2/resource-copy",
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/resources/oauth-account-relink-button.tsx",
+      "binding": {
+        "keys": [
+          "OAuth再連携を開始しました。",
+          "OAuth認可URLを取得できませんでした。プロバイダ設定を確認してください。",
+          "{0} を再連携",
+          "再連携"
+        ],
+        "hooks": [
+          "uiText"
+        ],
+        "defaults": [],
+        "imports": [
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/resources/delete-resource-button.tsx",
+      "binding": {
+        "keys": [
+          "{0} を削除"
+        ],
+        "hooks": [
+          "uiText"
+        ],
+        "defaults": [],
+        "imports": [
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/resources/resource-input-fields.tsx",
+      "binding": {
+        "keys": [
+          "作成",
+          "選択肢がありません。",
+          "選択肢がありません。"
+        ],
+        "hooks": [
+          "uiText",
+          "uiText",
+          "uiText"
+        ],
+        "defaults": [],
+        "imports": [
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/resources/resource-form-fields.tsx",
+      "binding": {
+        "keys": [
+          "このリソースは一覧確認のみ対応しています。"
+        ],
+        "hooks": [
+          "uiText"
+        ],
+        "defaults": [],
+        "imports": [
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/application/updater-settings-form.tsx",
+      "binding": {
+        "keys": [
+          "「設定を保存」を押した後、Host Agentのconfigureを再実行すると反映されます。反映済みになるまで更新操作は安全のため停止します。",
+          "ホストの自動セットアップ完了後に保存できます。",
+          "更新実行権限の切替状態を確認してから保存できます。",
+          "設定の変更には system_updates.execute 権限が必要です。現在は内容の確認だけできます。",
+          "設定を保存",
+          "設定を保存しました。Host Agentのconfigureを再実行すると反映されます。反映済みになるまで更新操作は安全のため停止します。"
+        ],
+        "hooks": [
+          "uiText"
+        ],
+        "defaults": [],
+        "imports": [
+          "@/lib/i18n/ui-v2/presentation-copy",
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/application/port-reconfigure-presentation.tsx",
+      "binding": {
+        "keys": [
+          "1024〜65535の整数を入力してください。",
+          "Control Panelからポート変更の適格性が報告されていません。APIとHost Agentを更新してから再取得してください。",
+          "Docker mappingに差分があります。安全な現在値を確認できるまでポート変更を開始できません。",
+          "Dockerの3つのポートを区別して確認するため、詳細設定を開いてください。",
+          "Endpoint revisionが変わりました。Node情報を再取得してください。",
+          "Endpointが反映済みになるまで変更できません。",
+          "Endpointをロールバック中です。",
+          "Host Agentから検証済みDocker mappingが報告されていません。Agent・Executor・Compose設定を更新して再取得してください。",
+          "Host Agentがオフラインです。Heartbeatを確認してください。",
+          "Host Agentが保存済み設定を反映するまで待っています。",
+          "Host Agentが保存済み設定を反映できませんでした。設定画面のエラーを確認してください。",
+          "Host Agentが対象ホストの到達状態を確認できません。",
+          "Host Agentによる対象ホストの到達確認を待っています。",
+          "Host Agentの設定revisionが一致していません。反映完了を待ってください。",
+          "Host Agentまたは設定が反映済みになるまで変更できません。",
+          "container待受ポートには1024〜65535の整数を入力してください。",
+          "localhost publishedポートには1024〜65535の整数を入力してください。",
+          "mapping反映済み",
+          "mapping差分あり",
+          "mapping未確認",
+          "このサービスでは別の更新ジョブが進行中です。",
+          "このサービスは現在ポートを変更できません。EndpointとHost Agentの状態を確認してください。",
+          "このサービスを管理するHost Agentが割り当てられていません。",
+          "この配備方式のポート変更は利用できません。",
+          "サービスが使用中のためポートを変更できません。",
+          "サービスが配信処理で使用中のため、ポートを変更できません。",
+          "サービス種別がHost Agentの対象設定と一致していません。",
+          "ポート変更には system_updates.execute 権限が必要です。",
+          "ポート変更要求を送信中です。",
+          "以前の更新結果を復旧・確認中です。",
+          "公開endpointには1〜65535の整数を入力してください。1024未満は既存reverse proxyの公開portとしてのみ使用してください。",
+          "前回要求の結果が不明です。履歴で確認できるまで再送しません。",
+          "同じホストで指定したポートが既に使用または予約されています。",
+          "未報告",
+          "現在適用中のポートとは異なる値を入力してください。"
+        ],
+        "hooks": [],
+        "defaults": [
+          "japaneseCopy",
+          "japaneseCopy",
+          "japaneseCopy"
+        ],
+        "imports": [
+          "@/lib/i18n/ui-v2/copy",
+          "@/lib/i18n/ui-v2/presentation-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/resources/resource-stream-forms.tsx",
+      "binding": {
+        "keys": [
+          "1つの固定Relayは同時に1配信枠だけを処理できます。Relayの設定と同じバインディングID・Live Stream IDを指定してください。",
+          "BOT設定名",
+          "DiscordサーバーID",
+          "Studioのカスタムキーを固定利用",
+          "YouTube Live APIを使うには、YouTube Live用途でGoogleアカウントを接続してください。",
+          "YouTube Live API（固定Relay・既存互換）",
+          "YouTube Live API（本番・通常）",
+          "YouTube Live API（検証）",
+          "YouTube Studioでカスタムキーの解像度を手動1080p60、デュアルストリームをOFFに設定してください。1つのキーを同時に複数枠へ割り当てることはできません。Control Panelは配信枠を自動作成し、このキーのLiveStreamへバインドします。",
+          "YouTube Studioで作成した再利用可能なカスタムキーを入力します。保存済みなら空欄のままで構いません。",
+          "YouTube視聴URL",
+          "ストリームキー",
+          "ストリームキー（従来方式）",
+          "チャットチャンネルID",
+          "フレームレート",
+          "プリセット名",
+          "プロファイル名",
+          "ボイスチャンネルID",
+          "低遅延",
+          "停止時に完了扱い",
+          "停止時に完了扱い: 常に有効",
+          "先にNode登録でDiscord Bot Nodeを登録してください。",
+          "入力した場合のみ保存します。",
+          "公開",
+          "公開範囲",
+          "再利用するYouTube Live Stream ID",
+          "再接続最大回数",
+          "出力名",
+          "出力方式",
+          "名前と、32桁以内の数字だけで構成された3つのDiscord IDを入力してください。",
+          "固定Relayが配信する既存のYouTube Live Stream IDを入力します。URLやストリームキーは入力しません。",
+          "固定Relayの同時配信制約",
+          "固定RelayバインディングID",
+          "固定Relayモードでは停止時にYouTube配信を必ず完了扱いにします。",
+          "接続済みGoogleアカウント",
+          "接続確認用です。実際に配信を開始する場合は本番・通常を選択してください。",
+          "既存のストリームキー設定を使う場合だけ選択します。新規設定では本番・通常を推奨します。",
+          "既存の固定Relay設定を編集する場合だけ使用します。新規作成では選択できません。",
+          "既存ストリームキー方式で使うキーを入力します。",
+          "映像ビットレート (kbps)",
+          "未選択",
+          "未選択",
+          "標準",
+          "横解像度",
+          "番組タイトルテンプレート",
+          "管理済みの固定Relayを識別する非秘密IDです。配信キーは入力しません。",
+          "縦解像度",
+          "自動停止",
+          "自動開始",
+          "説明",
+          "超低遅延",
+          "通常はこちら。Control Panelが配信枠を作成し、EncoderからYouTubeへ直接送信します。固定Relayは不要です。",
+          "遅延設定",
+          "配信開始時のDiscord通知に使用します。",
+          "限定公開",
+          "非公開",
+          "音声ビットレート (kbps)",
+          "音声転送と自動再接続は常に有効です。"
+        ],
+        "hooks": [
+          "uiText",
+          "uiText",
+          "uiText",
+          "uiText"
+        ],
+        "defaults": [],
+        "imports": [
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/resources/resource-caption-form.tsx",
+      "binding": {
+        "keys": [
+          "Deepgram APIキー",
+          "プロファイル名",
+          "入力したキーは暗号化シークレットとして保存し、Workerだけが配信開始時に取得します。",
+          "変更しない場合は空欄",
+          "既に設定済みの場合は空欄",
+          "日本語",
+          "発話確定までの待機 (ms)",
+          "英語",
+          "言語",
+          "読みやすく整形",
+          "途中結果を表示",
+          "遅延補正 (ms)",
+          "音声認識モデル"
+        ],
+        "hooks": [
+          "uiText"
+        ],
+        "defaults": [],
+        "imports": [
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/resources/resource-overlay-form.tsx",
+      "binding": {
+        "keys": [
+          "1920x1080 / 自動フィット",
+          "1920x1080の画像を選択するとプレビューされます。",
+          "PNG、JPEG、WebPのみ。1920x1080の画像を保存します。5MB以下にしてください。",
+          "PNG、JPEG、WebPの画像を選択してください。",
+          "{0} を読み込みました。配信画質が1080未満の場合は自動でフィットします。",
+          "。差し替える場合だけ新しい画像を選択してください。",
+          "」が設定されています。APIがプレビュー用URLを返した場合はここに画像を表示します。",
+          "ウォーターマークプレビュー",
+          "ウォーターマーク画像は配信映像全体に重ねる1920x1080固定です。配信画質が1080未満の場合は自動でフィットします。",
+          "プレビュー",
+          "プロファイル名",
+          "合成サイズ",
+          "現在の画像:",
+          "現在の画像「",
+          "画像は5MB以下にしてください。",
+          "画像を読み込めませんでした。",
+          "画像を読み込めませんでした。",
+          "画像を読み込めませんでした。",
+          "画像アップロード",
+          "画像サイズは{0}x{1}にしてください。"
+        ],
+        "hooks": [
+          "uiText",
+          "uiText"
+        ],
+        "defaults": [],
+        "imports": [
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/resources/resource-archive-forms.tsx",
+      "binding": {
+        "keys": [
+          "DriveフォルダID",
+          "Drive保存先",
+          "Drive保存用途でGoogleアカウントを接続してください。",
+          "OAuthアカウント",
+          "URLのfolders/以降にあるIDを入力します。",
+          "プロファイル名",
+          "保存先名",
+          "保存期間 (日)",
+          "共有ドライブを使う",
+          "共有ドライブ配下のフォルダID",
+          "未選択",
+          "未選択",
+          "録画形式",
+          "録画後に保存先へアップロード"
+        ],
+        "hooks": [
+          "uiText",
+          "uiText"
+        ],
+        "defaults": [],
+        "imports": [
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/resources/resource-oauth-forms.tsx",
+      "binding": {
+        "keys": [
+          "Drive保存のみ",
+          "Google Cloud Consoleに登録するリダイレクトURI",
+          "Google OAuthプロバイダ",
+          "OAuth接続を開始",
+          "OAuth認可画面へ移動します。",
+          "YouTube Liveのみ",
+          "YouTube Live・Drive保存",
+          "`redirect_uri_mismatch` が出る場合は、Google側の値とここに保存した値がスキーム、ホスト、パスまで完全一致しているか確認してください。",
+          "アカウント表示名",
+          "アカウント表示名",
+          "プロバイダ",
+          "プロバイダ未設定",
+          "メール未取得",
+          "ログイン、OAuthアカウント連携、YouTube/Drive接続は保存済みのRedirect URIを共用します。Google OAuthクライアントの「承認済みのリダイレクトURI」に下の値を登録してください。",
+          "ロールがありません。",
+          "例: 広報 YouTube",
+          "保存済みClient Secretはありません。",
+          "先にOAuthログインプロバイダでGoogleプロバイダを登録し、有効化してください。",
+          "入力値は保存後に再表示しません。",
+          "初回ログイン時に自動ユーザー作成",
+          "接続情報",
+          "接続用途",
+          "有効化",
+          "未選択",
+          "空欄のまま更新すると現在のClient Secretを保持します。差し替える時だけ入力してください。",
+          "自動作成ユーザーのロール",
+          "表示名",
+          "複数ある場合は改行またはカンマで区切ります。空なら制限しません。",
+          "許可ドメイン",
+          "配信枠や保存先の選択肢に表示する、識別しやすい名前です。"
+        ],
+        "hooks": [
+          "uiText",
+          "uiText",
+          "uiText"
+        ],
+        "defaults": [],
+        "imports": [
+          "@/lib/i18n/ui-v2/presentation-copy",
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/resources/resource-access-forms.tsx",
+      "binding": {
+        "keys": [
+          "。ロールIDを取得できないため、ロール変更は無効です。",
+          "メールアドレス",
+          "ユーザー名",
+          "ログイン中のユーザー自身のロールは変更できません。ユーザー名とメールアドレスは更新できます。",
+          "ログイン後に変更してもらう一時パスワードです。",
+          "ロールがありません。",
+          "ロールの変更には「ロールを割り当て」権限が必要です。ユーザー名とメールアドレスは更新できます。",
+          "ロール名",
+          "付与するロール",
+          "初期パスワード",
+          "既存ロール:",
+          "権限一覧を取得できませんでした。",
+          "登録完了メールと本人確認用の連絡先です。",
+          "登録完了メールを送る",
+          "許可する操作"
+        ],
+        "hooks": [
+          "uiText",
+          "uiText"
+        ],
+        "defaults": [],
+        "imports": [
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/resources/resource-notification-form.tsx",
+      "binding": {
+        "keys": [
+          " 現在の送信先: {0}",
+          "Slack は hooks.slack.com のIncoming Webhook URLを指定します。",
+          "Webhook URL（変更する場合のみ入力）",
+          "この通知先は旧形式の個別SMTP設定を使用しています。",
+          "インシデント更新",
+          "インシデント発生",
+          "インシデント解決",
+          "エラー",
+          "メール",
+          "保存後はURLの実値を表示しません。",
+          "共通SMTP設定へ移行",
+          "共通SMTP設定へ移行",
+          "復旧実行",
+          "復旧承認待ち",
+          "情報",
+          "有効にして保存すると、設定画面の「メールサーバー」を使用し、旧個別SMTP認証情報を削除します。この操作は元に戻せません。",
+          "有効化",
+          "現在の送信先:",
+          "監査ログへ保存された認証済みユーザー操作とsystem操作は、有効な通知先へ常に送信されます。上の選択項目はインシデント、診断、復旧イベントだけを絞り込みます。",
+          "空欄のまま更新すると現在のURLを保持します。保存済みURLの実値は表示しません。{0}",
+          "空欄のまま更新すると現在の送信先を保持します。複数指定は改行またはカンマで区切ります。",
+          "複数指定する場合は改行またはカンマで区切ります。",
+          "設定画面の「メールサーバー」で構成した共通SMTP設定を使用します。この通知先ではSMTP認証情報の入力は不要です。",
+          "診断作成",
+          "警告",
+          "送信先メール",
+          "送信先メール（変更する場合のみ入力）",
+          "通知するイベント",
+          "通知する重要度",
+          "通知先名",
+          "通知方式",
+          "重大"
+        ],
+        "hooks": [
+          "uiText"
+        ],
+        "defaults": [],
+        "imports": [
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/application/updater-host-bootstrap-panel.tsx",
+      "binding": {
+        "keys": [
+          "セットアップ状態を取得できないため、新しいセットアップを開始できません。通信状態を確認して再度開いてください。",
+          "ホストのセットアップを開始できませんでした。認証情報と状態を確認してください。"
+        ],
+        "hooks": [
+          "uiText"
+        ],
+        "defaults": [],
+        "imports": [
+          "@/lib/i18n/ui-v2/presentation-copy",
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/application/updater-runtime-settings-section.tsx",
+      "binding": {
+        "keys": [
+          "5〜60秒の範囲で設定してください。",
+          "Heartbeat間隔（秒）",
+          "Host AgentからControl Panelへoutbound HTTPSで接続します。受信APIや管理用ポートは使用しません。",
+          "Host Agentの動作",
+          "root所有policyを固定するdigestです。未設定時はobserve結果を信頼せず不明として扱います。",
+          "受信ポート: なし",
+          "実行ホスト:",
+          "更新確認間隔（秒）",
+          "未割り当て"
+        ],
+        "hooks": [
+          "uiText"
+        ],
+        "defaults": [],
+        "imports": [
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/application/updater-bootstrap-hosts-section.tsx",
+      "binding": {
+        "keys": [
+          "CPUアーキテクチャ",
+          "IPアドレス / ホスト名",
+          "SSHポート",
+          "SSHユーザー",
+          "bootstrap対象ホスト",
+          "bootstrap対象ホストはまだありません。「ホストを追加」から登録してください。",
+          "{0} 用Updater SSHクライアント公開鍵",
+          "{0} 用公開鍵をコピー",
+          "「{0}」を削除しますか？",
+          "このbootstrap用ホスト定義をフォームから削除します。pull_v2の実行対象・所有権は変更しません。「設定を保存」で反映した後、必要に応じて対象ホストのbootstrap用authorized_keysを撤去してください。",
+          "この一覧は独立UpdaterがHost Agentを初期導入するためだけに使用します。pull_v2の実行対象・所有権とは分離されています。対象サーバーで確認したssh-ed25519ホスト公開鍵の全文を、別の安全な経路で受け取って入力してください。初回接続時の自動信頼は行いません。",
+          "まだ生成されていません。設定を保存し、独立Updaterが反映するまでお待ちください。",
+          "ホスト",
+          "ホスト {0} を削除",
+          "ホストID",
+          "ホストを削除",
+          "ホストを追加",
+          "例: ssh-ed25519 AAAA... server-name",
+          "削除",
+          "対象ホストへ登録する独立Updater公開鍵",
+          "確認済みSSHホスト公開鍵（OpenSSH形式・全文）",
+          "確認結果: {0}",
+          "自動bootstrapでは autostream-update-host 固定です。一時管理者ユーザーとは別です。",
+          "表示名",
+          "設定保存後に独立Updaterが生成し、bootstrap時に対象ホストへ登録します。",
+          "配信サーバー1"
+        ],
+        "hooks": [
+          "uiText"
+        ],
+        "defaults": [],
+        "imports": [
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/application/updater-targets-settings-section.tsx",
+      "binding": {
+        "keys": [
+          "MariaDBデータベース名",
+          "NodeサービスID",
+          "systemdサービスがこのホストの127.0.0.1で実際に待ち受けるポートです。Cloudflare Tunnelなどの公開HTTPSポート443とは分けて指定します。",
+          "このサービスが実際に使用しているデータベース名です。ユーザー名・パスワード・DSNは入力しません。",
+          "サービス {0} を削除",
+          "サービスを追加",
+          "サービス種別（自動）",
+          "ホストを選択",
+          "ローカル待受ポート",
+          "先にホストを設定してください。",
+          "実行ホスト {0} 上で管理するAutoStreamサービスを指定します。ホスト割り当てはControl Panelが管理します。",
+          "実行ホスト（サーバー管理）",
+          "更新するサービス",
+          "更新対象サービスはまだありません。",
+          "未割り当て",
+          "登録サービスを選択",
+          "追加できる未使用の登録サービスがありません。",
+          "配備方式"
+        ],
+        "hooks": [
+          "uiText"
+        ],
+        "defaults": [],
+        "imports": [
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/application/updater-release-token-section.tsx",
+      "binding": {
+        "keys": [
+          "Tokenの登録・変更には system_updates.execute と secrets.update の両方の権限が必要です。",
+          "bootstrap artifact取得用TokenはControl Panelの暗号化secretにだけ保存され、値は再表示されません。独立Updaterがbootstrap jobをclaimした時だけ一回限りで渡し、Host Agentのpolicyや応答には含めません。",
+          "新しいGitHub Release Token",
+          "未設定",
+          "登録済みTokenを削除する",
+          "空欄のまま保存すると現在のTokenを維持",
+          "設定済み"
+        ],
+        "hooks": [
+          "uiText"
+        ],
+        "defaults": [],
+        "imports": [
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/application/updater-bootstrap-presentation.ts",
+      "binding": {
+        "keys": [
+          "セットアップは完了しませんでした。状態を再取得し、安全な手順で確認してください。",
+          "セットアップ状態を独立Updaterから取得しました。",
+          "一時認証情報の有効期間が終了しました。再実行時は新しい認証情報を入力してください。",
+          "一部の手順が完了しませんでした。状態を再取得して確認してください。",
+          "暗号化された要求を独立Updaterが処理しています。",
+          "検証済みhelperの導入と動作確認が完了しました。",
+          "独立Updaterでの処理開始を待っています。"
+        ],
+        "hooks": [],
+        "defaults": [
+          "japaneseCopy"
+        ],
+        "imports": [
+          "@/lib/i18n/ui-v2/copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/application/updater-bootstrap-status-sections.tsx",
+      "binding": {
+        "keys": [
+          "helper自動セットアップ",
+          "セットアップ",
+          "再セットアップ",
+          "再試行",
+          "接続先未入力",
+          "未セットアップを一括セットアップ",
+          "管理者SSH認証を今回だけ使用し、独立Updaterから制限付きhelperを導入して動作確認します。対象ホストで個別にインストールコマンドを実行する必要はありません。 helperは更新時だけSSH経由で起動し、対象ホストに常駐service・listener・helper専用port・helper用env・Node Runtime Tokenは作成しません。 bootstrap対象ホストはpull_v2の実行対象・所有権から独立して保存されます。自動セットアップは検証済みの標準Host Agent profileだけに対応し、実際のhealth・version応答まで確認します。カスタム構成は手動導入になります。"
+        ],
+        "hooks": [
+          "uiText",
+          "uiText",
+          "uiText"
+        ],
+        "defaults": [],
+        "imports": [
+          "@/lib/i18n/ui-v2/presentation-copy",
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/application/updater-bootstrap-credential-form.tsx",
+      "binding": {
+        "keys": [
+          "Fingerprint未報告",
+          "Fingerprint未報告",
+          "Updater暗号鍵:",
+          "rootではなく、パスワード入力なしでsudoを実行できる既存ユーザーを指定します。",
+          "{0}台を一括セットアップ",
+          "キャンセル",
+          "セットアップを開始",
+          "ホストをセットアップ",
+          "一時SSH秘密鍵",
+          "一時管理者SSHユーザー",
+          "接続鍵の確認",
+          "秘密鍵とパスフレーズは今回のセットアップだけに使用し、保存・再表示しません。選択した全ホストで同じ認証情報を使用します。",
+          "秘密鍵パスフレーズ（任意）",
+          "表示されたUpdater暗号鍵と各ホストのSSHホスト鍵Fingerprintを、独立した安全な経路で確認しました。"
+        ],
+        "hooks": [
+          "uiText"
+        ],
+        "defaults": [],
+        "imports": [
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    }
+  ]
+}

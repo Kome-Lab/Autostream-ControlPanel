@@ -1,4 +1,6 @@
 "use client";
+import { useUICopy } from "@/lib/i18n/ui-v2/use-ui-copy";
+
 
 import { useState } from "react";
 import { KeyRound, Trash2 } from "lucide-react";
@@ -35,8 +37,9 @@ export function PasskeyPanel({
   refreshAuthority: () => Promise<AccountAuthoritySnapshot>;
   accountResourceID: string;
 }) {
+  const uiText = useUICopy();
   const [name, setName] = useState("メイン端末");
-  const outcomeUnknown = () => setNotice({ tone: "error", text: "Passkey操作の結果を確認できません。再送せず、登録一覧または監査ログを確認してください。" });
+  const outcomeUnknown = () => setNotice({ tone: "error", text: uiText("Passkey操作の結果を確認できません。再送せず、登録一覧または監査ログを確認してください。") });
   const registerPasskey = async () => {
       if (!passkeysSupported()) {
         throw new Error("passkey unsupported");
@@ -60,45 +63,45 @@ export function PasskeyPanel({
           <KeyRound className="size-5" />
           Passkey
         </CardTitle>
-        <CardDescription>端末の生体認証やセキュリティキーを登録します。</CardDescription>
+        <CardDescription>{uiText("端末の生体認証やセキュリティキーを登録します。")}</CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="flex gap-2">
-          <Input placeholder="Passkey名" value={name} onChange={(event) => setName(event.target.value)} />
+          <Input placeholder={uiText("Passkey名")} value={name} onChange={(event) => setName(event.target.value)} />
           <AccountActionConfirmation
             controller={actionController}
             intent={{ id: "AUTH-19", resourceId: accountResourceID }}
             authority={authority}
             refreshAuthority={refreshAuthority}
-            label="登録"
+            label={uiText("登録")}
             variant="default"
             disabled={!name.trim()}
             handler={registerPasskey}
             onSucceeded={() => {
-              setNotice({ tone: "success", text: "Passkeyを登録しました。" });
+              setNotice({ tone: "success", text: uiText("Passkeyを登録しました。") });
               refresh();
             }}
             onOutcomeUnknown={outcomeUnknown}
           />
         </div>
         <div className="space-y-2">
-          {passkeys.length === 0 ? <div className="text-sm text-muted-foreground">{loading ? "読み込み中" : "登録済みPasskeyはありません。"}</div> : null}
+          {passkeys.length === 0 ? <div className="text-sm text-muted-foreground">{loading ? uiText("読み込み中") : uiText("登録済みPasskeyはありません。")}</div> : null}
           {passkeys.map((passkey) => (
             <div key={passkey.id} className="flex items-center justify-between gap-3 rounded-md border px-3 py-2">
               <div className="min-w-0">
                 <div className="truncate text-sm font-medium">{passkey.name || "Passkey"}</div>
-                <div className="text-xs text-muted-foreground">最終使用 {passkey.last_used_at ? formatDateTime(passkey.last_used_at, timezone) : "-"}</div>
+                <div className="text-xs text-muted-foreground">{uiText("最終使用")}{passkey.last_used_at ? formatDateTime(passkey.last_used_at, timezone) : "-"}</div>
               </div>
               <AccountActionConfirmation
                 controller={actionController}
                 intent={{ id: "AUTH-21", resourceId: accountResourceID }}
                 authority={authority}
                 refreshAuthority={refreshAuthority}
-                label="Passkeyを削除"
+                label={uiText("Passkeyを削除")}
                 icon={<Trash2 />}
                 handler={() => apiDelete<void>(`/auth/passkeys/${encodeURIComponent(passkey.id)}`)}
                 onSucceeded={() => {
-                  setNotice({ tone: "success", text: "Passkeyを削除しました。" });
+                  setNotice({ tone: "success", text: uiText("Passkeyを削除しました。") });
                   refresh();
                 }}
                 onOutcomeUnknown={outcomeUnknown}

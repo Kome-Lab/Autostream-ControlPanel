@@ -1,10 +1,15 @@
 "use client";
+import { useUICopy } from "@/lib/i18n/ui-v2/use-ui-copy";
+
 
 import { useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { CheckCircle2, Palette, ShieldCheck, UserCog } from "lucide-react";
 import { useI18n } from "@/components/admin/i18n-provider";
+import { PageHeader } from "@/components/shell/page-header";
+import { DetailSection } from "@/components/layout/detail-section";
 import { AccountAvatar } from "@/components/ui/account-avatar";
+import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -22,7 +27,9 @@ import { MFAPanel } from "./account-mfa-panel";
 import { PasskeyPanel } from "./account-passkey-panel";
 
 export function AccountView() {
-  const { t } = useI18n();
+  const uiText = useUICopy();
+  const { t, locale } = useI18n();
+  const ja = locale === "ja";
   const queryClient = useQueryClient();
   const currentUser = useCurrentUser();
   const appSettings = useAppSettings();
@@ -50,14 +57,13 @@ export function AccountView() {
   };
 
   return (
-    <div className="space-y-5">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-normal">アカウント設定</h1>
-          <p className="mt-1 text-sm text-muted-foreground">個人情報とログイン時のセキュリティを管理します。</p>
-        </div>
-        <Badge variant="outline" className="gap-2"><UserCog />個人アカウント</Badge>
-      </div>
+    <div className="space-y-5" data-screen-family="account">
+      <PageHeader title={ja ? "アカウント設定" : "Account settings"}
+        description={ja ? "プロフィール、ログイン保護、外観を管理します。資格情報は各操作の確認画面で扱います。" : "Manage your profile, login protection and appearance. Credential actions retain their own confirmation steps."}
+        eyebrow={<><UserCog aria-hidden="true" className="size-4" />{ja ? "個人アカウント" : "Personal account"}</>}
+        actions={<Button variant="outline" disabled={[currentUser, mfaStatus, passkeys, oauthLinks, oauthProviders].some(query => query.isFetching)} onClick={() => { void Promise.all([currentUser.refetch(), mfaStatus.refetch(), passkeys.refetch(), oauthLinks.refetch(), oauthProviders.refetch()]); }}>{ja ? "更新" : "Refresh"}</Button>} />
+      {[mfaStatus, passkeys, oauthLinks, oauthProviders].some(query => query.isLoading) ? <p role="status">{ja ? "アカウント情報を取得中です。" : "Loading account information."}</p> : [mfaStatus, passkeys, oauthLinks, oauthProviders].some(query => query.isFetching) ? <p role="status">{ja ? "表示中の情報を更新中です。" : "Refreshing displayed information."}</p> : null}
+      {[currentUser, mfaStatus, passkeys, oauthLinks, oauthProviders].some((query) => query.isError) ? <p role="alert" className="rounded-md border p-3 text-sm text-status-warning">{ja ? "一部の最新状態を取得できません。表示中の情報には前回の結果が含まれる場合があります。" : "Some current state is unavailable. Displayed information may include previous results."}</p> : null}
 
       {notice ? (
         <div role="status" aria-live="polite" className={notice.tone === "success" ? "rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/35 dark:text-emerald-200" : "rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800 dark:border-red-900 dark:bg-red-950/35 dark:text-red-200"}>
@@ -68,35 +74,36 @@ export function AccountView() {
       <Card>
         <CardContent className="grid gap-5 md:grid-cols-[minmax(0,1fr)_minmax(320px,0.7fr)] md:items-center">
           <div className="flex min-w-0 items-center gap-4">
-            <AccountAvatar name={username} src={user?.avatar_url} alt={`${username}のアカウントアイコン`} className="size-20" sizes="80px" />
+            <AccountAvatar name={username} src={user?.avatar_url} alt={uiText("{0}のアカウントアイコン", username)} className="size-20" sizes="80px" />
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
                 <div className="truncate text-xl font-semibold">{username}</div>
                 <Badge className={user?.status === "active" ? "border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-300" : ""} variant="outline">
-                  <CheckCircle2 />{accountStatusLabel(user?.status)}
+                  <CheckCircle2 />{accountStatusLabel(user?.status, uiText)}
                 </Badge>
               </div>
-              <div className="mt-1 truncate text-sm text-muted-foreground">{user?.email || "メールアドレス未設定"}</div>
+              <div className="mt-1 truncate text-sm text-muted-foreground">{user?.email || uiText("メールアドレス未設定")}</div>
               <div className="mt-2 flex flex-wrap gap-1.5">
-                {roles.length ? roles.map((role) => <Badge key={role} variant="secondary">{roleLabel(role)}</Badge>) : <Badge variant="secondary">ロール未設定</Badge>}
+                {roles.length ? roles.map((role) => <Badge key={role} variant="secondary">{roleLabel(role, uiText)}</Badge>) : <Badge variant="secondary">{uiText("ロール未設定")}</Badge>}
               </div>
             </div>
           </div>
           <div className="grid grid-cols-3 divide-x rounded-md border bg-muted/20">
-            <AccountSummaryMetric label="MFA" value={mfaStatus.isLoading ? "確認中" : mfaStatus.data?.enabled ? "有効" : "無効"} />
-            <AccountSummaryMetric label="Passkey" value={`${passkeys.data?.length || 0}件`} />
-            <AccountSummaryMetric label="外部ログイン" value={`${oauthLinks.data?.length || 0}件`} />
+            <AccountSummaryMetric label="MFA" value={mfaStatus.isError || !mfaStatus.data ? (ja ? "未確認" : "Unknown") : mfaStatus.data.enabled ? (ja ? "有効" : "Enabled") : (ja ? "無効" : "Disabled")} />
+            <AccountSummaryMetric label="Passkey" value={passkeys.isError || !passkeys.data ? (ja ? "未確認" : "Unknown") : String(passkeys.data.length)} />
+            <AccountSummaryMetric label={ja ? "外部ログイン" : "External login"} value={oauthLinks.isError || !oauthLinks.data ? (ja ? "未確認" : "Unknown") : String(oauthLinks.data.length)} />
           </div>
         </CardContent>
       </Card>
 
       <Tabs defaultValue="profile" className="gap-4">
-        <TabsList variant="line" className="h-auto w-full justify-start border-b pb-1">
-          <TabsTrigger value="profile" className="min-w-32 flex-none"><UserCog />プロフィール</TabsTrigger>
-          <TabsTrigger value="security" className="min-w-32 flex-none"><ShieldCheck />セキュリティ</TabsTrigger>
-          <TabsTrigger value="appearance" className="min-w-32 flex-none"><Palette />外観</TabsTrigger>
+        <TabsList variant="line" className="h-auto w-full flex-wrap justify-start border-b pb-1">
+          <TabsTrigger value="profile" className="min-w-32 flex-none"><UserCog />{ja ? "プロフィール" : "Profile"}</TabsTrigger>
+          <TabsTrigger value="security" className="min-w-32 flex-none"><ShieldCheck />{ja ? "セキュリティ" : "Security"}</TabsTrigger>
+          <TabsTrigger value="appearance" className="min-w-32 flex-none"><Palette />{ja ? "外観" : "Appearance"}</TabsTrigger>
         </TabsList>
         <TabsContent value="profile">
+          <DetailSection title={ja ? "プロフィールとログイン連携" : "Profile and connected logins"}>
           <div className="grid gap-4 xl:grid-cols-[minmax(300px,0.75fr)_minmax(0,1.25fr)]">
             <AvatarPanel
               username={username}
@@ -124,9 +131,11 @@ export function AccountView() {
               accountResourceID={accountResourceID}
             />
           </div>
+          </DetailSection>
         </TabsContent>
         <TabsContent value="security">
-          <div className="grid items-start gap-4 xl:grid-cols-2 2xl:grid-cols-3">
+          <DetailSection title={ja ? "パスワード・MFA・Passkey" : "Password, MFA and passkeys"} description={ja ? "復旧コードや秘密値は必要な操作の中で一度だけ表示します。" : "Recovery codes and secrets are revealed only within their individual actions."}>
+          <div className="grid items-start gap-6 xl:grid-cols-2 min-[1800px]:grid-cols-3">
             <PasswordPanel setNotice={setNotice} actionController={actionController} authority={authority} refreshAuthority={refreshAuthority} accountResourceID={accountResourceID} />
             <MFAPanel status={mfaStatus.data} loading={mfaStatus.isLoading} username={username} sessionAvailable={Boolean(user)} setNotice={setNotice} refresh={() => queryClient.invalidateQueries({ queryKey: ["auth", "mfa", "status"] })} actionController={actionController} authority={authority} refreshAuthority={refreshAuthority} accountResourceID={accountResourceID} />
             <PasskeyPanel
@@ -142,6 +151,7 @@ export function AccountView() {
               accountResourceID={accountResourceID}
             />
           </div>
+          </DetailSection>
         </TabsContent>
         <TabsContent value="appearance">
           <AppearancePanel />

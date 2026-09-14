@@ -1,5 +1,10 @@
 "use client";
+import { fixedPresentationText } from "@/lib/i18n/ui-v2/presentation-copy";
 
+import { useUICopy } from "@/lib/i18n/ui-v2/use-ui-copy";
+
+
+import { DraftExitContext, useDraftExit } from "@/components/forms/draft-exit";
 import { useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { KeyRound, LoaderCircle, Settings2 } from "lucide-react";
@@ -29,6 +34,7 @@ type UpdaterSettingsPanelProps = {
 };
 
 export function UpdaterSettingsPanel({ updater, availableTargets, jobs, canEdit, canManageSecrets }: UpdaterSettingsPanelProps) {
+  const uiText = useUICopy();
   const [open, setOpen] = useState(false);
   const [bootstrapCloseBlocked, setBootstrapCloseBlocked] = useState(false);
   const [ambiguousOwnershipRequest, setAmbiguousOwnershipRequest] = useState<PullUpdaterOwnershipActivationRequest | null>(null);
@@ -124,9 +130,10 @@ export function UpdaterSettingsPanel({ updater, availableTargets, jobs, canEdit,
     && Number(updater.ownership_epoch) === observedOwnership.ownership_epoch,
   );
   const ownershipMutationPending = activateOwnership.isPending || deactivateOwnership.isPending;
+  const draftExit = useDraftExit({ enabled: open && canEdit, pending: bootstrapCloseBlocked || ownershipMutationPending });
   const setDialogOpen = (nextOpen: boolean) => {
     if (!nextOpen && (bootstrapCloseBlocked || ownershipMutationPending)) return;
-    setOpen(nextOpen);
+    if (nextOpen) setOpen(true); else draftExit.request(() => setOpen(false));
   };
   const requestOwnershipActivation = async () => {
     if (!settingsData || !ownershipEligibility.ready || !canEdit) return;
@@ -214,12 +221,11 @@ export function UpdaterSettingsPanel({ updater, availableTargets, jobs, canEdit,
   };
 
   return (
-    <Dialog open={open} onOpenChange={setDialogOpen}>
+    <DraftExitContext.Provider value={draftExit}><Dialog open={open} onOpenChange={setDialogOpen}>
       <DialogTrigger asChild>
-        <Button variant="outline" size="sm" aria-label={`${updater.name || updater.updater_id} の設定`}>
+        <Button variant="outline" size="sm" aria-label={uiText("{0} の設定", updater.name || updater.updater_id)}>
           <Settings2 className="size-4" />
-          設定
-        </Button>
+          {uiText("設定")}</Button>
       </DialogTrigger>
       <DialogContent
         className="max-h-[92vh] overflow-y-auto sm:max-w-5xl"
@@ -232,18 +238,17 @@ export function UpdaterSettingsPanel({ updater, availableTargets, jobs, canEdit,
         }}
       >
         <DialogHeader>
-          <DialogTitle>{updater.name || updater.updater_id} の設定</DialogTitle>
+          <DialogTitle>{updater.name || updater.updater_id} {uiText("の設定")}</DialogTitle>
           <DialogDescription>
-            このホストで管理するサービスをControl Panel上で設定します。Host Agentが外向き接続で設定を取得します。
-          </DialogDescription>
+            {uiText("このホストで管理するサービスをControl Panel上で設定します。Host Agentが外向き接続で設定を取得します。")}</DialogDescription>
         </DialogHeader>
 
         <div className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/30 p-3 text-xs">
           <Badge variant={policyState.tone}>{policyState.label}</Badge>
-          <span>設定Revision: {updater.desired_revision ?? settingsData?.revision ?? 0}</span>
-          <span>反映済みRevision: {updater.applied_revision ?? 0}</span>
+          <span>{uiText("設定Revision:")}{updater.desired_revision ?? settingsData?.revision ?? 0}</span>
+          <span>{uiText("反映済みRevision:")}{updater.applied_revision ?? 0}</span>
           {updater.policy_error_code || updater.policy_error ? (
-            <span className="break-words text-destructive">反映情報: {systemUpdatePolicyErrorMessage(updater.policy_error_code || updater.policy_error)}</span>
+            <span className="break-words text-destructive">{uiText("反映情報:")}{fixedPresentationText(systemUpdatePolicyErrorMessage(updater.policy_error_code || updater.policy_error), uiText)}</span>
           ) : null}
         </div>
 
@@ -251,34 +256,34 @@ export function UpdaterSettingsPanel({ updater, availableTargets, jobs, canEdit,
           <section className="space-y-3 rounded-md border border-blue-200 bg-blue-50/40 p-4 dark:border-blue-900 dark:bg-blue-950/20" aria-labelledby={`${updater.updater_id}-ownership-heading`}>
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
-                <h3 id={`${updater.updater_id}-ownership-heading`} className="font-medium">更新実行権限の切替</h3>
-                <p className="mt-1 text-xs text-muted-foreground">Host Agentの更新実行権限をCASで切り替えます。observer状態では更新を実行しません。</p>
+                <h3 id={`${updater.updater_id}-ownership-heading`} className="font-medium">{uiText("更新実行権限の切替")}</h3>
+                <p className="mt-1 text-xs text-muted-foreground">{uiText("Host Agentの更新実行権限をCASで切り替えます。observer状態では更新を実行しません。")}</p>
               </div>
               <Badge variant={Number(updater.ownership_epoch) > 0 ? "default" : "secondary"}>
                 {Number(updater.ownership_epoch) > 0 ? `Host Agent active · epoch ${updater.ownership_epoch}` : "Observer only"}
               </Badge>
             </div>
             <div className="grid gap-2 text-xs sm:grid-cols-2 lg:grid-cols-4">
-              <OwnershipStateItem label="実行ホスト" value={settingsData.execution_host_id || "未報告"} />
+              <OwnershipStateItem label={uiText("実行ホスト")} value={settingsData.execution_host_id || uiText("未報告")} />
               <OwnershipStateItem
-                label="現在のOwner"
+                label={uiText("現在のOwner")}
                 value={settingsData.execution_host_ownership
-                  ? `${settingsData.execution_host_ownership.transport_mode} / ${settingsData.execution_host_ownership.agent_service_id || "未割当"}`
-                  : "未報告"}
+                  ? `${settingsData.execution_host_ownership.transport_mode} / ${settingsData.execution_host_ownership.agent_service_id || uiText("未割当")}`
+                  : uiText("未報告")}
               />
-              <OwnershipStateItem label="現在のOwnership epoch" value={settingsData.execution_host_ownership?.ownership_epoch ?? "未報告"} />
+              <OwnershipStateItem label={uiText("現在のOwnership epoch")} value={settingsData.execution_host_ownership?.ownership_epoch ?? uiText("未報告")} />
               <OwnershipStateItem
-                label={activePullOwner ? "実行権限解除" : "Observer readiness"}
+                label={activePullOwner ? uiText("実行権限解除") : "Observer readiness"}
                 value={activePullOwner
-                  ? (deactivationEligibility.ready ? "解除可能" : ownershipEligibilityMessage(deactivationEligibility.reason))
-                  : (ownershipEligibility.ready ? "切替可能" : ownershipEligibilityMessage(ownershipEligibility.reason))}
+                  ? (deactivationEligibility.ready ? uiText("解除可能") : ownershipEligibilityMessage(deactivationEligibility.reason))
+                  : (ownershipEligibility.ready ? uiText("切替可能") : ownershipEligibilityMessage(ownershipEligibility.reason))}
               />
             </div>
             <div className="text-xs text-muted-foreground">
-              Source / projection / executor revision: {settingsData.revision} / {settingsData.projection_revision ?? "未報告"} / {settingsData.local_executor_policy_revision ?? "未報告"}
+              Source / projection / executor revision: {settingsData.revision} / {settingsData.projection_revision ?? uiText("未報告")} / {settingsData.local_executor_policy_revision ?? uiText("未報告")}
             </div>
             <div className="text-xs text-muted-foreground">
-              Observer: {settingsData.pull_activation?.status || "未報告"} · heartbeat {settingsData.pull_activation?.last_heartbeat_at || "未報告"} ·
+              Observer: {settingsData.pull_activation?.status || uiText("未報告")} · heartbeat {settingsData.pull_activation?.last_heartbeat_at || uiText("未報告")} ·
               observe-only {settingsData.pull_activation?.observe_only === true ? "yes" : "no"} · executor {settingsData.pull_activation?.update_executor === true ? "ready" : "not ready"}
             </div>
             {ownershipFeedback || resolvedOwnershipTransitionObserved ? (
@@ -289,10 +294,10 @@ export function UpdaterSettingsPanel({ updater, availableTargets, jobs, canEdit,
                 role={ownershipFeedback?.tone === "error" && !resolvedOwnershipTransitionObserved ? "alert" : "status"}
               >
                 {deactivationTransitionObserved
-                  ? "実行権限解除を最新状態で確認しました。Host Agentはobserver epoch 0です。"
+                  ? uiText("実行権限解除を最新状態で確認しました。Host Agentはobserver epoch 0です。")
                   : ownershipTransitionObserved
-                    ? "切替結果を最新状態で確認しました。Host Agentが更新実行権限を所有しています。"
-                    : ownershipFeedback?.message}
+                    ? uiText("切替結果を最新状態で確認しました。Host Agentが更新実行権限を所有しています。")
+                    : ownershipFeedback?.message ? fixedPresentationText(ownershipFeedback.message, uiText) : null}
               </div>
             ) : null}
             <div className="flex flex-wrap gap-2">
@@ -303,12 +308,12 @@ export function UpdaterSettingsPanel({ updater, availableTargets, jobs, canEdit,
                   authority={currentFoundationAuthority(activationSnapshot)}
                   refreshAuthority={() => refreshOwnershipAuthority("UPD-06")}
                   handler={requestOwnershipActivation}
-                  label="Host Agentへ切り替え"
+                  label={uiText("Host Agentへ切り替え")}
                   icon={activateOwnership.isPending ? <LoaderCircle className="size-4 animate-spin" /> : <KeyRound className="size-4" />}
                   aria-busy={activateOwnership.isPending}
                   variant="outline"
                   disabled={!canEdit || !ownershipEligibility.ready || ownershipMutationPending}
-                  title={!canEdit ? "system_updates.execute 権限が必要です。" : ownershipEligibilityMessage(ownershipEligibility.reason) || undefined}
+                  title={!canEdit ? uiText("system_updates.execute 権限が必要です。") : ownershipEligibilityMessage(ownershipEligibility.reason) || undefined}
                 />
               ) : null}
               {activePullOwner ? (
@@ -318,12 +323,12 @@ export function UpdaterSettingsPanel({ updater, availableTargets, jobs, canEdit,
                   authority={currentFoundationAuthority(deactivationSnapshot)}
                   refreshAuthority={() => refreshOwnershipAuthority("UPD-07")}
                   handler={requestOwnershipDeactivation}
-                  label="実行権限を解除"
+                  label={uiText("実行権限を解除")}
                   icon={deactivateOwnership.isPending ? <LoaderCircle className="size-4 animate-spin" /> : <KeyRound className="size-4" />}
                   aria-busy={deactivateOwnership.isPending}
                   variant="destructive"
                   disabled={!canEdit || !deactivationEligibility.ready || ownershipMutationPending}
-                  title={!canEdit ? "system_updates.execute 権限が必要です。" : ownershipEligibilityMessage(deactivationEligibility.reason) || undefined}
+                  title={!canEdit ? uiText("system_updates.execute 権限が必要です。") : ownershipEligibilityMessage(deactivationEligibility.reason) || undefined}
                 />
               ) : null}
               {ownershipRequestState === "ambiguous" || deactivationRequestState === "ambiguous" ? (
@@ -335,22 +340,20 @@ export function UpdaterSettingsPanel({ updater, availableTargets, jobs, canEdit,
                     void queryClient.invalidateQueries({ queryKey: ["system-updates"] });
                   }}
                 >
-                  状態だけ再取得
-                </Button>
+                  {uiText("状態だけ再取得")}</Button>
               ) : null}
             </div>
-            {!canEdit ? <p className="text-xs text-muted-foreground">切替には system_updates.execute 権限が必要です。</p> : null}
+            {!canEdit ? <p className="text-xs text-muted-foreground">{uiText("切替には system_updates.execute 権限が必要です。")}</p> : null}
           </section>
         ) : null}
 
         {settings.isLoading ? (
           <div className="flex items-center gap-2 rounded-md border border-dashed p-6 text-sm text-muted-foreground" role="status">
             <LoaderCircle className="size-4 animate-spin" />
-            Updater設定を読み込んでいます。
-          </div>
+            {uiText("Updater設定を読み込んでいます。")}</div>
         ) : settings.isError ? (
           <div className="rounded-md border border-destructive/40 bg-destructive/5 p-4 text-sm text-destructive">
-            {systemUpdateErrorMessage(settings.error, "Updater設定を取得できませんでした。")}
+            {fixedPresentationText(systemUpdateErrorMessage(settings.error, uiText("Updater設定を取得できませんでした。")), uiText)}
           </div>
         ) : settingsData ? (
           <UpdaterSettingsForm
@@ -366,6 +369,6 @@ export function UpdaterSettingsPanel({ updater, availableTargets, jobs, canEdit,
           />
         ) : null}
       </DialogContent>
-    </Dialog>
+    </Dialog></DraftExitContext.Provider>
   );
 }

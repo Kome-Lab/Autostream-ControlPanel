@@ -1,4 +1,8 @@
 "use client";
+import { useI18n } from "@/components/admin/i18n-provider";
+import { resourceCopy } from "@/lib/i18n/ui-v2/resource-copy";
+import { useUICopy } from "@/lib/i18n/ui-v2/use-ui-copy";
+
 
 import { useMemo } from "react";
 import { RefreshCcw } from "lucide-react";
@@ -15,6 +19,9 @@ import { PermissionNotice, QueryErrorNotice } from "./resource-notices";
 import { ResourceTable } from "./resource-table";
 
 export function ServiceHealthResourcePanel({ resource, access }: { resource: ResourceDefinition; access: ResourceAccess }) {
+  const uiText = useUICopy();
+  const { locale } = useI18n();
+  const copy = resourceCopy(resource, locale);
   const appSettings = useAppSettings();
   const currentUser = useCurrentUser();
   const canReadRegisteredNodes = hasPermission(currentUser.data, "api_tokens.create");
@@ -22,21 +29,21 @@ export function ServiceHealthResourcePanel({ resource, access }: { resource: Res
   const serviceHealth = useServiceHealth(access.read);
   const timezone = appSettings.data?.timezone;
   const rows = useMemo(
-    () => mergeServiceHealthRows(registeredNodes.data || [], serviceHealth.data || []).map((row) => enrichResourceRow(resource, row as unknown as ResourceRow)),
-    [registeredNodes.data, resource, serviceHealth.data],
+    () => mergeServiceHealthRows(registeredNodes.data || [], serviceHealth.data || []).map((row) => enrichResourceRow(resource, row as unknown as ResourceRow, uiText)),
+    [registeredNodes.data, resource, serviceHealth.data, uiText],
   );
   const columns = useMemo(() => visibleColumns(rows, resource), [rows, resource]);
   const loading = rows.length === 0 && (serviceHealth.isLoading || (canReadRegisteredNodes && registeredNodes.isLoading));
   const fetching = serviceHealth.isFetching || (canReadRegisteredNodes && registeredNodes.isFetching);
 
-  if (!access.read) return <PermissionNotice resource={resource} action="参照" permission={resource.permissions?.read} />;
+  if (!access.read) return <PermissionNotice resource={resource} action={uiText("参照")} permission={resource.permissions?.read} />;
   const queryError = serviceHealth.isError || (canReadRegisteredNodes && registeredNodes.isError);
   return (
     <Card>
       <CardHeader className="gap-2 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <CardTitle>{resource.title}</CardTitle>
-          <CardDescription>{resource.description}</CardDescription>
+          <CardTitle>{copy.title}</CardTitle>
+          <CardDescription>{copy.description}</CardDescription>
         </div>
         <Button
           variant="outline"
@@ -48,8 +55,7 @@ export function ServiceHealthResourcePanel({ resource, access }: { resource: Res
           }}
         >
           <RefreshCcw className="size-4" />
-          更新
-        </Button>
+          {locale === "ja" ? "更新" : "Refresh"}</Button>
       </CardHeader>
       <CardContent className="space-y-4">
         {queryError ? <QueryErrorNotice onRetry={() => { void registeredNodes.refetch(); void serviceHealth.refetch(); }} /> : loading ? <Skeleton className="h-48 w-full" /> : <ResourceTable rows={rows} columns={columns} resource={resource} timezone={timezone} canEdit={false} canDelete={false} canTest={false} currentUser={currentUser.data} />}

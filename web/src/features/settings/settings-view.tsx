@@ -1,11 +1,16 @@
 "use client";
+import { useUICopy } from "@/lib/i18n/ui-v2/use-ui-copy";
 
+
+import { useDraftExit, useNonSecretDraft } from "@/components/forms/draft-exit";
 import { type ReactNode, useCallback, useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Save, Send } from "lucide-react";
 import { RemoteStateBoundary } from "@/components/foundation/remote-state/remote-state-boundary";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { PageHeader } from "@/components/shell/page-header";
+import { DetailSection } from "@/components/layout/detail-section";
+import { FormFooter } from "@/components/forms/form-footer";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -22,23 +27,14 @@ import type { ManagedAppSettings } from "@/types/domain";
 const customTimeZoneValue = "__custom_timezone__";
 
 export function SettingsView() {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const appSettings = useManagedAppSettings();
   const state = managedAppSettingsRemoteState(appSettings);
 
   return (
-    <div className="space-y-6">
-      <section>
-        <h1 className="text-2xl font-semibold tracking-normal">{t("settings")}</h1>
-        <p className="mt-2 max-w-3xl text-sm text-muted-foreground">管理画面の表示名と運用設定を管理します。</p>
-      </section>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>{t("appSettings")}</CardTitle>
-          <CardDescription>サイドバー、ログイン、初期作成画面の表示名と、画面上の時刻表示に使うタイムゾーンです。</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
+    <div className="space-y-5" data-screen-family="settings">
+      <PageHeader title={t("settings")} description={locale === "ja" ? "表示・タイムゾーン、共有SMTP、BOT確認、計測を個別に管理します。" : "Manage display and timezone, shared SMTP, bot protection and analytics separately."} />
+      <DetailSection title={t("appSettings")}>
           <RemoteStateBoundary
             state={state}
             noticeId="app-settings-remote-state"
@@ -47,20 +43,19 @@ export function SettingsView() {
             renderLoading={() => <Skeleton className="h-10 w-full" />}
             renderData={(settings) => (
               <AppSettingsForm
-                key={`${settings.app_name || "default"}-${settings.timezone || defaultTimeZone}-${settings.smtp_enabled ? "smtp-on" : "smtp-off"}-${settings.turnstile_enabled ? "turnstile-on" : "turnstile-off"}-${settings.google_analytics_enabled ? "analytics-on" : "analytics-off"}`}
                 initialSettings={settings}
               />
             )}
             onRetry={() => void appSettings.refetch()}
             retryPending={appSettings.isFetching}
           />
-        </CardContent>
-      </Card>
+      </DetailSection>
     </div>
   );
 }
 
 function AppSettingsForm({ initialSettings }: { initialSettings?: ManagedAppSettings }) {
+  const uiText = useUICopy();
   const { t } = useI18n();
   const queryClient = useQueryClient();
   const currentUser = useCurrentUser();
@@ -117,22 +112,25 @@ function AppSettingsForm({ initialSettings }: { initialSettings?: ManagedAppSett
   const saveEvaluation = actionController.evaluate(saveIntent);
   const testEvaluation = actionController.evaluate(testEmailIntent);
   const canUpdate = hasPermission(currentUser.data, "system_settings.update");
+  const draftExit = useDraftExit({ enabled: canUpdate, pending: Boolean(pending) || dispatching });
+  const draft = useNonSecretDraft([appName, timezone, smtpEnabled, smtpHost, smtpPort, smtpStartTLS, smtpFrom, smtpUsername, turnstileEnabled, turnstileSiteKey, googleAnalyticsEnabled, googleAnalyticsMeasurementID], draftExit);
   const handleActionResult = useCallback((result: AppSettingsActionResult, intent: AppSettingsActionIntent) => {
     setDispatching(false);
     if (result.kind === "succeeded") {
       if (intent.id === "APP-01") {
-        setMessage("保存しました。");
+        draft.saved();
+        setMessage(uiText("保存しました。"));
         void queryClient.invalidateQueries({ queryKey: ["settings", "app"] });
         void queryClient.invalidateQueries({ queryKey: ["settings", "app", "manage"] });
       } else {
-        setMessage("テストメールを送信しました。");
+        setMessage(uiText("テストメールを送信しました。"));
       }
       setPending(null);
       return;
     }
     setMessage(appSettingsActionResultMessage(result, t));
     if (result.kind === "blocked") setPending(null);
-  }, [queryClient, t]);
+  }, [draft, queryClient, t, uiText]);
   const smtpRequiredMissing = smtpEnabled && (!smtpHost.trim() || !smtpFrom.trim());
   const turnstileRequiredMissing = turnstileEnabled && (!turnstileSiteKey.trim() || (!turnstileSecret.trim() && !initialSettings?.turnstile_configured));
   const googleAnalyticsIDValid = !googleAnalyticsEnabled || /^G-[A-Z0-9]{4,22}$/.test(googleAnalyticsMeasurementID.trim().toUpperCase());
@@ -140,7 +138,7 @@ function AppSettingsForm({ initialSettings }: { initialSettings?: ManagedAppSett
   return (
     <div className="space-y-4">
       <div className="grid gap-4 xl:grid-cols-2">
-        <SettingsSection title="基本設定" description="管理画面の名前と、システム内の時刻表示に使う基準タイムゾーンです。">
+        <SettingsSection title={uiText("基本設定")} description={uiText("管理画面の名前と、システム内の時刻表示に使う基準タイムゾーンです。")}>
           <div className="grid gap-3 lg:grid-cols-2">
             <div className="space-y-2">
               <label className="text-sm font-medium" htmlFor="app-name">
@@ -150,15 +148,13 @@ function AppSettingsForm({ initialSettings }: { initialSettings?: ManagedAppSett
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium" htmlFor="app-timezone-input">
-                タイムゾーンID
-              </label>
+                {uiText("タイムゾーンID")}</label>
               <Input id="app-timezone-input" value={timezone} onChange={(event) => setTimezone(event.target.value)} placeholder="Asia/Tokyo" spellCheck={false} />
-              <p className={timezoneValid ? "text-xs text-muted-foreground" : "text-xs text-destructive"}>{timezoneValid ? "IANA time zone nameを直接入力できます。" : "有効なIANA time zone nameを入力してください。"}</p>
+              <p className={timezoneValid ? "text-xs text-muted-foreground" : "text-xs text-destructive"}>{timezoneValid ? uiText("IANA time zone nameを直接入力できます。") : uiText("有効なIANA time zone nameを入力してください。")}</p>
             </div>
             <div className="space-y-2 lg:col-span-2">
               <label className="text-sm font-medium" htmlFor="app-timezone">
-                候補から選択
-              </label>
+                {uiText("候補から選択")}</label>
               <Select
                 value={timezoneSelectValue}
                 onValueChange={(value) => {
@@ -170,7 +166,7 @@ function AppSettingsForm({ initialSettings }: { initialSettings?: ManagedAppSett
                 </SelectTrigger>
                 <SelectContent className="max-h-80">
                   {timezoneSelectValue === customTimeZoneValue ? (
-                    <SelectItem value={customTimeZoneValue}>{trimmedTimezone ? `手入力: ${trimmedTimezone}` : "手入力"}</SelectItem>
+                    <SelectItem value={customTimeZoneValue}>{trimmedTimezone ? uiText("手入力: {0}", trimmedTimezone) : uiText("手入力")}</SelectItem>
                   ) : null}
                   {options.map((option) => (
                     <SelectItem key={option.value} value={option.value}>
@@ -182,19 +178,19 @@ function AppSettingsForm({ initialSettings }: { initialSettings?: ManagedAppSett
             </div>
           </div>
         </SettingsSection>
-        <SettingsSection title="表示プレビュー" description="保存前の表示名とタイムゾーン変換結果を確認できます。">
+        <SettingsSection title={uiText("表示プレビュー")} description={uiText("保存前の表示名とタイムゾーン変換結果を確認できます。")}>
           <dl className="grid grid-cols-[112px_minmax(0,1fr)] gap-x-3 gap-y-2 text-sm">
-            <dt className="text-muted-foreground">アプリ名</dt>
+            <dt className="text-muted-foreground">{uiText("アプリ名")}</dt>
             <dd className="min-w-0 truncate">{appName || "-"}</dd>
-            <dt className="text-muted-foreground">タイムゾーン</dt>
-            <dd className="min-w-0 truncate">{timezoneValid ? normalizedTimezone : "未確認"}</dd>
-            <dt className="text-muted-foreground">現在時刻</dt>
+            <dt className="text-muted-foreground">{uiText("タイムゾーン")}</dt>
+            <dd className="min-w-0 truncate">{timezoneValid ? normalizedTimezone : uiText("未確認")}</dd>
+            <dt className="text-muted-foreground">{uiText("現在時刻")}</dt>
             <dd className="min-w-0 truncate">{timezoneValid ? formatDateTimeInTimeZone(new Date().toISOString(), normalizedTimezone, { dateStyle: "medium", timeStyle: "medium" }) : "-"}</dd>
           </dl>
         </SettingsSection>
         <SettingsSection
-          title="メールサーバー"
-          description="ユーザー登録完了、メール変更確認、運用通知に使います。"
+          title={uiText("メールサーバー")}
+          description={uiText("ユーザー登録完了、メール変更確認、運用通知に使います。")}
           action={<Switch checked={smtpEnabled} onCheckedChange={setSMTPEnabled} />}
           className={smtpEnabled ? "xl:col-span-2" : ""}
         >
@@ -213,13 +209,12 @@ function AppSettingsForm({ initialSettings }: { initialSettings?: ManagedAppSett
                 <Input value={smtpUsername} onChange={(event) => setSMTPUsername(event.target.value)} />
               </Field>
               <Field label="SMTP Password">
-                <Input type="password" value={smtpPassword} onChange={(event) => setSMTPPassword(event.target.value)} placeholder={initialSettings?.smtp_password_configured ? "設定済み" : ""} />
+                <Input type="password" value={smtpPassword} onChange={(event) => setSMTPPassword(event.target.value)} placeholder={initialSettings?.smtp_password_configured ? uiText("設定済み") : ""} />
               </Field>
               <label className="flex min-h-10 items-center gap-2 self-end text-sm">
                 <Switch checked={smtpStartTLS} onCheckedChange={setSMTPStartTLS} />
-                STARTTLSを使用する
-              </label>
-              <Field label="テスト送信先">
+                {uiText("STARTTLSを使用する")}</label>
+              <Field label={uiText("テスト送信先")}>
                 <Input
                   type="email"
                   value={testEmailTo}
@@ -240,29 +235,28 @@ function AppSettingsForm({ initialSettings }: { initialSettings?: ManagedAppSett
                   disabled={Boolean(pending) || dispatching || !canUpdate || testEvaluation.availability.kind !== "allowed" || !smtpEnabled || smtpRequiredMissing || !testEmailTo.trim()}
                 >
                   <Send className="size-4" />
-                  テスト送信
-                </Button>
+                  {uiText("テスト送信")}</Button>
               </div>
             </div>
           ) : (
-            <div className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">メール送信を使う場合は有効化してSMTP情報を保存してください。</div>
+            <div className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">{uiText("メール送信を使う場合は有効化してSMTP情報を保存してください。")}</div>
           )}
         </SettingsSection>
-        <SettingsSection title="Cloudflare Turnstile" description="ログインとメール変更確認のBOT確認に使います。" action={<Switch checked={turnstileEnabled} onCheckedChange={setTurnstileEnabled} />}>
+        <SettingsSection title="Cloudflare Turnstile" description={uiText("ログインとメール変更確認のBOT確認に使います。")} action={<Switch checked={turnstileEnabled} onCheckedChange={setTurnstileEnabled} />}>
           {turnstileEnabled ? (
             <div className="grid gap-3 md:grid-cols-2">
               <Field label="Site key">
                 <Input value={turnstileSiteKey} onChange={(event) => setTurnstileSiteKey(event.target.value)} placeholder="0x4AAAA..." />
               </Field>
               <Field label="Secret key">
-                <Input type="password" value={turnstileSecret} onChange={(event) => setTurnstileSecret(event.target.value)} placeholder={initialSettings?.turnstile_configured ? "設定済み" : ""} />
+                <Input type="password" value={turnstileSecret} onChange={(event) => setTurnstileSecret(event.target.value)} placeholder={initialSettings?.turnstile_configured ? uiText("設定済み") : ""} />
               </Field>
             </div>
           ) : (
-            <div className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">Turnstileを使う場合は有効化してSite keyとSecret keyを保存してください。</div>
+            <div className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">{uiText("Turnstileを使う場合は有効化してSite keyとSecret keyを保存してください。")}</div>
           )}
         </SettingsSection>
-        <SettingsSection title="Google Analytics" description="ログイン画面と管理画面のページ閲覧だけをGA4へ送信します。AutoStreamが送るイベントには検索条件、ユーザー情報、配信内容を含めません。" action={<Switch checked={googleAnalyticsEnabled} onCheckedChange={setGoogleAnalyticsEnabled} />}>
+        <SettingsSection title="Google Analytics" description={uiText("ログイン画面と管理画面のページ閲覧だけをGA4へ送信します。AutoStreamが送るイベントには検索条件、ユーザー情報、配信内容を含めません。")} action={<Switch checked={googleAnalyticsEnabled} onCheckedChange={setGoogleAnalyticsEnabled} />}>
           {googleAnalyticsEnabled ? (
             <>
               <Field label="GA4 Measurement ID">
@@ -274,18 +268,17 @@ function AppSettingsForm({ initialSettings }: { initialSettings?: ManagedAppSett
                   spellCheck={false}
                   aria-invalid={!googleAnalyticsIDValid}
                 />
-                {!googleAnalyticsIDValid ? <span className="text-xs font-normal text-destructive">G-から始まるMeasurement IDを入力してください。</span> : null}
+                {!googleAnalyticsIDValid ? <span className="text-xs font-normal text-destructive">{uiText("G-から始まるMeasurement IDを入力してください。")}</span> : null}
               </Field>
               <div className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">
-                GA4データストリームの「拡張計測機能」はOFFにしてください。ONのままでは、履歴変更のpage_viewやサイト内検索などがGoogle側から別途自動送信されます。
-              </div>
+                {uiText("GA4データストリームの「拡張計測機能」はOFFにしてください。ONのままでは、履歴変更のpage_viewやサイト内検索などがGoogle側から別途自動送信されます。")}</div>
             </>
           ) : (
-            <div className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">有効化するまでGoogleのスクリプトや計測通信は読み込まれません。</div>
+            <div className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">{uiText("有効化するまでGoogleのスクリプトや計測通信は読み込まれません。")}</div>
           )}
         </SettingsSection>
       </div>
-      {message ? <p className="text-sm text-muted-foreground">{message}</p> : null}
+      <FormFooter feedback={message} pending={dispatching}>
       <Button onClick={() => {
         setMessage("");
         setPending(saveIntent);
@@ -293,6 +286,7 @@ function AppSettingsForm({ initialSettings }: { initialSettings?: ManagedAppSett
         <Save className="size-4" />
         {t("save")}
       </Button>
+      </FormFooter>
       {pending ? (
         <AppSettingsActionConfirmationHost
           key={pending.id}
@@ -315,18 +309,8 @@ function AppSettingsForm({ initialSettings }: { initialSettings?: ManagedAppSett
 }
 
 function SettingsSection({ title, description, action, className = "", children }: { title: string; description: string; action?: ReactNode; className?: string; children: ReactNode }) {
-  return (
-    <section className={`space-y-3 rounded-md border bg-muted/20 p-3 ${className}`}>
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="text-sm font-medium">{title}</div>
-          <p className="text-xs text-muted-foreground">{description}</p>
-        </div>
-        {action ? <div className="shrink-0">{action}</div> : null}
-      </div>
-      {children}
-    </section>
-  );
+  return <DetailSection title={title} description={description} actions={action} className={className}>{children}</DetailSection>;
+
 }
 
 function appSettingsActionResultMessage(result: AppSettingsActionResult, translate: ReturnType<typeof useI18n>["t"]) {

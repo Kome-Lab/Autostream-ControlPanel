@@ -417,6 +417,15 @@ export class BrowserHarness {
     await this.send("Input.dispatchKeyEvent", { ...base, type: "keyUp" });
   }
 
+  async pressTab(direction: "forward" | "backward"): Promise<void> {
+    if (direction !== "forward" && direction !== "backward") throw new Error("Unsupported Tab direction");
+    if (this.closed) throw new Error("Browser harness closed");
+    this.assertNoFatalError();
+    const tabInput = { key: "Tab", code: "Tab", windowsVirtualKeyCode: 9, nativeVirtualKeyCode: 9, modifiers: direction === "backward" ? 8 : 0 };
+    await this.send("Input.dispatchKeyEvent", { ...tabInput, type: "keyDown" });
+    await this.send("Input.dispatchKeyEvent", { ...tabInput, type: "keyUp" });
+  }
+
   async pressKey(key: string, code = key) {
     await this.send("Input.dispatchKeyEvent", { type: "keyDown", key, code });
     await this.send("Input.dispatchKeyEvent", { type: "keyUp", key, code });

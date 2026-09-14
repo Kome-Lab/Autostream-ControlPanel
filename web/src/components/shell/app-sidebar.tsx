@@ -19,7 +19,7 @@ type AppSidebarProps = {
 
 export function AppSidebar({ appName, versionLabel, updateStatus, pathname, currentUser, sectionState, onToggleSection }: AppSidebarProps) {
   return (
-    <aside className="fixed inset-y-0 left-0 z-30 flex w-[15.5rem] flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground max-lg:hidden">
+    <aside className="fixed inset-y-0 left-0 z-30 flex w-[15.5rem] flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground max-xl:hidden">
       <div className="flex min-h-[4.5rem] shrink-0 items-center border-b border-sidebar-border px-4 py-2">
         <ShellBrand appName={appName} versionLabel={versionLabel} />
       </div>

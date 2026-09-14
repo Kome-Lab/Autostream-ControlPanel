@@ -1,4 +1,8 @@
 "use client";
+import { useUICopy } from "@/lib/i18n/ui-v2/use-ui-copy";
+
+
+import { useNonSecretDraft } from "@/components/forms/draft-exit";
 
 import { useState } from "react";
 import { Input } from "@/components/ui/input";
@@ -13,6 +17,7 @@ const watermarkCanvasHeight = 1080;
 const watermarkMaxBytes = 5 * 1024 * 1024;
 
 export function OverlayProfileForm({ disabled, submit, initial, submitLabel }: { disabled: boolean; submit: SubmitResource; initial?: ResourceRow; submitLabel?: string }) {
+  const uiText = useUICopy();
   const row = initial || {};
   const existingImageName = rowString(row, ["watermark_image_name", "watermark_file_name", "config.watermark_image_name", "config.watermark_file_name"]);
   const existingPreviewImage = rowString(row, ["watermark_image_data_url", "config.watermark_image_data_url", "watermark_image_url", "config.watermark_image_url"]);
@@ -21,6 +26,8 @@ export function OverlayProfileForm({ disabled, submit, initial, submitLabel }: {
   const [watermarkFileName, setWatermarkFileName] = useState(existingImageName);
   const [fileMessage, setFileMessage] = useState("");
   const editing = Boolean(initial);
+
+  useNonSecretDraft([name, watermarkImage, watermarkFileName]);
 
   return (
     <form
@@ -40,9 +47,9 @@ export function OverlayProfileForm({ disabled, submit, initial, submitLabel }: {
         });
       }}
     >
-      <TextField label="プロファイル名" value={name} onChange={setName} required />
+      <TextField label={uiText("プロファイル名")} value={name} onChange={setName} required />
       <div className="grid gap-3 md:grid-cols-2">
-        <Field label="画像アップロード" description="PNG、JPEG、WebPのみ。1920x1080の画像を保存します。5MB以下にしてください。">
+        <Field label={uiText("画像アップロード")} description={uiText("PNG、JPEG、WebPのみ。1920x1080の画像を保存します。5MB以下にしてください。")}>
           <Input
             type="file"
             accept="image/png,image/jpeg,image/webp"
@@ -50,13 +57,13 @@ export function OverlayProfileForm({ disabled, submit, initial, submitLabel }: {
               const file = event.target.files?.[0];
               if (!file) return;
               if (!["image/png", "image/jpeg", "image/webp"].includes(file.type)) {
-                setFileMessage("PNG、JPEG、WebPの画像を選択してください。");
+                setFileMessage(uiText("PNG、JPEG、WebPの画像を選択してください。"));
                 setWatermarkImage("");
                 setWatermarkFileName("");
                 return;
               }
               if (file.size > watermarkMaxBytes) {
-                setFileMessage("画像は5MB以下にしてください。");
+                setFileMessage(uiText("画像は5MB以下にしてください。"));
                 setWatermarkImage("");
                 setWatermarkFileName("");
                 return;
@@ -64,7 +71,7 @@ export function OverlayProfileForm({ disabled, submit, initial, submitLabel }: {
               const reader = new FileReader();
               reader.onload = () => {
                 if (typeof reader.result !== "string") {
-                  setFileMessage("画像を読み込めませんでした。");
+                  setFileMessage(uiText("画像を読み込めませんでした。"));
                   setWatermarkImage("");
                   setWatermarkFileName("");
                   return;
@@ -72,33 +79,33 @@ export function OverlayProfileForm({ disabled, submit, initial, submitLabel }: {
                 const probe = new window.Image();
                 probe.onload = () => {
                   if (probe.naturalWidth !== watermarkCanvasWidth || probe.naturalHeight !== watermarkCanvasHeight) {
-                    setFileMessage(`画像サイズは${watermarkCanvasWidth}x${watermarkCanvasHeight}にしてください。`);
+                    setFileMessage(uiText("画像サイズは{0}x{1}にしてください。", watermarkCanvasWidth, watermarkCanvasHeight));
                     setWatermarkImage("");
                     setWatermarkFileName("");
                     return;
                   }
                   setWatermarkImage(reader.result as string);
                   setWatermarkFileName(file.name);
-                  setFileMessage(`${file.name} を読み込みました。配信画質が1080未満の場合は自動でフィットします。`);
+                  setFileMessage(uiText("{0} を読み込みました。配信画質が1080未満の場合は自動でフィットします。", file.name));
                 };
                 probe.onerror = () => {
-                  setFileMessage("画像を読み込めませんでした。");
+                  setFileMessage(uiText("画像を読み込めませんでした。"));
                   setWatermarkImage("");
                   setWatermarkFileName("");
                 };
                 probe.src = reader.result;
               };
-              reader.onerror = () => setFileMessage("画像を読み込めませんでした。");
+              reader.onerror = () => setFileMessage(uiText("画像を読み込めませんでした。"));
               reader.readAsDataURL(file);
             }}
           />
           {fileMessage ? <p className="mt-1 text-xs text-muted-foreground">{fileMessage}</p> : null}
         </Field>
-        <Field label="合成サイズ" description="ウォーターマーク画像は配信映像全体に重ねる1920x1080固定です。配信画質が1080未満の場合は自動でフィットします。">
-          <div className="rounded-md border bg-muted/40 px-3 py-2 text-sm">1920x1080 / 自動フィット</div>
+        <Field label={uiText("合成サイズ")} description={uiText("ウォーターマーク画像は配信映像全体に重ねる1920x1080固定です。配信画質が1080未満の場合は自動でフィットします。")}>
+          <div className="rounded-md border bg-muted/40 px-3 py-2 text-sm">{uiText("1920x1080 / 自動フィット")}</div>
         </Field>
       </div>
-      {editing && existingImageName && !watermarkImage ? <div className="rounded-md border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">現在の画像: {existingImageName}。差し替える場合だけ新しい画像を選択してください。</div> : null}
+      {editing && existingImageName && !watermarkImage ? <div className="rounded-md border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">{uiText("現在の画像:")}{existingImageName}{uiText("。差し替える場合だけ新しい画像を選択してください。")}</div> : null}
       <WatermarkPreview image={watermarkImage || existingPreviewImage} imageName={watermarkFileName || existingImageName} />
       <FormActions label={submitLabel} disabled={disabled || (!editing && !watermarkImage)} />
     </form>
@@ -106,24 +113,24 @@ export function OverlayProfileForm({ disabled, submit, initial, submitLabel }: {
 }
 
 function WatermarkPreview({ image, imageName }: { image: string; imageName?: string }) {
+  const uiText = useUICopy();
   return (
     <div className="space-y-2">
-      <div className="text-sm font-medium">プレビュー</div>
+      <div className="text-sm font-medium">{uiText("プレビュー")}</div>
       <div className="relative aspect-video overflow-hidden rounded-md border bg-slate-950">
         <div className="absolute inset-0 bg-[linear-gradient(135deg,rgba(255,255,255,.08)_25%,transparent_25%,transparent_50%,rgba(255,255,255,.08)_50%,rgba(255,255,255,.08)_75%,transparent_75%,transparent)] bg-[length:24px_24px]" />
         {image ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img
             src={image}
-            alt="ウォーターマークプレビュー"
+            alt={uiText("ウォーターマークプレビュー")}
             className="absolute inset-0 h-full w-full object-contain"
           />
         ) : imageName ? (
           <div className="absolute inset-0 flex items-center justify-center px-6 text-center text-sm text-slate-300">
-            現在の画像「{imageName}」が設定されています。APIがプレビュー用URLを返した場合はここに画像を表示します。
-          </div>
+            {uiText("現在の画像「")}{imageName}{uiText("」が設定されています。APIがプレビュー用URLを返した場合はここに画像を表示します。")}</div>
         ) : (
-          <div className="absolute inset-0 flex items-center justify-center text-center text-sm text-slate-300">1920x1080の画像を選択するとプレビューされます。</div>
+          <div className="absolute inset-0 flex items-center justify-center text-center text-sm text-slate-300">{uiText("1920x1080の画像を選択するとプレビューされます。")}</div>
         )}
       </div>
     </div>

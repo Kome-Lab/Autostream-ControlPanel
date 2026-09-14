@@ -1,3 +1,5 @@
+
+import { japaneseCopy, type UICopy } from "@/lib/i18n/ui-v2/copy";
 import { Download, LoaderCircle, XCircle } from "lucide-react";
 import { UpdaterActionConfirmation } from "@/features/application/updater-action-confirmation";
 import { createUpdaterActionController, type UpdaterActionAuthority, type UpdaterActionIntent } from "@/features/application/updater-action-policy";
@@ -31,7 +33,7 @@ export function createApplicationActionRenderers({
   executeCancel: (job: SystemUpdateJob) => Promise<SystemUpdateJob>;
   cancelling: boolean;
   cancellingJobID: string | undefined
-}) {
+}, uiText: UICopy = japaneseCopy) {
   const renderTargetAction = (target: SystemUpdateTarget, disabled: boolean) => {
     const actionID = isControlPanelUpdateTarget(target) ? "UPD-02" as const : "UPD-01" as const;
     const snapshot = softwareUpdateAuthoritySnapshot(actionID, target, updates);
@@ -49,11 +51,11 @@ export function createApplicationActionRenderers({
         authority={currentUpdaterAuthority(snapshot.applicable, snapshot.fingerprint)}
         refreshAuthority={() => refreshTargetAuthority(actionID, target.target_id)}
         handler={() => executeTarget(target)}
-        label={strategy === "when_idle" ? "空き次第更新" : "更新"}
+        label={strategy === "when_idle" ? uiText("空き次第更新") : uiText("更新")}
         icon={creating ? <LoaderCircle className="size-4 animate-spin" /> : <Download className="size-4" />}
         className="mt-3 w-full"
         disabled={disabled}
-        title={!canExecuteSystemUpdates ? "system_updates.execute 権限が必要です。" : undefined}
+        title={!canExecuteSystemUpdates ? uiText("system_updates.execute 権限が必要です。") : undefined}
       />
     );
   };
@@ -71,11 +73,11 @@ export function createApplicationActionRenderers({
         authority={currentUpdaterAuthority(snapshot.applicable, snapshot.fingerprint)}
         refreshAuthority={() => refreshCancelAuthority(job.id)}
         handler={() => executeCancel(job)}
-        label="キャンセル"
+        label={uiText("キャンセル")}
         icon={cancelling && cancellingJobID === job.id ? <LoaderCircle className="size-4 animate-spin" /> : <XCircle className="size-4" />}
         variant="outline"
         disabled={cancelling && cancellingJobID === job.id}
-        title={!canExecuteSystemUpdates ? "system_updates.execute 権限が必要です。" : undefined}
+        title={!canExecuteSystemUpdates ? uiText("system_updates.execute 権限が必要です。") : undefined}
       />
     );
   };

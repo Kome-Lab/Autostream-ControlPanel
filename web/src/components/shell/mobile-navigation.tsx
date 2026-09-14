@@ -64,7 +64,7 @@ export function MobileNavigation(props: MobileNavigationProps) {
       }}
     >
       <SheetTrigger asChild>
-        <Button ref={triggerRef} variant="outline" size="icon-sm" className="lg:hidden" aria-label={t("navigationOpen")}>
+        <Button ref={triggerRef} variant="outline" size="icon-sm" className="size-11 xl:hidden" aria-label={t("navigationOpen")}>
           <Menu aria-hidden="true" />
         </Button>
       </SheetTrigger>

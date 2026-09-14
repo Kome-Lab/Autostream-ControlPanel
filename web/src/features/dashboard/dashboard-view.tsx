@@ -1,418 +1,99 @@
 "use client";
 
-import type { ComponentType } from "react";
 import { useMemo } from "react";
 import Link from "next/link";
-import {
-  AlertTriangle,
-  Archive,
-  ArrowRight,
-  CheckCircle2,
-  ClipboardList,
-  Headphones,
-  Plus,
-  RadioTower,
-  RefreshCcw,
-  ServerCog,
-  ShieldCheck,
-} from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Skeleton } from "@/components/ui/skeleton";
-import { StatusBadge, statusDescriptor } from "@/components/admin/status-badge";
+import { AlertTriangle, Plus, RadioTower, RefreshCcw } from "lucide-react";
+import { useI18n } from "@/components/admin/i18n-provider";
+import { DetailSection } from "@/components/layout/detail-section";
 import { PageActions } from "@/components/shell/page-actions";
 import { PageHeader } from "@/components/shell/page-header";
-import { useCurrentUser, useServiceHealth, useStreams } from "@/features/queries";
+import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
+import { useCurrentUser, useResourceData, useServiceHealth, useStreams } from "@/features/queries";
 import { OperationalStateNotice } from "@/features/monitoring/operational-state-notice";
 import {
-  aggregateOperationalQueries,
-  countOperationalStreams,
-  knownEmptyOperationalQuery,
-  operationalQuerySnapshot,
-  remoteStateAllowsPositiveSummary,
-  serviceAvailabilityContribution,
-  summarizeServiceAvailability,
+  aggregateOperationalQueries, countOperationalStreams, knownEmptyOperationalQuery,
+  operationalQuerySnapshot, remoteStateAllowsPositiveSummary,
+  serviceAvailabilityContribution, summarizeServiceAvailability,
 } from "@/features/monitoring/operational-remote-state";
 import { hasPermission } from "@/lib/auth/permissions";
-import { recordingDescriptor, safeDisplayURL } from "@/lib/stream-presentation";
-import { cn } from "@/lib/utils";
-import type { Stream } from "@/types/domain";
+import { DashboardStreams, dashboardStreamGroups } from "./dashboard-streams";
+import { DashboardIncidentBanner, DashboardOutputs, DashboardServices, type DashboardIncident } from "./dashboard-panels";
 
 export function DashboardView() {
+  const { locale } = useI18n();
+  const ja = locale === "ja";
   const currentUser = useCurrentUser();
   const canReadStreams = hasPermission(currentUser.data, "streams.read");
   const canCreateStreams = hasPermission(currentUser.data, "streams.create");
   const canReadServices = hasPermission(currentUser.data, "service_health.read");
+  const canReadIncidents = hasPermission(currentUser.data, "incidents.read");
   const streams = useStreams(canReadStreams);
   const services = useServiceHealth(canReadServices);
-
-  const streamRows = useMemo(() => [...(streams.data || [])].sort(compareStreams), [streams.data]);
+  const incidents = useResourceData<DashboardIncident[]>("/observability/incidents", canReadIncidents);
+  const streamRows = useMemo(() => streams.data || [], [streams.data]);
   const serviceRows = useMemo(() => services.data || [], [services.data]);
   const statusCounts = useMemo(() => countOperationalStreams(streamRows), [streamRows]);
   const serviceCoverage = useMemo(() => summarizeServiceAvailability(serviceRows), [serviceRows]);
+  const groups = useMemo(() => dashboardStreamGroups(streamRows), [streamRows]);
+  const serviceNames = useMemo(() => new Map(serviceRows.flatMap((row) =>
+    [row.id, row.service_id].filter((id): id is string => Boolean(id)).map((id) => [id, row.service_name || id] as const))), [serviceRows]);
   const remoteState = aggregateOperationalQueries("dashboard", {
     streams: canReadStreams ? operationalQuerySnapshot(streams) : knownEmptyOperationalQuery(),
     services: canReadServices ? operationalQuerySnapshot(services) : knownEmptyOperationalQuery(),
   });
-  const serviceNameByID = useMemo(
-    () => new Map(serviceRows.flatMap((row) => compactValues([row.id, row.service_id]).map((id) => [id, row.service_name || id] as const))),
-    [serviceRows],
-  );
-  const servicesByStream = useMemo(() => {
-    const grouped = new Map<string, string[]>();
-    for (const service of serviceRows) {
-      const streamID = service.current_stream_id?.trim();
-      if (!streamID) continue;
-      grouped.set(streamID, [...(grouped.get(streamID) || []), service.service_name || service.service_id || service.id]);
-    }
-    return grouped;
-  }, [serviceRows]);
-  const streamNameByID = useMemo(() => new Map(streamRows.map((stream) => [stream.id, stream.name])), [streamRows]);
-  const operationRows = streamRows.filter((stream) => !isFinished(stream.status)).slice(0, 6);
-  const streamIssues = streamRows.filter((stream) => ["failed", "error"].includes(String(stream.status).toLowerCase()));
   const serviceIssues = serviceRows.filter((service) => {
     const contribution = serviceAvailabilityContribution(service);
     return contribution.kind === "known" && !contribution.positive;
   });
-  const refreshing = streams.isFetching || services.isFetching;
-  const issueCount = streamIssues.length + serviceIssues.length;
   const unknownIssueCount = statusCounts.unknown + serviceCoverage.unknownCount;
   const issueSummaryConfirmed = remoteStateAllowsPositiveSummary(remoteState, unknownIssueCount, canReadStreams || canReadServices);
-  const serviceSummaryConfirmed = canReadServices
-    && services.status === "success"
-    && !services.isFetching
-    && serviceCoverage.unknownCount === 0;
-
-  if (currentUser.isLoading || remoteState.kind === "initial-loading") {
-    return <DashboardSkeleton />;
-  }
-
-  return (
-    <div className="space-y-5">
-      <PageHeader
-        title="自動配信オペレーション"
-        description="VC参加待機、配信・録画、要対応、配信基盤を一画面で確認できます。"
-        breadcrumbs={[{ label: "管理", href: "/admin/" }, { label: "ダッシュボード" }]}
-        eyebrow={<><RadioTower className="size-4" aria-hidden="true" />Discord VC連動</>}
-        actions={(
-          <PageActions
-            primary={canCreateStreams ? (
-              <Button asChild size="sm">
-                <Link href="/admin/streams/#create-stream">
-                  <Plus className="size-4" aria-hidden="true" />
-                  配信枠を作成
-                </Link>
-              </Button>
-            ) : null}
-            secondary={(
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={refreshing}
-                onClick={() => {
-                  if (canReadStreams) void streams.refetch();
-                  if (canReadServices) void services.refetch();
-                }}
-              >
-                <RefreshCcw className={cn("size-4", refreshing && "animate-spin")} aria-hidden="true" />
-                最新状態に更新
-              </Button>
-            )}
-          />
-        )}
-      />
-
-      <OperationalStateNotice state={remoteState} consumer="dashboard" />
-
-      {streams.isError || services.isError ? (
-        <QueryWarning
-          streamsFailed={canReadStreams && streams.isError}
-          servicesFailed={canReadServices && services.isError}
-          retry={() => {
-            if (canReadStreams) void streams.refetch();
-            if (canReadServices) void services.refetch();
-          }}
-        />
-      ) : null}
-
-      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4" aria-label="運用サマリー">
-        <OperationMetric icon={RadioTower} label="配信中" value={canReadStreams ? statusCounts.live : "-"} detail={canReadStreams ? statusCounts.unknown > 0 ? `${statusCounts.unknown}件は状態不明` : "映像と録画を監視中" : "配信の参照権限がありません"} tone={statusCounts.live > 0 ? "ok" : "default"} />
-        <OperationMetric icon={Headphones} label="待機中" value={canReadStreams ? statusCounts.waiting : "-"} detail={canReadStreams ? statusCounts.unknown > 0 ? `${statusCounts.unknown}件は待機数から除外` : "VC参加または手動開始を待機" : "管理者へ権限を確認してください"} />
-        <OperationMetric icon={AlertTriangle} label="要対応" value={canReadStreams || canReadServices ? statusCounts.attention + serviceCoverage.negativeCount : "-"} detail={issueSummaryConfirmed ? "配信と基盤の確認項目" : unknownIssueCount > 0 ? `${unknownIssueCount}件は判定不能` : "全件の最新状態を確認できません"} tone={issueCount > 0 ? "danger" : issueSummaryConfirmed ? "ok" : "warning"} />
-        <OperationMetric
-          icon={ServerCog}
-          label="サービス稼働"
-          value={canReadServices ? `${serviceCoverage.positiveCount}/${serviceCoverage.knownCount}` : "-"}
-          detail={canReadServices ? serviceCoverage.unknownCount > 0 ? `${serviceCoverage.unknownCount}件は状態不明` : serviceCoverage.totalCount > 0 && serviceCoverage.positiveCount === serviceCoverage.knownCount ? "すべて正常" : "未接続・警告を確認" : "サービス状態の参照権限がありません"}
-          tone={serviceSummaryConfirmed && serviceCoverage.totalCount > 0 && serviceCoverage.positiveCount === serviceCoverage.knownCount ? "ok" : canReadServices ? "warning" : "default"}
-        />
-      </section>
-
-      <section className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_22rem]">
-        {canReadStreams ? (
-          <Card className="min-w-0">
-            <CardHeader className="border-b">
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div>
-                  <CardTitle>配信枠の稼働状況</CardTitle>
-                  <CardDescription>VC参加を待機している枠と現在動作中の枠を表示します。</CardDescription>
-                </div>
-                <Button asChild variant="ghost" size="sm">
-                  <Link href="/admin/streams/">
-                    すべての配信枠
-                    <ArrowRight className="size-4" />
-                  </Link>
-                </Button>
-              </div>
-            </CardHeader>
-            <CardContent className="p-0">
-              {operationRows.length > 0 ? (
-                <div className="divide-y">
-                  <div className="grid grid-cols-[7.25rem_minmax(0,1fr)_12rem_8rem_11rem_2rem] gap-3 bg-muted/45 px-4 py-2 text-xs font-medium text-muted-foreground max-lg:hidden">
-                    <span>状態</span>
-                    <span>配信枠</span>
-                    <span>開始条件</span>
-                    <span>録画</span>
-                    <span>担当Node</span>
-                    <span className="sr-only">詳細</span>
-                  </div>
-                  {operationRows.map((stream) => (
-                    <div key={stream.id} className="grid gap-3 px-4 py-3 transition-colors hover:bg-muted/25 lg:grid-cols-[7.25rem_minmax(0,1fr)_12rem_8rem_11rem_2rem] lg:items-center">
-                      <StatusBadge status={stream.status} />
-                      <div className="min-w-0">
-                        <div className="truncate text-sm font-medium">{stream.name}</div>
-                        <div className="mt-1 flex min-w-0 flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
-                          <span className="truncate">入力: {safeDisplayURL(stream.encoder_input_url || stream.input_source) || "未設定"}</span>
-                          <span className="truncate">出力: {stream.output_target || (stream.youtube_output_id ? "YouTube" : "未設定")}</span>
-                        </div>
-                      </div>
-                      <div className="min-w-0 text-xs leading-5">
-                        <div className="truncate font-medium text-foreground">{stream.auto_start_trigger === "discord_voice_join" ? "VC参加で自動開始" : "手動開始"}</div>
-                        <div className="truncate text-muted-foreground">配信先はv2 snapshotで管理</div>
-                      </div>
-                      <RecordingBadge stream={stream} />
-                      <div className="text-xs leading-5 text-muted-foreground">
-                        {assignedNodeLabels(stream, serviceNameByID, servicesByStream).map((label) => (
-                          <div key={label} className="truncate">{label}</div>
-                        ))}
-                      </div>
-                      <Button asChild variant="ghost" size="icon-sm">
-                        <Link href="/admin/streams/" aria-label={`${stream.name}を配信一覧で確認`}>
-                          <ArrowRight className="size-4" />
-                        </Link>
-                      </Button>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <EmptyState icon={Headphones} title="待機中・配信中の枠はありません" description="配信枠を作成すると、VC参加の待機状態、録画、担当Nodeがここに並びます。" href="/admin/streams/#create-stream" action="配信枠を作成" />
-              )}
-            </CardContent>
-          </Card>
-        ) : (
-          <PermissionPanel title="配信枠を表示できません" description="このアカウントには配信枠を参照する権限がありません。管理者に「配信の閲覧」権限を依頼してください。" />
-        )}
-
-        <Card>
-          <CardHeader className="border-b">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <CardTitle>要対応</CardTitle>
-                <CardDescription>優先して確認する項目</CardDescription>
-              </div>
-              <span className={cn(
-                "rounded-md border px-2 py-1 text-xs font-semibold",
-                issueCount > 0
-                  ? "border-red-200 bg-red-50 text-red-700 dark:border-red-900 dark:bg-red-950/35 dark:text-red-200"
-                  : issueSummaryConfirmed
-                    ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/35 dark:text-emerald-200"
-                    : "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950/35 dark:text-amber-200",
-              )}>{issueCount > 0 || issueSummaryConfirmed ? `${issueCount}件` : "判定保留"}</span>
-            </div>
-          </CardHeader>
-          <CardContent className="p-0">
-            {issueCount > 0 ? (
-              <div className="divide-y">
-                {streamIssues.slice(0, 3).map((stream) => (
-                  <IssueRow key={stream.id} href="/admin/streams/" title={stream.name} detail={statusDescriptor(stream.status).detail} tone="danger" />
-                ))}
-                {serviceIssues.slice(0, 4).map((service) => (
-                  <IssueRow key={service.id || service.service_id} href="/admin/service-health/" title={service.service_name || service.service_id || service.id} detail={`${serviceTypeLabel(service.service_type)} / ${statusDescriptor(service.health_status || service.status).label}`} tone={String(service.status).toLowerCase() === "online" ? "warning" : "danger"} />
-                ))}
-              </div>
-            ) : issueSummaryConfirmed ? (
-              <div className="flex min-h-48 flex-col items-center justify-center px-6 py-8 text-center">
-                <span className="flex size-10 items-center justify-center rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300">
-                  <CheckCircle2 className="size-5" />
-                </span>
-                <div className="mt-3 text-sm font-semibold">対応待ちはありません</div>
-                <div className="mt-1 text-xs text-muted-foreground">参照可能な配信とサービスは正常です。</div>
-              </div>
-            ) : (
-              <div className="flex min-h-48 flex-col items-center justify-center px-6 py-8 text-center">
-                <span className="flex size-10 items-center justify-center rounded-full bg-amber-100 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300">
-                  <AlertTriangle className="size-5" />
-                </span>
-                <div className="mt-3 text-sm font-semibold">要対応の有無を判定できません</div>
-                <div className="mt-1 text-xs text-muted-foreground">未取得・更新中・古いデータを解消してから確認してください。</div>
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      </section>
-
-      <section className="grid items-start gap-4 xl:grid-cols-[minmax(0,1.35fr)_minmax(18rem,0.65fr)]">
-        {canReadServices ? (
-          <Card>
-            <CardHeader className="border-b">
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div>
-                  <CardTitle>配信基盤</CardTitle>
-                  <CardDescription>Nodeの接続状態と現在の担当配信</CardDescription>
-                </div>
-                <Button asChild variant="ghost" size="sm">
-                  <Link href="/admin/service-health/">
-                    稼働状況を開く
-                    <ArrowRight className="size-4" />
-                  </Link>
-                </Button>
-              </div>
-            </CardHeader>
-            <CardContent className="p-0">
-              {serviceRows.length > 0 ? (
-                <div className="divide-y">
-                  {serviceRows.slice(0, 6).map((service) => (
-                    <div key={service.id || service.service_id} className="grid gap-2 px-4 py-3 sm:grid-cols-[minmax(0,1fr)_9rem_11rem] sm:items-center">
-                      <div className="min-w-0">
-                        <div className="truncate text-sm font-medium">{service.service_name || service.service_id || service.id}</div>
-                        <div className="mt-0.5 text-xs text-muted-foreground">{serviceTypeLabel(service.service_type)}</div>
-                      </div>
-                      <StatusBadge status={service.health_status || service.status} />
-                      <div className="truncate text-xs text-muted-foreground">{service.current_stream_id ? streamNameByID.get(service.current_stream_id) || service.current_stream_id : "待機中"}</div>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <EmptyState icon={ServerCog} title="登録済みNodeがありません" description="Nodeを登録すると稼働状況を確認できます。" href="/admin/nodes/" action="Node登録を開く" />
-              )}
-            </CardContent>
-          </Card>
-        ) : (
-          <PermissionPanel title="配信基盤を表示できません" description="Nodeとサービス状態を参照する権限がありません。" />
-        )}
-
-        <Card>
-          <CardHeader className="border-b">
-            <CardTitle>運用証跡</CardTitle>
-            <CardDescription>確認・報告に使う管理情報</CardDescription>
-          </CardHeader>
-          <CardContent className="p-0">
-            {hasPermission(currentUser.data, "audit_logs.read") ? <QuickLink href="/admin/audit-logs/" icon={ClipboardList} title="監査ログ" detail="担当者の操作履歴" /> : null}
-            {hasPermission(currentUser.data, "archives.read") ? <QuickLink href="/admin/archive/" icon={Archive} title="録画・アーカイブ" detail="成果物と保存状態" /> : null}
-            {hasPermission(currentUser.data, "system_settings.read") ? <QuickLink href="/admin/security/" icon={ShieldCheck} title="セキュリティ" detail="MFAと運用ポリシー" /> : null}
-          </CardContent>
-        </Card>
-      </section>
-    </div>
-  );
-}
-
-function DashboardSkeleton() {
-  return (
-    <div className="space-y-4">
-      <Skeleton className="h-14 w-full" />
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        {Array.from({ length: 4 }).map((_, index) => <Skeleton key={index} className="h-28 w-full" />)}
-      </div>
-      <Skeleton className="h-[420px] w-full" />
-    </div>
-  );
-}
-
-function OperationMetric({ icon: Icon, label, value, detail, tone = "default" }: { icon: ComponentType<{ className?: string }>; label: string; value: string | number; detail: string; tone?: "default" | "ok" | "warning" | "danger" }) {
-  return (
-    <Card className="gap-0 py-0">
-      <CardContent className="flex items-start gap-3 p-4">
-        <span className={cn("flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground", tone === "ok" && "bg-emerald-100 text-emerald-700 dark:bg-emerald-950/45 dark:text-emerald-300", tone === "warning" && "bg-amber-100 text-amber-700 dark:bg-amber-950/45 dark:text-amber-300", tone === "danger" && "bg-red-100 text-red-700 dark:bg-red-950/45 dark:text-red-300")}>
-          <Icon className="size-4" />
-        </span>
-        <div className="min-w-0">
-          <div className="text-xs font-medium text-muted-foreground">{label}</div>
-          <div className={cn("mt-0.5 text-2xl font-semibold tabular-nums", tone === "ok" && "text-emerald-700 dark:text-emerald-300", tone === "warning" && "text-amber-700 dark:text-amber-300", tone === "danger" && "text-red-700 dark:text-red-300")}>{value}</div>
-          <div className="mt-0.5 text-xs text-muted-foreground">{detail}</div>
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
-function RecordingBadge({ stream }: { stream: Stream }) {
-  const recording = recordingDescriptor(stream);
-  return <span className={cn("inline-flex w-fit items-center rounded-md border px-2 py-1 text-xs font-medium", recording.className)}>{recording.label}</span>;
-}
-
-function IssueRow({ href, title, detail, tone }: { href: string; title: string; detail: string; tone: "warning" | "danger" }) {
-  return (
-    <Link href={href} className="flex items-start gap-3 px-4 py-3 transition-colors hover:bg-muted/35">
-      <span className={cn("mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-md", tone === "danger" ? "bg-red-100 text-red-700 dark:bg-red-950/45 dark:text-red-300" : "bg-amber-100 text-amber-700 dark:bg-amber-950/45 dark:text-amber-300")}><AlertTriangle className="size-3.5" /></span>
-      <span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium">{title}</span><span className="mt-0.5 block text-xs text-muted-foreground">{detail}</span></span>
-      <ArrowRight className="mt-1 size-4 shrink-0 text-muted-foreground" />
-    </Link>
-  );
-}
-
-function QuickLink({ href, icon: Icon, title, detail }: { href: string; icon: ComponentType<{ className?: string }>; title: string; detail: string }) {
-  return (
-    <Link href={href} className="flex items-center gap-3 border-b px-4 py-3 transition-colors last:border-b-0 hover:bg-muted/35">
-      <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground"><Icon className="size-4" /></span>
-      <span className="min-w-0 flex-1"><span className="block text-sm font-medium">{title}</span><span className="block truncate text-xs text-muted-foreground">{detail}</span></span>
-      <ArrowRight className="size-4 text-muted-foreground" />
-    </Link>
-  );
-}
-
-function EmptyState({ icon: Icon, title, description, href, action }: { icon: ComponentType<{ className?: string }>; title: string; description: string; href: string; action: string }) {
-  return (
-    <div className="flex min-h-56 flex-col items-center justify-center px-6 py-10 text-center">
-      <span className="flex size-10 items-center justify-center rounded-lg bg-muted text-muted-foreground"><Icon className="size-5" /></span>
-      <div className="mt-3 text-sm font-semibold">{title}</div><p className="mt-1 max-w-sm text-xs text-muted-foreground">{description}</p>
-      <Button asChild variant="outline" size="sm" className="mt-4"><Link href={href}>{action}</Link></Button>
-    </div>
-  );
-}
-
-function PermissionPanel({ title, description }: { title: string; description: string }) {
-  return <Card><CardContent className="flex min-h-48 flex-col justify-center p-6"><ShieldCheck className="size-5 text-muted-foreground" /><div className="mt-3 font-semibold">{title}</div><p className="mt-1 max-w-xl text-sm text-muted-foreground">{description}</p></CardContent></Card>;
-}
-
-function QueryWarning({ streamsFailed, servicesFailed, retry }: { streamsFailed: boolean; servicesFailed: boolean; retry: () => void }) {
-  const targets = [streamsFailed ? "配信枠" : "", servicesFailed ? "サービス状態" : ""].filter(Boolean).join("と");
-  return (
-    <div className="flex flex-col gap-3 rounded-lg border border-amber-300 bg-amber-50 p-4 text-amber-900 dark:border-amber-900 dark:bg-amber-950/35 dark:text-amber-100 sm:flex-row sm:items-center sm:justify-between">
-      <div className="flex gap-3"><AlertTriangle className="mt-0.5 size-5 shrink-0" /><div><div className="text-sm font-semibold">{targets}を取得できませんでした</div><p className="mt-0.5 text-xs opacity-85">通信状態を確認して再試行してください。直前の表示がある場合は更新前の情報です。</p></div></div>
-      <Button type="button" variant="outline" size="sm" onClick={retry}><RefreshCcw className="size-4" />再試行</Button>
-    </div>
-  );
-}
-
-function compareStreams(left: Stream, right: Stream) {
-  const priority = (stream: Stream) => {
-    const status = String(stream.status).toLowerCase();
-    if (["failed", "error"].includes(status)) return 0;
-    if (["live", "starting"].includes(status)) return 1;
-    if (["ready", "scheduled", "created", "draft"].includes(status)) return 2;
-    return 3;
+  const refreshing = streams.isFetching || services.isFetching || (canReadIncidents && incidents.isFetching);
+  const refresh = () => {
+    if (canReadStreams) void streams.refetch();
+    if (canReadServices) void services.refetch();
+    if (canReadIncidents) void incidents.refetch();
   };
-  return priority(left) - priority(right) || left.name.localeCompare(right.name, "ja");
-}
+  const recent = [...streamRows].filter((row) => row.updated_at).sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at))).slice(0, 5);
 
-function isFinished(status?: string) { return ["completed", "stopped"].includes(String(status || "").toLowerCase()); }
-function assignedNodeLabels(stream: Stream, labels: Map<string, string>, servicesByStream: Map<string, string[]>) {
-  const ids = compactValues([stream.assigned_worker_id, stream.assigned_encoder_id]);
-  const resolved = [...ids.map((id) => labels.get(id) || id), ...(servicesByStream.get(stream.id) || [])];
-  const unique = Array.from(new Set(resolved));
-  return unique.length > 0 ? unique.slice(0, 2) : ["未割当"];
+  return <div className="space-y-5" data-screen-family="dashboard">
+    <PageHeader title={ja ? "自動配信オペレーション" : "Live operations"}
+      description={ja ? "配信中の枠を最初に確認し、サービス、出力、録画、要対応を続けて確認できます。" : "Review active streams first, then services, outputs, recording and action items."}
+      breadcrumbs={[{ label: ja ? "管理" : "Admin", href: "/admin/" }, { label: ja ? "ダッシュボード" : "Dashboard" }]}
+      eyebrow={<><RadioTower className="size-4" aria-hidden="true" />Discord VC</>}
+      actions={<PageActions primary={canCreateStreams ? <Button asChild><Link href="/admin/streams/#create-stream"><Plus aria-hidden="true" />{ja ? "配信枠を作成" : "Create stream"}</Link></Button> : null}
+        secondary={<Button variant="outline" disabled={refreshing} onClick={refresh}><RefreshCcw aria-hidden="true" />{ja ? "最新状態に更新" : "Refresh"}</Button>} />} />
+    {canReadIncidents ? <DashboardIncidentBanner rows={incidents.data} unavailable={incidents.isError} refreshing={incidents.isFetching} /> : null}
+    <OperationalStateNotice state={remoteState} consumer="dashboard" />
+    {currentUser.isLoading || remoteState.kind === "initial-loading" ? <div role="status" aria-label={ja ? "読込中" : "Loading"}><Skeleton className="h-72 w-full" /></div> : <>
+      <DetailSection id="dashboard-active" title={ja ? "配信中・開始中" : "Active and starting streams"}
+        description={ja ? "停止処理中の枠も表示します。開始可否は配信詳細の最新Readinessで確認してください。" : "Includes streams that are stopping. Check fresh Readiness in stream details before starting."}
+        actions={canReadStreams ? <Link className="text-sm text-primary underline" href="/admin/streams/">{ja ? "配信枠を開く" : "View streams"}</Link> : null}>
+        {canReadStreams ? <DashboardStreams rows={groups.active} serviceNames={serviceNames} /> : <p>{ja ? "配信の参照権限がありません。" : "You do not have permission to read streams."}</p>}
+      </DetailSection>
+      <div className="grid min-w-0 gap-6 xl:grid-cols-2 min-[1800px]:grid-cols-3">
+        {canReadServices ? <DashboardServices rows={serviceRows} /> : <DetailSection title={ja ? "サービス稼働" : "Service availability"}><p>{ja ? "サービス状態の参照権限がありません。" : "You do not have permission to read service health."}</p></DetailSection>}
+        {canReadStreams ? <DashboardOutputs streams={streamRows} canReadArchive={hasPermission(currentUser.data, "archives.read")} /> : null}
+        <DetailSection id="dashboard-attention" title={ja ? "要対応" : "Action items"}>
+          {groups.issues.length || serviceIssues.length ? <ul className="space-y-3">
+            {groups.issues.map((row) => <li key={row.id}><Link href="/admin/streams/" className="flex items-start gap-2 text-sm text-primary underline"><AlertTriangle className="size-4 shrink-0" aria-hidden="true" />{row.name}</Link></li>)}
+            {serviceIssues.slice(0, 6).map((row) => <li key={row.id}><Link href="/admin/service-health/" className="text-sm text-primary underline">{row.service_name || row.service_id || row.id}</Link></li>)}
+          </ul> : <p className="text-sm">{issueSummaryConfirmed ? (ja ? "参照可能な配信・サービスに対応待ちはありません。" : "No pending issues in accessible streams and services.") : (ja ? "要対応の有無を判定できません。" : "Cannot determine whether action is required.")}</p>}
+          {unknownIssueCount > 0 ? <p className="mt-3 text-sm text-status-warning">{ja ? "状態不明: " + unknownIssueCount + " 件" : unknownIssueCount + " items have unknown state"}</p> : null}
+        </DetailSection>
+      </div>
+      {canReadStreams ? <DetailSection id="dashboard-waiting" title={ja ? "待機中・下書き" : "Waiting and draft streams"}
+        description={ja ? "VC参加または手動開始を待つ配信枠です。待機状態は開始可能の保証ではありません。" : "Slots awaiting voice participation or a manual start. Waiting does not guarantee readiness."}>
+        <DashboardStreams rows={groups.waiting} serviceNames={serviceNames} />
+      </DetailSection> : null}
+      <DetailSection id="dashboard-recent" title={ja ? "最近の更新と運用記録" : "Recent updates and operational records"}>
+        {canReadStreams ? <ul className="space-y-2 text-sm">{recent.map((row) => <li key={row.id} className="flex flex-wrap justify-between gap-2"><Link href="/admin/streams/" className="text-primary underline">{row.name}</Link><time dateTime={row.updated_at}>{row.updated_at}</time></li>)}</ul> : null}
+        <div className="mt-4 flex flex-wrap gap-4 text-sm">
+          {hasPermission(currentUser.data, "audit_logs.read") ? <Link className="text-primary underline" href="/admin/audit-logs/">{ja ? "監査ログ" : "Audit logs"}</Link> : null}
+          {hasPermission(currentUser.data, "archives.read") ? <Link className="text-primary underline" href="/admin/archive/">{ja ? "録画・アーカイブ" : "Recording and archive"}</Link> : null}
+          {hasPermission(currentUser.data, "system_settings.read") ? <Link className="text-primary underline" href="/admin/security/">{ja ? "セキュリティ" : "Security"}</Link> : null}
+        </div>
+      </DetailSection>
+    </>}
+  </div>;
 }
-
-function serviceTypeLabel(serviceType?: string) { const labels: Record<string, string> = { encoder_recorder: "Encoder / Recorder", discord_bot: "Discord Bot", observability: "Observability", worker: "Worker" }; return labels[String(serviceType || "").toLowerCase()] || serviceType || "Service"; }
-function compactValues(values: Array<string | undefined>) { return values.map((value) => value?.trim() || "").filter(Boolean); }

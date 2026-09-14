@@ -238,7 +238,9 @@ test("hostile secret or transport text cannot enter safe failure or audit presen
 test("desktop and mobile rows share one guarded action factory and cached rows survive refresh errors", () => {
   const source = readMovedSource(new URL("../src/features/resources/resource-page.tsx", import.meta.url));
   assert.match(source, /const rowActions = \(row: ResourceRow\) =>/);
-  assert.equal((source.match(/\{rowActions\(row\)\}/g) || []).length, 2);
+  // UI renewal 001 section 6.3: one real table row, not two hidden controller trees.
+  assert.equal((source.match(/cell: \(\{ row \}\) => rowActions\(row\.original\)/g) || []).length, 1);
+  assert.match(source, /<DataTable columns=\{definitions\} data=\{rows\}/);
   assert.match(source, /query\.isLoading && rows\.length === 0/);
   assert.match(source, /rows\.length === 0 && query\.isError \? null/);
   assert.match(source, /ResourceActionConfirmationHost/);

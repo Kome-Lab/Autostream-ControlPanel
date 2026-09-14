@@ -1,4 +1,8 @@
 "use client";
+import { fixedPresentationText } from "@/lib/i18n/ui-v2/presentation-copy";
+
+import { useUICopy } from "@/lib/i18n/ui-v2/use-ui-copy";
+
 
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
@@ -52,6 +56,7 @@ export function UpdaterHostBootstrapPanel({
   onActiveChange,
   onCloseBlockedChange,
 }: UpdaterHostBootstrapPanelProps) {
+  const uiText = useUICopy();
   const formID = useId();
   const queryClient = useQueryClient();
   const currentUser = useCurrentUser();
@@ -316,7 +321,7 @@ export function UpdaterHostBootstrapPanel({
       if (!(error instanceof UpdaterHostBootstrapRequestAmbiguousError)) {
         setFeedback({
           tone: "error",
-          message: systemUpdateErrorMessage(error, "ホストのセットアップを開始できませんでした。認証情報と状態を確認してください。"),
+          message: fixedPresentationText(systemUpdateErrorMessage(error, uiText("ホストのセットアップを開始できませんでした。認証情報と状態を確認してください。")), uiText),
         });
       }
       if (mutationStarted) throw error;
@@ -357,8 +362,7 @@ export function UpdaterHostBootstrapPanel({
 
       {bootstrapJobs.isError ? (
         <div className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-xs text-destructive" role="alert">
-          セットアップ状態を取得できないため、新しいセットアップを開始できません。通信状態を確認して再度開いてください。
-        </div>
+          {uiText("セットアップ状態を取得できないため、新しいセットアップを開始できません。通信状態を確認して再度開いてください。")}</div>
       ) : null}
 
       <BootstrapHostResults

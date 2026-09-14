@@ -1,4 +1,9 @@
 "use client";
+import { resourceCopy } from "@/lib/i18n/ui-v2/resource-copy";
+import { useUICopy } from "@/lib/i18n/ui-v2/use-ui-copy";
+
+
+import { DraftExitContext, useDraftExit } from "@/components/forms/draft-exit";
 
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -18,7 +23,8 @@ import { requiredPermissionText } from "./resource-permissions";
 import { ResourceFormFields } from "./resource-form-fields";
 
 export function EditResourceButton({ resource, row, disabled, controller }: { resource: ResourceDefinition; row: ResourceRow; disabled: boolean; controller: ResourceActionController }) {
-  const { t } = useI18n();
+  const uiText = useUICopy();
+  const { t, locale } = useI18n();
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const [message, setMessage] = useState("");
@@ -28,16 +34,18 @@ export function EditResourceButton({ resource, row, disabled, controller }: { re
   const legacyMutation = useMutation<unknown, Error, Record<string, unknown>>({
     mutationFn: async (payload) => apiPut(`${resource.path}/${encodeURIComponent(id)}`, payload),
     onSuccess: async () => {
-      setMessage("更新しました。");
+      draftExit.saved();
+      setMessage(uiText("更新しました。"));
       await queryClient.invalidateQueries({ queryKey: ["resource", resource.path] });
     },
     onError: async (error) => {
-      setMessage(resourceWriteErrorMessage(resource, error, "更新"));
+      setMessage(resourceWriteErrorMessage(resource, error, "更新", uiText));
       if (error instanceof APIError && error.code === "caption_profile_saved_runtime_apply_failed") {
         await queryClient.invalidateQueries({ queryKey: ["resource", resource.path] });
       }
     },
   });
+  const draftExit = useDraftExit({ enabled: open && !disabled, pending: legacyMutation.isPending || Boolean(pending) || dispatching });
   const submit: SubmitResource = (payload, options) => {
     setMessage("");
     const actionID = resourceActionID(resource.path, "update");
@@ -50,11 +58,11 @@ export function EditResourceButton({ resource, row, disabled, controller }: { re
     if (options?.secretValue) {
       intents.push(Object.freeze({ id: "RES-13", payload: Object.freeze({ value: options.secretValue }), publicLabel: "Deepgram API key" }));
     }
-    intents.push(Object.freeze({ id: actionID, row: Object.freeze({ ...row }), payload: Object.freeze({ ...payload }), publicLabel: resourceRowLabel(row) }));
+    intents.push(Object.freeze({ id: actionID, row: Object.freeze({ ...row }), payload: Object.freeze({ ...payload }), publicLabel: resourceRowLabel(row, uiText) }));
     setPending({
       path: `${resource.path}/${encodeURIComponent(id)}`,
       invalidatePath: resource.path,
-      successMessage: "更新しました。",
+      successMessage: uiText("更新しました。"),
       intents: Object.freeze(intents),
       index: 0,
       onSensitiveDispatched: options?.onSensitiveDispatched,
@@ -63,7 +71,7 @@ export function EditResourceButton({ resource, row, disabled, controller }: { re
 
   const handleResult = (submission: PendingResourceSubmission, result: ResourceActionExecutionResult, intent: ResourceActionIntent) => {
     setDispatching(false);
-    setMessage(resourceActionResultMessage(result, t, "更新しました。"));
+    setMessage(resourceActionResultMessage(result, t, uiText("更新しました。")));
     if (result.kind !== "succeeded") {
       if (result.kind === "blocked") setPending(null);
       return;
@@ -85,22 +93,23 @@ export function EditResourceButton({ resource, row, disabled, controller }: { re
     }
     setPending(null);
     void queryClient.invalidateQueries({ queryKey: ["resource", resource.path] });
+    draftExit.saved();
     setOpen(false);
   };
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <DraftExitContext.Provider value={draftExit}><Dialog open={open} onOpenChange={(value) => { if (value) setOpen(true); else draftExit.request(() => setOpen(false)); }}>
       <DialogTrigger asChild>
-          <Button variant="outline" size="icon-sm" disabled={!id || disabled} title={disabled ? requiredPermissionText(resource.permissions?.update) : undefined} aria-label={`${resourceRowLabel(row)} を編集`}>
+          <Button variant="outline" size="icon-sm" disabled={!id || disabled} title={disabled ? requiredPermissionText(resource.permissions?.update, uiText) : undefined} aria-label={uiText("{0} を編集", resourceRowLabel(row, uiText))}>
           <Pencil className="size-4" />
         </Button>
       </DialogTrigger>
       <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
         <DialogHeader>
-          <DialogTitle>{resource.title}を編集</DialogTitle>
-          <DialogDescription>{resource.form === "user" ? "ユーザー名、メールアドレス、割り当てロールを更新します。" : "作成済みの設定をフォームで更新します。秘密情報は空欄のまま更新すると既存値を保持する項目があります。"}</DialogDescription>
+          <DialogTitle>{resourceCopy(resource, locale).title}{uiText("を編集")}</DialogTitle>
+          <DialogDescription>{resource.form === "user" ? uiText("ユーザー名、メールアドレス、割り当てロールを更新します。") : uiText("作成済みの設定をフォームで更新します。秘密情報は空欄のまま更新すると既存値を保持する項目があります。")}</DialogDescription>
         </DialogHeader>
-        <ResourceFormFields resource={resource} disabled={legacyMutation.isPending || Boolean(pending) || dispatching} submit={submit} initial={row} submitLabel="更新" />
+        <ResourceFormFields resource={resource} disabled={legacyMutation.isPending || Boolean(pending) || dispatching} submit={submit} initial={row} submitLabel={uiText("更新")} />
         {message ? <p className="text-sm text-muted-foreground">{message}</p> : null}
         {pending ? (
           <ResourceActionConfirmationHost
@@ -118,10 +127,10 @@ export function EditResourceButton({ resource, row, disabled, controller }: { re
         ) : null}
         <DialogFooter>
           <DialogClose asChild>
-            <Button variant="outline">閉じる</Button>
+            <Button variant="outline">{uiText("閉じる")}</Button>
           </DialogClose>
         </DialogFooter>
       </DialogContent>
-    </Dialog>
+    </Dialog></DraftExitContext.Provider>
   );
 }

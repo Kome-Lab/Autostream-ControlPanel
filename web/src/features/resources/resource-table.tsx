@@ -1,9 +1,15 @@
 "use client";
+import { notificationFeedback } from "@/lib/i18n/ui-v2/presentation-copy";
+import { useUICopy } from "@/lib/i18n/ui-v2/use-ui-copy";
+
 
 import { useState } from "react";
 import { Check, Copy, Send } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import type { ColumnDef } from "@tanstack/react-table";
+import { DataTable } from "@/components/tables/data-table";
+import { DomainStatusBadge } from "@/components/foundation/status/domain-status-badge";
+import { presentIncidentStatus, presentDiagnosticStatus, presentRemediationStatus } from "@/lib/foundation/status/observability-presenters";
 import { useI18n } from "@/components/admin/i18n-provider";
 import { type ObservabilityActionController, type ObservabilityActionExecutionResult, type ObservabilityActionPlan } from "@/features/observability/action-policy";
 import { ObservabilityActionControl } from "@/features/observability/observability-action-control";
@@ -12,9 +18,9 @@ import { ResourceActionControl } from "@/features/resources/resource-action-cont
 import { type ResourceActionController, type ResourceActionExecutionResult } from "@/features/resources/resource-action-controller";
 import { type ResourceActionIntent } from "@/features/resources/resource-action-descriptors";
 import { hasPermission } from "@/lib/auth/permissions";
-import { notificationChannelTestFeedback, type NotificationChannelTestFeedback } from "@/lib/notification-channel";
+import { type NotificationChannelTestFeedback } from "@/lib/notification-channel";
 import { type ResourceRow } from "./resource-form-types";
-import { resourceCanEdit, resourceActionResultMessage } from "./resource-action-feedback";
+import { resourceHistoryConfig, resourceCanEdit, resourceActionResultMessage } from "./resource-action-feedback";
 import { resourceRowID, resourceRowLabel } from "./resource-values";
 import { EditResourceButton } from "./edit-resource-button";
 import { OAuthAccountRelinkButton } from "./oauth-account-relink-button";
@@ -49,11 +55,12 @@ export function ResourceTable({
   onObservabilityResult?: (plan: ObservabilityActionPlan, result: ObservabilityActionExecutionResult) => void | Promise<void>;
   onDeleteResult?: (result: ResourceActionExecutionResult, intent: ResourceActionIntent) => void;
 }) {
-  const { t } = useI18n();
+  const uiText = useUICopy();
+  const { t, locale } = useI18n();
   const [copiedID, setCopiedID] = useState("");
   const [testNotice, setTestNotice] = useState<(NotificationChannelTestFeedback & { id: string; pending?: boolean }) | null>(null);
   if (rows.length === 0) {
-    return <div className="rounded-md border border-dashed p-6 text-sm text-muted-foreground">データがありません。</div>;
+    return <div className="rounded-md border border-dashed p-6 text-sm text-muted-foreground">{uiText("データがありません。")}</div>;
   }
   const showDelete = Boolean(resource.deletable);
   const showEdit = resourceCanEdit(resource);
@@ -80,24 +87,23 @@ export function ResourceTable({
         {showTest && resourceActionController ? (
           <ResourceActionControl
             controller={resourceActionController}
-            intent={Object.freeze({ id: "RES-39", row: Object.freeze({ ...row }), publicLabel: resourceRowLabel(row) })}
-            label={`${resourceRowLabel(row)} へテスト送信`}
+            intent={Object.freeze({ id: "RES-39", row: Object.freeze({ ...row }), publicLabel: resourceRowLabel(row, uiText) })}
+            label={uiText("{0} へテスト送信", resourceRowLabel(row, uiText))}
             disabled={!resourceRowID(row) || !canTest}
             buttonProps={{ variant: "outline", size: "sm" }}
             onResult={(result, intent) => {
               const id = resourceRowID(intent.row as ResourceRow);
               if (result.kind === "succeeded") {
-                setTestNotice({ id, ...notificationChannelTestFeedback(result.value) });
+                setTestNotice({ id, ...notificationFeedback(result.value, uiText) });
                 return;
               }
-              setTestNotice({ id, ok: false, message: resourceActionResultMessage(result, t, "テスト送信しました。") });
+              setTestNotice({ id, ok: false, message: resourceActionResultMessage(result, t, uiText("テスト送信しました。")) });
             }}
           >
             <Send className="size-4" />
-            テスト送信
-          </ResourceActionControl>
+            {uiText("テスト送信")}</ResourceActionControl>
         ) : null}
-        {observabilityController && onObservabilityResult ? observabilityActionButtons(resource, row, currentUser).map((action) => (
+        {observabilityController && onObservabilityResult ? observabilityActionButtons(resource, row, currentUser, uiText).map((action) => (
           <ObservabilityActionControl
             key={action.plan.key}
             controller={observabilityController}
@@ -117,62 +123,36 @@ export function ResourceTable({
     </>
   );
 
-  return (
-    <div className="space-y-3">
-      <div className="hidden overflow-hidden rounded-md border xl:block">
-      <Table className="w-full table-fixed">
-        <TableHeader>
-          <TableRow>
-            {columns.map((column) => (
-              <TableHead key={column} className="whitespace-normal">{columnLabel(column)}</TableHead>
-            ))}
-            {showActions ? <TableHead className="w-56 whitespace-normal text-right">操作</TableHead> : null}
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {rows.map((row, index) => (
-            <TableRow key={String(row.id || row.name || index)}>
-              {columns.map((column) => (
-                <TableCell key={column} className="whitespace-normal break-words align-top">
-                  {formatResourceCell(resource, row[column], column, timezone)}
-                </TableCell>
-              ))}
-              {showActions ? (
-                <TableCell className="w-56 text-right">
-                  {rowActions(row)}
-                </TableCell>
-              ) : null}
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table>
-      </div>
-      <div className="grid gap-3 xl:hidden">
-        {rows.map((row, index) => (
-          <article key={String(row.id || row.name || index)} className="rounded-md border bg-card p-4 shadow-sm">
-            <div className="min-w-0">
-              <h3 className="break-words text-sm font-semibold">{resourceRowLabel(row)}</h3>
-              {resourceRowID(row) ? <p className="mt-1 break-all font-mono text-xs text-muted-foreground">{resourceRowID(row)}</p> : null}
-            </div>
-            <dl className="mt-4 grid grid-cols-1 gap-x-5 gap-y-3 sm:grid-cols-2">
-              {columns.map((column) => (
-                <div key={column} className="min-w-0 space-y-1">
-                  <dt className="text-xs font-medium text-muted-foreground">{columnLabel(column)}</dt>
-                  <dd className="min-w-0 break-words text-sm">{formatResourceCell(resource, row[column], column, timezone)}</dd>
-                </div>
-              ))}
-            </dl>
-            {showActions ? <div className="mt-4 border-t pt-3">{rowActions(row)}</div> : null}
-          </article>
-        ))}
-      </div>
-    </div>
-  );
+  const statusPresenter = resource.path === "/observability/incidents" ? presentIncidentStatus
+    : resource.path === "/observability/diagnostics" ? presentDiagnosticStatus
+      : resource.path === "/observability/remediation-actions" ? presentRemediationStatus : undefined;
+  const definitions: ColumnDef<ResourceRow>[] = columns.map((column, index) => ({
+    id: column,
+    accessorFn: (row) => typeof row[column] === "object" ? "" : row[column],
+    header: locale === "ja" ? columnLabel(column, uiText) : column.replaceAll("_", " "),
+    meta: {
+      required: index === 0 || ["name", "id", "status", "severity"].includes(column),
+      priority: ["name", "id", "status", "severity"].includes(column) ? 0 : ["updated_at", "created_at", "confidence", "evidence"].includes(column) ? 1 : 2,
+    },
+    cell: ({ row }) => column === "status" && statusPresenter
+      ? <DomainStatusBadge presentation={statusPresenter(row.original[column])} translate={t} showDetail />
+      : formatResourceCell(resource, row.original[column], column, timezone, uiText),
+  }));
+  if (showActions) definitions.push({
+    id: "actions", header: t("actions"), meta: { required: true, priority: 0 },
+    cell: ({ row }) => rowActions(row.original),
+  });
+  return <DataTable columns={definitions} data={rows} getRowId={(row, index) => resourceRowID(row) || String(row.name ?? index)}
+    mode={resourceHistoryConfig(resource.path) || resource.path.startsWith("/observability/") ? "server" : "client"}
+    filterPlaceholder={locale === "ja" ? "取得済みデータを検索" : "Search loaded records"}
+    density="compact" minTableWidthClass="min-w-[980px]" />;
+
 }
 
 function CopyResourceIDButton({ id, copied, onCopy }: { id: string; copied: boolean; onCopy: (id: string) => Promise<void> }) {
+  const uiText = useUICopy();
   return (
-    <Button variant="outline" size="icon-sm" disabled={!id} aria-label="IDをコピー" onClick={() => void onCopy(id)}>
+    <Button variant="outline" size="icon-sm" disabled={!id} aria-label={uiText("IDをコピー")} onClick={() => void onCopy(id)}>
       {copied ? <Check className="size-4" /> : <Copy className="size-4" />}
     </Button>
   );

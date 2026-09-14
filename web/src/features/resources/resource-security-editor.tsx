@@ -1,6 +1,11 @@
 "use client";
+import { useUICopy } from "@/lib/i18n/ui-v2/use-ui-copy";
+import { japaneseCopy, type UICopy } from "@/lib/i18n/ui-v2/copy";
 
-import { useEffect, useState } from "react";
+
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useExistingDraft } from "@/components/forms/draft-exit";
+import { useResourceData } from "@/features/queries";
 import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -9,7 +14,7 @@ import { type ResourceDefinition } from "@/features/resources/resource-config";
 import { ResourceActionConfirmationHost } from "@/features/resources/resource-action-control";
 import { type ResourceActionController } from "@/features/resources/resource-action-controller";
 import { type ResourceActionIntent } from "@/features/resources/resource-action-descriptors";
-import { useResourceOptions } from "./resource-form-queries";
+import { normalizeRows, rowString } from "./resource-values";
 import { isRecord, numberSetting, stringSetting, numberValue } from "./resource-values";
 import { NumberField, SelectField, Field, CheckboxList } from "./resource-input-fields";
 import { requiredPermissionText } from "./resource-permissions";
@@ -27,9 +32,11 @@ type SecuritySettingsPayload = {
 };
 
 export function SecuritySettingsEditor({ resource, data, loading, disabled, controller }: { resource: ResourceDefinition; data: unknown; loading: boolean; disabled: boolean; controller: ResourceActionController }) {
+  const uiText = useUICopy();
   const { t } = useI18n();
   const queryClient = useQueryClient();
-  const roles = useResourceOptions("/roles", ["name"], ["name"], ["permissions"]);
+  const rolesQuery = useResourceData<unknown>("/roles");
+  const roles = normalizeRows(rolesQuery.data).map((row) => ({ value: rowString(row, ["name"]), label: rowString(row, ["name"]), description: rowString(row, ["permissions"]) })).filter((option) => option.value);
   const [passwordMinLength, setPasswordMinLength] = useState("12");
   const [loginLockoutThreshold, setLoginLockoutThreshold] = useState("5");
   const [sessionIdleTimeout, setSessionIdleTimeout] = useState("30");
@@ -39,9 +46,18 @@ export function SecuritySettingsEditor({ resource, data, loading, disabled, cont
   const [message, setMessage] = useState("");
   const [pending, setPending] = useState<ResourceActionIntent | null>(null);
 
+  const draftSnapshot = JSON.stringify([passwordMinLength, loginLockoutThreshold, sessionIdleTimeout, sessionAbsoluteLifetime, mfaMode, mfaRequiredRoles]);
+  const [savedSnapshot, setSavedSnapshot] = useState(draftSnapshot);
+  const dirty = draftSnapshot !== savedSnapshot;
+  const dirtyRef = useRef(dirty);
+  useLayoutEffect(() => { dirtyRef.current = dirty; });
+  useExistingDraft(!disabled && dirty, !disabled && Boolean(pending));
+
   useEffect(() => {
-    if (!isRecord(data)) return;
+    if (!isRecord(data) || dirtyRef.current) return;
     const handle = window.setTimeout(() => {
+      if (dirtyRef.current) return;
+      setSavedSnapshot(JSON.stringify([String(numberSetting(data.password_min_length, 12)), String(numberSetting(data.login_lockout_threshold, 5)), String(numberSetting(data.session_idle_timeout_min, 30)), String(numberSetting(data.session_absolute_lifetime_h, 12)), stringSetting(data.mfa_mode, "disabled"), Array.isArray(data.mfa_required_roles) ? data.mfa_required_roles.map(String) : []]));
       setPasswordMinLength(String(numberSetting(data.password_min_length, 12)));
       setLoginLockoutThreshold(String(numberSetting(data.login_lockout_threshold, 5)));
       setSessionIdleTimeout(String(numberSetting(data.session_idle_timeout_min, 30)));
@@ -57,20 +73,21 @@ export function SecuritySettingsEditor({ resource, data, loading, disabled, cont
   const lockoutThreshold = numberValue(loginLockoutThreshold, 5);
   const idleTimeout = numberValue(sessionIdleTimeout, 30);
   const absoluteLifetime = numberValue(sessionAbsoluteLifetime, 12);
-  const mfaScope = mfaRequiredRoles.length > 0 ? mfaRequiredRoles.join(", ") : "全ユーザー";
+  const mfaScope = mfaRequiredRoles.length > 0 ? mfaRequiredRoles.join(", ") : uiText("全ユーザー");
 
   return (
     <div className="rounded-md border bg-muted/20 p-3">
       <div className="mb-3">
-        <div className="font-medium">設定を変更</div>
-        <p className="text-sm text-muted-foreground">ログイン保護、セッション期限、MFA適用範囲を保存できます。パスワードハッシュはArgon2id固定です。</p>
+        <div className="font-medium">{uiText("設定を変更")}</div>
+        <p className="text-sm text-muted-foreground">{uiText("ログイン保護、セッション期限、MFA適用範囲を保存できます。パスワードハッシュはArgon2id固定です。")}</p>
       </div>
+      {rolesQuery.isError ? <p role="alert" className="text-sm text-destructive">{uiText("ロール一覧を取得できませんでした。取得済みの設定は保持しています。")}</p> : null}
       {!loading ? (
         <div className="mb-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-          <SecurityPolicyCard label="パスワード" value={`${passwordLength}文字以上`} detail="Argon2idで保存します。Remember meは無効です。" />
-          <SecurityPolicyCard label="ロックアウト" value={`${lockoutThreshold}回失敗でロック`} detail="連続ログイン失敗時の保護です。" />
-          <SecurityPolicyCard label="セッション" value={`無操作${idleTimeout}分 / 最大${absoluteLifetime}時間`} detail="保存後に作成されるログインセッションへ適用します。" />
-          <SecurityPolicyCard label="MFA" value={securityMFAModeLabel(mfaMode)} detail={mfaMode === "disabled" ? "現在は要求しません。" : `対象: ${mfaScope}`} />
+          <SecurityPolicyCard label={uiText("パスワード")} value={uiText("{0}文字以上", passwordLength)} detail={uiText("Argon2idで保存します。Remember meは無効です。")} />
+          <SecurityPolicyCard label={uiText("ロックアウト")} value={uiText("{0}回失敗でロック", lockoutThreshold)} detail={uiText("連続ログイン失敗時の保護です。")} />
+          <SecurityPolicyCard label={uiText("セッション")} value={uiText("無操作{0}分 / 最大{1}時間", idleTimeout, absoluteLifetime)} detail={uiText("保存後に作成されるログインセッションへ適用します。")} />
+          <SecurityPolicyCard label="MFA" value={securityMFAModeLabel(mfaMode, uiText)} detail={mfaMode === "disabled" ? uiText("現在は要求しません。") : uiText("対象: {0}", mfaScope)} />
         </div>
       ) : null}
       {loading ? (
@@ -96,45 +113,45 @@ export function SecuritySettingsEditor({ resource, data, loading, disabled, cont
         >
           <fieldset disabled={disabled} className="space-y-3">
           <div className="grid gap-3 md:grid-cols-2">
-            <NumberField label="最小パスワード長" value={passwordMinLength} onChange={setPasswordMinLength} min={8} required />
-            <NumberField label="ロックまでの失敗回数" value={loginLockoutThreshold} onChange={setLoginLockoutThreshold} min={3} required />
-            <NumberField label="アイドルタイムアウト (分)" value={sessionIdleTimeout} onChange={setSessionIdleTimeout} min={5} required />
-            <NumberField label="絶対セッション期限 (時間)" value={sessionAbsoluteLifetime} onChange={setSessionAbsoluteLifetime} min={1} required />
+            <NumberField label={uiText("最小パスワード長")} value={passwordMinLength} onChange={setPasswordMinLength} min={8} required />
+            <NumberField label={uiText("ロックまでの失敗回数")} value={loginLockoutThreshold} onChange={setLoginLockoutThreshold} min={3} required />
+            <NumberField label={uiText("アイドルタイムアウト (分)")} value={sessionIdleTimeout} onChange={setSessionIdleTimeout} min={5} required />
+            <NumberField label={uiText("絶対セッション期限 (時間)")} value={sessionAbsoluteLifetime} onChange={setSessionAbsoluteLifetime} min={1} required />
             <SelectField
-              label="MFAポリシー"
+              label={uiText("MFAポリシー")}
               value={mfaMode}
               onChange={setMFAMode}
               options={[
-                { value: "disabled", label: "無効" },
-                { value: "totp", label: "TOTPを要求" },
-                { value: "passkey", label: "Passkeyを要求" },
+                { value: "disabled", label: uiText("無効") },
+                { value: "totp", label: uiText("TOTPを要求") },
+                { value: "passkey", label: uiText("Passkeyを要求") },
               ]}
             />
-            <Field label="固定ポリシー">
-              <div className="rounded-md border bg-background px-3 py-2 text-sm text-muted-foreground">Argon2id / Remember me無効 / Passkey利用可能</div>
+            <Field label={uiText("固定ポリシー")}>
+              <div className="rounded-md border bg-background px-3 py-2 text-sm text-muted-foreground">{uiText("Argon2id / Remember me無効 / Passkey利用可能")}</div>
             </Field>
           </div>
           <CheckboxList
-            label="MFAを要求するロール"
+            label={uiText("MFAを要求するロール")}
             values={mfaRequiredRoles}
             onChange={setMFARequiredRoles}
             items={roleItems}
-            emptyText="ロールがまだ登録されていません。空のまま保存すると全ユーザーにMFAを要求します。"
+            emptyText={uiText("ロールがまだ登録されていません。空のまま保存すると全ユーザーにMFAを要求します。")}
           />
-          <p className="text-xs text-muted-foreground">MFAポリシー有効時にロールを未選択で保存すると、全ユーザーが対象になります。</p>
+          <p className="text-xs text-muted-foreground">{uiText("MFAポリシー有効時にロールを未選択で保存すると、全ユーザーが対象になります。")}</p>
           </fieldset>
-          <Button type="submit" disabled={Boolean(pending) || disabled} title={disabled ? requiredPermissionText(resource.permissions?.update) : undefined}>
-            保存
-          </Button>
-          {disabled ? <p className="text-xs text-muted-foreground">{requiredPermissionText(resource.permissions?.update)}</p> : null}
+          <Button type="submit" disabled={Boolean(pending) || disabled} title={disabled ? requiredPermissionText(resource.permissions?.update, uiText) : undefined}>
+            {uiText("保存")}</Button>
+          {disabled ? <p className="text-xs text-muted-foreground">{requiredPermissionText(resource.permissions?.update, uiText)}</p> : null}
           {message ? <p className="text-sm text-muted-foreground">{message}</p> : null}
           {pending ? (
             <ResourceActionConfirmationHost
               controller={controller}
               intent={pending}
               onResult={(result) => {
-                setMessage(resourceActionResultMessage(result, t, "セキュリティ設定を保存しました。"));
+                setMessage(resourceActionResultMessage(result, t, uiText("セキュリティ設定を保存しました。")));
                 if (result.kind === "succeeded") {
+                  setSavedSnapshot(draftSnapshot);
                   setPending(null);
                   void queryClient.invalidateQueries({ queryKey: ["resource", resource.path] });
                   void queryClient.invalidateQueries({ queryKey: ["auth", "mfa", "status"] });
@@ -161,13 +178,13 @@ function SecurityPolicyCard({ label, value, detail }: { label: string; value: st
   );
 }
 
-function securityMFAModeLabel(mode: string) {
+function securityMFAModeLabel(mode: string, uiText: UICopy = japaneseCopy) {
   switch (mode) {
     case "totp":
-      return "TOTPを要求";
+      return uiText("TOTPを要求");
     case "passkey":
-      return "Passkeyを要求";
+      return uiText("Passkeyを要求");
     default:
-      return "無効";
+      return uiText("無効");
   }
 }

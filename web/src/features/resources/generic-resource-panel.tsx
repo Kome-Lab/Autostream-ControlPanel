@@ -1,10 +1,13 @@
 "use client";
+import { useUICopy } from "@/lib/i18n/ui-v2/use-ui-copy";
+
 
 import { useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { LoaderCircle, RefreshCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { resourceCopy } from "@/lib/i18n/ui-v2/resource-copy";
+import { DetailSection } from "@/components/layout/detail-section";
 import { Skeleton } from "@/components/ui/skeleton";
 import { apiGet, apiPost } from "@/lib/api/client";
 import { useI18n } from "@/components/admin/i18n-provider";
@@ -26,7 +29,9 @@ import { CreateResourceForm } from "./create-resource-form";
 import { ResourceTable } from "./resource-table";
 
 export function GenericResourcePanel({ resource, access, currentUser }: { resource: ResourceDefinition; access: ResourceAccess; currentUser: Parameters<typeof hasPermission>[0] }) {
-  const { t } = useI18n();
+  const uiText = useUICopy();
+  const { t, locale } = useI18n();
+  const copy = resourceCopy(resource, locale);
   const queryClient = useQueryClient();
   const query = useResourceData<unknown>(resource.path, access.read);
   const appSettings = useAppSettings();
@@ -43,8 +48,8 @@ export function GenericResourcePanel({ resource, access, currentUser }: { resour
       const id = typeof row.id === "string" ? row.id : JSON.stringify(row);
       if (!unique.has(id)) unique.set(id, row);
     }
-    return [...unique.values()].map((row) => enrichResourceRow(resource, row));
-  }, [baseRows, historyState.path, historyState.rows, resource]);
+    return [...unique.values()].map((row) => enrichResourceRow(resource, row, uiText));
+  }, [baseRows, historyState.path, historyState.rows, resource, uiText]);
   const columns = useMemo(() => visibleColumns(rows, resource), [rows, resource]);
   const showTable = resource.form !== "security-settings";
   const [deleteMessage, setDeleteMessage] = useState("");
@@ -74,7 +79,7 @@ export function GenericResourcePanel({ resource, access, currentUser }: { resour
         exhausted: page.length < (historyConfig?.pageSize || 200),
       }));
     },
-    onError: () => setActionMessage("過去の履歴を取得できませんでした。通信状態を確認して再試行してください。"),
+    onError: () => setActionMessage(uiText("過去の履歴を取得できませんでした。通信状態を確認して再試行してください。")),
   });
   const observabilityController = useMemo(() => createObservabilityActionController({
     refresh: async (plan) => {
@@ -96,17 +101,17 @@ export function GenericResourcePanel({ resource, access, currentUser }: { resour
       ? [resource.path, "/observability/incidents", "/observability/diagnostics"]
       : [resource.path];
     if (result.kind === "succeeded") {
-      setActionMessage(observabilityActionSuccessMessage(plan, result.value));
+      setActionMessage(observabilityActionSuccessMessage(plan, result.value, uiText));
       await Promise.all([...new Set(affectedResources)].map((path) => queryClient.invalidateQueries({ queryKey: ["resource", path] })));
       return;
     }
     if (result.kind === "outcome_unknown") {
-      setActionMessage("操作結果を確認できません。再送せず、最新状態または監査ログを確認してください。");
+      setActionMessage(uiText("操作結果を確認できません。再送せず、最新状態または監査ログを確認してください。"));
       await Promise.all([...new Set(affectedResources)].map((path) => queryClient.invalidateQueries({ queryKey: ["resource", path] })));
       return;
     }
     if (result.kind === "conflict") {
-      setActionMessage("状態が更新されたため操作を再送しませんでした。最新状態を確認してください。");
+      setActionMessage(uiText("状態が更新されたため操作を再送しませんでした。最新状態を確認してください。"));
       await Promise.all(["/observability/remediation-actions", "/observability/incidents", "/observability/diagnostics"].map((path) => queryClient.invalidateQueries({ queryKey: ["resource", path] })));
       return;
     }
@@ -114,29 +119,23 @@ export function GenericResourcePanel({ resource, access, currentUser }: { resour
       setActionMessage(t(result.error.messageKey));
       return;
     }
-    setActionMessage("最新の権限または状態を確認できないため、操作を送信しませんでした。");
+    setActionMessage(uiText("最新の権限または状態を確認できないため、操作を送信しませんでした。"));
   };
-  if (!access.read) return <PermissionNotice resource={resource} action="参照" permission={resource.permissions?.read} />;
+  if (!access.read) return <PermissionNotice resource={resource} action={uiText("参照")} permission={resource.permissions?.read} />;
 
   return (
-    <Card>
-      <CardHeader className="gap-2 border-b bg-muted/20 py-3 sm:flex-row sm:items-start sm:justify-between">
-        <div>
-          <CardTitle>{resource.title}</CardTitle>
-          <CardDescription>{resource.description}</CardDescription>
-        </div>
-        <div className="flex items-center gap-2">
+    <DetailSection title={copy.title} description={copy.description} actions={<div className="flex items-center gap-2">
           <Button variant="outline" size="sm" disabled={query.isFetching} onClick={() => {
             void query.refetch().then((result) => {
               if (result.isSuccess) resourceActionController.reconcile();
             });
           }}>
             <RefreshCcw className="size-4" />
-            更新
+            {locale === "ja" ? "更新" : "Refresh"}
           </Button>
-        </div>
-      </CardHeader>
-      <CardContent className="space-y-4 py-4">
+        </div>}>
+      <div className="space-y-4">
+        {query.isFetching && query.data !== undefined ? <p role="status" className="text-sm text-muted-foreground">{locale === "ja" ? "取得済みデータを表示しながら更新中です。" : "Refreshing; showing previously received data."}</p> : null}
         {query.isError ? <QueryErrorNotice onRetry={() => {
           void query.refetch().then((result) => {
             if (result.isSuccess) resourceActionController.reconcile();
@@ -148,7 +147,7 @@ export function GenericResourcePanel({ resource, access, currentUser }: { resour
         {actionMessage ? <p className="text-sm text-muted-foreground">{actionMessage}</p> : null}
         {showTable ? (
           query.isLoading && rows.length === 0 ? (
-            <Skeleton className="h-48 w-full" />
+            <div role="status" aria-label={locale === "ja" ? "読込中" : "Loading"}><span className="sr-only">{locale === "ja" ? "読込中" : "Loading"}</span><Skeleton className="h-48 w-full" /></div>
           ) : rows.length === 0 && query.isError ? null : (
             <ResourceTable
               rows={rows}
@@ -166,7 +165,7 @@ export function GenericResourcePanel({ resource, access, currentUser }: { resour
                 return handleObservabilityResult(plan, result);
               }}
               onDeleteResult={(result) => {
-                setDeleteMessage(resourceActionResultMessage(result, t, "削除しました。"));
+                setDeleteMessage(resourceActionResultMessage(result, t, uiText("削除しました。")));
                 if (result.kind === "succeeded") {
                   void queryClient.invalidateQueries({ queryKey: ["resource", resource.path] });
                 }
@@ -178,11 +177,10 @@ export function GenericResourcePanel({ resource, access, currentUser }: { resour
           <div className="flex justify-center border-t pt-4">
             <Button variant="outline" size="sm" disabled={historyMutation.isPending} onClick={() => historyMutation.mutate()}>
               {historyMutation.isPending ? <LoaderCircle className="size-4 animate-spin" /> : null}
-              さらに過去の履歴を読み込む
-            </Button>
+              {uiText("さらに過去の履歴を読み込む")}</Button>
           </div>
         ) : null}
-      </CardContent>
-    </Card>
+      </div>
+    </DetailSection>
   );
 }

@@ -1,14 +1,21 @@
 "use client";
+import { fixedPresentationText } from "@/lib/i18n/ui-v2/presentation-copy";
+import { useUICopy } from "@/lib/i18n/ui-v2/use-ui-copy";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+
+import { DraftExitContext, useDraftExit } from "@/components/forms/draft-exit";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
 import { AlertCircle, Check, Copy, Eye, Pencil, Play, Plus, RadioTower, RotateCw, SlidersHorizontal, Square, Shuffle, Trash2, Video } from "lucide-react";
 
-import { StatusBadge } from "@/components/admin/status-badge";
+import { DomainStatusBadge } from "@/components/foundation/status/domain-status-badge";
+import { presentStreamLifecycleStatus } from "@/lib/foundation/status/lifecycle-presenters";
+import { DetailSection } from "@/components/layout/detail-section";
+import { PageHeader } from "@/components/shell/page-header";
+import { PageActions } from "@/components/shell/page-actions";
 import { useI18n } from "@/components/admin/i18n-provider";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { DataTable } from "@/components/tables/data-table";
 import { useAppSettings, useCurrentUser, useResourceData, useStreams } from "@/features/queries";
@@ -18,6 +25,7 @@ import type { StreamActionIntent } from "@/features/streams/stream-action-descri
 import { streamActionBlockedMessage, streamActionLabel } from "@/features/streams/stream-action-feedback";
 import { mutateStreamAction, refreshStreamActionAuthority, streamActionStateSnapshot, streamPermissionSnapshot } from "@/features/streams/stream-action-runtime";
 import { StreamDetailsDialog } from "@/features/streams/stream-details-dialog";
+import { readinessResult, type StreamOperationNotice } from "./stream-detail-operations";
 import { streamStatusAllowsDelete, streamStatusAllowsEdit, streamStatusAllowsForceStop, streamStatusAllowsStart, streamStatusAllowsStop } from "@/features/streams/stream-lifecycle";
 import { StreamSlotForm } from "@/features/streams/stream-slot-form";
 import { StreamSummary } from "@/features/streams/stream-summary";
@@ -29,8 +37,12 @@ import { formatDateTimeInTimeZone } from "@/lib/timezone";
 import { cn } from "@/lib/utils";
 import type { Stream } from "@/types/domain";
 
+const streamTableURL = { key: "streams", sorts: ["name", "status", "updated"], filters: { status: ["draft", "created", "ready", "scheduled", "starting", "live", "stopping", "stopped", "completed", "failed", "error"] } } as const;
+
 export function StreamsView() {
-  const { t } = useI18n();
+  const uiText = useUICopy();
+  const { t, locale } = useI18n();
+  const ja = locale === "ja";
   const streams = useStreams();
   const currentUser = useCurrentUser();
   const appSettings = useAppSettings();
@@ -41,15 +53,13 @@ export function StreamsView() {
   const [createOpen, setCreateOpen] = useState(false);
   const [editingStream, setEditingStream] = useState<Stream | null>(null);
   const [selectedStream, setSelectedStream] = useState<Stream | null>(null);
-  const [actionNotice, setActionNotice] = useState<{ tone: "success" | "error"; message: string } | null>(null);
+  const detailTrigger = useRef<HTMLButtonElement | null>(null);
+  const createTrigger = useRef<HTMLButtonElement | null>(null);
+  const editTrigger = useRef<HTMLButtonElement | null>(null);
+  const [actionNotice, setActionNotice] = useState<StreamOperationNotice | null>(null);
   const [, setActionAuthorityRevision] = useState(0);
 
-  useEffect(() => {
-    const syncFromHash = () => setCreateOpen(window.location.hash === "#create-stream");
-    syncFromHash();
-    window.addEventListener("hashchange", syncFromHash);
-    return () => window.removeEventListener("hashchange", syncFromHash);
-  }, []);
+
 
   const actionController = useMemo(() => createStreamActionController({
     getPermissions: () => streamPermissionSnapshot(queryClient),
@@ -59,21 +69,34 @@ export function StreamsView() {
   const can = (permission: string) => hasPermission(currentUser.data, permission);
   const canCreate = can("streams.create");
   const canUpdate = can("streams.update");
+  const createDraftExit = useDraftExit({ enabled: createOpen && canCreate, pending: false });
+  const editDraftExit = useDraftExit({ enabled: editingStream !== null && canUpdate, pending: false });
+  useEffect(() => {
+    const syncFromHash = () => { const open = window.location.hash === "#create-stream"; if (open) setCreateOpen(true); else createDraftExit.request(() => setCreateOpen(false)); };
+    syncFromHash();
+    window.addEventListener("hashchange", syncFromHash);
+    return () => window.removeEventListener("hashchange", syncFromHash);
+  }, [createDraftExit]);
   const handleStreamActionResult = useCallback((result: StreamActionExecutionResult, intent: StreamActionIntent) => {
     if (result.kind === "succeeded") {
+
       if (intent.id === "STR-10" && intent.stream) {
         setCreatedStreams((current) => current.filter((stream) => stream.id !== intent.stream?.id));
       }
       void queryClient.invalidateQueries({ queryKey: ["streams"] });
-      setActionNotice({ tone: "success", message: `${intent.stream?.name || intent.publicLabel || "配信枠"}の${streamActionLabel(intent.id)}を受け付けました。最新状態を確認してください。` });
+      if (intent.id === "STR-08" && intent.stream) {
+        setActionNotice({ tone: "success", streamID: intent.stream.id, readiness: readinessResult(result.value, intent.stream), message: ja ? "開始準備の確認結果を受信しました。" : "Readiness check received." });
+        return;
+      }
+      setActionNotice({ tone: "success", streamID: intent.stream?.id, message: uiText("{0}の{1}を受け付けました。最新状態を確認してください。", intent.stream?.name || intent.publicLabel || uiText("配信枠"), streamActionLabel(intent.id, uiText)) });
       return;
     }
     if (result.kind === "outcome_unknown") {
-      setActionNotice({ tone: "error", message: "操作結果を確認できません。再送せず、配信枠の最新状態または監査ログを確認してください。" });
+      setActionNotice({ tone: "error", streamID: intent.stream?.id, message: uiText("操作結果を確認できません。再送せず、配信枠の最新状態または監査ログを確認してください。") });
     } else if (result.kind === "failed") {
-      setActionNotice({ tone: "error", message: `${t(result.error.messageKey)} 再送せず、最新状態を確認してください。` });
+      setActionNotice({ tone: "error", streamID: intent.stream?.id, message: uiText("{0} 再送せず、最新状態を確認してください。", t(result.error.messageKey)) });
     } else {
-      setActionNotice({ tone: "error", message: streamActionBlockedMessage(result.reason) });
+      setActionNotice({ tone: "error", streamID: intent.stream?.id, message: streamActionBlockedMessage(result.reason, uiText) });
     }
     if (result.kind === "failed" && intent.id === "STR-08") {
       // The control clears its latch only when both permission and resource
@@ -91,7 +114,7 @@ export function StreamsView() {
     // Reconciliation fetches are safe and never resend the mutation.
     void queryClient.invalidateQueries({ queryKey: ["auth", "me"] });
     void queryClient.invalidateQueries({ queryKey: ["streams"] });
-  }, [actionController, queryClient, t]);
+  }, [actionController, ja, queryClient, t, uiText]);
   const streamRows = useMemo(
     () => [...createdStreams, ...(streams.data || []).filter((stream) => !createdStreams.some((created) => created.id === stream.id))],
     [createdStreams, streams.data],
@@ -120,72 +143,88 @@ export function StreamsView() {
       accessorKey: "name",
       header: t("name"),
       cell: ({ row }) => (
-        <div className="min-w-52"><div className="flex items-center gap-2"><div className="font-medium">{row.original.name}</div><Button variant="outline" size="icon-sm" aria-label="配信IDをコピー" onClick={() => void copyStreamID(row.original.id)}>{copiedStreamID === row.original.id ? <Check className="size-4" /> : <Copy className="size-4" />}</Button></div></div>
+        <div className="min-w-52"><div className="flex items-center gap-2"><button type="button" className="min-h-11 text-left font-medium text-primary underline underline-offset-4" onClick={(event) => { detailTrigger.current = event.currentTarget; setSelectedStream(row.original); }}>{row.original.name}</button><Button variant="outline" size="icon-sm" aria-label={uiText("配信IDをコピー")} onClick={() => void copyStreamID(row.original.id)}>{copiedStreamID === row.original.id ? <Check className="size-4" /> : <Copy className="size-4" />}</Button></div></div>
       ),
     },
-    { accessorKey: "status", header: t("status"), cell: ({ row }) => <StatusBadge status={row.original.status} showDetail /> },
+    { accessorKey: "status", header: t("status"), cell: ({ row }) => <DomainStatusBadge presentation={presentStreamLifecycleStatus(row.original.status)} translate={t} showDetail /> },
+    { id: "readiness", header: "Readiness", meta: { priority: 0, required: true }, cell: ({ row }) => <button type="button" className="text-left text-sm text-primary underline" onClick={(event) => { detailTrigger.current = event.currentTarget; setSelectedStream(row.original); }}>{ja ? "開始前に再確認" : "Review before starting"}</button> },
     {
       id: "actions",
       header: t("actions"),
       cell: ({ row }) => (
-        <div className="flex min-w-44 flex-nowrap gap-1">
-          <Button variant="outline" size="icon-sm" aria-label={t("details")} onClick={() => setSelectedStream(row.original)}><Eye /></Button>
-          {String(row.original.status).toLowerCase() === "live" ? <Button variant="outline" size="icon-sm" aria-label={`${row.original.name} ライブ調整`} title="ライブ調整" onClick={() => setEditingStream(row.original)} disabled={!canUpdate}><SlidersHorizontal /></Button> : null}
-          {streamStatusAllowsEdit(row.original.status) ? <Button variant="outline" size="icon-sm" aria-label={`${row.original.name} を編集`} onClick={() => setEditingStream(row.original)} disabled={!canUpdate}><Pencil /></Button> : null}
-          {streamStatusAllowsStart(row.original.status) ? <StreamActionControl controller={actionController} intent={{ id: "STR-04", stream: row.original }} label={`${row.original.name} を開始`} buttonProps={{ variant: "outline", size: "icon-sm" }} onResult={handleStreamActionResult}><Play /></StreamActionControl> : null}
-          {streamStatusAllowsStop(row.original.status) ? <StreamActionControl controller={actionController} intent={{ id: "STR-05", stream: row.original }} label={`${row.original.name} を停止`} buttonProps={{ variant: "outline", size: "icon-sm" }} onResult={handleStreamActionResult}><Square /></StreamActionControl> : null}
-          {streamStatusAllowsForceStop(row.original.status) ? <StreamActionControl controller={actionController} intent={{ id: "STR-06", stream: row.original }} label={`${row.original.name} を強制停止`} buttonProps={{ variant: "destructive", size: "icon-sm" }} onResult={handleStreamActionResult}><AlertCircle /></StreamActionControl> : null}
-          {staticRelayRecoveryActionAvailable(staticRelayOutputIDs.has(row.original.youtube_output_id || "") ? "live_api_relay_static" : "", row.original.status) ? <StreamActionControl controller={actionController} intent={{ id: "STR-07", stream: row.original, staticRelayRecoveryAvailable: true }} label={`${row.original.name} の固定Relay回復を実行`} buttonProps={{ variant: "outline", size: "icon-sm" }} onResult={handleStreamActionResult}><RadioTower /></StreamActionControl> : null}
-          <StreamActionControl controller={actionController} intent={{ id: "STR-08", stream: row.original }} label={`${row.original.name} の開始準備を再確認`} buttonProps={{ variant: "outline", size: "icon-sm" }} onResult={handleStreamActionResult}><RotateCw /></StreamActionControl>
-          <StreamActionControl controller={actionController} intent={{ id: "STR-09", stream: row.original }} label={`${row.original.name} のWorkerテストを実行`} buttonProps={{ variant: "outline", size: "icon-sm" }} onResult={handleStreamActionResult}><Shuffle /></StreamActionControl>
-          {streamStatusAllowsDelete(row.original.status) ? <StreamActionControl controller={actionController} intent={{ id: "STR-10", stream: row.original }} label={`${row.original.name} を削除`} buttonProps={{ variant: "destructive", size: "icon-sm" }} onResult={handleStreamActionResult}><Trash2 /></StreamActionControl> : null}
+        <div className="flex min-w-0 flex-wrap gap-1">
+          <Button variant="outline" size="icon-sm" aria-label={t("details")} onClick={(event) => { detailTrigger.current = event.currentTarget; setSelectedStream(row.original); }}><Eye /></Button>
+          {String(row.original.status).toLowerCase() === "live" ? <Button variant="outline" size="icon-sm" aria-label={uiText("{0} ライブ調整", row.original.name)} title={uiText("ライブ調整")} onClick={(event) => { const trigger = event.currentTarget; editDraftExit.request(() => { editTrigger.current = trigger; setEditingStream(row.original); }); }} disabled={!canUpdate}><SlidersHorizontal /></Button> : null}
+          {streamStatusAllowsEdit(row.original.status) ? <Button variant="outline" size="icon-sm" aria-label={uiText("{0} を編集", row.original.name)} onClick={(event) => { const trigger = event.currentTarget; editDraftExit.request(() => { editTrigger.current = trigger; setEditingStream(row.original); }); }} disabled={!canUpdate}><Pencil /></Button> : null}
+          {streamStatusAllowsStart(row.original.status) ? <StreamActionControl controller={actionController} intent={{ id: "STR-04", stream: row.original }} label={uiText("{0} を開始", row.original.name)} buttonProps={{ variant: "outline", size: "icon-sm" }} onResult={handleStreamActionResult}><Play /></StreamActionControl> : null}
+          {streamStatusAllowsStop(row.original.status) ? <StreamActionControl controller={actionController} intent={{ id: "STR-05", stream: row.original }} label={uiText("{0} を停止", row.original.name)} buttonProps={{ variant: "outline", size: "icon-sm" }} onResult={handleStreamActionResult}><Square /></StreamActionControl> : null}
+          {streamStatusAllowsForceStop(row.original.status) ? <StreamActionControl controller={actionController} intent={{ id: "STR-06", stream: row.original }} label={uiText("{0} を強制停止", row.original.name)} buttonProps={{ variant: "destructive", size: "icon-sm" }} onResult={handleStreamActionResult}><AlertCircle /></StreamActionControl> : null}
+          {staticRelayRecoveryActionAvailable(staticRelayOutputIDs.has(row.original.youtube_output_id || "") ? "live_api_relay_static" : "", row.original.status) ? <StreamActionControl controller={actionController} intent={{ id: "STR-07", stream: row.original, staticRelayRecoveryAvailable: true }} label={uiText("{0} の固定Relay回復を実行", row.original.name)} buttonProps={{ variant: "outline", size: "icon-sm" }} onResult={handleStreamActionResult}><RadioTower /></StreamActionControl> : null}
+          <StreamActionControl controller={actionController} intent={{ id: "STR-08", stream: row.original }} label={uiText("{0} の開始準備を再確認", row.original.name)} buttonProps={{ variant: "outline", size: "icon-sm" }} onResult={handleStreamActionResult}><RotateCw /></StreamActionControl>
+          <StreamActionControl controller={actionController} intent={{ id: "STR-09", stream: row.original }} label={uiText("{0} のWorkerテストを実行", row.original.name)} buttonProps={{ variant: "outline", size: "icon-sm" }} onResult={handleStreamActionResult}><Shuffle /></StreamActionControl>
+          {streamStatusAllowsDelete(row.original.status) ? <StreamActionControl controller={actionController} intent={{ id: "STR-10", stream: row.original }} label={uiText("{0} を削除", row.original.name)} buttonProps={{ variant: "destructive", size: "icon-sm" }} onResult={handleStreamActionResult}><Trash2 /></StreamActionControl> : null}
         </div>
       ),
     },
     {
       id: "route",
       accessorFn: (stream) => compactList([stream.encoder_input_url, stream.input_source, stream.output_target, stream.youtube_output_id]).join(" "),
-      header: "配信経路",
-      cell: ({ row }) => <div className="min-w-56 max-w-80 text-sm"><div className="flex items-center gap-1.5"><RadioTower className="size-3.5 shrink-0 text-muted-foreground" /><span className="truncate" title={streamInputPresentation(row.original)}>{streamInputPresentation(row.original)}</span></div><div className="mt-1 flex items-center gap-1.5 text-muted-foreground"><Video className="size-3.5 shrink-0" /><span className="truncate">{optionLabel(youtubeOutputLabels, row.original.youtube_output_id) || row.original.output_target || "出力未設定"}</span></div></div>,
+      header: ja ? "入力 / YouTube" : "Input / YouTube",
+      meta: { priority: 1 },
+      cell: ({ row }) => <div className="min-w-56 max-w-80 text-sm"><div className="flex items-center gap-1.5"><RadioTower className="size-3.5 shrink-0 text-muted-foreground" /><span className="truncate" title={streamInputPresentation(row.original, uiText)}>{streamInputPresentation(row.original, uiText)}</span></div><div className="mt-1 flex items-center gap-1.5 text-muted-foreground"><Video className="size-3.5 shrink-0" /><span className="truncate">{optionLabel(youtubeOutputLabels, row.original.youtube_output_id) || row.original.output_target || uiText("出力未設定")}</span></div></div>,
     },
     {
       id: "recording",
-      accessorFn: (stream) => compactList([recordingDescriptor(stream).label, stream.archive_file_name, stream.archive_masked_folder_id]).join(" "),
-      header: "録画・保存",
+      accessorFn: (stream) => compactList([fixedPresentationText(recordingDescriptor(stream).label, uiText), stream.archive_file_name, stream.archive_masked_folder_id]).join(" "),
+      header: ja ? "録画・保存" : "Recording / archive",
+      meta: { priority: 1 },
       cell: ({ row }) => {
         const recording = recordingDescriptor(row.original);
-        return <div className="min-w-44 max-w-64 text-sm"><span className={cn("inline-flex rounded-md border px-2 py-0.5 text-xs font-medium", recording.className)}>{recording.label}</span><div className="mt-1 truncate text-muted-foreground" title={row.original.archive_file_name}>{row.original.archive_file_name || optionLabel(archiveDestinationLabels, row.original.archive_drive_destination_id) || optionLabel(archiveProfileLabels, row.original.archive_profile_id) || "保存先未設定"}</div>{row.original.archive_folder_id_configured ? <div className="truncate text-xs text-muted-foreground">フォルダー {row.original.archive_masked_folder_id || "設定済み"}</div> : null}</div>;
+        return <div className="min-w-44 max-w-64 text-sm"><span className={cn("inline-flex rounded-md border px-2 py-0.5 text-xs font-medium", recording.className)}>{fixedPresentationText(recording.label, uiText)}</span><div className="mt-1 truncate text-muted-foreground" title={row.original.archive_file_name}>{row.original.archive_file_name || optionLabel(archiveDestinationLabels, row.original.archive_drive_destination_id) || optionLabel(archiveProfileLabels, row.original.archive_profile_id) || uiText("保存先未設定")}</div>{row.original.archive_folder_id_configured ? <div className="truncate text-xs text-muted-foreground">{uiText("フォルダー")}{row.original.archive_masked_folder_id || uiText("設定済み")}</div> : null}</div>;
       },
     },
     {
       id: "discord",
-      accessorFn: (stream) => compactList([optionLabel(discordLabels, stream.discord_config_id), stream.discord_config_id, stream.auto_start_trigger === "discord_voice_join" ? "VC参加で自動開始" : "手動開始"]).join(" "),
-      header: "自動開始",
-      cell: ({ row }) => <div className="min-w-40 text-sm"><div>{row.original.auto_start_trigger === "discord_voice_join" ? "VC参加で自動開始" : "手動開始"}</div><div className="mt-1 truncate text-muted-foreground">{optionLabel(discordLabels, row.original.discord_config_id) || "Discord未設定"}</div><div className="truncate text-xs text-muted-foreground">配信先はv2 snapshotで管理</div></div>,
+      accessorFn: (stream) => compactList([optionLabel(discordLabels, stream.discord_config_id), stream.discord_config_id, stream.auto_start_trigger === "discord_voice_join" ? uiText("VC参加で自動開始") : uiText("手動開始")]).join(" "),
+      header: ja ? "開始条件" : "Trigger",
+      meta: { priority: 1 },
+      cell: ({ row }) => <div className="min-w-40 text-sm"><div>{row.original.auto_start_trigger === "discord_voice_join" ? uiText("VC参加で自動開始") : uiText("手動開始")}</div><div className="mt-1 truncate text-muted-foreground">{optionLabel(discordLabels, row.original.discord_config_id) || uiText("Discord未設定")}</div><div className="truncate text-xs text-muted-foreground">{uiText("配信先はv2 snapshotで管理")}</div></div>,
     },
     {
       id: "nodes",
       accessorFn: (stream) => compactList([stream.assigned_worker_id, stream.assigned_encoder_id]).join(" "),
-      header: "担当Node",
-      cell: ({ row }) => <div className="min-w-36 text-sm text-muted-foreground"><div className="truncate">Worker {row.original.assigned_worker_id || "未割当"}</div><div className="truncate">Encoder {row.original.assigned_encoder_id || "未割当"}</div></div>,
+      header: ja ? "担当Node" : "Assignments",
+      meta: { priority: 1 },
+      cell: ({ row }) => <div className="min-w-36 text-sm text-muted-foreground"><div className="truncate">Worker {row.original.assigned_worker_id || uiText("未割当")}</div><div className="truncate">Encoder {row.original.assigned_encoder_id || uiText("未割当")}</div></div>,
     },
-    { id: "updated", header: "更新", cell: ({ row }) => <span className="text-sm">{formatDateTime(row.original.updated_at || row.original.created_at, timezone)}</span> },
+    { id: "updated", accessorFn: (stream) => stream.updated_at || stream.created_at || "", header: ja ? "更新" : "Updated", meta: { priority: 1 }, cell: ({ row }) => <span className="text-sm">{formatDateTime(row.original.updated_at || row.original.created_at, timezone)}</span> },
   ];
 
   return (
-    <div className="space-y-5">
-      <section className="flex flex-col gap-3 border-b pb-5 sm:flex-row sm:items-end sm:justify-between"><div><div className="flex items-center gap-2 text-sm font-medium text-primary"><RadioTower className="size-4" />Discord VC連動</div><h1 className="mt-1 text-xl font-semibold">待機開始から終了後の録画まで一元管理</h1><p className="mt-1 text-sm text-muted-foreground">VC参加を待機する配信枠、配信経路、録画状態、担当Nodeを一元管理します。</p></div>{canCreate ? <Button onClick={() => setCreateOpen(true)}><Plus className="size-4" />配信枠を作成</Button> : null}</section>
-      <StreamSummary rows={streamRows} />
-      {streams.isError ? <div className="flex flex-col gap-3 rounded-lg border border-amber-300 bg-amber-50 p-4 text-amber-900 dark:border-amber-900 dark:bg-amber-950/35 dark:text-amber-100 sm:flex-row sm:items-center sm:justify-between"><div className="flex gap-3"><AlertCircle className="mt-0.5 size-5 shrink-0" /><div><div className="text-sm font-semibold">配信枠を取得できませんでした</div><p className="mt-0.5 text-xs">通信状態を確認して再試行してください。新しい操作は一覧が更新されてから行ってください。</p></div></div><Button variant="outline" size="sm" onClick={() => streams.refetch()}><RotateCw className="size-4" />再試行</Button></div> : null}
+    <div className="space-y-5" data-screen-family="streams">
+      <PageHeader title={ja ? "配信枠" : "Streams"}
+        description={ja ? "作成後に編集画面で担当Nodeを明示的に割り当て、Readinessを確認して開始します。" : "After creating a slot, edit it to assign nodes explicitly, check Readiness, then start."}
+        breadcrumbs={[{ label: ja ? "管理" : "Admin", href: "/admin/" }, { label: ja ? "配信枠" : "Streams" }]}
+        eyebrow={<><RadioTower aria-hidden="true" className="size-4" />Discord VC</>}
+        actions={<PageActions primary={canCreate ? <Button onClick={(event) => { createTrigger.current = event.currentTarget; setCreateOpen(true); }}><Plus aria-hidden="true" />{ja ? "配信枠を作成" : "Create stream"}</Button> : null}
+          secondary={<Button variant="outline" disabled={streams.isFetching} onClick={() => void streams.refetch()}><RotateCw aria-hidden="true" />{ja ? "更新" : "Refresh"}</Button>} />} />
+      {streams.dataUpdatedAt ? <p className="text-xs text-muted-foreground">{ja ? "最終取得: " : "Last received: "}<time dateTime={new Date(streams.dataUpdatedAt).toISOString()}>{formatDateTime(new Date(streams.dataUpdatedAt).toISOString(), timezone)}</time></p> : null}
+      {streams.data !== undefined || createdStreams.length ? <StreamSummary rows={streamRows} /> : <p role="status">{ja ? "配信状態は未取得です。" : "Stream state has not been received."}</p>}
+      {streams.isError ? <div className="flex flex-col gap-3 rounded-lg border border-amber-300 bg-amber-50 p-4 text-amber-900 dark:border-amber-900 dark:bg-amber-950/35 dark:text-amber-100 sm:flex-row sm:items-center sm:justify-between"><div className="flex gap-3"><AlertCircle className="mt-0.5 size-5 shrink-0" /><div><div className="text-sm font-semibold">{uiText("配信枠を取得できませんでした")}</div><p className="mt-0.5 text-xs">{uiText("通信状態を確認して再試行してください。新しい操作は一覧が更新されてから行ってください。")}</p></div></div><Button variant="outline" size="sm" onClick={() => streams.refetch()}><RotateCw className="size-4" />{uiText("再試行")}</Button></div> : null}
       {actionNotice ? <div className={cn("rounded-lg border p-3 text-sm", actionNotice.tone === "success" ? "border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/35 dark:text-emerald-200" : "border-red-200 bg-red-50 text-red-800 dark:border-red-900 dark:bg-red-950/35 dark:text-red-200")}>{actionNotice.message}</div> : null}
-      <Card><CardHeader className="border-b"><CardTitle>配信枠</CardTitle><CardDescription>VC待機中・配信中・要対応の状態を確認し、必要な操作を実行できます。</CardDescription></CardHeader><CardContent><DataTable columns={columns} data={streamRows} filterPlaceholder="配信名・状態・VC・URL・録画保存先で絞り込み" getRowId={(row) => row.id} responsive /></CardContent></Card>
-      <Sheet open={createOpen} onOpenChange={(open) => { setCreateOpen(open); if (!open && window.location.hash === "#create-stream") window.history.replaceState(null, "", window.location.pathname + window.location.search); }}>
-        <SheetContent side="right" className="w-full overflow-y-auto p-0 sm:max-w-3xl"><SheetHeader className="sr-only"><SheetTitle>配信枠を作成</SheetTitle><SheetDescription>Discord VCの開始条件、入力、出力、録画を設定します。</SheetDescription></SheetHeader><StreamSlotForm className="min-h-full rounded-none border-0 shadow-none" actionController={actionController} onActionResult={handleStreamActionResult} canCreate={canCreate} canUpdate={canUpdate} canAssignEncoder={can("services.assign")} canAssignWorker={can("workers.assign")} onSaved={(stream) => { setCreatedStreams((current) => [stream, ...current.filter((item) => item.id !== stream.id)]); setActionNotice({ tone: "success", message: `${stream.name} を作成しました。稼働中の配信を保護するためNode割り当ては変更していません。開始前にこの配信枠を編集し、担当Nodeを明示的に割り当ててください。` }); setCreateOpen(false); }} /></SheetContent>
-      </Sheet>
-      <Sheet open={editingStream !== null} onOpenChange={(open) => { if (!open) setEditingStream(null); }}>
-        <SheetContent side="right" className="w-full overflow-y-auto p-0 sm:max-w-3xl"><SheetHeader className="sr-only"><SheetTitle>配信枠を編集</SheetTitle><SheetDescription>待機中または終了済みの配信枠の設定を変更します。</SheetDescription></SheetHeader>{editingStream ? <StreamSlotForm key={editingStream.id} stream={editingStream} className="min-h-full rounded-none border-0 shadow-none" actionController={actionController} onActionResult={handleStreamActionResult} canCreate={canCreate} canUpdate={canUpdate} canAssignEncoder={can("services.assign")} canAssignWorker={can("workers.assign")} onSaved={(stream) => { setCreatedStreams((current) => [stream, ...current.filter((item) => item.id !== stream.id)]); setActionNotice({ tone: "success", message: `${stream.name} の設定を更新しました。開始前に担当Nodeと出力先を確認してください。` }); setEditingStream(null); }} /> : null}</SheetContent>
-      </Sheet>
-      <StreamDetailsDialog stream={currentSelectedStream} actionController={actionController} onOpenChange={(open) => { if (!open) setSelectedStream(null); }} discordLabels={discordLabels} youtubeOutputLabels={youtubeOutputLabels} archiveAccountLabels={archiveAccountLabels} archiveDestinationLabels={archiveDestinationLabels} archiveProfileLabels={archiveProfileLabels} overlayProfileLabels={overlayProfileLabels} />
+      {streams.isFetching && streams.data !== undefined ? <p role="status">{ja ? "取得済みデータを表示しながら更新中です。" : "Refreshing; showing previously received data."}</p> : null}
+      <DetailSection title={ja ? "配信一覧" : "Stream list"} description={ja ? "状態・開始準備・担当・出力を確認してから操作してください。" : "Review state, readiness, assignments and outputs before an action."}>
+        <DataTable columns={columns} data={streamRows} density="compact" urlPolicy={streamTableURL} dataReady={streams.data !== undefined || createdStreams.length > 0}
+          filters={[{ id: "status", label: t("status"), options: streamTableURL.filters.status.map((value) => ({ value, label: t(presentStreamLifecycleStatus(value).labelKey) })) }]}
+          filterPlaceholder={ja ? "取得済みの配信枠を検索" : "Search loaded streams"} getRowId={(row) => row.id} responsive />
+      </DetailSection>
+      <DraftExitContext.Provider value={createDraftExit}><Sheet open={createOpen} onOpenChange={(open) => { if (open) setCreateOpen(true); else createDraftExit.request(() => { setCreateOpen(false); if (window.location.hash === "#create-stream") window.history.replaceState(window.history.state, "", window.location.pathname + window.location.search); }); }}>
+        <SheetContent onCloseAutoFocus={(event) => { event.preventDefault(); createTrigger.current?.focus(); }} side="right" className="w-full overflow-y-auto p-0 sm:max-w-3xl"><SheetHeader className="sr-only"><SheetTitle>{uiText("配信枠を作成")}</SheetTitle><SheetDescription>{uiText("Discord VCの開始条件、入力、出力、録画を設定します。")}</SheetDescription></SheetHeader><StreamSlotForm className="min-h-full rounded-none border-0 shadow-none" actionController={actionController} onActionResult={handleStreamActionResult} canCreate={canCreate} canUpdate={canUpdate} canAssignEncoder={can("services.assign")} canAssignWorker={can("workers.assign")} onSaved={(stream) => { setCreatedStreams((current) => [stream, ...current.filter((item) => item.id !== stream.id)]); setActionNotice({ tone: "success", message: uiText("{0} を作成しました。稼働中の配信を保護するためNode割り当ては変更していません。開始前にこの配信枠を編集し、担当Nodeを明示的に割り当ててください。", stream.name) }); createDraftExit.request(() => setCreateOpen(false)); }} /></SheetContent>
+      </Sheet></DraftExitContext.Provider>
+      <DraftExitContext.Provider value={editDraftExit}><Sheet open={editingStream !== null} onOpenChange={(open) => { if (!open) editDraftExit.request(() => setEditingStream(null)); }}>
+        <SheetContent onCloseAutoFocus={(event) => { event.preventDefault(); editTrigger.current?.focus(); }} side="right" className="w-full overflow-y-auto p-0 sm:max-w-3xl"><SheetHeader className="sr-only"><SheetTitle>{uiText("配信枠を編集")}</SheetTitle><SheetDescription>{uiText("待機中または終了済みの配信枠の設定を変更します。")}</SheetDescription></SheetHeader>{editingStream ? <StreamSlotForm key={editingStream.id} stream={editingStream} className="min-h-full rounded-none border-0 shadow-none" actionController={actionController} onActionResult={handleStreamActionResult} canCreate={canCreate} canUpdate={canUpdate} canAssignEncoder={can("services.assign")} canAssignWorker={can("workers.assign")} onSaved={(stream) => { setCreatedStreams((current) => [stream, ...current.filter((item) => item.id !== stream.id)]); setActionNotice({ tone: "success", message: uiText("{0} の設定を更新しました。開始前に担当Nodeと出力先を確認してください。", stream.name) }); editDraftExit.request(() => setEditingStream(null)); }} /> : null}</SheetContent>
+      </Sheet></DraftExitContext.Provider>
+      <StreamDetailsDialog returnFocus={() => detailTrigger.current?.focus()} stream={currentSelectedStream} actionController={actionController} onActionResult={handleStreamActionResult} actionNotice={actionNotice} onOpenChange={(open) => { if (!open) setSelectedStream(null); }} discordLabels={discordLabels} youtubeOutputLabels={youtubeOutputLabels} archiveAccountLabels={archiveAccountLabels} archiveDestinationLabels={archiveDestinationLabels} archiveProfileLabels={archiveProfileLabels} overlayProfileLabels={overlayProfileLabels} />
     </div>
   );
 }

@@ -1,4 +1,8 @@
 "use client";
+import { useUICopy } from "@/lib/i18n/ui-v2/use-ui-copy";
+
+
+import { useNonSecretDraft } from "@/components/forms/draft-exit";
 
 import { useState } from "react";
 import { type SubmitResource, type ResourceRow } from "./resource-form-types";
@@ -6,6 +10,7 @@ import { rowString, normalizeDeepgramLanguage, rowBoolean, numberValue } from ".
 import { TextField, SelectField, Field, NumberField, SwitchField, FormActions } from "./resource-input-fields";
 
 export function CaptionProfileForm({ disabled, submit, initial, submitLabel }: { disabled: boolean; submit: SubmitResource; initial?: ResourceRow; submitLabel?: string }) {
+  const uiText = useUICopy();
   const row = initial || {};
   const [name, setName] = useState(() => rowString(row, ["name"]) || "日本語ライブ字幕");
   const [language, setLanguage] = useState(() => normalizeDeepgramLanguage(rowString(row, ["language", "config.language"]) || "ja"));
@@ -28,6 +33,8 @@ export function CaptionProfileForm({ disabled, submit, initial, submitLabel }: {
   const [showVoiceTranscripts, setShowVoiceTranscripts] = useState(() => rowBoolean(row, ["show_voice_transcripts", "config.show_voice_transcripts"], true));
   const [showLegacyCaptionBar, setShowLegacyCaptionBar] = useState(() => rowBoolean(row, ["show_legacy_caption_bar", "config.show_legacy_caption_bar"], false));
   const [apiKey, setAPIKey] = useState("");
+
+  useNonSecretDraft([name, language, delayMs, endpointingMs, utteranceEndMs, localFinalizeMs, speakerIdleCloseSeconds, keepaliveIntervalSeconds, replayBufferMaxMs, captionAudioFlushMs, captionAudioMaxBatchPackets, unresolvedSSRCBufferMs, conversationMaxItems, conversationReorderWindowMs, voiceInterimTTLSeconds, voiceFinalTTLSeconds, interimResults, smartFormat, showVoiceTranscripts, showLegacyCaptionBar]);
 
   return (
     <form
@@ -67,20 +74,20 @@ export function CaptionProfileForm({ disabled, submit, initial, submitLabel }: {
       }}
     >
       <div className="grid gap-3 md:grid-cols-2">
-        <TextField label="プロファイル名" value={name} onChange={setName} required />
+        <TextField label={uiText("プロファイル名")} value={name} onChange={setName} required />
         <SelectField
-          label="言語"
+          label={uiText("言語")}
           value={language}
           onChange={setLanguage}
           options={[
-            { value: "ja", label: "日本語" },
-            { value: "en", label: "英語" },
+            { value: "ja", label: uiText("日本語") },
+            { value: "en", label: uiText("英語") },
           ]}
         />
-        <Field label="音声認識モデル"><div className="rounded-md border bg-background px-3 py-2 text-sm">Deepgram Nova-3</div></Field>
-        <TextField label="Deepgram APIキー" value={apiKey} onChange={setAPIKey} type="password" placeholder={initial ? "変更しない場合は空欄" : "既に設定済みの場合は空欄"} description="入力したキーは暗号化シークレットとして保存し、Workerだけが配信開始時に取得します。" />
-        <NumberField label="発話確定までの待機 (ms)" value={endpointingMs} onChange={setEndpointingMs} min={10} required />
-        <NumberField label="遅延補正 (ms)" value={delayMs} onChange={setDelayMs} min={0} />
+        <Field label={uiText("音声認識モデル")}><div className="rounded-md border bg-background px-3 py-2 text-sm">Deepgram Nova-3</div></Field>
+        <TextField label={uiText("Deepgram APIキー")} value={apiKey} onChange={setAPIKey} type="password" placeholder={initial ? uiText("変更しない場合は空欄") : uiText("既に設定済みの場合は空欄")} description={uiText("入力したキーは暗号化シークレットとして保存し、Workerだけが配信開始時に取得します。")} />
+        <NumberField label={uiText("発話確定までの待機 (ms)")} value={endpointingMs} onChange={setEndpointingMs} min={10} required />
+        <NumberField label={uiText("遅延補正 (ms)")} value={delayMs} onChange={setDelayMs} min={0} />
         <NumberField label="Utterance end (ms)" value={utteranceEndMs} onChange={setUtteranceEndMs} min={100} />
         <NumberField label="Local finalize (ms)" value={localFinalizeMs} onChange={setLocalFinalizeMs} min={0} />
         <NumberField label="Speaker idle close (sec)" value={speakerIdleCloseSeconds} onChange={setSpeakerIdleCloseSeconds} min={1} />
@@ -95,8 +102,8 @@ export function CaptionProfileForm({ disabled, submit, initial, submitLabel }: {
         <NumberField label="Voice final TTL (sec)" value={voiceFinalTTLSeconds} onChange={setVoiceFinalTTLSeconds} min={1} />
       </div>
       <div className="grid gap-3 md:grid-cols-2">
-        <SwitchField label="途中結果を表示" checked={interimResults} onCheckedChange={setInterimResults} />
-        <SwitchField label="読みやすく整形" checked={smartFormat} onCheckedChange={setSmartFormat} />
+        <SwitchField label={uiText("途中結果を表示")} checked={interimResults} onCheckedChange={setInterimResults} />
+        <SwitchField label={uiText("読みやすく整形")} checked={smartFormat} onCheckedChange={setSmartFormat} />
         <SwitchField label="Show voice transcripts" checked={showVoiceTranscripts} onCheckedChange={setShowVoiceTranscripts} />
         <SwitchField label="Show legacy caption bar" checked={showLegacyCaptionBar} onCheckedChange={setShowLegacyCaptionBar} />
       </div>

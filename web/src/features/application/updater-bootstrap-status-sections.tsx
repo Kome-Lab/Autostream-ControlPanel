@@ -1,3 +1,7 @@
+
+import { fixedPresentationText } from "@/lib/i18n/ui-v2/presentation-copy";
+
+import { useUICopy } from "@/lib/i18n/ui-v2/use-ui-copy";
 import { ServerCog } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -20,15 +24,13 @@ export function BootstrapSetupHeading({
   busy: boolean;
   openCredentialForm: (hostIDs: string[], mode: "single" | "bulk") => void
 }) {
+  const uiText = useUICopy();
   return (
 <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <div className="flex items-center gap-2 font-medium"><ServerCog className="size-4" />helper自動セットアップ</div>
+          <div className="flex items-center gap-2 font-medium"><ServerCog className="size-4" />{uiText("helper自動セットアップ")}</div>
           <p className="mt-1 max-w-3xl text-xs leading-5 text-muted-foreground">
-            管理者SSH認証を今回だけ使用し、独立Updaterから制限付きhelperを導入して動作確認します。対象ホストで個別にインストールコマンドを実行する必要はありません。
-            helperは更新時だけSSH経由で起動し、対象ホストに常駐service・listener・helper専用port・helper用env・Node Runtime Tokenは作成しません。
-            bootstrap対象ホストはpull_v2の実行対象・所有権から独立して保存されます。自動セットアップは検証済みの標準Host Agent profileだけに対応し、実際のhealth・version応答まで確認します。カスタム構成は手動導入になります。
-          </p>
+            {uiText("管理者SSH認証を今回だけ使用し、独立Updaterから制限付きhelperを導入して動作確認します。対象ホストで個別にインストールコマンドを実行する必要はありません。 helperは更新時だけSSH経由で起動し、対象ホストに常駐service・listener・helper専用port・helper用env・Node Runtime Tokenは作成しません。 bootstrap対象ホストはpull_v2の実行対象・所有権から独立して保存されます。自動セットアップは検証済みの標準Host Agent profileだけに対応し、実際のhealth・version応答まで確認します。カスタム構成は手動導入になります。")}</p>
         </div>
         {canEdit ? (
           <Button
@@ -39,7 +41,7 @@ export function BootstrapSetupHeading({
             onClick={() => openCredentialForm(bulkHostIDs, "bulk")}
           >
             <ServerCog className="size-4" />
-            未セットアップを一括セットアップ{bulkHostIDs.length ? ` (${bulkHostIDs.length})` : ""}
+            {uiText("未セットアップを一括セットアップ")}{bulkHostIDs.length ? ` (${bulkHostIDs.length})` : ""}
           </Button>
         ) : null}
       </div>
@@ -64,6 +66,7 @@ export function BootstrapHostResults({
   busy: boolean;
   openCredentialForm: (hostIDs: string[], mode: "single" | "bulk") => void
 }) {
+  const uiText = useUICopy();
   return (
 <div className="space-y-2">
         {currentHosts.map((host) => {
@@ -71,20 +74,20 @@ export function BootstrapHostResults({
           const eligibility = eligibilityByHostID.get(host.host_id);
           const displayStatus = result?.status || eligibilityStatus(eligibility?.reason, bootstrapStatusReady);
           const buttonLabel = result?.status === "succeeded"
-            ? "再セットアップ"
+            ? uiText("再セットアップ")
             : result?.status === "failed" || result?.status === "credential_expired"
-              ? "再試行"
-              : "セットアップ";
+              ? uiText("再試行")
+              : uiText("セットアップ");
           const disabled = !canEdit || !bootstrapStatusReady || !eligibility?.ready || busy;
           return (
             <div key={host.host_id} className="flex flex-wrap items-center justify-between gap-3 rounded-md border bg-background/80 p-3 text-sm">
               <div className="min-w-0">
                 <div className="truncate font-medium">{host.name || host.host_id}</div>
-                <div className="mt-0.5 text-xs text-muted-foreground">{host.address || "接続先未入力"}:{host.port || 22}</div>
-                {result ? <div className="mt-1 break-words text-xs text-muted-foreground">{bootstrapResultSafeMessage(result.status)}</div> : null}
+                <div className="mt-0.5 text-xs text-muted-foreground">{host.address || uiText("接続先未入力")}:{host.port || 22}</div>
+                {result ? <div className="mt-1 break-words text-xs text-muted-foreground">{bootstrapResultSafeMessage(result.status, uiText)}</div> : null}
               </div>
               <div className="flex items-center gap-2">
-                <Badge variant={bootstrapBadgeTone(displayStatus)}>{systemUpdateHostBootstrapStatusLabel(displayStatus)}</Badge>
+                <Badge variant={bootstrapBadgeTone(displayStatus)}>{fixedPresentationText(systemUpdateHostBootstrapStatusLabel(displayStatus), uiText)}</Badge>
                 {typeof result?.progress === "number" && isUpdaterHostBootstrapJobActive(result.status) ? (
                   <span className="text-xs text-muted-foreground">{Math.max(0, Math.min(100, Math.round(result.progress)))}%</span>
                 ) : null}
@@ -94,7 +97,7 @@ export function BootstrapHostResults({
                     variant="outline"
                     size="sm"
                     disabled={disabled}
-                    title={updaterHostBootstrapEligibilityMessage(eligibility?.reason, bootstrapStatusReady)}
+                    title={fixedPresentationText(updaterHostBootstrapEligibilityMessage(eligibility?.reason, bootstrapStatusReady), uiText)}
                     onClick={() => openCredentialForm([host.host_id], "single")}
                   >
                     {buttonLabel}
@@ -110,6 +113,7 @@ export function BootstrapHostResults({
 
 
 export function BootstrapFeedback({ feedback }: { feedback: Feedback }) {
+  const uiText = useUICopy();
   return (
 <div
           className={feedback.tone === "success"
@@ -119,7 +123,7 @@ export function BootstrapFeedback({ feedback }: { feedback: Feedback }) {
               : "rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive"}
           role={feedback.tone === "error" ? "alert" : "status"}
         >
-          {feedback.message}
+          {fixedPresentationText(feedback.message, uiText)}
         </div>
   );
 }

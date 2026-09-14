@@ -1,4 +1,7 @@
 "use client";
+import { useUICopy } from "@/lib/i18n/ui-v2/use-ui-copy";
+import { japaneseCopy, type UICopy } from "@/lib/i18n/ui-v2/copy";
+
 
 import type { FormEvent, ReactNode } from "react";
 import Link from "next/link";
@@ -7,7 +10,8 @@ import { useQuery } from "@tanstack/react-query";
 import { KeyRound, Moon, RadioTower, Sun } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader } from "@/components/ui/card";
+import { Field } from "@/components/forms/field";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { TurnstileWidget } from "@/components/auth/turnstile-widget";
@@ -31,7 +35,8 @@ type LoginResponse = {
 };
 
 export function LoginCard() {
-  const { t } = useI18n();
+  const uiText = useUICopy();
+  const { t, locale } = useI18n();
   const router = useRouter();
   const searchParams = useSearchParams();
   const setupStatus = useSetupStatus();
@@ -43,7 +48,7 @@ export function LoginCard() {
   const [mfaChallengeToken, setMFAChallengeToken] = useState(() => oauthMFAChallengeFromHash());
   const [turnstileToken, setTurnstileToken] = useState("");
   const [turnstileResetKey, setTurnstileResetKey] = useState(0);
-  const [message, setMessage] = useState(() => (oauthMFAChallengeFromHash() ? "OAuthログインのMFA確認を完了してください。" : ""));
+  const [message, setMessage] = useState(() => (oauthMFAChallengeFromHash() ? uiText("OAuthログインのMFA確認を完了してください。") : ""));
   const [busy, setBusy] = useState(false);
   const [passkeyUnavailable, setPasskeyUnavailable] = useState(false);
   const turnstileEnabled = Boolean(appSettings.data?.turnstile_enabled && appSettings.data?.turnstile_site_key);
@@ -73,14 +78,14 @@ export function LoginCard() {
       if (body.mfa_required && body.challenge_token) {
         clearCSRFToken();
         setMFAChallengeToken(body.challenge_token);
-        setMessage("2FAコードを入力してください。");
+        setMessage(uiText("2FAコードを入力してください。"));
         return;
       }
       setCSRFToken(body.csrf_token);
       router.replace(postLoginPath);
     } catch (error) {
       resetTurnstile();
-      setMessage(authErrorMessage(error, "ログインできませんでした。ユーザー名とパスワードを確認してください。", t));
+      setMessage(authErrorMessage(error, uiText("ログインできませんでした。ユーザー名とパスワードを確認してください。"), t, uiText));
     } finally {
       setBusy(false);
     }
@@ -95,7 +100,7 @@ export function LoginCard() {
       setCSRFToken(body.csrf_token);
       router.replace(postLoginPath);
     } catch (error) {
-      setMessage(authErrorMessage(error, "2FAコードを確認してください。", t));
+      setMessage(authErrorMessage(error, uiText("2FAコードを確認してください。"), t, uiText));
     } finally {
       setBusy(false);
     }
@@ -112,7 +117,7 @@ export function LoginCard() {
       window.location.assign(validatedOAuthRedirect(body.authorization_url));
     } catch (error) {
       resetTurnstile();
-      setMessage(authErrorMessage(error, "OAuthログインを開始できませんでした。", t));
+      setMessage(authErrorMessage(error, uiText("OAuthログインを開始できませんでした。"), t, uiText));
       setBusy(false);
     }
   };
@@ -120,7 +125,7 @@ export function LoginCard() {
   const loginWithPasskey = async () => {
     if (!passkeysSupported()) {
       setPasskeyUnavailable(true);
-      setMessage("このブラウザではPasskeyログインを利用できません。");
+      setMessage(uiText("このブラウザではPasskeyログインを利用できません。"));
       return;
     }
     setPasskeyUnavailable(false);
@@ -140,58 +145,55 @@ export function LoginCard() {
       if (result.mfa_required && result.challenge_token) {
         clearCSRFToken();
         setMFAChallengeToken(result.challenge_token);
-        setMessage("2FAコードを入力してください。");
+        setMessage(uiText("2FAコードを入力してください。"));
         return;
       }
       setCSRFToken(result.csrf_token);
       router.replace(postLoginPath);
     } catch (error) {
       resetTurnstile();
-      setMessage(authErrorMessage(error, "Passkeyでログインできませんでした。", t));
+      setMessage(authErrorMessage(error, uiText("Passkeyでログインできませんでした。"), t, uiText));
     } finally {
       setBusy(false);
     }
   };
 
   return (
-    <AuthFrame title={t("login")} description="Control Panelにログインします。">
-      {sessionExpired ? <div className="rounded-md border bg-muted/40 p-3 text-sm text-muted-foreground">セッションの有効期限が切れました。もう一度ログインしてください。</div> : null}
+    <AuthFrame title={t("login")} description={locale === "ja" ? "Control Panelにログインします。" : "Sign in to the Control Panel."}>
+      {sessionExpired ? <div className="rounded-md border bg-muted/40 p-3 text-sm text-muted-foreground">{uiText("セッションの有効期限が切れました。もう一度ログインしてください。")}</div> : null}
       <form className="space-y-3" onSubmit={mfaChallengeToken ? verifyMFA : login}>
         {setupStatus.data?.setup_required ? (
           <div className="rounded-md border bg-muted/40 p-3 text-sm text-muted-foreground">
-            初回管理者が未作成です。先に{" "}
+            {uiText("初回管理者が未作成です。先に")}{" "}
             <Link href="/setup" className="font-medium text-primary underline-offset-4 hover:underline">
-              初期作成
-            </Link>
-            を完了してください。
-          </div>
+              {uiText("初期作成")}</Link>
+            {uiText("を完了してください。")}</div>
         ) : null}
         {mfaChallengeToken ? (
-          <Input value={mfaCode} onChange={(event) => setMFACode(event.target.value)} placeholder="2FAコード" inputMode="numeric" autoComplete="one-time-code" />
+          <Field label="2FA / MFA"><Input value={mfaCode} onChange={(event) => setMFACode(event.target.value)} placeholder={uiText("2FAコード")} inputMode="numeric" autoComplete="one-time-code" /></Field>
         ) : (
           <>
-            <Input value={username} onChange={(event) => setUsername(event.target.value)} placeholder={t("username")} autoComplete="username" />
-            <Input value={password} onChange={(event) => setPassword(event.target.value)} placeholder={t("password")} type="password" autoComplete="current-password" />
+            <Field label={t("username")}><Input value={username} onChange={(event) => setUsername(event.target.value)} placeholder={t("username")} autoComplete="username" /></Field>
+            <Field label={t("password")}><Input value={password} onChange={(event) => setPassword(event.target.value)} placeholder={t("password")} type="password" autoComplete="current-password" /></Field>
             {turnstileEnabled ? <TurnstileWidget siteKey={turnstileSiteKey} action="login" resetKey={turnstileResetKey} onToken={setTurnstileToken} /> : null}
           </>
         )}
-        {message ? <p className="text-sm text-destructive">{message}</p> : null}
+        {message ? <p role="status" className="text-sm text-destructive">{message}</p> : null}
         <Button className="w-full" type="submit" disabled={busy || (!mfaChallengeToken && loginSecurityPending) || (Boolean(mfaChallengeToken) && mfaCode.trim().length < 6)}>
-          {mfaChallengeToken ? "2FA確認" : t("login")}
+          {mfaChallengeToken ? uiText("2FA確認") : t("login")}
         </Button>
       </form>
       {!mfaChallengeToken ? (
         <div className="space-y-2">
           <Button type="button" variant="outline" className="w-full justify-start" disabled={busy || loginSecurityPending} onClick={loginWithPasskey}>
             <KeyRound className="size-4" />
-            Passkeyでログイン
-          </Button>
-          {passkeyUnavailable ? <p className="text-xs text-muted-foreground">このブラウザではPasskeyを利用できません。</p> : null}
+            {uiText("Passkeyでログイン")}</Button>
+          {passkeyUnavailable ? <p className="text-xs text-muted-foreground">{uiText("このブラウザではPasskeyを利用できません。")}</p> : null}
         </div>
       ) : null}
       {!mfaChallengeToken && oauthProviders.data?.length ? (
         <div className="space-y-2">
-          <div className="text-xs text-muted-foreground">OAuthログイン</div>
+          <div className="text-xs text-muted-foreground">{uiText("OAuthログイン")}</div>
           {oauthProviders.data.map((provider) => (
             <Button key={provider.id} type="button" variant="outline" className="w-full justify-start" disabled={busy || loginSecurityPending} onClick={() => startOAuthLogin(provider.id)}>
               {provider.name || provider.provider_type}
@@ -204,6 +206,7 @@ export function LoginCard() {
 }
 
 export function EmailConfirmCard({ token }: { token?: string }) {
+  const uiText = useUICopy();
   const appSettings = useAppSettings();
   const searchParams = useSearchParams();
   const [turnstileToken, setTurnstileToken] = useState("");
@@ -229,9 +232,9 @@ export function EmailConfirmCard({ token }: { token?: string }) {
   };
 
   return (
-    <AuthFrame title="メールアドレス変更確認" description="ワンタイムURLの確認を完了します。">
+    <AuthFrame title={uiText("メールアドレス変更確認")} description={uiText("ワンタイムURLの確認を完了します。")}>
       <form className="space-y-3" onSubmit={(event) => event.preventDefault()}>
-        {!trimmedToken ? <p className="text-sm text-destructive">確認トークンがありません。</p> : null}
+        {!trimmedToken ? <p className="text-sm text-destructive">{uiText("確認トークンがありません。")}</p> : null}
         {turnstileEnabled ? <TurnstileWidget siteKey={turnstileSiteKey} action="email_confirm" resetKey={turnstileResetKey} onToken={setTurnstileToken} /> : null}
         {message ? <p className="text-sm text-muted-foreground">{message}</p> : null}
         <AccountActionConfirmation
@@ -239,17 +242,17 @@ export function EmailConfirmCard({ token }: { token?: string }) {
           intent={{ id: "AUTH-07", resourceId: "email-change" }}
           authority={authority}
           refreshAuthority={async () => emailConfirmationAuthority(trimmedToken)}
-          label="確認する"
+          label={uiText("確認する")}
           variant="default"
           className="w-full"
           disabled={!trimmedToken || (turnstileEnabled && !turnstileToken)}
           handler={confirm}
-          onSucceeded={() => setMessage("メールアドレスを変更しました。")}
-          onOutcomeUnknown={() => setMessage("変更結果を確認できません。再送せず、ログイン後のアカウント状態を確認してください。")}
+          onSucceeded={() => setMessage(uiText("メールアドレスを変更しました。"))}
+          onOutcomeUnknown={() => setMessage(uiText("変更結果を確認できません。再送せず、ログイン後のアカウント状態を確認してください。"))}
         />
       </form>
       <Button asChild variant="outline" className="w-full">
-        <Link href="/login">ログインへ戻る</Link>
+        <Link href="/login">{uiText("ログインへ戻る")}</Link>
       </Button>
     </AuthFrame>
   );
@@ -259,26 +262,27 @@ function authErrorMessage(
   error: unknown,
   fallback: string,
   translate: (key: TranslationKey, values?: TranslationValues) => string,
+  uiText: UICopy = japaneseCopy
 ) {
   if (error instanceof APIError) {
     const messages: Record<string, string> = {
-      invalid_credentials: "ユーザー名またはパスワードを確認してください。",
-      mfa_enrollment_required: "このアカウントは2FA登録が必要です。管理者に確認してください。",
-      invalid_mfa_code: "2FAコードを確認してください。",
-      invalid_mfa_challenge: "2FA確認の有効期限が切れています。もう一度ログインしてください。",
-      passkey_required: "このアカウントはPasskeyログインが必要です。",
-      passkey_enrollment_required: "このアカウントはPasskey登録が必要です。管理者に確認してください。",
-      passkeys_not_configured: "Passkeyログインはまだ構成されていません。",
-      passkey_runtime_unavailable: "Passkeyログイン設定を確認してください。",
-      passkey_login_challenge_failed: "Passkeyログインを開始できませんでした。",
-      invalid_passkey_login_challenge: "Passkeyログインの有効期限が切れています。もう一度お試しください。",
-      passkey_login_response_required: "Passkey認証の応答がありません。",
-      oauth_provider_not_usable_for_login: "このOAuthプロバイダはログインに利用できません。",
-      turnstile_token_required: "BOT確認を完了してください。",
-      turnstile_failed: "BOT確認に失敗しました。もう一度お試しください。",
-      turnstile_unavailable: "BOT確認を利用できません。時間をおいて再試行してください。",
-      turnstile_not_configured: "BOT確認設定が未完了です。管理者に確認してください。",
-      invalid_email_change_token: "メールアドレス変更URLの有効期限が切れています。",
+      invalid_credentials: uiText("ユーザー名またはパスワードを確認してください。"),
+      mfa_enrollment_required: uiText("このアカウントは2FA登録が必要です。管理者に確認してください。"),
+      invalid_mfa_code: uiText("2FAコードを確認してください。"),
+      invalid_mfa_challenge: uiText("2FA確認の有効期限が切れています。もう一度ログインしてください。"),
+      passkey_required: uiText("このアカウントはPasskeyログインが必要です。"),
+      passkey_enrollment_required: uiText("このアカウントはPasskey登録が必要です。管理者に確認してください。"),
+      passkeys_not_configured: uiText("Passkeyログインはまだ構成されていません。"),
+      passkey_runtime_unavailable: uiText("Passkeyログイン設定を確認してください。"),
+      passkey_login_challenge_failed: uiText("Passkeyログインを開始できませんでした。"),
+      invalid_passkey_login_challenge: uiText("Passkeyログインの有効期限が切れています。もう一度お試しください。"),
+      passkey_login_response_required: uiText("Passkey認証の応答がありません。"),
+      oauth_provider_not_usable_for_login: uiText("このOAuthプロバイダはログインに利用できません。"),
+      turnstile_token_required: uiText("BOT確認を完了してください。"),
+      turnstile_failed: uiText("BOT確認に失敗しました。もう一度お試しください。"),
+      turnstile_unavailable: uiText("BOT確認を利用できません。時間をおいて再試行してください。"),
+      turnstile_not_configured: uiText("BOT確認設定が未完了です。管理者に確認してください。"),
+      invalid_email_change_token: uiText("メールアドレス変更URLの有効期限が切れています。"),
     };
     if (messages[error.code || ""]) return messages[error.code || ""];
   }
@@ -308,6 +312,7 @@ function oauthMFAChallengeFromHash() {
 }
 
 export function SetupCard() {
+  const uiText = useUICopy();
   const { t } = useI18n();
   const router = useRouter();
   const setupStatus = useSetupStatus();
@@ -327,24 +332,22 @@ export function SetupCard() {
   const disabled = setupStatus.data ? !setupStatus.data.setup_required : false;
 
   return (
-    <AuthFrame title={t("setup")} description="初回だけ管理者ユーザーを作成します。">
+    <AuthFrame title={t("setup")} description={uiText("初回だけ管理者ユーザーを作成します。")}>
       {setupStatus.isLoading ? <Skeleton className="h-10 w-full" /> : null}
       {setupStatus.data && !setupStatus.data.setup_enabled ? (
-        <div className="rounded-md border bg-muted/40 p-3 text-sm text-muted-foreground">初期作成は無効です。`AUTOSTREAM_SETUP_TOKEN` を設定して再起動してください。</div>
+        <div className="rounded-md border bg-muted/40 p-3 text-sm text-muted-foreground">{uiText("初期作成は無効です。`AUTOSTREAM_SETUP_TOKEN` を設定して再起動してください。")}</div>
       ) : null}
       {setupStatus.data?.setup_enabled && !setupStatus.data.setup_required ? (
         <div className="rounded-md border bg-muted/40 p-3 text-sm text-muted-foreground">
-          初期管理者は作成済みです。{" "}
+          {uiText("初期管理者は作成済みです。")}{" "}
           <Link href="/login" className="font-medium text-primary underline-offset-4 hover:underline">
-            ログインページ
-          </Link>
-          へ進んでください。
-        </div>
+            {uiText("ログインページ")}</Link>
+          {uiText("へ進んでください。")}</div>
       ) : null}
       <form className="space-y-3" onSubmit={(event) => event.preventDefault()}>
-        <Input value={username} onChange={(event) => setUsername(event.target.value)} placeholder={t("username")} autoComplete="username" disabled={disabled} />
-        <Input value={password} onChange={(event) => setPassword(event.target.value)} placeholder={t("password")} type="password" autoComplete="new-password" disabled={disabled} />
-        <Input value={setupToken} onChange={(event) => setSetupToken(event.target.value)} placeholder="Setup token" type="password" disabled={disabled} />
+        <Field label={t("username")}><Input value={username} onChange={(event) => setUsername(event.target.value)} placeholder={t("username")} autoComplete="username" disabled={disabled} /></Field>
+        <Field label={t("password")}><Input value={password} onChange={(event) => setPassword(event.target.value)} placeholder={t("password")} type="password" autoComplete="new-password" disabled={disabled} /></Field>
+        <Field label="Setup token"><Input value={setupToken} onChange={(event) => setSetupToken(event.target.value)} placeholder="Setup token" type="password" disabled={disabled} /></Field>
         {message ? <p className="text-sm text-muted-foreground">{message}</p> : null}
         <AccountActionConfirmation
           controller={actionController}
@@ -359,10 +362,10 @@ export function SetupCard() {
           onSucceeded={() => {
             setPassword("");
             setSetupToken("");
-            setMessage("初期管理者を作成しました。ログインページへ進みます。");
+            setMessage(uiText("初期管理者を作成しました。ログインページへ進みます。"));
             setTimeout(() => router.push("/login"), 600);
           }}
-          onOutcomeUnknown={() => setMessage("初期作成の結果を確認できません。再送せず、ログイン可能か確認してください。")}
+          onOutcomeUnknown={() => setMessage(uiText("初期作成の結果を確認できません。再送せず、ログイン可能か確認してください。"))}
         />
       </form>
     </AuthFrame>
@@ -376,13 +379,13 @@ function AuthFrame({ title, description, children }: { title: string; descriptio
   const appName = appSettings.data?.app_name || t("appName");
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-background p-6">
+    <main className="flex min-h-dvh items-center justify-center bg-background px-4 py-20 sm:px-6" data-screen-family="authentication">
       <div className="absolute right-4 top-4">
         <Button variant="outline" size="icon-sm" onClick={toggleTheme} aria-label={t("theme")}>
           {dark ? <Moon /> : <Sun />}
         </Button>
       </div>
-      <Card className="w-full max-w-md">
+      <Card className="w-full max-w-md shadow-none">
         <CardHeader>
           <div className="mb-2 flex items-center gap-3">
             <div className="flex size-9 items-center justify-center rounded-md bg-primary text-primary-foreground">
@@ -393,7 +396,7 @@ function AuthFrame({ title, description, children }: { title: string; descriptio
               <div className="text-xs text-muted-foreground">Control Panel</div>
             </div>
           </div>
-          <CardTitle>{title}</CardTitle>
+          <h1 className="text-2xl font-semibold leading-tight">{title}</h1>
           <CardDescription>{description}</CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">{children}</CardContent>

@@ -272,6 +272,12 @@ test("registered node lists use responsive cards instead of forced-width tables"
   assert.match(source, /<DataTable[\s\S]*?responsive\s*\/>/);
   assert.doesNotMatch(source, /minTableWidthClass="min-w-\[960px\]"/);
   assert.match(tableSource, /responsive\?: boolean/);
-  assert.match(tableSource, /cell\.column\.id === "endpoint" \|\| cell\.column\.id === "actions"/);
+  // UI renewal §6.3: desktop and mobile reuse a single record; secondary
+  // endpoint information remains reachable through the disclosure control.
+  const recordSource = readFileSync(new URL("../src/components/tables/table-record.tsx", import.meta.url), "utf8");
+  assert.match(tableSource, /<TableRecord key=\{row.id\} row=\{row\}/);
+  assert.match(recordSource, /data-priority=\{priority > 1 \? "secondary" : "primary"\}/);
+  assert.match(recordSource, /aria-expanded=\{expanded\}/);
+  assert.equal((recordSource.match(/flexRender\(cell.column.columnDef.cell/g) || []).length, 1);
 });
 }

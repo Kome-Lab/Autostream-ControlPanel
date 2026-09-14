@@ -1,9 +1,15 @@
 "use client";
+import { fixedPresentationText } from "@/lib/i18n/ui-v2/presentation-copy";
+import { useUICopy } from "@/lib/i18n/ui-v2/use-ui-copy";
 
+
+import { useExistingDraft } from "@/components/forms/draft-exit";
 import { type ReactNode, useId, useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { LoaderCircle, Settings2 } from "lucide-react";
-import { DialogFooter } from "@/components/ui/dialog";
+import { FormFooter } from "@/components/forms/form-footer";
+import { SectionNavigation } from "@/components/layout/detail-section";
+import { useI18n } from "@/components/admin/i18n-provider";
 import { UpdaterHostBootstrapPanel } from "@/features/application/updater-host-bootstrap-panel";
 import { UpdaterActionConfirmation } from "@/features/application/updater-action-confirmation";
 import { createUpdaterActionController, updaterAuthorityFingerprint, type UpdaterActionAuthority, type UpdaterActionIntent } from "@/features/application/updater-action-policy";
@@ -38,6 +44,8 @@ export function UpdaterSettingsForm({
   ownershipOperationBlocked: boolean;
   onBootstrapCloseBlockedChange: (blocked: boolean) => void;
 }) {
+  const uiText = useUICopy();
+  const { locale } = useI18n();
   const queryClient = useQueryClient();
   const currentUser = useCurrentUser();
   const settingsAuthorityQuery = useUpdaterSettings(updater.updater_id, true);
@@ -87,7 +95,7 @@ export function UpdaterSettingsForm({
       setForm(settingsToForm(saved));
       setGithubToken("");
       setDeleteGitHubToken(false);
-      setFeedback({ tone: "success", message: "設定を保存しました。Host Agentのconfigureを再実行すると反映されます。反映済みになるまで更新操作は安全のため停止します。" });
+      setFeedback({ tone: "success", message: uiText("設定を保存しました。Host Agentのconfigureを再実行すると反映されます。反映済みになるまで更新操作は安全のため停止します。") });
       queryClient.setQueryData(["system-updates", "updaters", updater.updater_id, "settings"], saved);
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["system-updates"] }),
@@ -101,6 +109,10 @@ export function UpdaterSettingsForm({
       setGithubToken("");
     },
   });
+
+  const savedForm = settingsToForm(settingsAuthorityQuery.data || settings);
+  useExistingDraft(JSON.stringify(updaterDraftValues(form)) !== JSON.stringify(updaterDraftValues(savedForm)) || deleteGitHubToken,
+    saveSettings.isPending || bootstrapActive || ownershipOperationBlocked);
 
   const updateHost = (index: number, patch: Partial<UpdaterSettingsHost>) => {
     setForm((current) => ({
@@ -207,16 +219,21 @@ export function UpdaterSettingsForm({
   return (
     <>
       <div className="space-y-6">
+        <SectionNavigation label={locale === "ja" ? "Updater設定のセクション" : "Updater settings sections"} items={[
+          { id: formID + "-runtime-section", label: "Runtime / policy" },
+          { id: formID + "-hosts-section", label: "Host / bootstrap" },
+          { id: formID + "-targets-section", label: "Targets" },
+          { id: formID + "-token-section", label: "Release credentials" },
+        ]} />
         {!canEdit ? (
           <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-950 dark:border-amber-900 dark:bg-amber-950/35 dark:text-amber-100">
-            設定の変更には system_updates.execute 権限が必要です。現在は内容の確認だけできます。
-          </div>
+            {uiText("設定の変更には system_updates.execute 権限が必要です。現在は内容の確認だけできます。")}</div>
         ) : (
           <div className="rounded-md border border-blue-300 bg-blue-50 p-3 text-xs leading-5 text-blue-950 dark:border-blue-900 dark:bg-blue-950/35 dark:text-blue-100">
-            「設定を保存」を押した後、Host Agentのconfigureを再実行すると反映されます。反映済みになるまで更新操作は安全のため停止します。
-          </div>
+            {uiText("「設定を保存」を押した後、Host Agentのconfigureを再実行すると反映されます。反映済みになるまで更新操作は安全のため停止します。")}</div>
         )}
 
+        <section id={formID + "-runtime-section"} tabIndex={-1} className="min-w-0 scroll-mt-24">
         <UpdaterRuntimeSettingsSection
           formID={formID} executionHostID={executionHostID} canEdit={canEdit}
           pollInterval={form.pollInterval} heartbeatInterval={form.heartbeatInterval} localExecutorPolicySHA256={form.localExecutorPolicySHA256}
@@ -224,7 +241,9 @@ export function UpdaterSettingsForm({
           changeHeartbeatInterval={(event) => setForm((current) => ({ ...current, heartbeatInterval: event.target.value }))}
           changePolicyDigest={(event) => setForm((current) => ({ ...current, localExecutorPolicySHA256: event.target.value }))}
         />
+        </section>
 
+        <section id={formID + "-hosts-section"} tabIndex={-1} className="min-w-0 scroll-mt-24">
         <UpdaterBootstrapHostsSection
           formID={formID} hosts={form.hosts} canEdit={canEdit}
           clientPublicKeys={updater.ssh_client_public_keys} clientKeyFingerprints={updater.ssh_client_key_fingerprints}
@@ -251,7 +270,9 @@ export function UpdaterSettingsForm({
             />
           ) : null}
         />
+        </section>
 
+        <section id={formID + "-targets-section"} tabIndex={-1} className="min-w-0 scroll-mt-24">
         <UpdaterTargetsSettingsSection
           formID={formID} executionHostID={executionHostID} canEdit={canEdit}
           canAddRegisteredTarget={canAddRegisteredTarget} nextTargetHostID={nextTargetHostID}
@@ -265,12 +286,15 @@ export function UpdaterSettingsForm({
                 })}
           removeTarget={(index) => setForm((current) => ({ ...current, targets: current.targets.filter((_, targetIndex) => targetIndex !== index) }))}
         />
+        </section>
 
+        <section id={formID + "-token-section"} tabIndex={-1} className="min-w-0 scroll-mt-24">
         <UpdaterReleaseTokenSection
           formID={formID} tokenConfigured={settings.github_token_configured} tokenFingerprint={settings.github_token_fingerprint}
           canManageSecrets={canManageSecrets} canEdit={canEdit} githubToken={githubToken} deleteGitHubToken={deleteGitHubToken}
           setGithubToken={setGithubToken} setDeleteGitHubToken={setDeleteGitHubToken}
         />
+        </section>
 
         {feedback ? (
           <div
@@ -279,12 +303,12 @@ export function UpdaterSettingsForm({
               : "rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive"}
             role={feedback.tone === "error" ? "alert" : "status"}
           >
-            {feedback.message}
+            {fixedPresentationText(feedback.message, uiText)}
           </div>
         ) : null}
       </div>
 
-      <DialogFooter className="mt-6">
+      <FormFooter pending={saveSettings.isPending || bootstrapActive || ownershipOperationBlocked}>
         {canEdit ? (
           <UpdaterActionConfirmation
             controller={updaterActionController}
@@ -292,22 +316,28 @@ export function UpdaterSettingsForm({
             authority={settingsActionAuthority}
             refreshAuthority={refreshSettingsActionAuthority}
             handler={() => saveSettings.mutateAsync()}
-            label="設定を保存"
+            label={uiText("設定を保存")}
             icon={saveSettings.isPending ? <LoaderCircle className="size-4 animate-spin" /> : <Settings2 className="size-4" />}
             size="default"
             disabled={saveSettings.isPending || bootstrapActive || ownershipOperationBlocked}
             title={bootstrapActive
-              ? "ホストの自動セットアップ完了後に保存できます。"
+              ? uiText("ホストの自動セットアップ完了後に保存できます。")
               : ownershipOperationBlocked
-                ? "更新実行権限の切替状態を確認してから保存できます。"
+                ? uiText("更新実行権限の切替状態を確認してから保存できます。")
                 : undefined}
           />
         ) : null}
-      </DialogFooter>
+      </FormFooter>
     </>
   );
 }
 
 export function OwnershipStateItem({ label, value }: { label: string; value: ReactNode }) {
   return <div className="rounded-md border bg-background/70 px-3 py-2"><div className="text-muted-foreground">{label}</div><div className="mt-0.5 break-all font-medium">{value}</div></div>;
+}
+
+function updaterDraftValues(form: UpdaterSettingsFormState) {
+  return [form.pollInterval, form.heartbeatInterval, form.localExecutorPolicySHA256,
+    form.hosts.map((host) => [host.host_id, host.name, host.address, host.port, host.user, host.arch, host.host_public_key]),
+    form.targets.map((target) => [target.target_id, target.service_id, target.host_id, target.service_type, target.deployment_mode, target.database_name, target.local_listen_port])];
 }

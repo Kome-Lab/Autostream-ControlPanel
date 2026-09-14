@@ -1,4 +1,6 @@
 "use client";
+import { japaneseCopy, type UICopy } from "@/lib/i18n/ui-v2/copy";
+
 
 import { type ResourceRow } from "./resource-form-types";
 
@@ -110,8 +112,8 @@ export function resourceRowID(row: ResourceRow) {
   return rowString(row, ["id", "service_id"]);
 }
 
-export function resourceRowLabel(row: ResourceRow) {
-  return firstNonEmpty(rowString(row, ["name", "service_name", "username", "oauth_account_display_name", "display_name", "account_label", "provider_type", "id"]), "この項目");
+export function resourceRowLabel(row: ResourceRow, uiText: UICopy = japaneseCopy) {
+  return firstNonEmpty(rowString(row, ["name", "service_name", "username", "oauth_account_display_name", "display_name", "account_label", "provider_type", "id"]), uiText("この項目"));
 }
 
 export function isRecord(value: unknown): value is Record<string, unknown> {

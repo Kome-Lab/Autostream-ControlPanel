@@ -1,6 +1,10 @@
 "use client";
+import { useUICopy } from "@/lib/i18n/ui-v2/use-ui-copy";
+
 
 import { type ReactNode, useMemo } from "react";
+import { Field as LabeledField, FieldGroup } from "@/components/forms/field";
+import { FormFooter } from "@/components/forms/form-footer";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -12,11 +16,7 @@ import { permissionGroupLabel } from "./resource-permissions";
 
 export function Field({ label, description, children }: { label: string; description?: string; children: ReactNode }) {
   return (
-    <div className="space-y-1.5">
-      <div className="text-sm font-medium">{label}</div>
-      {children}
-      {description ? <p className="text-xs text-muted-foreground">{description}</p> : null}
-    </div>
+    <FieldGroup title={label} description={description}><div className="min-w-0 sm:col-span-2">{children}</div></FieldGroup>
   );
 }
 
@@ -38,9 +38,9 @@ export function TextField({
   required?: boolean;
 }) {
   return (
-    <Field label={label} description={description}>
+    <LabeledField label={label} description={description} required={required}>
       <Input value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} type={type} required={required} />
-    </Field>
+    </LabeledField>
   );
 }
 
@@ -58,20 +58,21 @@ export function NumberField({
   required?: boolean;
 }) {
   return (
-    <Field label={label}>
+    <LabeledField label={label} required={required}>
       <Input value={value} onChange={(event) => onChange(event.target.value)} type="number" min={min} required={required} />
-    </Field>
+    </LabeledField>
   );
 }
 
 export function SelectField({ label, value, onChange, options, disabled = false }: { label: string; value: string; onChange: (value: string) => void; options: SelectOption[]; disabled?: boolean }) {
   const selected = options.find((option) => option.value === value);
   return (
-    <Field label={label}>
       <Select value={value} onValueChange={onChange} disabled={disabled}>
+        <LabeledField label={label} description={selected?.description}>
         <SelectTrigger className="w-full">
           <span className="min-w-0 truncate">{selected?.label || <SelectValue />}</span>
         </SelectTrigger>
+        </LabeledField>
         <SelectContent>
           {options.map((option) => (
             <SelectItem key={option.value} value={option.value} textValue={option.label}>
@@ -80,8 +81,6 @@ export function SelectField({ label, value, onChange, options, disabled = false 
           ))}
         </SelectContent>
       </Select>
-      {selected?.description ? <p className="text-xs text-muted-foreground">{selected.description}</p> : null}
-    </Field>
   );
 }
 
@@ -99,7 +98,7 @@ export function CheckboxList({
   values,
   onChange,
   items,
-  emptyText = "選択肢がありません。",
+  emptyText,
   disabled = false,
 }: {
   label: string;
@@ -109,10 +108,11 @@ export function CheckboxList({
   emptyText?: string;
   disabled?: boolean;
 }) {
+  const uiText = useUICopy();
   return (
     <Field label={label}>
       {items.length === 0 ? (
-        <div className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">{emptyText}</div>
+        <div className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">{emptyText ?? uiText("選択肢がありません。")}</div>
       ) : (
         <div className="grid gap-2 md:grid-cols-2">
           {items.map((item) => (
@@ -131,19 +131,20 @@ export function CheckboxList({
 }
 
 export function GroupedCheckboxList(props: { label: string; values: string[]; onChange: (values: string[]) => void; items: SelectOption[]; emptyText?: string }) {
+  const uiText = useUICopy();
 	const groups = useMemo(() => {
 		const grouped = new Map<string, SelectOption[]>();
 		for (const item of props.items) {
-			const group = item.group || permissionGroupLabel(item.value === "*" ? "all" : item.value.split(".")[0] || "other");
+			const group = item.group || permissionGroupLabel(item.value === "*" ? "all" : item.value.split(".")[0] || "other", uiText);
 			grouped.set(group, [...(grouped.get(group) || []), item]);
 		}
 		return [...grouped.entries()];
-  }, [props.items]);
+  }, [props.items, uiText]);
 
   return (
     <Field label={props.label}>
       {props.items.length === 0 ? (
-        <div className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">{props.emptyText || "選択肢がありません。"}</div>
+        <div className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">{props.emptyText || uiText("選択肢がありません。")}</div>
       ) : (
         <div className="space-y-3">
           {groups.map(([group, items]) => (
@@ -168,12 +169,13 @@ export function GroupedCheckboxList(props: { label: string; values: string[]; on
   );
 }
 
-export function FormActions({ disabled, label = "作成" }: { disabled: boolean; label?: string }) {
+export function FormActions({ disabled, label }: { disabled: boolean; label?: string }) {
+  const uiText = useUICopy();
   return (
-    <div className="flex justify-end">
+    <FormFooter>
       <Button type="submit" size="sm" disabled={disabled}>
-        {label}
+        {label ?? uiText("作成")}
       </Button>
-    </div>
+    </FormFooter>
   );
 }
