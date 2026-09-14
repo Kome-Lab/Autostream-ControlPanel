@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFileSync } from "node:fs";
+import ts from "typescript";
 import type { BrowserHarness } from "../helpers/browser-harness.mts";
 import { captureObservation, preserveFetchDiagnostic } from "./capture.mts";
 import { conditions } from "./matrix.mts";
@@ -67,7 +69,7 @@ test("UI-OBSERVATION-002: current acceptance rejects hidden diagnostics/secrets,
     { ...base, controls: [{ ...base.controls[0], tag: "INPUT", labelled: false }] },
   ]) assert.throws(() => assertObservation(invalid, condition));
 });
-test("UI-LIFECYCLE-002: current caller settles both sides of paint and blank before reset", async () => {
+test("UI-LIFECYCLE-002: current caller configures the owned condition before its product navigation", async () => {
   const calls: string[] = [];
   const browser = {
     waitForRequestHandlersIdle: async () => { calls.push("idle"); },
@@ -76,19 +78,20 @@ test("UI-LIFECYCLE-002: current caller settles both sides of paint and blank bef
     clearRequestCounts: () => {}, clearNavigationCount: () => {}, clearConsoleErrors: () => {},
   };
   await navigateDocument(browser as unknown as BrowserHarness, "product", () => calls.push("reset"));
-  assert.deepEqual(calls, ["idle", "paint", "idle", "about:blank", "idle", "reset", "product"]);
+  assert.deepEqual(calls, ["reset", "product"]);
 });
-for (const fault of ["first-idle", "paint", "paint-idle", "blank", "old-idle"] as const) {
-  test("UI-LIFECYCLE-003: current " + fault + " failure retains the original cause and forbids reset", async () => {
-    const error = new Error(fault); let idle = 0, resets = 0, product = 0;
+// The five original boundary negatives now target the five reachable setup
+// boundaries; obsolete inter-condition blank drains cannot stand in for these.
+for (const fault of ["preflight", "reset-context", "initialize", "configured-health", "product-context"] as const) {
+  test("UI-LIFECYCLE-003: current " + fault + " failure retains the original cause and forbids product navigation", async () => {
+    const error = new Error(fault); let health = 0, resets = 0, product = 0;
     const browser = {
-      waitForRequestHandlersIdle: async () => { idle++; if ((fault === "first-idle" && idle === 1) || (fault === "paint-idle" && idle === 2) || (fault === "old-idle" && idle === 3)) throw error; },
-      evaluate: async () => { if (fault === "paint") throw error; }, assertNoFatalError: () => {},
-      navigate: async (url: string) => { if (url === "about:blank" && fault === "blank") throw error; if (url === "product") product++; },
-      clearRequestCounts: () => {}, clearNavigationCount: () => {}, clearConsoleErrors: () => {},
+      assertNoFatalError: () => { health++; if ((fault === "preflight" && health === 1) || (fault === "configured-health" && health === 2)) throw error; },
+      setFetchDiagnosticContext: ({ phase }: { phase: string }) => { if (fault === "reset-context" && phase === "phase-reset" || fault === "product-context" && phase === "to-product") throw error; },
+      navigate: async () => { product++; },
     };
-    await assert.rejects(navigateDocument(browser as unknown as BrowserHarness, "product", () => resets++), result => result === error);
-    assert.equal(resets, 0); assert.equal(product, 0);
+    await assert.rejects(navigateDocument(browser as unknown as BrowserHarness, "product", () => { resets++; if (fault === "initialize") throw error; }), result => result === error);
+    assert.equal(resets, ["preflight", "reset-context"].includes(fault) ? 0 : 1); assert.equal(product, 0);
   });
 }
 
@@ -97,4 +100,23 @@ test("UI-LAYOUT-001: layout probe parses and rejects clipped or unreachable cont
   assert.doesNotThrow(() => new Function("return " + layoutExpression));
   assertLayout({ examined: 1, unreachable: [], clippedText: [], restored: true });
   for (const bad of [{ examined: 0, unreachable: [], clippedText: [], restored: true }, { examined: 1, unreachable: ["Submit"], clippedText: [], restored: true }, { examined: 1, unreachable: [], clippedText: ["Help"], restored: true }]) assert.throws(() => assertLayout(bad));
+});
+
+test("UI-STATUS-CALLER-001: actual current runner binds layout, observation, state and live harness evidence; disconnected consumers fail", () => {
+  const source = readFileSync(new URL("./run-browser.mts", import.meta.url), "utf8");
+  const check = (text: string) => {
+    const file = ts.createSourceFile("run-browser.mts", text, ts.ScriptTarget.Latest, true);
+    const calls = (name: string) => {
+      const owner = file.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === name);
+      assert.ok(owner, "real runner consumer missing"); const rows: string[] = [];
+      function visit(node: ts.Node) { if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text.startsWith("assert")) rows.push(node.expression.text + "(" + node.arguments.map(arg => arg.getText(file)).join(",") + ")"); ts.forEachChild(node, visit); }
+      visit(owner); return rows;
+    };
+    assert.deepEqual(calls("assertCurrentObservation"), ["assertLayout(layout)", "assertObservation(value,condition,evidence,primary)", "assertState(condition,value,evidence,primary)"], "all original gates must remain in the actual caller");
+    assert.deepEqual(calls("main").filter(call => call.startsWith("assertCurrentObservation(")), ["assertCurrentObservation(observation,layout,condition,target,surface.primary)"], "actual case must pass live harness evidence exactly once");
+  };
+  check(source);
+  for (const statement of ["assertLayout(layout);", "assertObservation(value, condition, evidence, primary);", "assertState(condition, value, evidence, primary);", "assertCurrentObservation(observation, layout, condition, target, surface.primary);"]) {
+    const mutant = source.replace(statement, "void 0;"); assert.notEqual(mutant, source); assert.throws(() => check(mutant), /gates|actual case/);
+  }
 });

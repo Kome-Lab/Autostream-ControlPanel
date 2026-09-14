@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
+import { renderedDOM } from "./render-state.mts";
 
 export type LayoutObservation = { examined: number; unreachable: string[]; clippedText: string[]; restored: boolean };
 export const layoutExpression = `(() => {
-  const dialogs = [...document.querySelectorAll('[role=dialog],[role=alertdialog]')];
-  const roots = dialogs.length ? dialogs : [...document.querySelectorAll('main')];
+  ${renderedDOM}
+  const roots = [uiRoot()].filter(Boolean);
   const elements = [...new Set(roots.flatMap(root => [...root.querySelectorAll('button,a,input,select,textarea,summary,label,p,h1,h2,h3')]))]
-    .filter(e => e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden');
+    .filter(e => uiPainted(e)&&!e.closest('[inert]')&&!uiProxy(e));
   const original = { x:scrollX, y:scrollY, focus:document.activeElement }, unreachable=[], clippedText=[];
   const containers = new Set();
   for (const e of elements) for (let p=e.parentElement;p;p=p.parentElement) containers.add(p);
@@ -13,7 +14,7 @@ export const layoutExpression = `(() => {
   try {
   for (const e of elements) {
     e.scrollIntoView({block:'center',inline:'center',behavior:'instant'});
-    const r=e.getBoundingClientRect(), name=e.getAttribute('aria-label')||e.textContent?.trim().slice(0,100)||e.tagName;
+    const r=e.getBoundingClientRect(), name=uiIdentity(e);
     const control=e.matches('button,a,input,select,textarea,summary');
     if (control && (r.width<=0 || r.height<=0 || r.left< -1 || r.right>innerWidth+1)) unreachable.push(name);
     let left=0,right=innerWidth,top=0,bottom=innerHeight;

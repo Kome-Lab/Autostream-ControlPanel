@@ -1,4 +1,5 @@
-import { statePaths, sectionPaths } from "./state-drivers.mts";
+import assert from "node:assert/strict";
+import { statePaths, sectionPaths, loadingPaths } from "./state-drivers.mts";
 import { canonicalFixturePath, contentInput, emptyInput, unknownInput } from "./fixture-inputs.mts";
 import type { RouteResolver, StubResponse } from "../helpers/browser-harness.mts";
 import { createBundle9Fixture } from "../helpers/bundle9-browser-fixtures.mts";
@@ -35,8 +36,15 @@ export function createUIFixture(baseURL: string) {
     "/archive/streams": [{ id: "ui-archive", name: "UI recorded stream", status: "completed", archive_run_id: "ui-run" }],
     "/archive/processing-streams": [],
     "/streams/ui-archive/artifacts": [{ id: "ui-artifact", kind: "archive", name: "UI recording.mp4", size_bytes: 4096, status: "ready", created_at: "2026-09-01T00:00:00Z" }],
+    "/streams/ui-archive/artifacts/ui-artifact/shares": [],
     "/archive-shares/ui-synthetic-share": { stream_name: "UI recorded stream", artifact_name: "UI recording.mp4", artifact_kind: "archive", size_bytes: 4096, created_at: "2026-09-01T00:00:00Z", allow_download: true, expires_at: "2099-01-01T00:00:00Z", playback_url: "data:video/mp4;base64,AAAAHGZ0eXBtcDQyAAAAAG1wNDJpc29t", download_url: "/archive-shares/ui-synthetic-share/download" },
   };
+  const streams = Array.from({ length: 25 }, (_, index) => ({
+    id: index === 0 ? "stream-control-platform" : "ui-stream-" + index,
+    name: index === 0 ? "B9 Browser Stream" : "UI Stream " + String(index).padStart(2, "0"),
+    status: index % 3 === 0 ? "ready" : index % 3 === 1 ? "live" : "failed",
+    assigned_worker_id: "worker-one", assigned_encoder_id: "encoder-one",
+  }));
   function reset(next: Condition, path: string) {
     unblock(); condition = next; primary = path;
     phase = ["background-refresh", "stale"].includes(next.state) ? "ready" : next.state;
@@ -45,6 +53,7 @@ export function createUIFixture(baseURL: string) {
     inherited.state.permissions = next.state === "permission-denied" ? [] : next.exercise === "denied-read" ? ["streams.read", "service_health.read"] : ["*"];
   }
   const resolver: RouteResolver = (request) => {
+    assert.ok(condition, "fixture must be configured before its first request");
     const url = new URL(request.url);
     const path = canonicalFixturePath(url.pathname.replace(/\/+$/, "") || "/");
     let response: StubResponse | null;
@@ -57,13 +66,8 @@ export function createUIFixture(baseURL: string) {
       response = { status: 403, body: { code: "forbidden" } };
     } else if (path === "/account/preferences/ui") {
       response = { body: { theme_id: condition?.theme || "autostream", color_mode: condition?.exercise === "system-mode" ? "system" : condition?.mode || "light", revision: 4 } };
-    } else if (path === "/streams") {
-      response = { body: Array.from({ length: 25 }, (_, index) => ({
-        id: index === 0 ? "stream-control-platform" : "ui-stream-" + index,
-        name: index === 0 ? "B9 Browser Stream" : "UI Stream " + String(index).padStart(2, "0"),
-        status: index % 3 === 0 ? "ready" : index % 3 === 1 ? "live" : "failed",
-        assigned_worker_id: "worker-one", assigned_encoder_id: "encoder-one",
-      })) };
+    } else if (request.method === "GET" && path === "/streams") {
+      response = { body: structuredClone(streams) };
     } else if (request.method === "GET" && Object.hasOwn(extras, path)) {
       response = { body: structuredClone(extras[path]) };
     } else {
@@ -86,7 +90,7 @@ export function createUIFixture(baseURL: string) {
       if (path === "/observability/notification-deliveries") response = { ...response, body: displayRows.map(row => ({ ...row, event_type: "admin.audit", metadata: { action: "streams.update", summary: row.name }, channel: "email" })) };
     }
     const paths = statePaths(condition, primary);
-    if ((phase === "initial-loading" || phase === "background-refresh") && path === primary) response = { ...response, waitUntil: pending };
+    if (phase === "initial-loading" && loadingPaths(condition, primary).includes(path) || phase === "background-refresh" && path === primary) response = { ...response, waitUntil: pending };
     if (["blocking-error", "partial", "stale"].includes(phase) && paths.failure.includes(path)) response = { status: 503, body: { code: "temporarily_unavailable", detail: "UI-HIDDEN-DIAGNOSTIC" } };
     if (phase === "permission-denied" && path === primary) response = { status: 403, body: { code: "forbidden" } };
     if (phase === "empty" && (sectionPaths[condition.family] || [primary]).includes(path)) response = { body: emptyInput(path, response.body) };
@@ -95,5 +99,10 @@ export function createUIFixture(baseURL: string) {
     trace.push({ method: request.method, path: path + url.search, status: response.status ?? 200, body: request.postData ? JSON.parse(request.postData) : null });
     return { ...response, requiredResponse: true };
   };
-  return { resolver, trace, unexpected, reset, release() { unblock(); }, refresh() { phase = condition.state; }, get primary() { return primary; } };
+  return { resolver, trace, unexpected, reset, release() { unblock(); }, refresh() { phase = condition.state; }, get primary() { return primary; },
+    detailStream() {
+      const selected = streams[phase === "unknown" ? 0 : 1];
+      return contentInput(phase === "unknown" ? unknownInput("/streams", selected) : selected, condition.exercise, "/streams") as typeof selected;
+    },
+  };
 }

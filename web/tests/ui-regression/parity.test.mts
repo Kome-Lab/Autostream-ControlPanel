@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import ts from "typescript";
 import { approvedProtectedPaths, assertApprovedManifest, assertProtectedFixture, assertApprovedSourceDelta, assertRunnerTypeDelta } from "./approved-source-delta.mts";
+import { ciProtectedPaths, assertCISourceDelta, assertTypeDependencies } from "./ci-source-deltas.mts";
 const root = fileURLToPath(new URL("../../..", import.meta.url));
 const read = (path: string) => readFileSync(resolve(root, path));
 const fixture = (name: string) => JSON.parse(read("web/tests/fixtures/ui-regression/" + name + ".json").toString("utf8"));
@@ -37,20 +38,23 @@ test("UI-PARITY-002: 100 actions keep original permission, payload, duplicate an
     for (const path of row.current_owner_paths) assert.ok(existsSync(resolve(root, path)), row.id + ": missing owner");
   }
 });
-test("UI-PARITY-003: original 733 records, 731 raw sources and two exact approved deltas remain protected", () => {
+test("UI-PARITY-003: original 733 records, 729 raw sources and four separately bounded approved deltas remain protected", () => {
   const records = fixture("protected").protected;
   assert.ok(records.length > 100);
   const manifest = fixture("approved-source-deltas");
   assertProtectedFixture(read("web/tests/fixtures/ui-regression/protected.json"), manifest);
   assert.equal(records.length, 733);
-  let rawMatches = 0, deltas = 0;
+  let rawMatches = 0, deltas = 0, ciDeltas = 0;
   for (const row of records) {
     if (approvedProtectedPaths.some(path => path === row.path)) {
       assert.equal(sha(rawBase(row.path)), row.sha256, row.path);
       assertApprovedSourceDelta(row.path, rawBase(row.path), read(row.path), manifest); deltas++;
+    } else if (ciProtectedPaths.some(path => path === row.path)) {
+      assert.equal(sha(rawBase(row.path)), row.sha256, row.path);
+      assertCISourceDelta(row.path, rawBase(row.path), read(row.path), fixture("ci-source-deltas")); ciDeltas++;
     } else { assert.equal(sha(read(row.path)), row.sha256, row.path); rawMatches++; }
   }
-  assert.equal(rawMatches, 731); assert.equal(deltas, 2);
+  assert.equal(rawMatches, 729); assert.equal(deltas, 2); assert.equal(ciDeltas, 2);
 });
 function navigationBindings(source: string) {
   const bindings: { href: string; permissions: string[]; key: string }[] = [];
@@ -72,10 +76,10 @@ test("UI-PARITY-004: navigation groups retain every exact route and permission b
   assert.equal(before.length, 26);
   assert.deepEqual(navigationBindings(read("web/src/lib/navigation.ts").toString("utf8")), before);
 });
-test("UI-PARITY-005: dependencies, lock and original browser registration are unchanged", () => {
+test("UI-PARITY-005: runtime dependencies and original browser registration stay fixed with the exact type-only closure", () => {
   const before = JSON.parse(rawBase("web/package.json").toString("utf8"));
   const after = JSON.parse(read("web/package.json").toString("utf8"));
-  for (const key of ["dependencies", "devDependencies", "optionalDependencies", "overrides"]) assert.deepEqual(after[key], before[key]);
+  assertTypeDependencies(before, after);
   assert.equal(after.scripts["test:ui-foundation-browser"], before.scripts["test:ui-foundation-browser"]);
   assertRunnerTypeDelta(rawBase("web/tests/helpers/run-ui-foundation-browser.mts"), read("web/tests/helpers/run-ui-foundation-browser.mts"), fixture("approved-source-deltas"));
   for (const path of ["web/tests/ui-foundation-browser.test.mts", "web/tests/ui-foundation-confirmation-browser.test.mts", "web/tests/ui-foundation-secrets-browser.test.mts"]) assert.deepEqual(read(path), rawBase(path), path);

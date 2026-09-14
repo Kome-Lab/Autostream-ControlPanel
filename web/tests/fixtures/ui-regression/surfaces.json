@@ -80,7 +80,19 @@
           "source": "web/src/features/dashboard/dashboard-view.tsx"
         }
       },
-      "fixture": "Shell"
+      "fixture": "Shell",
+      "keyboard": {
+        "required": [
+          {
+            "selector": "main [data-slot=page-actions-primary] a"
+          },
+          {
+            "selector": "main button",
+            "name": "^(Refresh|更新|最新状態に更新)$"
+          }
+        ],
+        "activation": "none"
+      }
     },
     {
       "id": "streams-list",
@@ -130,7 +142,25 @@
           "source": "web/src/features/streams/streams-view.tsx"
         }
       },
-      "fixture": "Table"
+      "fixture": "Table",
+      "keyboard": {
+        "required": [
+          {
+            "selector": "main [data-slot=page-actions-primary] button"
+          },
+          {
+            "selector": "main button",
+            "name": "^(Refresh|更新|最新状態に更新)$"
+          },
+          {
+            "selector": "main [data-slot=column-visibility] > summary"
+          },
+          {
+            "selector": "main [data-slot=stream-primary-trigger][data-stream-id=stream-control-platform]"
+          }
+        ],
+        "activation": "disclosure"
+      }
     },
     {
       "id": "stream-detail",
@@ -180,7 +210,20 @@
           "source": "web/src/features/streams/stream-details-dialog.tsx"
         }
       },
-      "fixture": "Detail"
+      "fixture": "Detail",
+      "keyboard": {
+        "required": [
+          {
+            "selector": "[data-slot=section-navigation] button:first-child"
+          },
+          {
+            "selector": "[role=dialog] button",
+            "name": "^(Close|閉じる)$"
+          }
+        ],
+        "activation": "section",
+        "native": "[role=dialog] video"
+      }
     },
     {
       "id": "stream-create-edit",
@@ -230,7 +273,19 @@
           "source": "web/src/features/streams/stream-slot-form.tsx"
         }
       },
-      "fixture": "Form"
+      "fixture": "Form",
+      "keyboard": {
+        "required": [
+          {
+            "selector": "[data-slot=section-navigation] button:first-child"
+          },
+          {
+            "selector": "[role=dialog] button",
+            "name": "^(Close|閉じる)$"
+          }
+        ],
+        "activation": "section"
+      }
     },
     {
       "id": "service-health",
@@ -279,6 +334,18 @@
           "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
           "source": "web/src/features/resources/resource-page.tsx"
         }
+      },
+      "keyboard": {
+        "required": [
+          {
+            "selector": "main button",
+            "name": "^(Refresh|更新|最新状態に更新)$"
+          },
+          {
+            "selector": "main [data-slot=column-visibility] > summary"
+          }
+        ],
+        "activation": "disclosure"
       }
     },
     {
@@ -329,7 +396,22 @@
           "source": "web/src/features/workers/workers-view.tsx"
         }
       },
-      "fixture": "Confirmation"
+      "fixture": "Confirmation",
+      "keyboard": {
+        "required": [
+          {
+            "selector": "main button",
+            "name": "^(Refresh|更新|最新状態に更新)$"
+          },
+          {
+            "selector": "main a[href=\"/admin/registered-nodes\"]"
+          },
+          {
+            "selector": "main [data-slot=column-visibility] > summary"
+          }
+        ],
+        "activation": "disclosure"
+      }
     },
     {
       "id": "encoder-profiles",
@@ -378,6 +460,18 @@
           "contract": "No finite lifecycle/health status projection is defined for this display; unavailable data is a loading/error state.",
           "source": "web/src/features/resources/resource-page.tsx"
         }
+      },
+      "keyboard": {
+        "required": [
+          {
+            "selector": "main button",
+            "name": "^(Refresh|更新|最新状態に更新)$"
+          },
+          {
+            "selector": "main [data-slot=column-visibility] > summary"
+          }
+        ],
+        "activation": "disclosure"
       }
     },
     {
@@ -427,6 +521,18 @@
           "contract": "No finite lifecycle/health status projection is defined for this display; unavailable data is a loading/error state.",
           "source": "web/src/features/resources/resource-page.tsx"
         }
+      },
+      "keyboard": {
+        "required": [
+          {
+            "selector": "main button",
+            "name": "^(Refresh|更新|最新状態に更新)$"
+          },
+          {
+            "selector": "main [data-slot=column-visibility] > summary"
+          }
+        ],
+        "activation": "disclosure"
       }
     },
     {
@@ -476,6 +582,18 @@
           "contract": "No finite lifecycle/health status projection is defined for this display; unavailable data is a loading/error state.",
           "source": "web/src/features/resources/resource-page.tsx"
         }
+      },
+      "keyboard": {
+        "required": [
+          {
+            "selector": "main button",
+            "name": "^(Refresh|更新|最新状態に更新)$"
+          },
+          {
+            "selector": "main [data-slot=column-visibility] > summary"
+          }
+        ],
+        "activation": "disclosure"
       }
     },
     {
@@ -525,6 +643,18 @@
           "contract": "No finite lifecycle/health status projection is defined for this display; unavailable data is a loading/error state.",
           "source": "web/src/features/resources/resource-page.tsx"
         }
+      },
+      "keyboard": {
+        "required": [
+          {
+            "selector": "main button",
+            "name": "^(Refresh|更新|最新状態に更新)$"
+          },
+          {
+            "selector": "main [data-slot=column-visibility] > summary"
+          }
+        ],
+        "activation": "disclosure"
       }
     },
     {
@@ -574,6 +704,18 @@
           "contract": "No finite lifecycle/health status projection is defined for this display; unavailable data is a loading/error state.",
           "source": "web/src/features/resources/resource-page.tsx"
         }
+      },
+      "keyboard": {
+        "required": [
+          {
+            "selector": "main button",
+            "name": "^(Refresh|更新|最新状態に更新)$"
+          },
+          {
+            "selector": "main [data-slot=column-visibility] > summary"
+          }
+        ],
+        "activation": "disclosure"
       }
     },
     {
@@ -623,6 +765,21 @@
           "contract": "No finite lifecycle/health status projection is defined for this display; unavailable data is a loading/error state.",
           "source": "web/src/features/archive/archive-view.tsx"
         }
+      },
+      "keyboard": {
+        "required": [
+          {
+            "selector": "main button",
+            "name": "^(Refresh|更新|最新状態に更新)$"
+          },
+          {
+            "selector": "main [role=tab][aria-selected=true]"
+          },
+          {
+            "selector": "main [role=combobox]"
+          }
+        ],
+        "activation": "none"
       }
     },
     {
@@ -635,7 +792,19 @@
         "initial-loading": {
           "applicable": true,
           "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
-          "source": "web/src/features/monitoring/monitoring-view.tsx"
+          "source": "web/src/features/monitoring/monitoring-view.tsx",
+          "observation": {
+            "controls": "status-only",
+            "role": "status",
+            "heading": {
+              "ja": "Monitoring",
+              "en": "Monitoring"
+            },
+            "copy": {
+              "ja": "読込中",
+              "en": "Loading"
+            }
+          }
         },
         "empty": {
           "applicable": true,
@@ -672,6 +841,15 @@
           "contract": "No finite lifecycle/health status projection is defined for this display; unavailable data is a loading/error state.",
           "source": "web/src/features/monitoring/monitoring-view.tsx"
         }
+      },
+      "keyboard": {
+        "required": [
+          {
+            "selector": "main button",
+            "name": "^(Refresh|更新|最新状態に更新)$"
+          }
+        ],
+        "activation": "none"
       }
     },
     {
@@ -721,6 +899,18 @@
           "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
           "source": "web/src/features/resources/resource-page.tsx"
         }
+      },
+      "keyboard": {
+        "required": [
+          {
+            "selector": "main button",
+            "name": "^(Refresh|更新|最新状態に更新)$"
+          },
+          {
+            "selector": "main [data-slot=column-visibility] > summary"
+          }
+        ],
+        "activation": "disclosure"
       }
     },
     {
@@ -770,6 +960,18 @@
           "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
           "source": "web/src/features/resources/resource-page.tsx"
         }
+      },
+      "keyboard": {
+        "required": [
+          {
+            "selector": "main button",
+            "name": "^(Refresh|更新|最新状態に更新)$"
+          },
+          {
+            "selector": "main [data-slot=column-visibility] > summary"
+          }
+        ],
+        "activation": "disclosure"
       }
     },
     {
@@ -782,7 +984,19 @@
         "initial-loading": {
           "applicable": true,
           "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
-          "source": "web/src/features/metrics/metrics-view.tsx"
+          "source": "web/src/features/metrics/metrics-view.tsx",
+          "observation": {
+            "controls": "status-only",
+            "role": "status",
+            "heading": {
+              "ja": "Metrics",
+              "en": "Metrics"
+            },
+            "copy": {
+              "ja": "読込中",
+              "en": "Loading"
+            }
+          }
         },
         "empty": {
           "applicable": true,
@@ -819,6 +1033,15 @@
           "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
           "source": "web/src/features/metrics/metrics-view.tsx"
         }
+      },
+      "keyboard": {
+        "required": [
+          {
+            "selector": "main button",
+            "name": "^(Refresh|更新|最新状態に更新)$"
+          }
+        ],
+        "activation": "none"
       }
     },
     {
@@ -868,6 +1091,18 @@
           "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
           "source": "web/src/features/resources/resource-page.tsx"
         }
+      },
+      "keyboard": {
+        "required": [
+          {
+            "selector": "main button",
+            "name": "^(Refresh|更新|最新状態に更新)$"
+          },
+          {
+            "selector": "main [data-slot=column-visibility] > summary"
+          }
+        ],
+        "activation": "disclosure"
       }
     },
     {
@@ -917,6 +1152,18 @@
           "contract": "No finite lifecycle/health status projection is defined for this display; unavailable data is a loading/error state.",
           "source": "web/src/features/resources/resource-page.tsx"
         }
+      },
+      "keyboard": {
+        "required": [
+          {
+            "selector": "main button",
+            "name": "^(Refresh|更新|最新状態に更新)$"
+          },
+          {
+            "selector": "main [data-slot=column-visibility] > summary"
+          }
+        ],
+        "activation": "disclosure"
       }
     },
     {
@@ -966,6 +1213,22 @@
           "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
           "source": "web/src/features/audit/audit-logs-view.tsx"
         }
+      },
+      "keyboard": {
+        "required": [
+          {
+            "selector": "main button",
+            "name": "^(Refresh|更新|最新状態に更新)$"
+          },
+          {
+            "selector": "main [role=tab][aria-selected=true]"
+          },
+          {
+            "selector": "main a",
+            "name": "^CSV$"
+          }
+        ],
+        "activation": "none"
       }
     },
     {
@@ -978,27 +1241,32 @@
         "initial-loading": {
           "applicable": true,
           "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
-          "source": "web/src/features/nodes/node-registration-view.tsx"
+          "source": "web/src/features/nodes/node-registration-view.tsx",
+          "route": "/admin/registered-nodes/"
         },
         "empty": {
           "applicable": true,
           "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
-          "source": "web/src/features/nodes/node-registration-view.tsx"
+          "source": "web/src/features/nodes/node-registration-view.tsx",
+          "route": "/admin/registered-nodes/"
         },
         "blocking-error": {
           "applicable": true,
           "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
-          "source": "web/src/features/nodes/node-registration-view.tsx"
+          "source": "web/src/features/nodes/node-registration-view.tsx",
+          "route": "/admin/registered-nodes/"
         },
         "permission-denied": {
           "applicable": true,
           "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
-          "source": "web/src/features/nodes/node-registration-view.tsx"
+          "source": "web/src/features/nodes/node-registration-view.tsx",
+          "route": "/admin/registered-nodes/"
         },
         "background-refresh": {
           "applicable": true,
           "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
-          "source": "web/src/features/nodes/node-registration-view.tsx"
+          "source": "web/src/features/nodes/node-registration-view.tsx",
+          "route": "/admin/registered-nodes/"
         },
         "partial": {
           "applicable": false,
@@ -1008,13 +1276,27 @@
         "stale": {
           "applicable": true,
           "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
-          "source": "web/src/features/nodes/node-registration-view.tsx"
+          "source": "web/src/features/nodes/node-registration-view.tsx",
+          "route": "/admin/registered-nodes/"
         },
         "unknown": {
           "applicable": true,
           "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
-          "source": "web/src/features/nodes/node-registration-view.tsx"
+          "source": "web/src/features/nodes/node-registration-view.tsx",
+          "route": "/admin/registered-nodes/"
         }
+      },
+      "keyboard": {
+        "required": [
+          {
+            "selector": "main a[href=\"/admin/registered-nodes\"]"
+          },
+          {
+            "selector": "main button",
+            "name": "^(Create node|Nodeを作成|Node を作成)$"
+          }
+        ],
+        "activation": "none"
       }
     },
     {
@@ -1064,6 +1346,22 @@
           "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
           "source": "web/src/features/application/application-info-view.tsx"
         }
+      },
+      "keyboard": {
+        "required": [
+          {
+            "selector": "main button",
+            "name": "^(Check updates again|更新を再確認)$"
+          },
+          {
+            "selector": "main button",
+            "name": "^(Reload information|情報を再取得)$"
+          },
+          {
+            "selector": "[data-slot=section-navigation] button:first-child"
+          }
+        ],
+        "activation": "section"
       }
     },
     {
@@ -1113,6 +1411,18 @@
           "contract": "No finite lifecycle/health status projection is defined for this display; unavailable data is a loading/error state.",
           "source": "web/src/features/resources/resource-page.tsx"
         }
+      },
+      "keyboard": {
+        "required": [
+          {
+            "selector": "main button",
+            "name": "^(Refresh|更新|最新状態に更新)$"
+          },
+          {
+            "selector": "main [data-slot=column-visibility] > summary"
+          }
+        ],
+        "activation": "disclosure"
       }
     },
     {
@@ -1162,6 +1472,18 @@
           "contract": "No finite lifecycle/health status projection is defined for this display; unavailable data is a loading/error state.",
           "source": "web/src/features/resources/resource-page.tsx"
         }
+      },
+      "keyboard": {
+        "required": [
+          {
+            "selector": "main button",
+            "name": "^(Refresh|更新|最新状態に更新)$"
+          },
+          {
+            "selector": "main [data-slot=column-visibility] > summary"
+          }
+        ],
+        "activation": "disclosure"
       }
     },
     {
@@ -1211,6 +1533,18 @@
           "contract": "No finite lifecycle/health status projection is defined for this display; unavailable data is a loading/error state.",
           "source": "web/src/features/resources/resource-page.tsx"
         }
+      },
+      "keyboard": {
+        "required": [
+          {
+            "selector": "main button",
+            "name": "^(Refresh|更新|最新状態に更新)$"
+          },
+          {
+            "selector": "main [data-slot=column-visibility] > summary"
+          }
+        ],
+        "activation": "disclosure"
       }
     },
     {
@@ -1260,6 +1594,18 @@
           "contract": "No finite lifecycle/health status projection is defined for this display; unavailable data is a loading/error state.",
           "source": "web/src/features/resources/resource-page.tsx"
         }
+      },
+      "keyboard": {
+        "required": [
+          {
+            "selector": "main button",
+            "name": "^(Refresh|更新|最新状態に更新)$"
+          },
+          {
+            "selector": "main input[type=number][min=\"8\"]"
+          }
+        ],
+        "activation": "none"
       }
     },
     {
@@ -1309,6 +1655,22 @@
           "contract": "No finite lifecycle/health status projection is defined for this display; unavailable data is a loading/error state.",
           "source": "web/src/features/account/account-view.tsx"
         }
+      },
+      "keyboard": {
+        "required": [
+          {
+            "selector": "main button",
+            "name": "^(Refresh|更新|最新状態に更新)$"
+          },
+          {
+            "selector": "main [role=tab][aria-selected=true]"
+          },
+          {
+            "selector": "main button",
+            "name": "^(Choose image|画像を選択)$"
+          }
+        ],
+        "activation": "none"
       }
     },
     {
@@ -1358,6 +1720,20 @@
           "contract": "Login is a local credential ceremony, not a permission-gated remote record collection. Authentication failures/session expiry/return URL and pending are covered by the inherited login browser cases.",
           "source": "web/src/components/auth/auth-card.tsx"
         }
+      },
+      "keyboard": {
+        "required": [
+          {
+            "selector": "main input[autocomplete=username]"
+          },
+          {
+            "selector": "main input[type=password]"
+          },
+          {
+            "selector": "main form button[type=submit]"
+          }
+        ],
+        "activation": "none"
       }
     },
     {
@@ -1370,7 +1746,19 @@
         "initial-loading": {
           "applicable": true,
           "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
-          "source": "web/src/features/archive/archive-share-player-view.tsx"
+          "source": "web/src/features/archive/archive-share-player-view.tsx",
+          "observation": {
+            "controls": "status-only",
+            "role": "status",
+            "heading": {
+              "ja": "共有アーカイブ",
+              "en": "Shared archive"
+            },
+            "copy": {
+              "ja": "読込中",
+              "en": "Loading"
+            }
+          }
         },
         "empty": {
           "applicable": false,
@@ -1380,12 +1768,36 @@
         "blocking-error": {
           "applicable": true,
           "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
-          "source": "web/src/features/archive/archive-share-player-view.tsx"
+          "source": "web/src/features/archive/archive-share-player-view.tsx",
+          "observation": {
+            "controls": "status-only",
+            "role": "alert",
+            "heading": {
+              "ja": "共有アーカイブ",
+              "en": "Shared archive"
+            },
+            "copy": {
+              "ja": "共有アーカイブを表示できません",
+              "en": "Shared archive unavailable"
+            }
+          }
         },
         "permission-denied": {
           "applicable": true,
           "contract": "Drive the existing primary GET and inspect the corresponding production state; no API/controller/model replacement.",
-          "source": "web/src/features/archive/archive-share-player-view.tsx"
+          "source": "web/src/features/archive/archive-share-player-view.tsx",
+          "observation": {
+            "controls": "status-only",
+            "role": "alert",
+            "heading": {
+              "ja": "共有アーカイブ",
+              "en": "Shared archive"
+            },
+            "copy": {
+              "ja": "共有アーカイブを表示できません",
+              "en": "Shared archive unavailable"
+            }
+          }
         },
         "background-refresh": {
           "applicable": false,
@@ -1407,6 +1819,16 @@
           "contract": "No finite lifecycle/health status projection is defined for this display; unavailable data is a loading/error state.",
           "source": "web/src/features/archive/archive-share-player-view.tsx"
         }
+      },
+      "keyboard": {
+        "required": [
+          {
+            "selector": "main a",
+            "name": "^(Open directly|直接開く)$"
+          }
+        ],
+        "activation": "none",
+        "native": "main video"
       }
     }
   ],

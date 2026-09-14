@@ -57,7 +57,7 @@ test("UI-FIXTURE-002: pending GET is held by the real resolver until released", 
   await response?.waitUntil;
   assert.equal(settled, true);
 });
-test("UI-LIFECYCLE-001: current caller drains old document before resetting fixture", async () => {
+test("UI-LIFECYCLE-001: current caller retains condition ownership and request evidence across its navigation", async () => {
   const calls: string[] = [];
   const browser = {
     setFetchDiagnosticContext: (context: { phase: string }) => calls.push(context.phase),
@@ -68,8 +68,9 @@ test("UI-LIFECYCLE-001: current caller drains old document before resetting fixt
     clearRequestCounts: () => calls.push("clear"), clearNavigationCount: () => calls.push("clear-navigation"), clearConsoleErrors: () => calls.push("clear-console"),
   };
   await navigateDocument(browser as unknown as BrowserHarness, "http://127.0.0.1/product", () => calls.push("reset"));
-  assert.ok(calls.indexOf("about:blank") < calls.lastIndexOf("drain"));
-  assert.ok(calls.lastIndexOf("drain") < calls.indexOf("reset"));
+  assert.equal(calls.includes("about:blank"), false);
+  assert.equal(calls.some(call => call.startsWith("clear")), false);
+  assert.ok(calls.indexOf("healthy") < calls.indexOf("reset"));
   assert.ok(calls.indexOf("reset") < calls.indexOf("http://127.0.0.1/product"));
 });
 

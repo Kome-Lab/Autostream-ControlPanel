@@ -1,21 +1,12 @@
 import type { BrowserHarness } from "../helpers/browser-harness.mts";
 
-// Reuse the real lifecycle owner. Never change interception error tolerances.
-export async function navigateDocument(browser: BrowserHarness, url: string, reset: () => void) {
-  browser.setFetchDiagnosticContext?.({ phase: "paint-before-leave" });
-  await browser.waitForRequestHandlersIdle();
-  await paint(browser);
-  await browser.waitForRequestHandlersIdle();
+// Initial product navigation belongs to one configured condition. Same-condition
+// history/recovery continues through this harness; no inter-condition blank reset.
+export async function navigateDocument(browser: BrowserHarness, url: string, initialize: () => void = () => {}) {
   browser.assertNoFatalError();
-  browser.setFetchDiagnosticContext?.({ phase: "to-blank" });
-  await browser.navigate("about:blank");
-  browser.setFetchDiagnosticContext?.({ phase: "old-handlers-drain" });
-  await browser.waitForRequestHandlersIdle();
   browser.setFetchDiagnosticContext?.({ phase: "phase-reset" });
-  reset();
-  browser.clearRequestCounts();
-  browser.clearNavigationCount();
-  browser.clearConsoleErrors();
+  initialize();
+  browser.assertNoFatalError();
   browser.setFetchDiagnosticContext?.({ phase: "to-product" });
   await browser.navigate(url);
 }

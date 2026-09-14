@@ -75,8 +75,44 @@ STR-01の成功は既存送信intentの同一性に対応する非機密比較sn
 
 form-content-driverの実生成式は日英の安全な空text入力だけを選び、両long-content exerciseを実行する。hidden/disabled/重複/credential/非空入力を拒否し、変更したsynthetic入力とmarkerを復元する。旧templateのescape欠落を戻すnegativeは実生成式のSyntaxErrorを検出する。
 
-`typecheck:ui-regression`は元strict対象179ルートを保持した設定と新規直接回帰を、strict/noEmit/skipLibCheck:falseで検査し、current web jobでblocking実行する。これは既存製品typecheckと別の検査である。
+`typecheck:ui-regression`は005のstrict対象187ルートを保持した設定と新規直接回帰を、strict/noEmit/skipLibCheck:falseで検査し、current web jobでblocking実行する。これは既存製品typecheckと別の検査である。
 
-protected.jsonの733原record/hashは変更しない。731pathはraw一致、session guardとharnessはapproved-source-deltas.jsonで固定旧hashと正確な追加構文だけを許可する。通知を除いたAST・残りのbytes、harnessの全既存member、runnerの局所narrowing除去後の原本一致を検査する。未知path、欠落supplement、元hash不一致、追加API、既存本文変更は失敗する。
+protected.jsonの733原record/hashは変更しない。004時点では731pathはraw一致、session guardとharnessはapproved-source-deltas.jsonで固定旧hashと正確な追加構文だけを許可する。通知を除いたAST・残りのbytes、harnessの全既存member、runnerの局所narrowing除去後の原本一致を検査する。未知path、欠落supplement、元hash不一致、追加API、既存本文変更は失敗する。
 
-native200%は必須未証明、実browser/focus/PNGは未実行のまま。局所socket回帰を実browser成功とは数えない。実code SHA/pinはREAL_CODE_SHA_PENDING、全9repo横断整理はNOT_STARTED。
+native200%は必須未証明、実browser/focus/PNGは未実行のまま。局所socket回帰を実browser成功とは数えない。006の新しいcode SHA/pinはREAL_CODE_SHA_PENDING。署名配送済み005と現在pinは保持し、全9repo横断整理はNOT_STARTED。
+
+## CI指摘の補正と条件所有
+
+006は署名配送済み005のsourceを継続する非署名candidateである。製品のquery、認可、retry、action controller、Preview、draft、state ownerは変えない。Streamの9 cell componentをmodule-levelへ移し、現在のrow/locale/permission/callbackを同じcontextから渡す。行IDと元triggerを保持し、Loginの全文labelは折返し・幅・高さだけを補正する。
+
+独立した計画条件ごとにBrowserHarnessとfixtureを一組だけ作る。fixture/init/viewport/media/clock/localeは最初の製品GET前に設定する。同じ条件内の履歴移動・回復・Table操作は同じinstanceで行い、失敗条件の再試行はしない。required responseのrelease、settlement、closeを順に行う。cleanup/outputの失敗は次条件への進行を止め、元の失敗を保全する。静的export/serverだけがfamily内で共有される。
+
+各条件の「<id>.browser-version.json」「<id>.lifecycle.json」、必要時のFetch診断と「<id>.render-failure-*.json」を既存observation artifactへ保存する。keyboard traceは条件ID、方向、閉じたDOM identity、段階、geometry/booleanだけで4KiB以内。入力値、body/script text、任意のrequest/error payloadをtraceへ入れない。
+
+可視dialogを操作scopeとし、closed detailsのsummary外と、属性・style・可視の対応widgetを確認できるnative form proxyを区別する。summaryを開いた時は列controlのlabel/可視性を検査し、元Tableの列表示変更・復元も保持する。全DOM/Storageのsecret・診断文字列、重複ID、label参照とzero-observationの失敗条件は残す。
+
+有限overlay animationのfinished promise、同じowner、正の安定geometryを既存wait上限内で観測する。Escape前に閉じるownerを固定し、exit完了後に元triggerを照合する。無限skeleton/chart animationは一括待機しない。layoutによるnested scroll/focus復元後、同じgeometryでcaptureする。固定sleep、timeout増量、撮影用のmotion変更は行わない。
+
+surfaces.jsonの事前keyboard経路を使い、必須triggerの欠落・飛ばし・逆順不一致・stationary・不可視focusを拒否する。modalでは全tabbable controlと両方向wrapを確認する。通常documentの境界、UA内部の未観測、modalからのescapeは別扱いである。native200%、UA keyboard、Navigation API非対応same-document履歴の必須未証明は維持する。
+
+4,144条件のID/順序/適用数は維持する。Nodesのremote状態だけを既存 /admin/registered-nodes/ へ接続し、登録ready/formは /admin/nodes/ を使う。初期loadingは画面のrequired owner集合をholdし、各要求の実発行とresponse 0を確認する。英語failure待機とstate検査は同じpredicate。Archive共有一覧は実IDに対応するGETだけを追加し、live Previewは同じ既存issueの要求・応答後に1 POST/403を検査する。再生成功の証拠ではない。
+
+## 型依存と追加の保護検査
+
+HLS本体1.7.0と全既存lock recordを保持する。devDependencies追加は @svta/cml-cmcd 2.4.0、eventemitter3 5.0.4だけで、必要peerは @svta/cml-structured-field-values 1.1.3、@svta/cml-utils 1.5.0。dependency-integrity.test.mtsは旧lock・peer・registry・integrity・登録を検証し、installed version不一致もFAILにする。
+
+元733recordのfixture bytes/hashと004の2例外は不変。現在は729path raw一致、004のharness/session 2path、006のworkflow checker/package-lock 2pathを別々に照合する。ci-source-deltas.json/.mtsは固定before hashと限定構造を使い、任意path、旧lock変更、余計なdependency、test削除、一括local参照免除を拒否する。go.mod/go.sumは変更しない。Goの実YAML位置/安全な既存workflow_call/外部full40SHAのpositive・negativeも実行する。
+
+3つの新しいdirect testは既存test:ui-regression:browser-contractsに一度ずつ登録される。既存current web CIが同じscriptを呼ぶため、新jobや二重suiteは追加しない。元187 strict root/optionsは保持し、既存globとimportが新しいhelper/testを含める。
+
+006時点の局所offline npm ciは既存cacheのNext 16.3.3欠落で未成立だった。指定4件の限定取得と既存cache上のHLS1.7.0を使った検査は、exact新lock検証ではない。このENOTCACHEDとmixed-cacheの117 PASS/1 FAILを履歴として保持する。
+
+## Exact lockと状態観測の補正
+
+007では別のprivate検証コピーと所有cache/node_modulesを使い、既存Node/npmから公式npm registryに限って、固定lockの依存を `npm ci --include=dev --ignore-scripts --no-audit --no-fund` で取得した。package/lockの前後hashは一致し、installed 454件の版不一致は0件。optional未導入分はOS/CPUとその依存到達性を分類し、適用対象の必須依存に欠落がないことを照合した。共有cacheやjunction先は変更せず、lockやHLS1.7.0は維持する。ignore-scriptsの導入結果をproduction buildやnative binaryの動作証拠にはしない。
+
+status-onlyはMetrics/Monitoringのinitial-loading、公開Archive共有のinitial-loading・blocking-error・permission-deniedの5状態、既存40条件だけに明示する。既存observer/callerで、実GETと未応答または正しい403/503、route、可視main/heading/status/alert、文言、正のgeometryを要求する。空白、未到達、wrong HTTP、hidden control、readyでの操作消失、secret、ID/label参照異常、overflowは引き続き拒否する。4,144条件のID・順序・分母は変更しない。直接回帰は実componentのSSR、生成observer式、既存harness/socketのcounterを接続し、実Chromeの描画証拠とは区別する。
+
+Dialogはconnectedな開き始めのownerを明示open・自動判定の両経路で固定し、その同一ownerがpaintedになるまで既存10秒のwait内で観測する。有限animationと安定geometryを確認し、owner交換・閉鎖・欠落・永久透明・キャンセル・期限超過・cleanup失敗を拒否する。一般のuiPainted、Fetch/fatal、期限、animation設定は変更しない。
+
+公式CI・実Chrome・production build・PNG比較は今回未実行。native200%、Navigation APIなしのsame-document履歴、UA内部keyboard、Preview再生、新UI画像の必須未証明を維持し、局所PASSで補完しない。

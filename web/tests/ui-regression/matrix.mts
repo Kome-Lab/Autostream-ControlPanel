@@ -1,15 +1,16 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-export type Surface = { id: string; route: string; primary: string; source: string; stage: string; fixture?: string; states: Record<string, { applicable: boolean; contract: string; source: string }> };
+export type StateObservationPolicy = { controls: "status-only"; role: "status" | "alert"; heading: Record<string, string>; copy: Record<string, string> };
+export type Surface = { id: string; route: string; primary: string; source: string; stage: string; fixture?: string; states: Record<string, { applicable: boolean; contract: string; source: string; route?: string; observation?: StateObservationPolicy }> };
 type Inventory = { widths: number[]; modes: string[]; locales: string[]; themes: string[]; surfaces: Surface[] };
 export const inventory: Inventory = JSON.parse(readFileSync(new URL("../fixtures/ui-regression/surfaces.json", import.meta.url), "utf8"));
 export type Condition = { id: string; family: string; route: string; kind: string; state: string; width: number; mode: string; locale: string; theme: string; exercise?: string };
 export const conditions: Condition[] = [];
-function add(surface: { id: string; route: string }, kind: string, state: string, widths: number[], themes: string[], exercise?: string) {
+function add(surface: Surface, kind: string, state: string, widths: number[], themes: string[], exercise?: string) {
   for (const width of widths) for (const theme of themes) for (const mode of inventory.modes) for (const locale of inventory.locales) {
     const id = [kind, surface.id, state, theme, mode, locale, width, exercise || "capture"].join("--");
-    conditions.push({ id, family: surface.id, route: surface.route, kind, state, width, theme, mode, locale, ...(exercise ? { exercise } : {}) });
+    conditions.push({ id, family: surface.id, route: surface.states[state]?.route || surface.route, kind, state, width, theme, mode, locale, ...(exercise ? { exercise } : {}) });
   }
 }
 for (const surface of inventory.surfaces) {

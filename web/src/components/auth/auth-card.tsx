@@ -179,15 +179,15 @@ export function LoginCard() {
           </>
         )}
         {message ? <p role="status" className="text-sm text-destructive">{message}</p> : null}
-        <Button className="w-full" type="submit" disabled={busy || (!mfaChallengeToken && loginSecurityPending) || (Boolean(mfaChallengeToken) && mfaCode.trim().length < 6)}>
+        <Button className="h-auto min-h-9 w-full min-w-0 max-w-full whitespace-normal [overflow-wrap:anywhere]" type="submit" disabled={busy || (!mfaChallengeToken && loginSecurityPending) || (Boolean(mfaChallengeToken) && mfaCode.trim().length < 6)}>
           {mfaChallengeToken ? uiText("2FA確認") : t("login")}
         </Button>
       </form>
       {!mfaChallengeToken ? (
         <div className="space-y-2">
-          <Button type="button" variant="outline" className="w-full justify-start" disabled={busy || loginSecurityPending} onClick={loginWithPasskey}>
+          <Button type="button" variant="outline" className="h-auto min-h-9 w-full min-w-0 max-w-full justify-start whitespace-normal text-left" disabled={busy || loginSecurityPending} onClick={loginWithPasskey}>
             <KeyRound className="size-4" />
-            {uiText("Passkeyでログイン")}</Button>
+            <span className="min-w-0 [overflow-wrap:anywhere]">{uiText("Passkeyでログイン")}</span></Button>
           {passkeyUnavailable ? <p className="text-xs text-muted-foreground">{uiText("このブラウザではPasskeyを利用できません。")}</p> : null}
         </div>
       ) : null}
@@ -195,8 +195,8 @@ export function LoginCard() {
         <div className="space-y-2">
           <div className="text-xs text-muted-foreground">{uiText("OAuthログイン")}</div>
           {oauthProviders.data.map((provider) => (
-            <Button key={provider.id} type="button" variant="outline" className="w-full justify-start" disabled={busy || loginSecurityPending} onClick={() => startOAuthLogin(provider.id)}>
-              {provider.name || provider.provider_type}
+            <Button key={provider.id} type="button" variant="outline" className="h-auto min-h-9 w-full min-w-0 max-w-full justify-start whitespace-normal text-left" disabled={busy || loginSecurityPending} onClick={() => startOAuthLogin(provider.id)}>
+              <span className="min-w-0 [overflow-wrap:anywhere]">{provider.name || provider.provider_type}</span>
             </Button>
           ))}
         </div>
@@ -385,7 +385,7 @@ function AuthFrame({ title, description, children }: { title: string; descriptio
           {dark ? <Moon /> : <Sun />}
         </Button>
       </div>
-      <Card className="w-full max-w-md shadow-none">
+      <Card className="w-full min-w-0 max-w-md shadow-none [overflow-wrap:anywhere]">
         <CardHeader>
           <div className="mb-2 flex items-center gap-3">
             <div className="flex size-9 items-center justify-center rounded-md bg-primary text-primary-foreground">
@@ -399,7 +399,7 @@ function AuthFrame({ title, description, children }: { title: string; descriptio
           <h1 className="text-2xl font-semibold leading-tight">{title}</h1>
           <CardDescription>{description}</CardDescription>
         </CardHeader>
-        <CardContent className="space-y-3">{children}</CardContent>
+        <CardContent className="min-w-0 space-y-3">{children}</CardContent>
       </Card>
     </main>
   );

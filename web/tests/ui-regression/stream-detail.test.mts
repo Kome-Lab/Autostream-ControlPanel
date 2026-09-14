@@ -1,5 +1,7 @@
 import "./component-loader.mts";
 import assert from "node:assert/strict";
+import ts from "typescript";
+import { actualJSXCallback } from "./source-callback.mts";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { createElement } from "react";
@@ -9,6 +11,24 @@ const { I18nProvider } = await import("../../src/components/admin/i18n-provider.
 const { StreamDetailOperations, readinessResult } = await import("../../src/features/streams/stream-detail-operations.tsx");
 const { createStreamActionController } = await import("../../src/features/streams/stream-action-controller.ts");
 const stream = { id: "stream-a", name: "日本語の利用者名", status: "ready", updated_at: "2026-09-01T00:00:00Z" };
+
+test("UI-STREAM-IDENTITY-001: actual primary cell and dialog close callbacks retain the exact original trigger", () => {
+  const owner = readFileSync(new URL("../../src/features/streams/streams-view.tsx", import.meta.url), "utf8");
+  const source = readFileSync(new URL("../../src/features/streams/stream-table-cells.tsx", import.meta.url), "utf8");
+  const parsed = ts.createSourceFile("cells.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const primary = parsed.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === "StreamNameCell"); assert.ok(primary);
+  const selected: unknown[] = [], detailTrigger = { current: null as { focus(): void } | null };
+  let focused = 0; const original = { focus() { focused++; } };
+  const onDetails = actualCallback(owner, "onDetails", { detailTrigger, setSelectedStream: (value: unknown) => selected.push(value) });
+  const click = actualJSXCallback(primary.getText(parsed), "button", "onClick", { onDetails, row: { original: stream } });
+  click({ currentTarget: original }); assert.equal(selected[0], stream); assert.equal(detailTrigger.current, original);
+  const returnFocus = actualJSXCallback(owner, "StreamDetailsDialog", "returnFocus", { detailTrigger });
+  const dialog = readFileSync(new URL("../../src/features/streams/stream-details-dialog.tsx", import.meta.url), "utf8");
+  const close = actualJSXCallback(dialog, "DialogContent", "onCloseAutoFocus", { returnFocus });
+  let prevented = 0; close({ preventDefault() { prevented++; } }); assert.equal(focused, 1); assert.equal(prevented, 1);
+  const fresh = { ...stream, name: "Current input" }; onDetails(fresh, original); assert.equal(selected.at(-1), fresh); assert.equal(detailTrigger.current, original);
+  assert.match(owner, /getRowId=\{streamRowID\}/); assert.match(owner, /<StreamTableContext.Provider value=\{tablePresentation\}/);
+});
 
 test("UI-STREAM-DETAIL-001: actual operation surface consumes the same controller for readiness/start/stop in ja/en", () => {
   for (const locale of ["ja", "en"]) {
@@ -92,4 +112,29 @@ test("UI-STREAM-DETAIL-006: actual control submit reports 409, unavailable and a
     assert.equal(states.at(-1)?.kind,expected==="failed"?"conflict":"outcome-unknown");
     if(expected==="outcome_unknown") {const retry=await controller.open({id:"STR-08",stream});assert.equal(retry.kind,"blocked");assert.equal(mutations,1);}
   }
+});
+
+test("UI-STREAM-PREVIEW-001: actual runner waits for the real required issue response and retains exact POST403",async()=>{
+  const {createHarnessFixture,settlePromptly}=await import("../helpers/browser-cdp-socket-fixture.mts");
+  const {createUIFixture}=await import("./route-fixture.mts");
+  const {conditions,inventory}=await import("./matrix.mts");
+  const {waitForLivePreview,assertPreviewIssue}=await import("./run-browser.mts");
+  const condition=conditions.find(row=>row.family==="stream-detail"&&row.exercise==="long-id")!;
+  const surface=inventory.surfaces.find(row=>row.id===condition.family)!;
+  const fixture=createUIFixture("http://ui.test");fixture.reset(condition,surface.primary);
+  const selected=fixture.detailStream(),path="/streams/"+encodeURIComponent(selected.id)+"/preview-links";
+  const owner=createHarnessFixture();owner.harness.setRouteResolver(fixture.resolver);
+  owner.socket.hold("Fetch.fulfillRequest");
+  try {
+    const waiting=waitForLivePreview(owner.harness,selected);
+    owner.socket.emitEvent("Fetch.requestPaused",{requestId:"preview",resourceType:"XHR",frameId:"main",request:{method:"POST",url:"http://ui.test"+path,postData:"{}"}});
+    const command=await owner.socket.waitForCommand("Fetch.fulfillRequest");
+    assert.equal(command.params.responseCode,403);assert.equal(owner.harness.requests.get(path),1);
+    assert.equal(owner.harness.responses.get(path)||0,0);assert.equal(await settlePromptly(waiting),"pending");
+    owner.socket.respond(command,{result:{}});await waiting;assert.equal(owner.harness.responses.get(path),1);
+    assertPreviewIssue(fixture.trace,selected);
+    for(const mutations of [[],[...fixture.trace,...fixture.trace],fixture.trace.map(row=>({...row,status:200})),fixture.trace.map(row=>({...row,method:"GET"})),fixture.trace.map(row=>({...row,path:"/streams/other/preview-links"}))]) {
+      assert.throws(()=>assertPreviewIssue(mutations,selected));
+    }
+  } finally {fixture.release();await owner.harness.close();}
 });
