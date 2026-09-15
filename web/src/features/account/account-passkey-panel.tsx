@@ -2,7 +2,7 @@
 import { useUICopy } from "@/lib/i18n/ui-v2/use-ui-copy";
 
 
-import { useState } from "react";
+import { useId, useState } from "react";
 import { KeyRound, Trash2 } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -38,6 +38,7 @@ export function PasskeyPanel({
   accountResourceID: string;
 }) {
   const uiText = useUICopy();
+  const nameID = useId();
   const [name, setName] = useState("メイン端末");
   const outcomeUnknown = () => setNotice({ tone: "error", text: uiText("Passkey操作の結果を確認できません。再送せず、登録一覧または監査ログを確認してください。") });
   const registerPasskey = async () => {
@@ -66,8 +67,9 @@ export function PasskeyPanel({
         <CardDescription>{uiText("端末の生体認証やセキュリティキーを登録します。")}</CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        <div className="flex gap-2">
-          <Input placeholder={uiText("Passkey名")} value={name} onChange={(event) => setName(event.target.value)} />
+        <label htmlFor={nameID} className="text-sm font-medium">{uiText("Passkey名")}</label>
+        <div className="flex min-w-0 flex-wrap gap-2">
+          <Input id={nameID} placeholder={uiText("Passkey名")} value={name} onChange={(event) => setName(event.target.value)} />
           <AccountActionConfirmation
             controller={actionController}
             intent={{ id: "AUTH-19", resourceId: accountResourceID }}

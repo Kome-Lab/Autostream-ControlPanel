@@ -32,6 +32,8 @@ export const messages = {
   "待機中または終了済みの枠設定を編集します。": "Edit a waiting or finished stream.",
   "Discord VCの開始条件、配信経路、録画保存先を設定します。Node割り当ては作成後に明示的に行います。": "Configure Discord voice triggers, streaming routes and recording destinations. Explicitly assign nodes after creating the stream.",
   "基本情報": "Basic information",
+  "配信枠のセクション": "Stream slot sections",
+  "ビジュアル設定": "Visual settings",
   "運用中に識別する配信枠名": "A name to identify this stream during operation",
   "配信枠名": "Stream name",
   "例: 商品発表会 メイン配信": "Example: Product launch main stream",

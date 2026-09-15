@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import type { ColumnDef } from "@tanstack/react-table";
 import { DataTable } from "@/components/tables/data-table";
 import { DomainStatusBadge } from "@/components/foundation/status/domain-status-badge";
+import { presentNodeConnectivityStatus, presentNodeHealthStatus } from "@/lib/foundation/status/node-presenters";
 import { presentIncidentStatus, presentDiagnosticStatus, presentRemediationStatus } from "@/lib/foundation/status/observability-presenters";
 import { useI18n } from "@/components/admin/i18n-provider";
 import { type ObservabilityActionController, type ObservabilityActionExecutionResult, type ObservabilityActionPlan } from "@/features/observability/action-policy";
@@ -134,7 +135,9 @@ export function ResourceTable({
       required: index === 0 || ["name", "id", "status", "severity"].includes(column),
       priority: ["name", "id", "status", "severity"].includes(column) ? 0 : ["updated_at", "created_at", "confidence", "evidence"].includes(column) ? 1 : 2,
     },
-    cell: ({ row }) => column === "status" && statusPresenter
+    cell: ({ row }) => resource.path === "/service-health" && (column === "status" || column === "health_status")
+      ? <DomainStatusBadge presentation={(column === "status" ? presentNodeConnectivityStatus : presentNodeHealthStatus)(row.original[column])} translate={t} showDetail />
+      : column === "status" && statusPresenter
       ? <DomainStatusBadge presentation={statusPresenter(row.original[column])} translate={t} showDetail />
       : formatResourceCell(resource, row.original[column], column, timezone, uiText),
   }));

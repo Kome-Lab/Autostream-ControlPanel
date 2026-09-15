@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { exerciseActivation } from "./keyboard-activation.mts";
+import { longIdentifier, longText } from "./fixture-inputs.mts";
+import { exerciseActivation, type ActivationTarget } from "./keyboard-activation.mts";
 import type { BrowserHarness } from "../helpers/browser-harness.mts";
 import { bundle9SyntheticMFASecret } from "../helpers/bundle9-browser-fixtures.mts";
 import type { Condition } from "./matrix.mts";
@@ -18,7 +19,7 @@ export const observationExpression = `(() => {
   const nameFromLabels = e => [...(e.labels||[])].map(label=>label.textContent?.trim()||'').join(' ').trim();
   const named = e => e.getAttribute('aria-label')?.trim() || references(e,'aria-labelledby').map(ref=>ref.element?.textContent?.trim()||'').join(' ').trim() || nameFromLabels(e) || e.textContent?.trim() || e.getAttribute('title') || '';
   const controls = uiRoot()?uiControls(uiRoot()):[];
-  const describe = e => { const r=e.getBoundingClientRect(); return { tag:e.tagName, role:e.getAttribute("role"), name:named(e), id:e.id, disabled:!!e.disabled||e.getAttribute('aria-disabled')==='true', value:e.tagName==='SELECT'||e.type==='number'||e.tagName==='INPUT'&&[...(e.labels||[])].some(l=>/^(配信枠名|Stream name)\\s*\\*?$/.test(l.textContent.trim()))?e.value:undefined, left:r.left, right:r.right, width:r.width, height:r.height, text:e.textContent?.trim().slice(0,250), labelled:!!(nameFromLabels(e)||e.getAttribute('aria-label')?.trim()||references(e,'aria-labelledby').some(ref=>ref.element?.textContent?.trim())), clipped:r.left< -1 || r.right>innerWidth+1 }; };
+  const describe = e => { const r=e.getBoundingClientRect(); return { tag:e.tagName, role:e.getAttribute("role"), name:named(e), id:e.id, disabled:!!e.disabled||e.getAttribute('aria-disabled')==='true', value:(e===globalThis.__uiContentDraft&&${JSON.stringify([longIdentifier,longText])}.includes(e.value))||e.tagName==='SELECT'||e.type==='number'||e.tagName==='INPUT'&&[...(e.labels||[])].some(l=>/^(配信枠名|Stream name)\\s*\\*?$/.test(l.textContent.trim()))?e.value:undefined, left:r.left, right:r.right, width:r.width, height:r.height, text:e.textContent?.trim().slice(0,250), labelled:!!(nameFromLabels(e)||e.getAttribute('aria-label')?.trim()||references(e,'aria-labelledby').some(ref=>ref.element?.textContent?.trim())), clipped:r.left< -1 || r.right>innerWidth+1 }; };
   const ids=[...document.querySelectorAll('[id]')].map(e=>e.id).filter(Boolean);
   const invalidReferences=[];
   for(const e of document.querySelectorAll('input,select')) if(uiProxyShape(e)&&!uiProxyPeer(e))invalidReferences.push('orphan-native-proxy:'+uiIdentity(e));
@@ -102,7 +103,7 @@ export function assertFocus(value: FocusObservation, previous?: string) {
   assert.equal(value.indicator, true, "keyboard focus indicator absent");
 }
 type KeyboardTarget = { selector: string; name?: string };
-type KeyboardContract = { required: KeyboardTarget[]; activation: "section" | "disclosure" | "none"; native?: string };
+type KeyboardContract = { required: KeyboardTarget[]; activation: "section" | "disclosure" | "none"; activationTarget?: ActivationTarget; native?: string };
 const keyboardInventory: { surfaces: { id: string; keyboard: KeyboardContract }[] } = JSON.parse(readFileSync(new URL('../fixtures/ui-regression/surfaces.json', import.meta.url), 'utf8'));
 export function keyboardContract(condition: Condition): KeyboardContract {
   if (condition.exercise === "Confirmation") return { required: [{ selector: '[role=alertdialog] button', name: '^(Cancel|キャンセル)$' }], activation: "none" };
@@ -166,7 +167,7 @@ export async function exerciseAccessibility(browser: BrowserHarness, condition: 
         // A one-control page still proves reverse movement through its preceding
         // document control/boundary, without asserting a nonexistent 13th item.
         if(!plan.modal&&order.length===1){const focus=await press("backward","boundary");if(!focus.boundary)assertFocus(focus,previous);const restored=await press("forward","boundary");assertFocus(restored);assert.equal(restored.id,order[0],"reverse boundary must restore the actual page target");}
-        pending.push(...await exerciseActivation(browser,contract.activation));
+        pending.push(...await exerciseActivation(browser,contract.activation,contract.activationTarget));
       }
       if(plan.native&&!pending.some(value=>value.startsWith("UA_")))pending.push("UA_KEYBOARD_IDENTITY_PENDING: native media keyboard behavior remains required");
     } catch (error) { inputFailed = true; throw error; } finally {

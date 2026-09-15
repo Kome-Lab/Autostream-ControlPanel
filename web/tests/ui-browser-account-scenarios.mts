@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { BrowserHarness } from "./helpers/browser-harness.mts";
 import { type BrowserRouteFixture, currentUser } from "./ui-browser-fixture.mts";
 import { setStoredDisplay } from "./ui-browser-navigation-helpers.mts";
+import { clickVisible } from "./ui-regression/visible-trigger.mts";
 
 
 
@@ -65,7 +66,7 @@ export async function runAccountAppearanceScenario(t: TestContext, browser: Brow
 		);
 		await waitForPreferenceSettlement("GET", 1);
 		fixture.uiPreferenceResponse = { body: { theme_id: "ocean", color_mode: "dark", revision: 4 } };
-    await browser.clickRoleWithText("tab", "外観");
+    await clickVisible(browser, 'main [role="tablist"] [role="tab"]', /^外観$/);
     const matrix = await browser.waitFor(
       `(() => ({ themes: document.querySelectorAll('[role="radiogroup"][aria-label="配色テーマ"] [role="radio"]').length, modes: document.querySelectorAll('[role="radiogroup"][aria-label="表示モード"] [role="radio"]').length }))()`,
       (value: { themes: number; modes: number }) => value.themes === 12 && value.modes === 3,
@@ -128,7 +129,7 @@ export async function runAccountAppearanceScenario(t: TestContext, browser: Brow
 		await setStoredDisplay(browser, "en", "light");
 		const translatedGet = preferenceRequestCount("GET") + 1;
 		await browser.reload();
-		await browser.clickRoleWithText("tab", "外観");
+		await clickVisible(browser, 'html[lang="en"] main [role="tablist"] [role="tab"]', /^Appearance$/);
 		await browser.waitFor(`document.querySelector('[aria-label="Violet theme"]') !== null`, Boolean, "translated theme accessible name missing");
 		await browser.waitFor(
 			`document.documentElement.dataset.theme + '/' + document.documentElement.dataset.colorMode`,

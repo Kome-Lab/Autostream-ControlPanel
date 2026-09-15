@@ -1362,12 +1362,12 @@
       },
       {
         "path": "web/tests/ui-browser-account-scenarios.mts",
-        "sha256": "e74ba0f2ff2bb9284695911267198b37289edfee4653cba48abbc64a884b3ba4",
+        "sha256": "f00ef532769ff0b56aa07a61dd02c57fdd4222f63bccc9272a0944887bb51883",
         "symbols": [
           "preferenceRequestCount",
           "waitForPreferenceSettlement"
         ],
-        "physical_lines": 156
+        "physical_lines": 157
       },
       {
         "path": "web/tests/ui-browser-fixture.mts",
@@ -1401,9 +1401,9 @@
       },
       {
         "path": "web/tests/ui-browser-navigation-scenarios.mts",
-        "sha256": "da435070019c3b7cb11590f1b182706f4df874ae338206e2676a5420531ec0f6",
+        "sha256": "2507a363d9cf822dccae8436aab2e3ac308e22272d86403ae5c383a41d8463e6",
         "symbols": [],
-        "physical_lines": 259
+        "physical_lines": 255
       },
       {
         "path": "web/tests/ui-browser-observation-scenarios.mts",
@@ -1413,7 +1413,7 @@
       },
       {
         "path": "web/tests/ui-browser-query-auth-helpers.mts",
-        "sha256": "f4db6c5f4061beafce90bdb0a86463fd7901f7e652212f429c86d14227499834",
+        "sha256": "e0352d409740a6bcb1c9d73c28ee4411dbd26833c02c48ebaca2e6fd37ed055f",
         "symbols": [
           "assertCreateOutcome",
           "assertStatusSnapshot",
@@ -1425,7 +1425,7 @@
           "waitForStartReadinessHandlersIdle",
           "waitForStatus"
         ],
-        "physical_lines": 173
+        "physical_lines": 175
       },
       {
         "path": "web/tests/ui-browser-query-auth-scenarios.mts",
@@ -1435,9 +1435,9 @@
       },
       {
         "path": "web/tests/ui-browser-start-readiness-scenarios.mts",
-        "sha256": "97d3bbbb57b1f804087bee22b408e9e9fe8eb1ee5f6ebf6104aa1bb20ef8b656",
+        "sha256": "f2c88c954c4f71f9a42421c6c73079c5d0b28f517f32407741b0a13c2cabc854",
         "symbols": [],
-        "physical_lines": 284
+        "physical_lines": 288
       },
       {
         "path": "web/tests/ui-browser-visual-settings-scenarios.mts",
@@ -5402,7 +5402,7 @@
       },
       {
         "path": "web/src/features/nodes/node-registration-view.tsx",
-        "sha256": "3a5683b8da64fd38ab1f88eac4837e9904d3473b1af9e80036b961c4784aaed7",
+        "sha256": "721f4c84d272e618d83436f33d567f2ba743597037d66b0c84f5c078e2496f57",
         "symbols": [
           "LegacyNodeRegistrationView",
           "NodeRegistrationView",
@@ -5412,7 +5412,7 @@
           "openEditNode",
           "submitEditNode"
         ],
-        "physical_lines": 359
+        "physical_lines": 360
       },
       {
         "path": "web/src/features/nodes/registered-node-columns.tsx",
@@ -5545,7 +5545,7 @@
       },
       {
         "path": "web/src/features/application/application-info-view.tsx",
-        "sha256": "3b89b7dfc27ed25855ebbe8250c28d608d85b36073152d9527816c4c181471d6",
+        "sha256": "5e9410ff710df4a388a770e3d935295fa0881aeb10a98c837617b39ebc2c95b1",
         "symbols": [
           "ApplicationInfoView",
           "clearTerminalSelfUpdate",
@@ -5558,7 +5558,7 @@
           "refreshPortAuthority",
           "refreshed"
         ],
-        "physical_lines": 385
+        "physical_lines": 387
       }
     ]
   },

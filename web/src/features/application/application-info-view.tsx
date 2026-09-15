@@ -312,6 +312,8 @@ export function ApplicationInfoView() {
         </div>
       ) : null}
 
+      {canReadSystemUpdates && systemUpdates.isFetching && systemUpdates.data !== undefined ? <p role="status" data-remote-freshness="refreshing">{uiText("取得済みデータを表示しながら更新中です。")}</p> : null}
+      {canViewNodeInfo && nodesFetching && (registeredNodes.data !== undefined || serviceHealth.data !== undefined) ? <p role="status" data-remote-freshness="refreshing">{uiText("サービス情報を更新中です。")}</p> : null}
       <SystemUpdatesCard
         canRead={canReadSystemUpdates}
         canExecute={canExecuteSystemUpdates}

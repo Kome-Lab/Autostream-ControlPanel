@@ -33,7 +33,7 @@ export function TableToolbar<T>({ table, filterPlaceholder, filters, mode }: {
   return (
     <div data-slot="table-toolbar" className="flex min-w-0 flex-wrap items-end gap-3">
       {mode === "client" ? <>
-        <label className="relative min-w-48 max-w-sm flex-1">
+        <label className="relative min-w-0 max-w-sm basis-48 flex-1">
           <span className="sr-only">{ja ? "一覧を検索" : "Search table"}</span>
           <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
           <Input type="search" value={(table.getState().globalFilter as string) ?? ""}
@@ -60,11 +60,11 @@ export function TableToolbar<T>({ table, filterPlaceholder, filters, mode }: {
           {sort.desc ? (ja ? "降順" : "Descending") : (ja ? "昇順" : "Ascending")}
         </Button> : null}
       </> : null}
-      <details data-slot="column-visibility" className="relative max-w-full">
+      <details data-slot="column-visibility" className="min-w-0 max-w-full">
         <summary className="min-h-10 cursor-pointer rounded-md border px-3 py-2 text-sm focus-visible:outline-2 focus-visible:outline-ring">{ja ? "表示する列" : "Columns"}</summary>
-        <div className="absolute right-0 z-10 mt-1 max-h-80 w-60 max-w-[80vw] overflow-y-auto rounded-md border bg-popover p-2 text-popover-foreground shadow-md">
-          {columns.map((column) => <label key={column.id} className="flex min-h-11 items-center gap-2 px-2 text-sm">
-            <input type="checkbox" checked={column.getIsVisible()} disabled={requiredColumn(column, first) || !column.getCanHide()}
+        <div className="mt-1 max-h-80 w-60 max-w-full overflow-y-auto rounded-md border bg-popover p-2 text-popover-foreground shadow-md">
+          {columns.map((column) => <label key={column.id} className="flex min-h-11 min-w-0 items-center gap-2 px-2 text-sm [overflow-wrap:anywhere]">
+            <input type="checkbox" data-column-id={column.id} checked={column.getIsVisible()} disabled={requiredColumn(column, first) || !column.getCanHide()}
               onChange={(event) => column.toggleVisibility(event.target.checked)} />
             {columnLabel(column)}
           </label>)}

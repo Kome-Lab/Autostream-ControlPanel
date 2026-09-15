@@ -3,7 +3,7 @@ import { useUICopy } from "@/lib/i18n/ui-v2/use-ui-copy";
 
 
 import { useDraftExit, useNonSecretDraft, useExistingDraft } from "@/components/forms/draft-exit";
-import { useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, KeyRound, RotateCw, Server } from "lucide-react";
 import { PageHeader } from "@/components/shell/page-header";
@@ -43,6 +43,7 @@ export function NodeRegistrationView({ mode = "registration" }: { mode?: NodeReg
 function LegacyNodeRegistrationView({ mode = "registration" }: { mode?: NodeRegistrationViewMode }) {
   const uiText = useUICopy();
   const { t, locale } = useI18n();
+  const inputID = useId();
   const currentUser = useCurrentUser();
   const appSettings = useAppSettings();
   const registeredNodes = useNodes();
@@ -196,9 +197,9 @@ function LegacyNodeRegistrationView({ mode = "registration" }: { mode?: NodeRegi
             </DialogHeader>
             <div className="space-y-4">
           <div className="grid gap-2">
-            <label className="text-sm font-medium">{t("nodeType")}</label>
+            <label htmlFor={`${inputID}-type`} className="text-sm font-medium">{t("nodeType")}</label>
             <Select value={nodeType} onValueChange={handleTypeChange}>
-              <SelectTrigger>
+              <SelectTrigger id={`${inputID}-type`}>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -211,19 +212,19 @@ function LegacyNodeRegistrationView({ mode = "registration" }: { mode?: NodeRegi
             </Select>
           </div>
           <div className="grid gap-2">
-            <label className="text-sm font-medium">{t("nodeId")}</label>
-            <Input value={nodeID} onChange={(event) => setNodeID(event.target.value)} />
+            <label htmlFor={`${inputID}-node-id`} className="text-sm font-medium">{t("nodeId")}</label>
+            <Input id={`${inputID}-node-id`} value={nodeID} onChange={(event) => setNodeID(event.target.value)} />
           </div>
           <div className="grid gap-2">
-            <label className="text-sm font-medium">{t("name")}</label>
-            <Input value={name} onChange={(event) => setName(event.target.value)} />
+            <label htmlFor={`${inputID}-name`} className="text-sm font-medium">{t("name")}</label>
+            <Input id={`${inputID}-name`} value={name} onChange={(event) => setName(event.target.value)} />
           </div>
           {nodeType === "update_agent" ? (
             <div className="grid gap-4 rounded-md border bg-muted/30 p-3">
               <div className="flex items-center gap-2 text-sm font-medium"><Badge variant="secondary">pull_v2</Badge>Host Pull Agent</div>
               <div className="grid gap-2">
-                <label className="text-sm font-medium">Execution Host ID</label>
-                <Input value={executionHostID} onChange={(event) => setExecutionHostID(event.target.value)} />
+                <label htmlFor={`${inputID}-execution-host`} className="text-sm font-medium">Execution Host ID</label>
+                <Input id={`${inputID}-execution-host`} value={executionHostID} onChange={(event) => setExecutionHostID(event.target.value)} />
                 <p className="text-xs text-muted-foreground">
                   {uiText("物理ホストごとに一意のIDです。Host AgentはControl Panelへ外向き接続するため、APIポート・SSL・SSH設定は不要です。")}</p>
               </div>
@@ -233,12 +234,12 @@ function LegacyNodeRegistrationView({ mode = "registration" }: { mode?: NodeRegi
             <>
               <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_120px]">
                 <div className="grid gap-2">
-                  <label className="text-sm font-medium">Host / FQDN / IP</label>
-                  <Input value={host} onChange={(event) => setHost(event.target.value)} />
+                  <label htmlFor={`${inputID}-host`} className="text-sm font-medium">Host / FQDN / IP</label>
+                  <Input id={`${inputID}-host`} value={host} onChange={(event) => setHost(event.target.value)} />
                 </div>
                 <div className="grid gap-2">
-                  <label className="text-sm font-medium">Port</label>
-                  <Input type="number" inputMode="numeric" min={1024} max={65535} value={port} onChange={(event) => setPort(event.target.value)} />
+                  <label htmlFor={`${inputID}-port`} className="text-sm font-medium">Port</label>
+                  <Input id={`${inputID}-port`} type="number" inputMode="numeric" min={1024} max={65535} value={port} onChange={(event) => setPort(event.target.value)} />
                 </div>
               </div>
               <label className="flex items-center gap-2 text-sm">
@@ -254,8 +255,8 @@ function LegacyNodeRegistrationView({ mode = "registration" }: { mode?: NodeRegi
               {uiText("受信listenerは作成しません。登録・Heartbeat・Policy取得はControl Panelの既存HTTPS APIを使用します。")}</div>
           )}
           <div className="grid gap-2">
-            <label className="text-sm font-medium">{uiText("説明")}</label>
-            <Textarea value={description} onChange={(event) => setDescription(event.target.value)} rows={3} />
+            <label htmlFor={`${inputID}-description`} className="text-sm font-medium">{uiText("説明")}</label>
+            <Textarea id={`${inputID}-description`} value={description} onChange={(event) => setDescription(event.target.value)} rows={3} />
           </div>
           <div className="grid gap-2 rounded-md border bg-muted/30 p-3 text-sm">
             <div className="font-medium">{uiText("Node Agentが自動報告する項目")}</div>

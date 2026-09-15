@@ -7,17 +7,18 @@ import { assertNoBrowserConsoleErrors } from "./helpers/ui-foundation-assertions
 import { type BrowserRouteFixture, startReadinessStream, healthyRows, currentVersion, permissionUser, startReadinessPath, currentUser } from "./ui-browser-fixture.mts";
 import { setStoredDisplay, waitForAnimationFrames, deferred } from "./ui-browser-navigation-helpers.mts";
 import { waitForStartReadinessHandlersIdle, waitForShell } from "./ui-browser-query-auth-helpers.mts";
+import { clickVisible, clickDisabledVisible } from "./ui-regression/visible-trigger.mts";
 
 
 
 export async function runStartReadinessScenario(t: TestContext, browser: BrowserHarness, server: { baseUrl: string }, fixture: Pick<BrowserRouteFixture, "streamsResponse" | "healthResponse" | "versionFixture" | "authResponse" | "startReadinessResponse" | "startReadinessMethods">) {
 
   await t.test("Streams start-readiness follows streams.start at render and confirm time", async (t) => {
-    const readinessSelector = `button[aria-label=${JSON.stringify(`${startReadinessStream.name} の開始準備を再確認`)}]`;
-    const editSelector = `button[aria-label=${JSON.stringify(`${startReadinessStream.name} を編集`)}]`;
+    const rowSelector = `[data-slot="data-table"] tr:has([data-slot="stream-primary-trigger"][data-stream-id=${JSON.stringify(startReadinessStream.id)}])`;
+    const readinessSelector = `${rowSelector} button[aria-label=${JSON.stringify(`${startReadinessStream.name} の開始準備を再確認`)}]`;
+    const editSelector = `${rowSelector} button[aria-label=${JSON.stringify(`${startReadinessStream.name} を編集`)}]`;
     const actionSnapshotExpression = `(() => {
-      const visibleButton = (selector) => [...document.querySelectorAll(selector)]
-        .find((element) => element instanceof HTMLButtonElement && element.getClientRects().length > 0);
+      const visibleButton = (selector) => { const matches=[...document.querySelectorAll(selector)].filter(element => element instanceof HTMLButtonElement && element.getClientRects().length > 0 && getComputedStyle(element).visibility!=='hidden'); if(matches.length>1)throw Error('ambiguous readiness row control');return matches[0]; };
       const readiness = visibleButton(${JSON.stringify(readinessSelector)});
       const edit = visibleButton(${JSON.stringify(editSelector)});
       const reasonId = readiness?.getAttribute("aria-describedby");
@@ -29,7 +30,7 @@ export async function runStartReadinessScenario(t: TestContext, browser: Browser
         readinessReason: reasonId ? document.getElementById(reasonId)?.textContent || "" : "",
       };
     })()`;
-    const successNotice = `${startReadinessStream.name}の開始準備確認を受け付けました。最新状態を確認してください。`;
+    const successNotice = "開始準備の確認結果を受信しました。";
     const successResponse = {
       body: { stream_id: startReadinessStream.id, ready: true, missing_service_types: [], issues: [], assigned_service_count: 2 },
       requiredResponse: true,
@@ -45,6 +46,9 @@ export async function runStartReadinessScenario(t: TestContext, browser: Browser
     await t.test("handler guard structural oracle rejects in-memory regressions", () => {
       const sources: StreamsStartReadinessGuardSources = {
         view: readFileSync(new URL("../src/features/streams/streams-view.tsx", import.meta.url), "utf8"),
+        cells: readFileSync(new URL("../src/features/streams/stream-table-cells.tsx", import.meta.url), "utf8"),
+        detailDialog: readFileSync(new URL("../src/features/streams/stream-details-dialog.tsx", import.meta.url), "utf8"),
+        details: readFileSync(new URL("../src/features/streams/stream-detail-operations.tsx", import.meta.url), "utf8"),
         controller: readFileSync(new URL("../src/features/streams/stream-action-controller.ts", import.meta.url), "utf8"),
         descriptors: readFileSync(new URL("../src/features/streams/stream-action-descriptors.ts", import.meta.url), "utf8"),
       };
@@ -97,13 +101,13 @@ export async function runStartReadinessScenario(t: TestContext, browser: Browser
           );
 
           if (initial.readinessAvailable) {
-            await browser.clickSelector(readinessSelector);
+            await clickVisible(browser, readinessSelector);
             await browser.waitFor(
               "Boolean(document.querySelector('[data-slot=\"alert-dialog-content\"][data-state=\"open\"]'))",
               Boolean,
               `${matrixCase.name}: start-readiness confirmation did not open`,
             );
-            await browser.clickSelector('[data-confirm-action]');
+            await clickVisible(browser, '[data-slot="alert-dialog-content"][data-state="open"] [data-confirm-action]');
             await browser.waitForRequestCount(startReadinessPath, 1);
             await browser.waitForResponseCount(startReadinessPath, 1);
             await browser.waitFor(
@@ -112,7 +116,7 @@ export async function runStartReadinessScenario(t: TestContext, browser: Browser
               `${matrixCase.name}: start-readiness mutation did not reach its public success boundary`,
             );
           } else {
-            await browser.clickSelector(readinessSelector);
+            await clickDisabledVisible(browser, readinessSelector);
             await waitForAnimationFrames(browser);
           }
           await waitForStartReadinessHandlersIdle(browser);
@@ -149,7 +153,7 @@ export async function runStartReadinessScenario(t: TestContext, browser: Browser
           (value: { readinessAvailable: boolean }) => value.readinessAvailable,
           "start-readiness action was not initially available",
         );
-        await browser.clickSelector(readinessSelector);
+        await clickVisible(browser, readinessSelector);
         await browser.waitFor(
           "Boolean(document.querySelector('[data-slot=\"alert-dialog-content\"][data-state=\"open\"]'))",
           Boolean,
@@ -176,7 +180,7 @@ export async function runStartReadinessScenario(t: TestContext, browser: Browser
           false,
           "permission refresh must dismiss the stale start-readiness confirmation",
         );
-        await browser.clickSelector(readinessSelector);
+        await clickDisabledVisible(browser, readinessSelector);
         await waitForAnimationFrames(browser);
         await waitForStartReadinessHandlersIdle(browser);
         assert.deepEqual(
@@ -203,13 +207,13 @@ export async function runStartReadinessScenario(t: TestContext, browser: Browser
           (value: { readinessAvailable: boolean }) => value.readinessAvailable,
           "403 fixture start-readiness action was not available",
         );
-        await browser.clickSelector(readinessSelector);
+        await clickVisible(browser, readinessSelector);
         await browser.waitFor(
           "Boolean(document.querySelector('[data-slot=\"alert-dialog-content\"][data-state=\"open\"]'))",
           Boolean,
           "403 fixture confirmation did not open",
         );
-        await browser.clickSelector('[data-confirm-action]');
+        await clickVisible(browser, '[data-slot="alert-dialog-content"][data-state="open"] [data-confirm-action]');
         await browser.waitForRequestCount(startReadinessPath, 1);
         await browser.waitForResponseCount(startReadinessPath, 1);
         await browser.waitFor(
@@ -243,20 +247,20 @@ export async function runStartReadinessScenario(t: TestContext, browser: Browser
             (value: { readinessAvailable: boolean }) => value.readinessAvailable,
             "pending fixture start-readiness action was not available",
           );
-          await browser.clickSelector(readinessSelector);
+          await clickVisible(browser, readinessSelector);
           await browser.waitFor(
             "Boolean(document.querySelector('[data-slot=\"alert-dialog-content\"][data-state=\"open\"]'))",
             Boolean,
             "pending fixture confirmation did not open",
           );
-          await browser.clickSelector('[data-confirm-action]');
+          await clickVisible(browser, '[data-slot="alert-dialog-content"][data-state="open"] [data-confirm-action]');
           await browser.waitForRequestCount(startReadinessPath, 1);
           await browser.waitFor(
             actionSnapshotExpression,
             (value: { readinessAvailable: boolean }) => !value.readinessAvailable,
             "pending start-readiness mutation did not disable its trigger",
           );
-          await browser.clickSelector(readinessSelector);
+          await clickDisabledVisible(browser, readinessSelector);
           await waitForAnimationFrames(browser);
           assert.equal(browser.requests.get(startReadinessPath), 1, "pending start-readiness must not send a duplicate request");
           assert.equal(browser.responses.get(startReadinessPath) || 0, 0, "deferred start-readiness must remain pending before release");

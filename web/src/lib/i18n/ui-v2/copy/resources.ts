@@ -1,5 +1,11 @@
 // Fixed UI copy. Interpolated values retain their original meaning.
 export const messages = {
+  "サービスの状態を読み込み中です。": "Loading service state.",
+  "一部の状態を取得できません。取得済みのデータを表示しています。": "Some state could not be loaded. Showing previously received data.",
+  "更新に失敗しました。取得済みのデータを表示しています。": "Refresh failed. Showing previously received data.",
+  "取得済みデータを表示しながら更新中です。": "Refreshing; showing previously received data.",
+  "セキュリティ設定を読み込み中です。": "Loading security settings.",
+  "サービス情報を更新中です。": "Refreshing service information.",
   "ロール一覧を取得できませんでした。取得済みの設定は保持しています。": "The role list could not be loaded. Previously received settings are retained.",
   "参照": "View",
   "過去の履歴を取得できませんでした。通信状態を確認して再試行してください。": "Could not load older history. Check connectivity and retry.",

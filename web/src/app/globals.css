@@ -365,6 +365,19 @@ textarea {
   outline-offset: 2px;
 }
 
+/* Unlayered so the real keyboard outline survives layered outline-none/ring
+   utilities. It covers controls and the sections reached by their navigation. */
+:where(button, a[href], input:not([type="hidden"]), select, textarea, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+@media (forced-colors: active) {
+  :where(button, a[href], input:not([type="hidden"]), select, textarea, summary, [tabindex]):focus-visible {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+  }
+}
+
 /* A row keeps its identity and action owners at every viewport. */
 .ui-record-label,
 .ui-record-disclosure {

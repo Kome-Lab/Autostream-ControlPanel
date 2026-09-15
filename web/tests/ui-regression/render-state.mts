@@ -25,12 +25,17 @@ export const renderedDOM = String.raw`
   const uiProxyShape = e => {
     if(!['INPUT','SELECT'].includes(e.tagName)||e.getAttribute('aria-hidden')!=='true'||e.tabIndex!==-1)return false;
     const s=getComputedStyle(e),r=e.getBoundingClientRect();
-    return s.position==='absolute'&&((r.width<=1&&r.height<=1&&/(hidden|clip)/.test(s.overflow||s.overflowX)&&s.clip!=='auto')||s.opacity==='0'&&s.pointerEvents==='none');
+    const w=parseFloat(s.width),h=parseFloat(s.height),zeroClip=/^rect\(0px,?\s*0px,?\s*0px,?\s*0px\)$/.test(s.clip);
+    const cssPixelClip=w>0&&w<=1&&h>0&&h<=1&&zeroClip&&/(hidden|clip)/.test(s.overflow||s.overflowX)&&[r.width/w,r.height/h].every(v=>Number.isFinite(v)&&v>0);
+    return s.position==='absolute'&&(cssPixelClip||s.opacity==='0'&&s.pointerEvents==='none');
   };
   const uiProxyPeer = e => {
     const selector=e.tagName==='SELECT'?'[role=combobox]':e.type==='checkbox'?'[role=checkbox],[role=switch]':e.type==='radio'?'[role=radio]':null;
     if(!selector)return null;
+    const labelled=p=>!!(p.getAttribute('aria-label')?.trim()||[...(p.labels||[])].some(l=>l.textContent?.trim())||p.closest('label')?.textContent?.trim()||
+      (p.getAttribute('aria-labelledby')||'').split(/\s+/).filter(Boolean).some(id=>document.getElementById(id)?.textContent?.trim()));
     const peers=[...(e.parentElement?.querySelectorAll(selector)||[])].filter(uiAX);
+    if(peers.length===1&&!labelled(peers[0]))return null;
     return peers.length===1?peers[0]:null;
   };
   const uiProxy = e => uiProxyShape(e)&&!!uiProxyPeer(e);

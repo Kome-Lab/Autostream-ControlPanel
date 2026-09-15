@@ -1,3 +1,4 @@
+import { clickVisible } from "./ui-regression/visible-trigger.mts";
 import type { TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { BrowserHarness } from "./helpers/browser-harness.mts";
@@ -57,7 +58,7 @@ export async function runNavigationParityScenario(t: TestContext, browser: Brows
       assert.ok(desktop.hrefs.length > 20, `${requestedPath} desktop navigation did not render`);
 
       await browser.setViewport(390, 844);
-      await browser.clickSelector('button[aria-label="ナビゲーションを開く"]');
+      await clickVisible(browser, 'button[aria-label="ナビゲーションを開く"]');
       await browser.waitFor("Boolean(document.querySelector('.mobile-navigation-sheet'))", Boolean, `mobile navigation did not open for ${requestedPath}`);
       const mobile = await browser.evaluate<NavigationSnapshot>(mobileNavigationSnapshotExpression);
       assertNavigationBoundaryOutcome({ requestedPath, expectedActive, desktop, mobile });
@@ -80,7 +81,7 @@ export async function runNavigationParityScenario(t: TestContext, browser: Brows
     assert.deepEqual(limited.activeHrefs, ["/admin/streams/"]);
 
     await browser.setViewport(390, 844);
-    await browser.clickSelector('button[aria-label="ナビゲーションを開く"]');
+    await clickVisible(browser, 'button[aria-label="ナビゲーションを開く"]');
     await browser.waitFor("Boolean(document.querySelector('.mobile-navigation-sheet'))", Boolean, "limited mobile navigation did not open");
     const limitedMobile = await browser.evaluate<NavigationSnapshot>(mobileNavigationSnapshotExpression);
     assertNavigationBoundaryOutcome({
@@ -109,14 +110,14 @@ export async function runNavigationCreateFocusScenario(t: TestContext, browser: 
     await setStoredDisplay(browser, "ja", "light");
     await browser.navigate(`${server.baseUrl}/admin/streams/`);
     await waitForShell(browser, "ナビゲーションを開く");
-    await browser.clickSelector('button[aria-label="ナビゲーションを開く"]');
+    await clickVisible(browser, 'button[aria-label="ナビゲーションを開く"]', undefined, true);
     await browser.waitFor("Boolean(document.querySelector('.mobile-navigation-sheet'))", Boolean, "mobile navigation did not open");
     const normalMotion = await sheetMotion(browser);
     assert.notEqual(normalMotion.content.animationName, "none");
     assert.ok(seconds(normalMotion.content.animationDuration) > 0);
     await waitForSheetSettled(browser);
 
-    await browser.clickSelector('.mobile-navigation-sheet a[href="/admin/streams/#create-stream"]');
+    await clickVisible(browser, '.mobile-navigation-sheet a[href="/admin/streams/#create-stream"]');
     const sameRoute = await browser.waitFor(
       createSnapshotExpression,
       (value: CreateSnapshot) => value.dialogCount === 1 && value.createOpen && !value.navigationOpen && value.focusInsideCreate,
@@ -132,10 +133,10 @@ export async function runNavigationCreateFocusScenario(t: TestContext, browser: 
 
     await browser.navigate(`${server.baseUrl}/admin/`);
     await waitForShell(browser, "ナビゲーションを開く");
-    await browser.clickSelector('button[aria-label="ナビゲーションを開く"]');
+    await clickVisible(browser, 'button[aria-label="ナビゲーションを開く"]', undefined, true);
     await browser.waitFor("Boolean(document.querySelector('.mobile-navigation-sheet'))", Boolean, "cross-route navigation did not open");
     await waitForSheetSettled(browser);
-    await browser.clickSelector('.mobile-navigation-sheet a[href="/admin/streams/#create-stream"]');
+    await clickVisible(browser, '.mobile-navigation-sheet a[href="/admin/streams/#create-stream"]');
     const crossRoute = await browser.waitFor(
       createSnapshotExpression,
       (value: CreateSnapshot) => value.dialogCount === 1 && value.createOpen && !value.navigationOpen && value.focusInsideCreate && value.url.includes("/admin/streams/#create-stream"),
@@ -148,7 +149,7 @@ export async function runNavigationCreateFocusScenario(t: TestContext, browser: 
     await browser.setViewport(1440, 900);
     await browser.navigate(`${server.baseUrl}/admin/streams/`);
     await waitForShell(browser, "アカウントメニュー");
-    await browser.clickSelector('header a[href="/admin/streams/#create-stream"]');
+    await clickVisible(browser, 'header a[href="/admin/streams/#create-stream"]');
     const desktop = await browser.waitFor(
       createSnapshotExpression,
       (value: CreateSnapshot) => value.dialogCount === 1 && value.createOpen && value.focusInsideCreate,
@@ -170,7 +171,7 @@ export async function runReducedMotionScenario(t: TestContext, browser: BrowserH
     await browser.setMediaFeatures([{ name: "prefers-reduced-motion", value: "reduce" }]);
     await browser.navigate(`${server.baseUrl}/admin/streams/`);
     await waitForShell(browser, "ナビゲーションを開く");
-    await browser.clickSelector('button[aria-label="ナビゲーションを開く"]');
+    await clickVisible(browser, 'button[aria-label="ナビゲーションを開く"]');
     await browser.waitFor("Boolean(document.querySelector('.mobile-navigation-sheet'))", Boolean, "reduced-motion navigation did not open");
     const reducedMotion = await sheetMotion(browser);
     for (const layer of [reducedMotion.content, reducedMotion.overlay]) {
@@ -198,17 +199,12 @@ export async function runDisplayControlsScenario(t: TestContext, browser: Browse
     await setStoredDisplay(browser, "ja", "light");
     await browser.navigate(`${server.baseUrl}/admin/streams/`);
     await waitForShell(browser, "ナビゲーションを開く");
-    await browser.clickSelector('button[aria-label="ナビゲーションを開く"]');
+    await clickVisible(browser, 'button[aria-label="ナビゲーションを開く"]');
     await browser.waitFor("Boolean(document.querySelector('.mobile-navigation-sheet'))", Boolean, "mobile navigation did not open for locale test");
     await waitForSheetSettled(browser);
     browser.clearRequestCounts();
-    await browser.clickSelector('[role="combobox"][aria-label="言語"]');
-    const englishOption = await browser.waitFor(
-      `(() => { const option = [...document.querySelectorAll('[role="option"]')].find((element) => element.textContent?.trim() === 'English'); if (!(option instanceof HTMLElement)) return null; const rect = option.getBoundingClientRect(); return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }; })()`,
-      (value: { x: number; y: number } | null) => value !== null,
-      "English locale option did not open",
-    );
-    await browser.clickAt(englishOption.x, englishOption.y);
+    await clickVisible(browser, '[role="combobox"][aria-label="言語"]');
+    await clickVisible(browser, '[role=option]', /^English$/);
     await browser.waitFor("document.documentElement.lang", (value: string) => value === "en", "locale did not switch to English");
     const englishShell = await browser.evaluate<EnglishShellSnapshot>(`(() => {
       const sheet = document.querySelector('.mobile-navigation-sheet');
@@ -236,9 +232,9 @@ export async function runDisplayControlsScenario(t: TestContext, browser: Browse
       Boolean,
       "locale option popup did not release pointer ownership",
     );
-    await browser.clickSelector('.mobile-navigation-sheet button[aria-label="Close navigation"]');
+    await clickVisible(browser, '.mobile-navigation-sheet button[aria-label="Close navigation"]');
     await browser.waitFor("!document.querySelector('.mobile-navigation-sheet')", Boolean, "translated close action did not close navigation");
-    await browser.clickSelector('button[aria-label="Account menu"]');
+    await clickVisible(browser, 'button[aria-label="Account menu"]');
     const accountText = await browser.waitFor(
       `(() => [...document.querySelectorAll('[role="menu"]')].find((element) => element.getClientRects().length)?.textContent || '')()`,
       (value: string) => value.includes("Account settings") && value.includes("Log out"),
@@ -250,7 +246,7 @@ export async function runDisplayControlsScenario(t: TestContext, browser: Browse
 
     const routeBeforeTheme = await browser.evaluate<string>("location.pathname + location.hash");
 		const mirrorBeforeTheme = await browser.evaluate<string>(`localStorage.getItem('autostream.ui_preference') || ''`);
-    await browser.clickSelector('button[aria-label="Theme"]');
+    await clickVisible(browser, 'button[aria-label="Theme"]');
     await browser.waitFor("document.documentElement.classList.contains('dark')", Boolean, "theme did not switch to dark");
     assert.equal(await browser.evaluate<string>("location.pathname + location.hash"), routeBeforeTheme);
     assert.equal(browser.requests.get("/auth/me") || 0, 0, "theme switching must not recreate the session query");

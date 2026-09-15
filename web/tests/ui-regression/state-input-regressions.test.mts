@@ -117,7 +117,7 @@ test("UI-STATE-VIEW-002: actual security partial shows role error while keeping 
 });
 
 test("UI-STATE-005: every initial aggregate holds all real loading owners, not a partial settled substitute", async () => {
-  for (const family of ["dashboard","workers","archive","monitoring","metrics","system-updates","account"]) {
+  for (const family of ["dashboard","workers","service-health","archive","monitoring","metrics","system-updates","account"]) {
     const current=fixtureFor(family,"initial-loading"), paths=loadingPaths(current.condition,current.surface.primary);
     const held=paths.map(path=>current.get(path));assert.ok(held.every(response=>response.waitUntil));
     const dom=observerDOM();dom.main.ownText="Data has not been received.";
@@ -143,6 +143,55 @@ test("UI-STATE-005: every initial aggregate holds all real loading owners, not a
   notice.setAttribute("role","status");notice.setAttribute("aria-label",status[1]);
   assertState(current.condition,dom.run(observationExpression),current.evidence,current.surface.primary);current.fixture.release();
 });
+test('UI-STATE-VIEW-009: Service Health renders the real same-cache initial, stale, partial, refresh, empty and unknown states in both locales',async()=>{
+  const {ResourcePage}=await import('../../src/features/resources/resource-page.tsx');
+  const {APIError}=await import('../../src/lib/api/client.ts');
+  for(const locale of ['ja','en'] as const)for(const state of ['ready','initial-loading','blocking-error','stale','partial','background-refresh','empty','unknown']){
+    const current=fixtureFor('service-health',state);current.condition.locale=locale;
+    const paths=['/service-health','/nodes'],first=new Map(paths.map(path=>[path,current.get(path)]));
+    if(['stale','background-refresh'].includes(state))current.fixture.refresh();
+    const latest=['stale','background-refresh'].includes(state)?new Map(paths.map(path=>[path,current.get(path)])):first;
+    try {
+      const html=renderUI(createElement(ResourcePage,{pageId:'service-health'}),locale,'/admin/service-health/',client=>{
+        for(const path of paths){const response=latest.get(path)!;const query=client.getQueryCache().find({queryKey:[path.slice(1)],exact:true});assert.ok(query);
+          const failed=(response.status??200)===503,held=!!response.waitUntil;
+          query.setState({data:state==='initial-loading'||failed&&state!=='stale'?undefined:state==='empty'?[]:failed||held?first.get(path)!.body:response.body,
+            status:state==='initial-loading'?'pending':failed?'error':'success',fetchStatus:held?'fetching':'idle',error:failed?new APIError('HIDDEN_PROVIDER_DETAIL',503,'temporarily_unavailable'):null});
+        }
+      });
+      const dom=observerDOM();dom.main.ownText=html.replace(/<[^>]*>/g,' ');
+      assertState(current.condition,dom.run(observationExpression),current.evidence,current.surface.primary);
+      assert.doesNotMatch(html,/HIDDEN_PROVIDER_DETAIL/);
+      if(['ready','stale','partial','background-refresh'].includes(state))assert.match(html,/Worker One/);
+      if(['stale','partial'].includes(state)){assert.match(html,/role="alert"/);assert.match(html,/data-remote-freshness="stale"/);assert.match(html,/data-slot="data-table"/);}
+      if(state==='initial-loading'){assert.match(html,/role="status"/);assert.match(html,locale==='ja'?/サービスの状態を読み込み中/:/Loading service state/);assert.doesNotMatch(html,/data-slot="data-table"/);}
+      if(state==='blocking-error'){assert.match(html,/role="alert"/);assert.doesNotMatch(html,/data-slot="data-table"/);}
+      if(state==='background-refresh')assert.match(html,/data-remote-freshness="refreshing"/);
+      if(state==='unknown'){for(const column of ['status','health_status']){const cell=html.match(new RegExp('<td[^>]*headers="[^"]+-'+column+'"[^>]*>([\\s\\S]*?)</td>'))?.[1];assert.ok(cell);assert.match(cell,/data-status-known="false"/);assert.match(cell,locale==='ja'?/不明/:/Unknown/);}assert.doesNotMatch(html,/>future_state</);}
+      if(state==='stale'){current.evidence.responseStatuses.set('/service-health',[200,200]);assert.throws(()=>assertState(current.condition,dom.run(observationExpression),current.evidence,current.surface.primary));}
+    } finally {current.fixture.release();}
+  }
+});
+
+test('UI-STATE-VIEW-010: Security initial status and System Updates background status follow their real queries',async()=>{
+  const {ResourcePage}=await import('../../src/features/resources/resource-page.tsx');
+  const {ApplicationInfoView}=await import('../../src/features/application/application-info-view.tsx');
+  for(const locale of ['ja','en'] as const){
+    const security=renderUI(createElement(ResourcePage,{pageId:'security'}),locale,'/admin/security/',client=>{
+      const query=client.getQueryCache().find({queryKey:['resource','/security/settings'],exact:true});assert.ok(query);query.setState({data:undefined,status:'pending',fetchStatus:'fetching'});
+    });
+    assert.match(security,locale==='ja'?/セキュリティ設定を読み込み中/:/Loading security settings/);assert.match(security,/role="status"/);
+    for(const key of ['system-updates','nodes']){
+      const html=renderUI(createElement(ApplicationInfoView),locale,'/admin/application/',client=>{
+        const query=client.getQueryCache().find({queryKey:[key],exact:true});assert.ok(query);query.setState({fetchStatus:'fetching'});
+      });
+      assert.match(html,/role="status"/);assert.match(html,locale==='ja'?/更新中/:/Refreshing/);assert.match(html,/B9 Host Agent/);
+    }
+    const settled=renderUI(createElement(ApplicationInfoView),locale,'/admin/application/');
+    assert.doesNotMatch(settled,/>Refreshing (?:service information|while displaying)/);
+  }
+});
+
 test("UI-STATE-006: actual English failure rendering and runner use the same failure predicate",async()=>{
   const {MetricsView}=await import("../../src/features/metrics/metrics-view.tsx");
   const {APIError}=await import("../../src/lib/api/client.ts");

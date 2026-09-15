@@ -68,6 +68,8 @@ export function createUIFixture(baseURL: string) {
       response = { body: { theme_id: condition?.theme || "autostream", color_mode: condition?.exercise === "system-mode" ? "system" : condition?.mode || "light", revision: 4 } };
     } else if (request.method === "GET" && path === "/streams") {
       response = { body: structuredClone(streams) };
+    } else if (request.method === "GET" && url.pathname === "/video-cover-presets" && url.search === "") {
+      response = { body: { items: [] } };
     } else if (request.method === "GET" && Object.hasOwn(extras, path)) {
       response = { body: structuredClone(extras[path]) };
     } else {
@@ -100,6 +102,15 @@ export function createUIFixture(baseURL: string) {
     return { ...response, requiredResponse: true };
   };
   return { resolver, trace, unexpected, reset, release() { unblock(); }, refresh() { phase = condition.state; }, get primary() { return primary; },
+    workerRestartTarget() {
+      const response = inherited.resolver({ method: "GET", url: origin + "/workers" });
+      assert.ok(Array.isArray(response?.body));
+      const rows = response.body as { id: string; service_id: string; service_type: string; service_name: string }[];
+      const matches = rows.filter(row => row.service_id === "worker-one" && row.id === "worker-one" && row.service_type === "worker");
+      assert.equal(matches.length, 1, "the inherited restart fixture requires the exact eligible Worker");
+      assert.equal(rows.filter(row => row.service_name === matches[0].service_name).length, 1, "fixture display identity must be unique");
+      return { id: matches[0].service_id, type: matches[0].service_type, name: matches[0].service_name };
+    },
     detailStream() {
       const selected = streams[phase === "unknown" ? 0 : 1];
       return contentInput(phase === "unknown" ? unknownInput("/streams", selected) : selected, condition.exercise, "/streams") as typeof selected;

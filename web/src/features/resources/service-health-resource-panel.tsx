@@ -33,11 +33,13 @@ export function ServiceHealthResourcePanel({ resource, access }: { resource: Res
     [registeredNodes.data, resource, serviceHealth.data, uiText],
   );
   const columns = useMemo(() => visibleColumns(rows, resource), [rows, resource]);
-  const loading = rows.length === 0 && (serviceHealth.isLoading || (canReadRegisteredNodes && registeredNodes.isLoading));
+  const received = serviceHealth.data !== undefined || (canReadRegisteredNodes && registeredNodes.data !== undefined);
+  const loading = !received && (serviceHealth.isLoading || (canReadRegisteredNodes && registeredNodes.isLoading));
   const fetching = serviceHealth.isFetching || (canReadRegisteredNodes && registeredNodes.isFetching);
 
   if (!access.read) return <PermissionNotice resource={resource} action={uiText("参照")} permission={resource.permissions?.read} />;
   const queryError = serviceHealth.isError || (canReadRegisteredNodes && registeredNodes.isError);
+  const partial = queryError && received && (serviceHealth.data === undefined || (canReadRegisteredNodes && registeredNodes.data === undefined));
   return (
     <Card>
       <CardHeader className="gap-2 sm:flex-row sm:items-start sm:justify-between">
@@ -58,7 +60,13 @@ export function ServiceHealthResourcePanel({ resource, access }: { resource: Res
           {locale === "ja" ? "更新" : "Refresh"}</Button>
       </CardHeader>
       <CardContent className="space-y-4">
-        {queryError ? <QueryErrorNotice onRetry={() => { void registeredNodes.refetch(); void serviceHealth.refetch(); }} /> : loading ? <Skeleton className="h-48 w-full" /> : <ResourceTable rows={rows} columns={columns} resource={resource} timezone={timezone} canEdit={false} canDelete={false} canTest={false} currentUser={currentUser.data} />}
+        {queryError ? <div data-remote-state={partial ? "partial" : received ? "ready" : "error"} data-remote-freshness={received ? "stale" : undefined}>
+          <QueryErrorNotice onRetry={() => { void registeredNodes.refetch(); void serviceHealth.refetch(); }} />
+          {received ? <p role="status">{partial ? uiText("一部の状態を取得できません。取得済みのデータを表示しています。") : uiText("更新に失敗しました。取得済みのデータを表示しています。")}</p> : null}
+        </div> : null}
+        {loading ? <div role="status" data-remote-state="loading"><p>{uiText("サービスの状態を読み込み中です。")}</p><Skeleton className="h-48 w-full" /></div> : null}
+        {fetching && received ? <p role="status" data-remote-freshness="refreshing">{uiText("取得済みデータを表示しながら更新中です。")}</p> : null}
+        {received ? <ResourceTable rows={rows} columns={columns} resource={resource} timezone={timezone} canEdit={false} canDelete={false} canTest={false} currentUser={currentUser.data} /> : null}
       </CardContent>
     </Card>
   );

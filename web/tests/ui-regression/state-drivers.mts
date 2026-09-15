@@ -11,6 +11,7 @@ export const deniedPrimaryRequests: Record<string, number> = {
 export const sectionPaths: Record<string, string[]> = {
   dashboard: ["/streams", "/service-health"],
   workers: ["/workers", "/nodes", "/service-health"],
+  "service-health": ["/service-health", "/nodes"],
   archive: ["/archive/streams", "/archive/processing-streams"],
   monitoring: ["/streams", "/service-health", "/observability/incidents", "/observability/diagnostics"],
   metrics: ["/observability/metrics", "/service-health"],
@@ -31,7 +32,7 @@ export function statePaths(condition: Condition, primary: string) {
 // Only owners participating in the visible initial aggregate; role/settings
 // secondary form queries are mounted later and are not initial prerequisites.
 export function loadingPaths(condition: Condition, primary: string) {
-  return ["dashboard", "workers", "archive", "monitoring", "metrics", "system-updates", "account"].includes(condition.family)
+  return ["dashboard", "workers", "service-health", "archive", "monitoring", "metrics", "system-updates", "account"].includes(condition.family)
     ? sectionPaths[condition.family] : [primary];
 }
 
@@ -46,7 +47,7 @@ export const visibleSeed: Record<string, string> = {
   "security-settings": "12", account: "Enabled", login: "UI Identity", "public-archive-share": "UI recording.mp4",
 };
 export type RequestEvidence = { requests: Map<string, number>; responses: Map<string, number>; responseStatuses: Map<string, number[]> };
-export const failureCopy = /取得でき|取得失敗|更新失敗|送信.*失敗|Could not|couldn.t|unavailable|failed to|refresh failed|一部|stale|表示できません/i;
+export const failureCopy = /取得でき|取得失敗|更新(?:に)?失敗|送信.*失敗|Could not|couldn.t|unavailable|failed to|refresh failed|一部|stale|表示できません/i;
 export const failureTextExpression = "[...document.querySelectorAll('main,[role=dialog],[role=alertdialog]')].map(e=>e.textContent).join(' ')";
 export const hasFailureCopy = (text: unknown) => typeof text === "string" && failureCopy.test(text);
 function statuses(evidence: RequestEvidence, path: string) { return evidence.responseStatuses.get(path) || []; }
@@ -104,7 +105,7 @@ export function assertState(condition: Condition, value: UIObservation, evidence
     const expected = deniedPrimaryRequests[condition.family] || 0;
     assert.equal(requests, expected, "existing per-surface denied query contract");
     assert.deepEqual(received, Array(expected).fill(403), "every denied response must be 403");
-    assert.match(text, /権限|permission|Permission|利用でき|アクセス|forbidden|Forbidden|取得でき|unavailable|表示できません/);
+    assert.match(text, /権限|permission|Permission|利用でき|アクセス|forbidden|Forbidden|取得でき|unavailable|Could not load|表示できません/);
     assert.deepEqual(value.controls.filter(control => !control.disabled && /^(Start|Stop|Restart worker|Delete|開始|停止|削除|Worker を再起動)$/.test(control.name)), [], "denied actor cannot perform high-risk actions");
   } else if (condition.state === "partial") {
     const paths = statePaths(condition, primary);

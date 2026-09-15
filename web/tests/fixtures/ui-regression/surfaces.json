@@ -214,7 +214,7 @@
       "keyboard": {
         "required": [
           {
-            "selector": "[data-slot=section-navigation] button:first-child"
+            "selector": "[role=dialog] [data-slot=section-navigation][aria-label=\"Stream detail sections\"] button[aria-controls=\"stream-overview\"], [role=dialog] [data-slot=section-navigation][aria-label=\"配信詳細のセクション\"] button[aria-controls=\"stream-overview\"]"
           },
           {
             "selector": "[role=dialog] button",
@@ -222,7 +222,11 @@
           }
         ],
         "activation": "section",
-        "native": "[role=dialog] video"
+        "native": "[role=dialog] video",
+        "activationTarget": {
+          "selector": "[role=dialog] [data-slot=section-navigation][aria-label=\"Stream detail sections\"] button[aria-controls=\"stream-overview\"], [role=dialog] [data-slot=section-navigation][aria-label=\"配信詳細のセクション\"] button[aria-controls=\"stream-overview\"]",
+          "sectionId": "stream-overview"
+        }
       }
     },
     {
@@ -277,14 +281,18 @@
       "keyboard": {
         "required": [
           {
-            "selector": "[data-slot=section-navigation] button:first-child"
+            "selector": "#create-stream > [data-slot=card-content] > nav[data-slot=section-navigation] button[aria-controls=\"create-stream-basic\"]"
           },
           {
             "selector": "[role=dialog] button",
             "name": "^(Close|閉じる)$"
           }
         ],
-        "activation": "section"
+        "activation": "section",
+        "activationTarget": {
+          "selector": "#create-stream > [data-slot=card-content] > nav[data-slot=section-navigation] button[aria-controls=\"create-stream-basic\"]",
+          "sectionId": "create-stream-basic"
+        }
       }
     },
     {
@@ -404,7 +412,7 @@
             "name": "^(Refresh|更新|最新状態に更新)$"
           },
           {
-            "selector": "main a[href=\"/admin/registered-nodes\"]"
+            "selector": "main a[href=\"/admin/registered-nodes/\"]"
           },
           {
             "selector": "main [data-slot=column-visibility] > summary"
@@ -1289,11 +1297,11 @@
       "keyboard": {
         "required": [
           {
-            "selector": "main a[href=\"/admin/registered-nodes\"]"
+            "selector": "main a[href=\"/admin/registered-nodes/\"]"
           },
           {
             "selector": "main button",
-            "name": "^(Create node|Nodeを作成|Node を作成)$"
+            "name": "^(Create node|Nodeを新規作成)$"
           }
         ],
         "activation": "none"
@@ -1351,17 +1359,21 @@
         "required": [
           {
             "selector": "main button",
-            "name": "^(Check updates again|更新を再確認)$"
+            "name": "^(Check updates again|更新情報を再確認)$"
           },
           {
             "selector": "main button",
             "name": "^(Reload information|情報を再取得)$"
           },
           {
-            "selector": "[data-slot=section-navigation] button:first-child"
+            "selector": "main [data-screen-family=application] > [data-slot=section-navigation] button[aria-controls=\"application-overview\"]"
           }
         ],
-        "activation": "section"
+        "activation": "section",
+        "activationTarget": {
+          "selector": "main [data-screen-family=application] > [data-slot=section-navigation] button[aria-controls=\"application-overview\"]",
+          "sectionId": "application-overview"
+        }
       }
     },
     {

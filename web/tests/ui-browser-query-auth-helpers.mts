@@ -151,13 +151,15 @@ export function assertCreateOutcome(snapshot: CreateSnapshot) {
 }
 
 export async function closeCreateAndAssertFocusReturn(browser: BrowserHarness, triggerLabel: string) {
+  assert.equal(await browser.evaluate("globalThis.__uiReturnTrigger?.isConnected===true"), true, "actual initiating Menu target must remain connected");
   await browser.pressKey("Escape");
   await browser.waitFor("document.querySelectorAll('[role=dialog]').length", (value: number) => value === 0, "Escape did not close create dialog");
   await browser.waitFor(
-    "document.activeElement?.getAttribute('aria-label')",
-    (value: string | null) => value === triggerLabel,
+    `document.activeElement===globalThis.__uiReturnTrigger && document.activeElement?.getAttribute('aria-label')===${JSON.stringify(triggerLabel)} && document.activeElement.getClientRects().length>0`,
+    Boolean,
     "focus did not return to the mobile navigation trigger",
   );
+  await browser.evaluate("delete globalThis.__uiReturnTrigger;true");
 }
 
 export async function waitForShell(browser: BrowserHarness, accessibleName: string) {

@@ -3,13 +3,39 @@ import test from "node:test";
 import { observerDOM, Element } from "./observer-dom.mts";
 import { observationExpression, assertObservation, focusExpression, assertFocus, exerciseAccessibility, safeKeyboardTrace, type UIObservation } from "./observation.mts";
 import { layoutExpression, assertLayout, type LayoutObservation } from "./layout-observation.mts";
-import { visibleTriggerExpression, clickVisible, clickStreamPrimary } from "./visible-trigger.mts";
-import { assertPageText, exerciseTableSort } from "./table-browser.mts";
+import { visibleTriggerExpression, clickVisible, clickDisabledVisible, clickStreamPrimary, clickWorkerRestart } from "./visible-trigger.mts";
+import { createUIFixture } from "./route-fixture.mts";
+import { assertPageText, exerciseTableSort, pageCounterExpression } from "./table-browser.mts";
 import { conditions } from "./matrix.mts";
 import type { BrowserHarness } from "../helpers/browser-harness.mts";
 const condition={...conditions[0],locale:"en" as const,mode:"light" as const,theme:"autostream" as const};
 const check=(dom:ReturnType<typeof observerDOM>,exercise?:string)=>assertObservation(dom.run<UIObservation>(observationExpression),{...condition,exercise} as typeof condition);
 const keyboardCondition=conditions.find(row=>row.family==="login"&&row.exercise==="keyboard")!;
+test('UI-DRIVER-012: eligible Worker is selected by its actual display identity and confirmed ID, never mixed-row order',async()=>{
+  const fixture=createUIFixture('http://ui.test');fixture.reset(conditions.find(c=>c.family==='workers'&&c.state==='ready')!,'/workers');
+  const worker=fixture.workerRestartTarget();
+  for(const fault of ['none','encoder-only','duplicate','disabled','wrong-id','missing-control']){
+    const dom=observerDOM(),owner=dom.main.add(new Element('DIV'));owner.setAttribute('data-screen-family','workers');
+    const table=owner.add(new Element('TABLE')),body=table.add(new Element('TBODY'));
+    const addRow=(type:string)=>{const row=body.add(new Element('TR')),name=row.add(new Element('TD')),kind=row.add(new Element('TD'));
+      name.setAttribute('headers','worker-table-service_name');name.add(new Element('DIV',worker.name)).className='font-medium';
+      kind.setAttribute('headers','worker-table-service_type');kind.add(new Element('DIV',type));
+      return row.add(new Element('BUTTON','Restart worker'));};
+    addRow('Encoder');const target=fault==='encoder-only'?null:addRow('Worker');if(fault==='duplicate')addRow('Worker');
+    if(target){target.disabled=fault==='disabled';target.hidden=fault==='missing-control';dom.document.elementFromPoint=()=>target;}
+    let clicks=0;
+    const browser={evaluate:async(e:string)=>dom.run(e),waitFor:async(e:string,p:(v:unknown)=>boolean)=>assert.ok(p(dom.run(e))),clickAt:async()=>{
+      clicks++;const dialog=dom.body.add(new Element('DIV'));dialog.setAttribute('role','alertdialog');
+      const section=dialog.add(new Element('SECTION'));section.setAttribute('data-confirmation-section','target');
+      section.add(new Element('LI',fault==='wrong-id'?'encoder-one':worker.id));section.add(new Element('LI',worker.name));
+    }} as unknown as BrowserHarness;
+    if(fault==='none')await clickWorkerRestart(browser,worker);else await assert.rejects(clickWorkerRestart(browser,worker));
+    assert.equal(clicks,['none','wrong-id'].includes(fault)?1:0,fault);
+    assert.equal(dom.document.querySelector('[data-ui-worker-row]'),null);
+    assert.equal(dom.document.querySelector('[data-ui-scenario-target]'),null);
+  }
+  fixture.release();
+});
 function loginKeyboardDOM() {
   const dom=observerDOM();dom.input.setAttribute("autocomplete","username");
   const password=dom.main.add(new Element("INPUT"));password.type="password";password.setAttribute("type","password");
@@ -22,6 +48,26 @@ function loginKeyboardDOM() {
 test("UI-DRIVER-001: actual runner page assertion rejects one-based confusion",()=>{
   assertPageText("2 / 4",1); assertPageText("Page 2 of 4",1);
   assert.throws(()=>assertPageText("1 / 4",1),/zero-based URL/);
+});
+
+test('UI-DRIVER-011: actual live counter excludes page-size text and rejects hidden, duplicate and stale counters',()=>{
+  const dom=observerDOM(),pagination=dom.main.add(new Element('DIV','Rows per page82050100'));pagination.setAttribute('data-slot','table-pagination');
+  const counter=pagination.add(new Element('SPAN','Page 2 of 4'));counter.setAttribute('aria-live','polite');
+  assertPageText(dom.run(pageCounterExpression),1);
+  assert.throws(()=>assertPageText(pagination.textContent,1));
+  counter.ownText='2 / 4 ページ';assertPageText(dom.run(pageCounterExpression),1);
+  counter.ownText='Page 1 of 4';assert.throws(()=>assertPageText(dom.run(pageCounterExpression),1),/zero-based/);
+  counter.hidden=true;assert.throws(()=>dom.run(pageCounterExpression),/one visible/);counter.hidden=false;
+  const duplicate=pagination.add(new Element('SPAN','Page 2 of 4'));duplicate.setAttribute('aria-live','polite');assert.throws(()=>dom.run(pageCounterExpression),/one visible/);
+});
+
+test('UI-LAYOUT-009: actual remaining reachability failures keep bounded value-free geometry and restoration',()=>{
+  const dom=observerDOM();dom.button.ownText='private@example.test SECRET_TOKEN';dom.button.rect.left=-200;dom.button.rect.right=-60;
+  dom.main.style.overflowX='hidden';const before={x:dom.context.scrollX,y:dom.context.scrollY};
+  const value=dom.run<LayoutObservation>(layoutExpression);assert.throws(()=>assertLayout(value),/unreachable/);
+  assert.ok(value.diagnostics?.failures.length);assert.equal(value.diagnostics.restored,true);
+  const diagnostic=JSON.stringify(value.diagnostics);assert.ok(Buffer.byteLength(diagnostic)<4096);assert.doesNotMatch(diagnostic,/private|SECRET|TOKEN|example/);
+  assert.deepEqual({x:dom.context.scrollX,y:dom.context.scrollY},before);
 });
 test("UI-DRIVER-002: real selector rejects hidden, disabled and ambiguous triggers",async()=>{
   const dom=observerDOM();assert.equal(dom.run(visibleTriggerExpression("button",/^Open$/)),true);
@@ -36,12 +82,12 @@ test("UI-DRIVER-003: actual desktop and mobile sort runner rejects unchanged row
   for(const desktop of [true,false]) {
     const direction="ascending";const visited:string[]=[];
     const browser={
-      evaluate:async(expression:string)=>{visited.push(expression);if(expression.includes("row")&&expression.includes("tbody"))return ["Z","A"];
+      evaluate:async(expression:string)=>{visited.push(expression);if(expression.includes("return {x,y}"))return {x:80,y:22};if(expression.includes("row")&&expression.includes("tbody"))return ["Z","A"];
         if(expression.includes("tbody tr td"))return ["Z","A"];
         if(expression.includes("findIndex"))return 0;if(expression.includes("streams.sort"))return "name";
         if(expression.includes("const e=document.querySelector"))return desktop;return true;},
       waitFor:async(expression:string,predicate:(value:unknown)=>boolean)=>{visited.push(expression);assert.ok(predicate(expression.includes("aria-sort")?direction:expression.includes("?.value")?"name":true));},
-      clickSelector:async()=>{},pressKey:async()=>{},pressNativeKey:async()=>{},
+      clickAt:async()=>{},clickSelector:async()=>{},pressKey:async()=>{},pressNativeKey:async()=>{},
     } as unknown as BrowserHarness;
     await assert.rejects(exerciseTableSort(browser),/actual displayed row order/);
     assert.ok(visited.some(expression=>expression.includes(desktop?"th:first-child button":"option[value")));
@@ -103,7 +149,7 @@ test("UI-OBSERVER-004: actual current driver requires reverse order and restores
         if(backward===1&&failure==="body")dom.document.activeElement=dom.body;
         if(backward===1&&failure==="escaped")dom.main.add(new Element("DIV")).setAttribute("role","dialog");
       },
-      async evaluate(expression:string) { return expression.includes("const targets=sections")?null:dom.run(expression); },
+      async evaluate(expression:string) { return expression.includes("const targets=kind")?null:dom.run(expression); },
     };
     const run=()=>Reflect.apply(exerciseAccessibility,undefined,[browser,keyboardCondition]);
     if(failure==="none") {
@@ -126,12 +172,39 @@ test("UI-DRIVER-004: actual Stream primary selection excludes six suffix actions
     let clicks=0;
     const browser={evaluate:async(expression:string)=>dom.run(expression),
       waitFor:async(expression:string,accept:(value:unknown)=>boolean)=>{assert.equal(accept(dom.run(expression)),true);},
-      clickSelector:async()=>{clicks++;if(replace){dom.button.parentElement=null;dom.main.children=dom.main.children.filter(e=>e!==dom.button);const replacement=dom.main.add(new Element("BUTTON",name));replacement.setAttribute("data-slot","stream-primary-trigger");replacement.setAttribute("data-stream-id","ui-stream-1");}}
+      clickAt:async()=>{clicks++;if(replace){dom.button.parentElement=null;dom.main.children=dom.main.children.filter(e=>e!==dom.button);const replacement=dom.main.add(new Element("BUTTON",name));replacement.setAttribute("data-slot","stream-primary-trigger");replacement.setAttribute("data-stream-id","ui-stream-1");}}
     } as unknown as BrowserHarness;
     if(replace)await assert.rejects(clickStreamPrimary(browser,{id:"ui-stream-1",name}),/actual trigger DOM identity/);
     else await clickStreamPrimary(browser,{id:"ui-stream-1",name});
     assert.equal(clicks,1);
   }
+});
+
+test("UI-DRIVER-009: native pointer uses the scrolled unique target and rejects changed identity, geometry, availability and hit", async () => {
+  for (const failure of ["none", "replacement", "hidden", "disabled", "offscreen", "obstructed", "nonfinite", "duplicate"] as const) {
+    const dom=observerDOM(),calls:string[]=[],points:number[][]=[];
+    const scroll=dom.button.scrollIntoView.bind(dom.button);dom.button.scrollIntoView=()=>{calls.push("scroll");scroll();};
+    const browser={waitFor:async(expression:string,accept:(value:unknown)=>boolean)=>{
+      assert.equal(accept(dom.run(expression)),true);
+      if(failure==="replacement")dom.button.parentElement=null;
+      if(failure==="hidden")dom.button.hidden=true;
+      if(failure==="disabled")dom.button.disabled=true;
+      if(failure==="offscreen")dom.button.rect.top=1000;
+      if(failure==="nonfinite")dom.button.rect.width=NaN;
+      if(failure==="obstructed")dom.document.elementFromPoint=()=>dom.input;
+      if(failure==="duplicate")dom.main.add(new Element("BUTTON","Other")).setAttribute("data-ui-scenario-target","");
+    },evaluate:async(expression:string)=>dom.run(expression),clickAt:async(x:number,y:number)=>{calls.push("native");points.push([x,y]);}} as unknown as BrowserHarness;
+    if(failure==="none") {await clickVisible(browser,"button",/^Open$/);assert.deepEqual(points,[[80,22]]);assert.deepEqual(calls,["scroll","native"]);}
+    else {await assert.rejects(clickVisible(browser,"button",/^Open$/),/marked trigger/);assert.equal(points.length,0);}
+    assert.equal(dom.button.getAttribute("data-ui-scenario-target"),null,"owned marker restored on success and failure");
+  }
+});
+test("UI-DRIVER-010: disabled permission and pending negatives keep a native attempt without enabling the control", async () => {
+  const dom=observerDOM();dom.button.disabled=true;let clicks=0;
+  const browser={waitFor:async(expression:string,accept:(value:unknown)=>boolean)=>assert.equal(accept(dom.run(expression)),true),evaluate:async(expression:string)=>dom.run(expression),clickAt:async()=>{clicks++;assert.equal(dom.button.disabled,true);}} as unknown as BrowserHarness;
+  await clickDisabledVisible(browser,"button");assert.equal(clicks,1);assert.equal(dom.button.disabled,true);
+  dom.document.elementFromPoint=()=>dom.input;
+  await assert.rejects(clickDisabledVisible(browser,"button"),/obstructed/);assert.equal(clicks,1);
 });
 test("UI-OBSERVER-005: modal paths require every observed control, bidirectional wrap and no document escape",async()=>{
   const modalCondition=conditions.find(row=>row.exercise==="Confirmation")!;

@@ -91,7 +91,7 @@ export function SecuritySettingsEditor({ resource, data, loading, disabled, cont
         </div>
       ) : null}
       {loading ? (
-        <Skeleton className="h-36 w-full" />
+        <div role="status"><p>{uiText("セキュリティ設定を読み込み中です。")}</p><Skeleton className="h-36 w-full" /></div>
       ) : (
         <form
           className="space-y-3"

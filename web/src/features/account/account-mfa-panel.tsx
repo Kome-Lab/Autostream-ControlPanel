@@ -3,7 +3,7 @@ import { useUICopy } from "@/lib/i18n/ui-v2/use-ui-copy";
 import { japaneseCopy, type UICopy } from "@/lib/i18n/ui-v2/copy";
 
 
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
 import { QrCode, RefreshCcw, ShieldCheck, ShieldOff } from "lucide-react";
@@ -47,6 +47,7 @@ export function MFAPanel({
   accountResourceID: string;
 }) {
   const uiText = useUICopy();
+  const inputID = useId();
   const { t } = useI18n();
   const pathname = usePathname();
   const previousPathname = useRef(pathname);
@@ -131,8 +132,8 @@ export function MFAPanel({
         {!loading && !totpEnrollmentAvailable ? <div className="rounded-md border bg-muted/35 px-3 py-2 text-sm text-muted-foreground">{mfaUnavailableMessage(status, uiText)}</div> : null}
         {totpEnrollmentAvailable && status?.enabled ? (
           <div className="space-y-2 rounded-md border p-3">
-            <label className="text-sm font-medium">{uiText("TOTPを再登録する場合の本人確認コード")}</label>
-            <Input inputMode="numeric" placeholder={uiText("現在のMFAコード")} value={currentCode} onChange={(event) => setCurrentCode(event.target.value)} />
+            <label htmlFor={`${inputID}-current`} className="text-sm font-medium">{uiText("TOTPを再登録する場合の本人確認コード")}</label>
+            <Input id={`${inputID}-current`} inputMode="numeric" placeholder={uiText("現在のMFAコード")} value={currentCode} onChange={(event) => setCurrentCode(event.target.value)} />
             <p className="text-xs text-muted-foreground">{uiText("再登録すると新しいQRコードとリカバリーコードを発行します。現在のMFAコードが必要です。")}</p>
           </div>
         ) : null}
@@ -200,9 +201,9 @@ export function MFAPanel({
             />
             {registrationInProgress ? (
               <div className="space-y-2 rounded-md border bg-muted/20 p-3">
-                <label className="text-sm font-medium">{uiText("2. アプリに表示された6桁コードで有効化")}</label>
+                <label htmlFor={`${inputID}-verify`} className="text-sm font-medium">{uiText("2. アプリに表示された6桁コードで有効化")}</label>
                 <div className="flex flex-col gap-2 sm:flex-row">
-                  <Input inputMode="numeric" placeholder={uiText("確認コード")} value={verifyCode} onChange={(event) => setVerifyCode(event.target.value)} />
+                  <Input id={`${inputID}-verify`} inputMode="numeric" placeholder={uiText("確認コード")} value={verifyCode} onChange={(event) => setVerifyCode(event.target.value)} />
                   <Button onClick={() => { void verifyEnrollment(); }} disabled={verifyCode.length < 6 || verifyPending}>
                     {uiText("有効化")}</Button>
                 </div>
@@ -217,7 +218,8 @@ export function MFAPanel({
                 <RefreshCcw className="size-4" />
                 {uiText("リカバリーコード再発行")}</div>
               <p className="text-xs text-muted-foreground">{uiText("新しいリカバリーコードを発行します。発行後、古いリカバリーコードは使えません。")}</p>
-              <Input inputMode="numeric" placeholder={uiText("現在のMFAコード")} value={recoveryCode} onChange={(event) => setRecoveryCode(event.target.value)} />
+              <label htmlFor={`${inputID}-recovery`} className="text-sm font-medium">{uiText("リカバリーコード再発行")}: {uiText("現在のMFAコード")}</label>
+              <Input id={`${inputID}-recovery`} inputMode="numeric" placeholder={uiText("現在のMFAコード")} value={recoveryCode} onChange={(event) => setRecoveryCode(event.target.value)} />
               <AccountActionConfirmation
                 controller={actionController}
                 intent={typedIntent("AUTH-18")}
@@ -242,7 +244,8 @@ export function MFAPanel({
                 <ShieldOff className="size-4" />
                 {uiText("MFAを無効化")}</div>
               <p className="text-xs text-red-700/80">{uiText("無効化すると次回ログイン時のTOTP確認が不要になります。現在のMFAコードで確認してください。")}</p>
-              <Input inputMode="numeric" placeholder={uiText("現在のMFAコード")} value={disableCode} onChange={(event) => setDisableCode(event.target.value)} />
+              <label htmlFor={`${inputID}-disable`} className="text-sm font-medium">{uiText("MFAを無効化")}: {uiText("現在のMFAコード")}</label>
+              <Input id={`${inputID}-disable`} inputMode="numeric" placeholder={uiText("現在のMFAコード")} value={disableCode} onChange={(event) => setDisableCode(event.target.value)} />
               <AccountActionConfirmation
                 controller={actionController}
                 intent={typedIntent("AUTH-17")}

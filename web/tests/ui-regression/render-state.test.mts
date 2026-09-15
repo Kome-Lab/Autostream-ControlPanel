@@ -34,7 +34,8 @@ test("UI-RENDER-001: emitted observation distinguishes closed details, visible p
   hiddenColumn.setAttribute("aria-label", "Name column"); assertObservation(observe(), condition);
   const field = dom.main.add(new Element("DIV")), peer = field.add(new Element("BUTTON", "Page size")); peer.setAttribute("role", "combobox");
   const proxy = field.add(new Element("SELECT")); proxy.setAttribute("aria-hidden", "true"); proxy.setAttribute("tabindex", "-1");
-  Object.assign(proxy.style, { position: "absolute", overflow: "hidden", clip: "rect(0px, 0px, 0px, 0px)" });
+  peer.setAttribute("aria-label", "Page size");
+  Object.assign(proxy.style, { width: "1px", height: "1px", position: "absolute", overflow: "hidden", clip: "rect(0px, 0px, 0px, 0px)" });
   Object.assign(proxy.rect, { width: 1, height: 1 });
   assertObservation(observe(), condition); assert.equal(observe().controls.filter(c => c.tag === "SELECT").length, 0);
   peer.hidden = true; assert.throws(() => assertObservation(observe(), condition), /references/);
@@ -51,6 +52,28 @@ test("UI-RENDER-002: active dialog controls are measured while hidden background
   dom.dialog.children[0].ownText = "Close";
   dom.main.add(new Element("DIV", "UI-HIDDEN-DIAGNOSTIC")).hidden = true;
   assert.throws(() => assertObservation(observe(), condition), /diagnostic/);
+});
+
+test('UI-RENDER-009: one CSS pixel proxy keeps its labelled visible peer at 1x/2x and rejects broad hidden-control exemptions',()=>{
+  for(const scale of [1,2]){
+    const dom=observerDOM(),field=dom.main.add(new Element('DIV')),peer=field.add(new Element('BUTTON','Choice')),proxy=field.add(new Element('SELECT'));
+    peer.setAttribute('role','combobox');peer.setAttribute('aria-label','Choice');proxy.setAttribute('aria-hidden','true');proxy.setAttribute('tabindex','-1');
+    Object.assign(proxy.style,{width:'1px',height:'1px',position:'absolute',overflow:'hidden',clip:'rect(0px, 0px, 0px, 0px)'});Object.assign(proxy.rect,{width:scale,height:scale});
+    const classify=()=>dom.run<boolean>(`(()=>{${renderedDOM}return uiProxy(document.querySelector('select'));})()`);
+    assert.equal(classify(),true);assertObservation(dom.run(observationExpression),condition);
+    for(const fault of ['peer-absent','peer-unlabelled','peer-duplicate','tabbable','real-size','no-clip']){
+      const old={...proxy.style};let extra:Element|undefined;
+      if(fault==='peer-absent')peer.hidden=true;
+      if(fault==='peer-unlabelled')peer.removeAttribute('aria-label');
+      if(fault==='peer-duplicate'){extra=field.add(new Element('BUTTON','Other'));extra.setAttribute('role','combobox');extra.setAttribute('aria-label','Other');}
+      if(fault==='tabbable')proxy.setAttribute('tabindex','0');
+      if(fault==='real-size')Object.assign(proxy.style,{width:'100px',height:'40px'});
+      if(fault==='no-clip')proxy.style.clip='auto';
+      assert.equal(classify(),false,fault);assert.throws(()=>assertObservation(dom.run(observationExpression),condition));
+      peer.hidden=false;peer.setAttribute('aria-label','Choice');if(extra)field.children=field.children.filter(e=>e!==extra);
+      proxy.setAttribute('tabindex','-1');Object.assign(proxy.style,old);
+    }
+  }
 });
 
 test("UI-RENDER-003: finite completion and stable geometry are both required; infinite child motion is not awaited", async () => {

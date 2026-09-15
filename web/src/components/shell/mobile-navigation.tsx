@@ -14,6 +14,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Sheet, SheetClose, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import type { NavigationSectionsState } from "@/lib/navigation-section-state";
 import type { CurrentUser } from "@/types/domain";
+import { offerStreamCreateFocus, type StreamCreateFocus } from "@/lib/ui-v2/stream-create-focus-handoff";
 
 type MobileNavigationProps = {
   appName: string;
@@ -33,24 +34,12 @@ export function MobileNavigation(props: MobileNavigationProps) {
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const pendingNavigationRef = useRef<(() => void) | null>(null);
-  const createCloseObserverRef = useRef<MutationObserver | null>(null);
-
-  useEffect(() => () => createCloseObserverRef.current?.disconnect(), []);
-
-  const restoreTriggerWhenCreateCloses = () => {
-    createCloseObserverRef.current?.disconnect();
-    const observer = new MutationObserver(() => {
-      const createDialog = document.querySelector("#create-stream")?.closest('[role="dialog"]');
-      if (window.location.hash === "#create-stream" || createDialog) return;
-      observer.disconnect();
-      createCloseObserverRef.current = null;
-      triggerRef.current?.focus();
-    });
-    createCloseObserverRef.current = observer;
-    observer.observe(document.body, { childList: true, subtree: true });
-  };
+  const createFocusRef = useRef<StreamCreateFocus | null>(null);
+  useEffect(() => () => { pendingNavigationRef.current = null; createFocusRef.current?.cancel(); }, []);
+  useEffect(() => { if (!props.canCreateStream) { pendingNavigationRef.current = null; createFocusRef.current?.cancel(); } }, [props.canCreateStream]);
 
   const navigateAfterClose = (navigate: () => void) => {
+    createFocusRef.current = offerStreamCreateFocus(triggerRef.current);
     pendingNavigationRef.current = navigate;
     setOpen(false);
   };
@@ -59,7 +48,7 @@ export function MobileNavigation(props: MobileNavigationProps) {
     <Sheet
       open={open}
       onOpenChange={(nextOpen) => {
-        if (nextOpen) pendingNavigationRef.current = null;
+        if (nextOpen) { pendingNavigationRef.current = null; createFocusRef.current?.cancel(); }
         setOpen(nextOpen);
       }}
     >
@@ -75,11 +64,13 @@ export function MobileNavigation(props: MobileNavigationProps) {
         onCloseAutoFocus={(event) => {
           const navigate = pendingNavigationRef.current;
           if (!navigate) return;
-          pendingNavigationRef.current = null;
           event.preventDefault();
-          triggerRef.current?.focus();
-          restoreTriggerWhenCreateCloses();
-          navigate();
+          const handoff = createFocusRef.current;
+          queueMicrotask(() => {
+            if (pendingNavigationRef.current !== navigate || !handoff?.active()) return;
+            pendingNavigationRef.current = null;
+            navigate();
+          });
         }}
       >
         <SheetTitle className="sr-only">{t("navigationTitle")}</SheetTitle>

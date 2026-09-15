@@ -119,14 +119,14 @@ test("UI-STREAM-PREVIEW-001: actual runner waits for the real required issue res
   const {createUIFixture}=await import("./route-fixture.mts");
   const {conditions,inventory}=await import("./matrix.mts");
   const {waitForLivePreview,assertPreviewIssue}=await import("./run-browser.mts");
-  const condition=conditions.find(row=>row.family==="stream-detail"&&row.exercise==="long-id")!;
+  const condition=conditions.find(row=>row.family==="stream-detail"&&row.exercise==="Detail")!;
   const surface=inventory.surfaces.find(row=>row.id===condition.family)!;
   const fixture=createUIFixture("http://ui.test");fixture.reset(condition,surface.primary);
   const selected=fixture.detailStream(),path="/streams/"+encodeURIComponent(selected.id)+"/preview-links";
   const owner=createHarnessFixture();owner.harness.setRouteResolver(fixture.resolver);
   owner.socket.hold("Fetch.fulfillRequest");
   try {
-    const waiting=waitForLivePreview(owner.harness,selected);
+    const waiting=waitForLivePreview(owner.harness,selected,condition);
     owner.socket.emitEvent("Fetch.requestPaused",{requestId:"preview",resourceType:"XHR",frameId:"main",request:{method:"POST",url:"http://ui.test"+path,postData:"{}"}});
     const command=await owner.socket.waitForCommand("Fetch.fulfillRequest");
     assert.equal(command.params.responseCode,403);assert.equal(owner.harness.requests.get(path),1);
@@ -137,4 +137,34 @@ test("UI-STREAM-PREVIEW-001: actual runner waits for the real required issue res
       assert.throws(()=>assertPreviewIssue(mutations,selected));
     }
   } finally {fixture.release();await owner.harness.close();}
+});
+
+test('UI-STREAM-PREVIEW-009: actual public-label guard accepts 1/128 and rejects 129/long fixtures before any mutation',async()=>{
+  const {conditions}=await import('./matrix.mts');
+  const {createUIFixture}=await import('./route-fixture.mts');
+  const {previewExpectation,waitForLivePreview,previewUnavailableCopy}=await import('./run-browser.mts');
+  const {translate}=await import('../../src/lib/i18n.ts');
+  const preview=readFileSync(new URL('../../src/features/streams/stream-preview.tsx',import.meta.url),'utf8');
+  let mutations=0;
+  const controller=createStreamActionController({getPermissions:()=>({kind:'ready',permissions:['*']}),getState:()=>({kind:'ready',freshness:'fresh',fingerprint:'same'}),mutate:async()=>{mutations++;}});
+  for(const length of [1,128,129,432]){
+    const result=await controller.open({id:'STR-11',stream:{...stream,status:'live',name:'a'.repeat(length)}});
+    assert.equal(result.kind,length<=128?'allowed':'blocked');
+  }
+  const planned=conditions.filter(row=>row.family==='stream-detail'&&['long-id','long-text'].includes(row.exercise||''));assert.equal(planned.length,16);
+  for(const condition of planned){
+    const locale=condition.locale;assert.ok(locale==='ja'||locale==='en');
+    const fixture=createUIFixture('http://ui.test');fixture.reset(condition,'/streams');const selected=fixture.detailStream();
+    try{
+      assert.equal(previewExpectation(condition,selected),'guard-rejected');
+      let unavailable='',state='';
+      const issue=actualCallback(preview,'issuePreviewLink',{issuePending:false,streamRef:{current:selected},controller,setIssuePending(){},setPreviewLink(){},setPreviewLinkError:(value:string)=>{unavailable=value;},setPlaybackState:(value:string)=>{state=value;},t:(key:Parameters<typeof translate>[1])=>translate(locale,key)});
+      await issue();assert.equal(unavailable,previewUnavailableCopy[locale]);assert.equal(state,'error');assert.equal(mutations,0);
+      const requests=new Map<string,number>(),browser={requests,waitFor:async(_expression:string,predicate:(value:string)=>boolean)=>assert.ok(predicate(unavailable))};
+      await Reflect.apply(waitForLivePreview,undefined,[browser,selected,condition]);
+      requests.set('/streams/'+encodeURIComponent(selected.id)+'/preview-links',1);
+      await assert.rejects(Reflect.apply(waitForLivePreview,undefined,[browser,selected,condition]),/must not issue/);
+      requests.clear();unavailable='unrelated HTTP failure';await assert.rejects(Reflect.apply(waitForLivePreview,undefined,[browser,selected,condition]));
+    } finally {fixture.release();}
+  }
 });
