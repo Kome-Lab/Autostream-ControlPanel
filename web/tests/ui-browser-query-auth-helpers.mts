@@ -150,16 +150,44 @@ export function assertCreateOutcome(snapshot: CreateSnapshot) {
   assert.match(snapshot.activeTag, /^(?:INPUT|BUTTON|TEXTAREA|SELECT)$/);
 }
 
-export async function closeCreateAndAssertFocusReturn(browser: BrowserHarness, triggerLabel: string) {
+export const mobileFocusDiagnosticExpression = `(() => {
+  const target=globalThis.__uiReturnTrigger,active=document.activeElement,rect=target?.getBoundingClientRect();
+  return {connected:target?.isConnected===true,disabled:!!target?.disabled||target?.getAttribute('aria-disabled')==='true',inert:!!target?.closest('[inert]'),
+    active:active===target?'opening':active===document.body?'body':active?.closest('[role=dialog]')?'dialog':'other',
+    dialogs:document.querySelectorAll('[role=dialog]').length,guards:document.querySelectorAll('[data-radix-focus-guard]').length,
+    rect:rect?[rect.left,rect.top,rect.width,rect.height]:[]};
+})()`;
+type MobileFocusDiagnostic = { connected:boolean; disabled:boolean; inert:boolean; active:string; dialogs:number; guards:number; rect:number[] };
+export async function closeCreateAndAssertFocusReturn(browser: BrowserHarness, triggerLabel: string, route: "same-route"|"cross-route" = "same-route", write: (line:string)=>void = console.log) {
+  const observations: {phase:string;value:MobileFocusDiagnostic}[]=[],diagnosticErrors:unknown[]=[];
+  let phase="before-close";
+  const observe=async()=>{try{observations.push({phase,value:await browser.evaluate<MobileFocusDiagnostic>(mobileFocusDiagnosticExpression)});}catch(error){diagnosticErrors.push(error);}};
+  try {
+  await observe();
   assert.equal(await browser.evaluate("globalThis.__uiReturnTrigger?.isConnected===true"), true, "actual initiating Menu target must remain connected");
   await browser.pressKey("Escape");
   await browser.waitFor("document.querySelectorAll('[role=dialog]').length", (value: number) => value === 0, "Escape did not close create dialog");
+  phase="dialog-closed";await observe();
   await browser.waitFor(
     `document.activeElement===globalThis.__uiReturnTrigger && document.activeElement?.getAttribute('aria-label')===${JSON.stringify(triggerLabel)} && document.activeElement.getClientRects().length>0`,
     Boolean,
     "focus did not return to the mobile navigation trigger",
   );
+  phase="focus-restored";await observe();
   await browser.evaluate("delete globalThis.__uiReturnTrigger;true");
+  if(diagnosticErrors.length)throw new AggregateError(diagnosticErrors,"Mobile diagnostic observation failed");
+  } catch(original) {
+    await observe();
+    try {
+      const count=(n:number)=>Number.isFinite(n)?Math.min(1024,Math.max(0,Math.floor(n))):null;
+      const payload={schemaVersion:1,code:"D013-MOBILE",route:route==="cross-route"?"cross-route":"same-route",phase,
+        observations:observations.slice(0,4).map(({phase:step,value:v})=>({phase:step,connected:v.connected===true,disabled:v.disabled===true,inert:v.inert===true,
+          active:["opening","body","dialog"].includes(v.active)?v.active:"other",dialogs:count(v.dialogs),guards:count(v.guards),rect:v.rect.slice(0,4).map(n=>Number.isFinite(n)?Math.max(-100000,Math.min(100000,Math.round(n))):null)})),diagnosticFailed:diagnosticErrors.length>0};
+      const json=JSON.stringify(payload);assert.ok(Buffer.byteLength(json)<=4096);write("UI_BROWSER_DIAGNOSTIC_013 "+json);
+    }catch(error){diagnosticErrors.push(error);}
+    if(diagnosticErrors.length)throw new AggregateError([original,...diagnosticErrors],"Mobile failure and diagnostic failure",{cause:original});
+    throw original;
+  }
 }
 
 export async function waitForShell(browser: BrowserHarness, accessibleName: string) {

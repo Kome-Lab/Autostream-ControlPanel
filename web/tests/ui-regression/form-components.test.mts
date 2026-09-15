@@ -11,11 +11,69 @@ import ts from 'typescript';
 import { renderUI } from './render-ui.mts';
 import { renderToStaticMarkup } from "react-dom/server";
 import test from "node:test";
+import { Element, observerDOM } from './observer-dom.mts';
+import { observationExpression, assertObservation, type UIObservation } from './observation.mts';
+import { conditions } from './matrix.mts';
+import { actualJSXCallback, actualCallback } from './source-callback.mts';
+import { createDraftExitController } from '../../src/lib/ui-v2/draft-exit-controller.ts';
 
 const { Field } = await import("../../src/components/forms/field.tsx");
 const { DetailSection, SectionNavigation } = await import("../../src/components/layout/detail-section.tsx");
 const { Input }=await import('../../src/components/ui/input.tsx');
 const { createUICopy }=await import('../../src/lib/i18n/ui-v2/copy.ts');
+
+function actualMarkupDOM(html:string){
+ const dom=observerDOM();dom.main.children=dom.main.children.filter(e=>e.tagName==='H1');const stack=[dom.main];
+ for(const token of html.matchAll(/<\/?([a-z][\w-]*)\b([^>]*)>|([^<]+)/gi)){
+   if(token[3]){stack.at(-1)!.ownText+=token[3];continue;}const tag=token[1].toUpperCase();
+   if(token[0].startsWith('</')){if(stack.at(-1)?.tagName===tag)stack.pop();continue;}
+   const e=stack.at(-1)!.add(new Element(tag));for(const a of token[2].matchAll(/([\w-]+)="([^"]*)"/g)){
+     e.setAttribute(a[1],a[2]);if(a[1]==='type')e.type=a[2];if(a[1]==='hidden')e.hidden=true;
+     if(a[1]==='style')for(const entry of a[2].split(';')){const [key,...parts]=entry.split(':');if(key)Object.assign(e.style,{[key.replace(/-([a-z])/g,(_,letter:string)=>letter.toUpperCase())]:parts.join(':')});}
+   }
+   if(e.style.position==='absolute'&&e.getAttribute('aria-hidden')==='true'){e.rect.width=1;e.rect.height=1;}
+   // CSSOM expands unitless zero lengths in the actual inline clip declaration.
+   if(/^rect\(0,?\s*0,?\s*0,?\s*0\)$/.test(e.style.clip))e.style.clip='rect(0px, 0px, 0px, 0px)';
+   if(!['INPUT','SELECT','IMG','BR','HR','META','LINK'].includes(tag))stack.push(e);else if(tag==='SELECT')stack.push(e);
+ }
+ for(const label of dom.document.querySelectorAll('label[for]')){const control=dom.document.getElementById(label.htmlFor);if(control)control.labels.push(label);}
+ return dom;
+}
+test('UI-VISUAL-LABEL-013: all six actual ModeSelect calls link unique localized visible triggers and native proxies',async()=>{
+ const text=readFileSync(new URL('../../src/features/streams/stream-visual-settings-section.tsx',import.meta.url),'utf8'),file=ts.createSourceFile('visual.tsx',text,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);
+ const calls:string[]=[];const visit=(node:ts.Node)=>{if(ts.isJsxSelfClosingElement(node)&&node.tagName.getText(file)==='ModeSelect')calls.push(node.getText(file));ts.forEachChild(node,visit);};visit(file);assert.equal(calls.length,6);
+ const helper=file.statements.find(n=>ts.isFunctionDeclaration(n)&&n.name?.text==='ModeSelect');assert.ok(helper);
+ const code=ts.transpileModule(helper.getText(file)+'\nfunction Fields(){return <>'+calls.join('\n')+'</>};exports.Fields=Fields;',{compilerOptions:{jsx:ts.JsxEmit.ReactJSX,module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
+ const selects=await import('../../src/components/ui/select.tsx'),{defaultStreamVisualDraft}=await import('../../src/features/streams/stream-visual-draft.ts');
+ for(const locale of ['ja','en'] as const){
+   const output:{Fields?:ComponentType}={},values={...selects,useId,locale,draft:defaultStreamVisualDraft(),controlsDisabled:false,uploadedBackground:false,uploadedCover:false,discordRows:[],coverRows:[],rowString:()=>'',update(){assert.fail('label rendering must not update');}};
+   new Function('exports','require',...Object.keys(values),code)(output,createRequire(import.meta.url),...Object.values(values));assert.ok(output.Fields);
+   const html=renderToStaticMarkup(createElement('div',null,createElement(output.Fields),createElement(output.Fields))),dom=actualMarkupDOM(html);
+   const peers=dom.document.querySelectorAll('[role=combobox]'),labels=dom.document.querySelectorAll('label');assert.equal(peers.length,12);assert.equal(labels.length,12);assert.equal(new Set(labels.map(l=>l.textContent)).size,6);
+   for(const peer of peers){const labelsFor=labels.filter(label=>label.htmlFor===peer.id);assert.equal(labelsFor.length,1);assert.equal(peer.getAttribute('aria-labelledby'),labelsFor[0].id);assert.ok(labelsFor[0].textContent.trim());assert.doesNotMatch(labelsFor[0].getAttribute('class')||'',/hidden|sr-only/);}
+   assert.match(html,locale==='ja'?/シーン背景モード/:/Scene background mode/);assert.match(html,locale==='ja'?/Video Coverプリセット/:/Video Cover preset/);
+   const condition={...conditions[0],locale:'en',mode:'light',theme:'autostream'};assertObservation(dom.run<UIObservation>(observationExpression),condition);
+   for(const fault of ['missing','wrong','empty','duplicate']){const bad=actualMarkupDOM(html),peer=bad.document.querySelector('[role=combobox]')!,label=bad.document.getElementById(peer.getAttribute('aria-labelledby')!)!;
+     if(fault==='missing')label.id='missing';if(fault==='wrong')peer.setAttribute('aria-labelledby','wrong');if(fault==='empty')label.ownText='';if(fault==='duplicate')bad.main.add(new Element('LABEL','Duplicate')).id=label.id;
+     assert.throws(()=>assertObservation(bad.run(observationExpression),condition),/reference|duplicate|unnamed/);
+   }
+ }
+});
+test('UI-NODE-DIALOG-013: actual controlled root and trigger retain the draft decision and one cleanup focus target',async()=>{
+ const text=readFileSync(new URL('../../src/features/nodes/node-registration-view.tsx',import.meta.url),'utf8'),file=ts.createSourceFile('nodes.tsx',text,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);
+ let roots=0,triggers=0;const visit=(n:ts.Node)=>{if(ts.isJsxElement(n)&&n.openingElement.tagName.getText(file)==='Dialog'){roots++;assert.match(n.getText(file),/<DialogTrigger asChild>/);}if(ts.isJsxElement(n)&&n.openingElement.tagName.getText(file)==='DialogTrigger'){triggers++;assert.match(n.getText(file),/Nodeを新規作成/);assert.doesNotMatch(n.getText(file),/onClick=/);}ts.forEachChild(n,visit);};visit(file);assert.equal(roots,1);assert.equal(triggers,1);
+ const {NodeRegistrationView}=await import('../../src/features/nodes/node-registration-view.tsx');for(const locale of ['ja','en'] as const){const html=renderUI(createElement(NodeRegistrationView),locale,'/admin/nodes/');assert.match(html,/<button[^>]*data-slot="dialog-trigger"[^>]*>/);assert.match(html,locale==='ja'?/Nodeを新規作成/:/Create node/);}
+ const radix=readFileSync(createRequire(import.meta.url).resolve('@radix-ui/react-dialog'),'utf8'),parsed=ts.createSourceFile('dialog.js',radix,ts.ScriptTarget.Latest,true,ts.ScriptKind.JS);let restore:ts.ArrowFunction|undefined;
+ const find=(n:ts.Node)=>{if(ts.isArrowFunction(n)&&n.getText(parsed).includes('context.triggerRef.current?.focus()')&&!n.getText(parsed).includes('return')&&!n.getText(parsed).includes('hasInteractedOutsideRef'))restore=n;ts.forEachChild(n,find);};find(parsed);assert.ok(restore,'actual Radix modal focus cleanup callback');
+ const dom=observerDOM(),target=dom.button;let focuses=0;target.focus=()=>{focuses++;dom.document.activeElement=target;};
+ const cleanup=actualCallback('const cleanup='+restore.getText(parsed),'cleanup',{context:{triggerRef:{current:target}}});
+ const state={open:false,dirty:false,pending:false,discard:false};const guard=createDraftExitController({enabled:()=>state.open,pending:()=>state.pending,confirmDiscard:()=>state.discard});guard.register({isDirty:()=>state.dirty,saved:()=>{state.dirty=false;}});
+ const callback=actualJSXCallback(text,'Dialog','onOpenChange',{createDraftExit:guard,setCreateOpen:(open:boolean)=>{state.open=open;}});
+ for(const decision of ['clean','stay','pending','discard','later-edit','clean']){callback(true);dom.document.activeElement=dom.input;state.dirty=['stay','discard','later-edit'].includes(decision);state.pending=decision==='pending';state.discard=decision==='discard';const before=focuses;callback(false);
+   if(['stay','pending','later-edit'].includes(decision)){assert.equal(state.open,true);assert.equal(focuses,before);state.dirty=state.pending=false;callback(false);}
+   assert.equal(state.open,false);assert.equal(dom.document.activeElement,dom.input);await Promise.resolve();let prevented=0;cleanup({preventDefault(){prevented++;}});assert.equal(prevented,1);assert.equal(focuses,before+1);assert.equal(dom.document.activeElement,target);
+ }
+});
 
 test('UI-FORM-SECTIONS-010: actual create/edit/live forms link visible real regions with unique instance IDs in both locales',async()=>{
   const {StreamSlotForm}=await import('../../src/features/streams/stream-slot-form.tsx');

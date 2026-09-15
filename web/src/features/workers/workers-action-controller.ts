@@ -254,6 +254,7 @@ export function createWorkerRestartController({
 function permissionSnapshot(queryClient: QueryClient): PermissionSnapshot {
   const state = queryClient.getQueryState(authQueryKey);
   if (state?.fetchStatus === "fetching") return Object.freeze({ kind: "refreshing" });
+  if (state?.status !== "success") return Object.freeze({ kind: "unavailable" });
   const current = queryClient.getQueryData<CurrentUser>(authQueryKey);
   const permissions = copyStringArray(current?.permissions);
   return permissions

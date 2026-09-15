@@ -509,7 +509,6 @@
           "作成済みNode、Configure実行状況、最終Heartbeatを確認できます。",
           "受信listenerは作成しません。登録・Heartbeat・Policy取得はControl Panelの既存HTTPS APIを使用します。",
           "実行時シークレットを自動付与（Encoder / Recorder必須）",
-          "更新",
           "更新中",
           "物理ホストごとに一意のIDです。Host AgentはControl Panelへ外向き接続するため、APIポート・SSL・SSH設定は不要です。",
           "登録済み:",

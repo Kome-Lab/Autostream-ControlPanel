@@ -91,11 +91,13 @@ export const focusExpression = `(() => {${renderedDOM}
   const ring=s.getPropertyValue('--tw-ring-shadow').trim();
   const indicator=outline||!matchMedia('(forced-colors: active)').matches&&e.matches(':focus-visible')&&ring!==''&&ring!=='none'&&ring!=='0 0 #0000'&&/[1-9][0-9]*(?:\\.[0-9]+)?px/.test(ring);
   const plan=globalThis.__uiKeyboardPlan;
+  const datetime=e.tagName==='INPUT'&&e.type==='datetime-local',host=plan?.datetimes.findIndex(entry=>entry.element===e)??-1;
+  const datetimeUnchanged=!plan||plan.datetimes.every(entry=>entry.element.isConnected&&entry.element.type==='datetime-local'&&uiAX(entry.element)&&entry.element.value===entry.value&&uiRoot()===plan.root);
   return {id:uiIdentity(e),visible:uiAX(e)&&e!==document.body&&r.left>=-1&&r.right<=innerWidth+1&&r.top>=-1&&r.bottom<=innerHeight+1,
     inside:!dialog||dialog.contains(e),indicator,boundary:e===document.body||e===document.documentElement,native:e.tagName==='VIDEO'||e.tagName==='AUDIO',
-    rect:[r.left,r.top,r.width,r.height],required:plan?plan.targets.indexOf(e):-1,modal:!!dialog};
+    datetime,datetimeHost:host,datetimeUnchanged,rect:[r.left,r.top,r.width,r.height],required:plan?plan.targets.indexOf(e):-1,modal:!!dialog};
 })()`;
-export type FocusObservation = { id: string; visible: boolean; inside: boolean; indicator: boolean; boundary: boolean; native: boolean; rect: number[]; required: number; modal: boolean };
+export type FocusObservation = { id: string; visible: boolean; inside: boolean; indicator: boolean; boundary: boolean; native: boolean; rect: number[]; required: number; modal: boolean; datetime?: boolean; datetimeHost?: number; datetimeUnchanged?: boolean };
 export function assertFocus(value: FocusObservation, previous?: string) {
   assert.ok(value.visible, "keyboard focus is hidden, inert, body or offscreen");
   assert.ok(value.inside, "keyboard focus escaped the active dialog");
@@ -118,7 +120,8 @@ export function prepareKeyboardExpression(contract: KeyboardContract) {
     const modal=uiDialogs().at(-1)||null;
     const order=modal?uiControls(modal).filter(e=>!e.disabled&&e.tabIndex>=0):[];
     if(modal&&(!order.length||targets.some(e=>!modal.contains(e))))throw Error('modal keyboard inventory missing');
-    globalThis.__uiKeyboardPlan={targets,order,modal};return {required:targets.length,modal:!!modal,order:order.map(uiIdentity),native:!!(contract.native&&document.querySelector(contract.native))};
+    const datetimes=uiControls(root).filter(e=>e.tagName==='INPUT'&&e.type==='datetime-local'&&!e.disabled&&e.tabIndex>=0).map(element=>({element,value:element.value}));
+    globalThis.__uiKeyboardPlan={targets,order,modal,root,datetimes};return {required:targets.length,modal:!!modal,order:order.map(uiIdentity),native:!!(contract.native&&document.querySelector(contract.native))};
   })()`;
 }
 type KeyTrace = { direction: "forward" | "backward"; stage: "seek" | "path" | "reverse" | "boundary"; focus: FocusObservation };
@@ -126,7 +129,7 @@ export function safeKeyboardTrace(condition: Condition, trace: KeyTrace[]) {
   assert.match(condition.id, /^[A-Za-z0-9-]+$/);
   const entries = trace.map(({direction,stage,focus}) => ({ direction, stage,
     id: /^(?:BODY|HTML|(?:\/[A-Z]+:[0-9]+){1,16})$/.test(focus.id) ? focus.id.slice(0,160) : "OTHER",
-    visible:!!focus.visible, inside:!!focus.inside, rect:focus.rect.slice(0,4).map(v=>Number.isFinite(v)?Math.round(v):null) }));
+    visible:!!focus.visible, inside:!!focus.inside, type:focus.datetime?"datetime-local":"other", valueUnchanged:focus.datetimeUnchanged===true, rect:focus.rect.slice(0,4).map(v=>Number.isFinite(v)?Math.round(v):null) }));
   const value = { condition: condition.id, totalSteps: trace.length, entries };
   while(Buffer.byteLength(JSON.stringify(value))>4096&&entries.length)entries.shift();
   assert.ok(Buffer.byteLength(JSON.stringify(value))<=4096);return value;
@@ -135,9 +138,24 @@ export async function exerciseAccessibility(browser: BrowserHarness, condition: 
   const pending: string[] = [];
   if (["keyboard", "forced-colors"].includes(condition.exercise || "") || ["Confirmation", "Form", "Detail"].includes(condition.exercise || "")) {
     const trace: KeyTrace[] = [], contract = keyboardContract(condition);
-    let previous: string | undefined; let inputFailed = false;
+    let previous: string | undefined; let inputFailed = false, mediaPending = false;
+    let last: FocusObservation | undefined;
+    const datetimeHosts=new Set<number>(),exits=new Set<string>(),hostSteps=new Map<string,number>();
     const press = async (direction: "forward"|"backward", stage: KeyTrace["stage"]) => {
-      await browser.pressTab(direction); const focus=await browser.evaluate<FocusObservation>(focusExpression);trace.push({direction,stage,focus});return focus;
+      for (;;) {
+        assert.ok(trace.length<128,"keyboard traversal exceeded the existing 128 step bound");
+        if(last?.datetime)assert.ok((hostSteps.get(last.datetimeHost+":"+direction)||0)<16,"datetime host did not exit within 16 native Tab steps");
+        await browser.pressTab(direction); const focus=await browser.evaluate<FocusObservation>(focusExpression);trace.push({direction,stage,focus});
+        assert.notEqual(focus.datetimeUnchanged,false,"datetime host was replaced, hidden, moved or edited");
+        if(focus.datetime){assertFocus(focus);assert.ok(Number.isInteger(focus.datetimeHost)&&focus.datetimeHost!>=0,"unobserved datetime host");datetimeHosts.add(focus.datetimeHost!);}
+        if(last?.datetime){
+          const key=last.datetimeHost+":"+direction,count=(hostSteps.get(key)||0)+1;hostSteps.set(key,count);
+          assert.ok(count<=16,"datetime host did not exit within 16 native Tab steps");
+          if(focus.id===last.id){assert.equal(focus.datetime,true,"datetime host type changed");assert.equal(focus.datetimeHost,last.datetimeHost,"datetime host identity changed");last=focus;continue;}
+          exits.add(key);
+        }
+        last=focus;return focus;
+      }
     };
     try {
     const plan = await browser.evaluate<{required:number;modal:boolean;order:string[];native:boolean}>(prepareKeyboardExpression(contract));
@@ -145,7 +163,7 @@ export async function exerciseAccessibility(browser: BrowserHarness, condition: 
       // A fixed maximum bounds broken navigation; it is not an expected count.
       for(let step=0;step<128;step++) {
         const focus=await press("forward",required?"path":"seek");
-        if(focus.native){pending.push("UA_KEYBOARD_IDENTITY_PENDING: native media internals cannot be observed");break;}
+        if(focus.native){mediaPending=true;pending.push("UA_KEYBOARD_IDENTITY_PENDING: native media internals cannot be observed");break;}
         if(focus.boundary&&!plan.modal){assert.equal(required,plan.required,"document ended before required keyboard path");break;}
         assertFocus(focus,previous);previous=focus.id;
         if(plan.modal){
@@ -155,9 +173,9 @@ export async function exerciseAccessibility(browser: BrowserHarness, condition: 
         } else if(focus.required>=0&&focus.required===required)required++;
         else if(focus.required>=required)assert.fail("required keyboard trigger was skipped");
         if(required||plan.modal)order.push(focus.id);
-        if(!plan.modal&&required===plan.required)break;
+        if(!plan.modal&&required===plan.required&&!focus.datetime)break;
       }
-      if(!pending.length) {
+      if(!mediaPending) {
         assert.equal(required,plan.required,"required keyboard path not reached within bound");
         if(plan.modal){assert.equal(cycle,true,"modal first/last focus wrap missing");assert.deepEqual(new Set(order),new Set(plan.order),"modal skipped a tabbable control");}
         assert.ok(order.length,"zero keyboard path observations");
@@ -167,9 +185,11 @@ export async function exerciseAccessibility(browser: BrowserHarness, condition: 
         // A one-control page still proves reverse movement through its preceding
         // document control/boundary, without asserting a nonexistent 13th item.
         if(!plan.modal&&order.length===1){const focus=await press("backward","boundary");if(!focus.boundary)assertFocus(focus,previous);const restored=await press("forward","boundary");assertFocus(restored);assert.equal(restored.id,order[0],"reverse boundary must restore the actual page target");}
+        for(const host of datetimeHosts)for(const direction of ["forward","backward"])assert.ok(exits.has(host+":"+direction),"datetime host must exit in both directions");
         pending.push(...await exerciseActivation(browser,contract.activation,contract.activationTarget));
       }
-      if(plan.native&&!pending.some(value=>value.startsWith("UA_")))pending.push("UA_KEYBOARD_IDENTITY_PENDING: native media keyboard behavior remains required");
+      if(datetimeHosts.size)pending.push("UA_DATETIME_SEGMENT_IDENTITY_PENDING");
+      if(plan.native&&!pending.some(value=>value.startsWith("UA_KEYBOARD_")))pending.push("UA_KEYBOARD_IDENTITY_PENDING: native media keyboard behavior remains required");
     } catch (error) { inputFailed = true; throw error; } finally {
       const cleanup: unknown[] = [];
       try { saveTrace(safeKeyboardTrace(condition,trace)); } catch (error) { cleanup.push(error); }

@@ -38,6 +38,7 @@ import { useI18n } from "@/components/admin/i18n-provider";
 import type { WorkerNode } from "@/types/domain";
 import { formatNodeMetricPercent, formatWorkerHeartbeat } from "./node-operational-display";
 import { buildWorkerRestartDescriptor } from "./workers-action-descriptors";
+import { copyCanonicalWorkerWireValue } from "./workers-wire-normalizer";
 import {
   createWorkerRestartController,
   type AllowedWorkerRestartOpen,
@@ -78,6 +79,16 @@ export function WorkersView() {
   const workers = useWorkers(canReadWorkers);
   const canReadRegisteredNodes = hasPermission(currentUser.data, "api_tokens.create");
   const canReadServiceHealth = hasPermission(currentUser.data, "service_health.read");
+  const canReadAny = canReadWorkers || canReadRegisteredNodes || canReadServiceHealth;
+  const readStatus = currentUser.status === "error" ? "error" : currentUser.status !== "success" || !currentUser.data ? "loading" : canReadAny ? "ready" : "denied";
+  const readRefreshing = readStatus === "ready" && currentUser.isFetching;
+  const readNotice = readStatus === "error"
+    ? locale === "ja" ? "Worker情報の閲覧権限を取得できません。" : "Worker read permissions are unavailable."
+    : readStatus === "loading"
+      ? locale === "ja" ? "Worker情報の閲覧権限を確認中です。" : "Checking Worker read permissions."
+      : readRefreshing
+        ? locale === "ja" ? "Worker情報の閲覧権限を再確認中です。表示値は取得済みの情報です。" : "Rechecking Worker read permissions. Showing previously received values."
+        : locale === "ja" ? "Worker情報を閲覧する権限がありません。" : "Permission denied: no Worker information is available to read.";
   const registeredNodes = useNodes(canReadRegisteredNodes);
   const serviceHealth = useServiceHealth(canReadServiceHealth);
   const queryClient = useQueryClient();
@@ -103,14 +114,14 @@ export function WorkersView() {
     "service-health": canReadServiceHealth ? remainingQuerySnapshot(serviceHealth) : knownEmptyRemainingQuery(),
   });
 
-  const rows = mergeOperationalNodes(workers.data || [], registeredNodes.data || [], serviceHealth.data || []);
+  const rows = readStatus === "ready" ? mergeOperationalNodes(canReadWorkers ? workers.data || [] : [], canReadRegisteredNodes ? registeredNodes.data || [] : [], canReadServiceHealth ? serviceHealth.data || [] : []) : [];
   const operationalSummary = summarizeWorkerOperations(rows);
   const activeJobs = rows.reduce((sum, node) => sum + Number(node.metrics?.active_jobs || node.metrics?.runningJobs || 0), 0);
   const warning = operationalSummary.attention;
-  const summaryConfirmed = remoteStateAllowsPositiveSummary(remoteState, 0, canReadWorkers || canReadRegisteredNodes || canReadServiceHealth);
+  const summaryConfirmed = readStatus === "ready" && !readRefreshing && remoteStateAllowsPositiveSummary(remoteState, 0, canReadAny);
   const onlineValue = rows.length > 0 || summaryConfirmed ? `${operationalSummary.healthy}/${operationalSummary.total}` : "—";
   const attentionValue = rows.length > 0 || summaryConfirmed ? warning : "—";
-  const unknownSummaryDetail = locale === "ja" ? "全Nodeの最新状態を確認できません" : "The latest state of every node is unavailable";
+  const unknownSummaryDetail = readStatus !== "ready" || readRefreshing ? readNotice : locale === "ja" ? "全Nodeの最新状態を確認できません" : "The latest state of every node is unavailable";
 
   const copyValue = async (key: string, value?: string) => {
     if (!value) return;
@@ -261,7 +272,7 @@ export function WorkersView() {
   return (
     <div className="space-y-5" data-screen-family="workers">
       <PageHeader title={t("workers")} description={t("workerPageDescription")}
-        actions={<Button variant="outline" disabled={workers.isFetching || registeredNodes.isFetching || serviceHealth.isFetching} onClick={() => {
+        actions={<Button variant="outline" disabled={readStatus !== "ready" || readRefreshing || workers.isFetching || registeredNodes.isFetching || serviceHealth.isFetching} onClick={() => {
           if (canReadWorkers) void workers.refetch();
           if (canReadRegisteredNodes) void registeredNodes.refetch();
           if (canReadServiceHealth) void serviceHealth.refetch();
@@ -269,7 +280,7 @@ export function WorkersView() {
       <NodeWorkspaceNavigation active="workers" canRegister={canReadRegisteredNodes} canOperate={canReadWorkers || canReadServiceHealth || canReadRegisteredNodes} />
       <section className="grid gap-4 md:grid-cols-3">
         <MetricCard title={t("onlineNodes")} value={onlineValue} detail={summaryConfirmed ? t("statusNodeHealthy") : unknownSummaryDetail} tone={summaryConfirmed && warning === 0 ? "ok" : "warning"} />
-        <MetricCard title={t("workerActiveJobs")} value={activeJobs} detail={t("workerCurrentlyProcessing")} />
+        <MetricCard title={t("workerActiveJobs")} value={rows.length > 0 || summaryConfirmed ? activeJobs : "—"} detail={readStatus === "ready" && !readRefreshing ? t("workerCurrentlyProcessing") : readNotice} />
         <MetricCard title={t("attentionRequired")} value={attentionValue} detail={summaryConfirmed ? t("workerAttentionDetail") : unknownSummaryDetail} tone={warning > 0 ? "danger" : summaryConfirmed ? "ok" : "warning"} />
       </section>
 
@@ -316,7 +327,8 @@ export function WorkersView() {
       ) : null}
 
       <DetailSection title={locale === "ja" ? "登録・稼働・担当" : "Registration, health and assignment"} description={locale === "ja" ? "接続・プロセス稼働・担当・ジョブを個別に確認してください。再起動の影響は既存の確認画面に表示します。" : "Review connection, process health, assignments and jobs separately. Restart impact is shown in the confirmation."}>
-          {remoteState.kind !== "ready" || remoteState.freshness.kind !== "fresh" ? <div className="mb-3"><RemainingStateNotice state={remoteState} consumer="workers" /></div> : null}
+          {readStatus !== "ready" || readRefreshing ? <p role={readStatus === "error" ? "alert" : "status"} className="mb-3">{readNotice}</p> : null}
+          {readStatus === "ready" && (remoteState.kind !== "ready" || remoteState.freshness.kind !== "fresh") ? <div className="mb-3"><RemainingStateNotice state={remoteState} consumer="workers" /></div> : null}
           <WorkerActionsContext.Provider value={workerActionsContextValue}>
             <DataTable columns={columns} data={rows} filterPlaceholder={t("workerFilterPlaceholder")} getRowId={(row) => row.service_id || row.id} minTableWidthClass="min-w-[980px]" />
           </WorkerActionsContext.Provider>
@@ -436,7 +448,7 @@ function capabilityCount(node: WorkerNode) {
 
 const operationalNodeTypes = new Set(["worker", "encoder_recorder", "discord_bot", "observability"]);
 
-function mergeOperationalNodes(...sources: WorkerNode[][]) {
+export function mergeOperationalNodes(...sources: WorkerNode[][]) {
   const merged = new Map<string, WorkerNode>();
   for (const source of sources) {
     for (const node of source) {
@@ -444,19 +456,25 @@ function mergeOperationalNodes(...sources: WorkerNode[][]) {
       const id = node.service_id || node.id;
       if (!id) continue;
       const current = merged.get(id);
-      merged.set(id, current ? {
+      // Do not let a later display source sanitize a rejected wire record.
+      if (current && !copyCanonicalWorkerWireValue(current)) continue;
+      if (!current || !copyCanonicalWorkerWireValue(node)) { merged.set(id, node); continue; }
+      const combined = {
         ...current,
         ...node,
         service_id: current.service_id || node.service_id,
-        id: current.id || node.id,
+        ...(Object.hasOwn(current, "id") || Object.hasOwn(node, "id") ? { id: current.id || node.id } : {}),
         service_type: current.service_type || node.service_type,
         service_name: current.service_name || node.service_name,
-        reported_version: node.reported_version || current.reported_version,
-        reported_commit: node.reported_commit || current.reported_commit,
-        reported_build_date: node.reported_build_date || current.reported_build_date,
         status: node.status || current.status,
-        health_status: node.health_status || current.health_status,
-      } : node);
+      };
+      for (const key of ["reported_version", "reported_commit", "reported_build_date", "health_status"] as const) {
+        const before = Object.getOwnPropertyDescriptor(current, key), next = Object.getOwnPropertyDescriptor(node, key);
+        const invalid = (value: PropertyDescriptor | undefined) => value && (!("value" in value) || typeof value.value !== "string");
+        const selected = invalid(before) ? before : invalid(next) ? next : next?.value ? next : before ?? next;
+        if (selected) Object.defineProperty(combined, key, selected);
+      }
+      merged.set(id, combined);
     }
   }
   return Array.from(merged.values()).sort((a, b) => {

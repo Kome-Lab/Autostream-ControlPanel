@@ -58,6 +58,11 @@ export function assertCurrentObservation(value: UIObservation, layout: LayoutObs
   assertObservation(value, condition, evidence, primary);
   assertState(condition, value, evidence, primary);
 }
+export async function refreshCurrentState(browser: BrowserHarness, condition: Condition) {
+  const owner = condition.family === "streams-list" ? 'main [data-slot="page-actions-secondary"]'
+    : condition.family === "nodes" ? 'main [data-screen-family="registered-nodes"] [data-slot="card-header"]' : "main";
+  await clickNamed(browser, condition.family === "system-updates" ? /^(更新情報を再確認|Check updates again)$/ : /^(更新|最新状態に更新|Refresh|Reload|Update)$/, owner);
+}
 export class DraftRestorationFailure extends Error {
   readonly primaryFailed: boolean; readonly primary: unknown; readonly restoration: unknown;
   constructor(primaryFailed: boolean, primary: unknown, restoration: unknown) {
@@ -148,7 +153,7 @@ export async function main() {
         }
         if (["background-refresh", "stale"].includes(condition.state)) {
           fixture.refresh();
-          await clickNamed(target, condition.family === "system-updates" ? /^(更新情報を再確認|Check updates again)$/ : /^(更新|最新状態に更新|Refresh|Reload|Update)$/, 'main');
+          await refreshCurrentState(target, condition);
           await target.waitForRequestCount(surface.primary, 2);
           if (condition.state === "stale") await target.waitForResponseCount(surface.primary, 2);
         }
@@ -214,7 +219,7 @@ export async function main() {
         if (nodeContent || condition.exercise === "Confirmation" || surface.stage === "detail" || surface.stage === "form" || condition.family === "roles" && condition.state === "partial") {
           await closeOverlay(target, reportRender);
           await target.waitFor("document.querySelectorAll('[role=dialog],[role=alertdialog]').length", value => value === 0, "dialog closes without duplicate owner");
-          assert.ok(await target.evaluate("document.activeElement === globalThis.__uiReturnTrigger && document.activeElement !== document.body && document.activeElement.getClientRects().length > 0"), "focus returns to the exact opening trigger");
+          await target.waitFor("(() => { const trigger=globalThis.__uiReturnTrigger; if(!trigger?.isConnected)throw Error('opening trigger lost'); return document.activeElement===trigger && trigger!==document.body && !trigger.disabled && trigger.getAttribute('aria-disabled')!=='true' && !trigger.closest('[inert]') && trigger.getClientRects().length>0; })()", Boolean, "focus returns to the exact opening trigger after focus cleanup");
           await target.evaluate("delete globalThis.__uiReturnTrigger;true");
         }
         if (condition.exercise === "Table") await exerciseTable(target);

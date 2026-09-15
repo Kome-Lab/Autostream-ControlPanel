@@ -7,8 +7,10 @@ import { clickVisible } from "./ui-regression/visible-trigger.mts";
 
 
 
-export async function runAccountAppearanceScenario(t: TestContext, browser: BrowserHarness, server: { baseUrl: string }, fixture: Pick<BrowserRouteFixture, "uiPreferenceMethods" | "authResponse" | "uiPreferenceBodies" | "uiPreferenceResponse" | "uiPreferenceWriteResponse">) {
+export async function runAccountAppearanceScenario(t: TestContext, rawBrowser: BrowserHarness, server: { baseUrl: string }, fixture: Pick<BrowserRouteFixture, "uiPreferenceMethods" | "authResponse" | "uiPreferenceBodies" | "uiPreferenceResponse" | "uiPreferenceWriteResponse">) {
 
+  const diagnostic=accountAppearanceDiagnostics(rawBrowser,()=>fixture.uiPreferenceMethods);
+  const browser=diagnostic.browser;
   await t.test("Account appearance persists 12 themes and 3 modes with DB fallback and save rollback", async () => {
 		const preferenceRequestCount = (method: "GET" | "PUT") => fixture.uiPreferenceMethods.filter((value) => value === method).length;
 		const waitForPreferenceSettlement = async (method: "GET" | "PUT", minimumRequests: number) => {
@@ -128,8 +130,12 @@ export async function runAccountAppearanceScenario(t: TestContext, browser: Brow
 		fixture.uiPreferenceResponse = { body: { theme_id: "violet", color_mode: "light", revision: 7 } };
 		await setStoredDisplay(browser, "en", "light");
 		const translatedGet = preferenceRequestCount("GET") + 1;
+		diagnostic.settled("GET", preferenceRequestCount("GET"));diagnostic.settled("PUT", 2);
+		await diagnostic.observe("before-reload");
 		await browser.reload();
+		await diagnostic.observe("after-reload");
 		await clickVisible(browser, 'html[lang="en"] main [role="tablist"] [role="tab"]', /^Appearance$/);
+		await diagnostic.observe("after-tab");
 		await browser.waitFor(`document.querySelector('[aria-label="Violet theme"]') !== null`, Boolean, "translated theme accessible name missing");
 		await browser.waitFor(
 			`document.documentElement.dataset.theme + '/' + document.documentElement.dataset.colorMode`,
@@ -137,6 +143,7 @@ export async function runAccountAppearanceScenario(t: TestContext, browser: Brow
 			"translated account did not consume its DB preference",
 		);
 		await waitForPreferenceSettlement("GET", translatedGet);
+		diagnostic.settled("GET", translatedGet);await diagnostic.observe("preference-settled");
 		await browser.evaluate(`document.querySelector('[aria-label="Ocean theme"]')?.focus(); true`);
 		await browser.pressKey("ArrowRight");
 		await browser.waitFor(
@@ -152,6 +159,55 @@ export async function runAccountAppearanceScenario(t: TestContext, browser: Brow
 			"mode radiogroup did not implement roving Home/End selection",
 		);
 		await waitForPreferenceSettlement("GET", translatedGet);
+		diagnostic.settled("GET", translatedGet);await diagnostic.observe("preference-settled");
 		await waitForPreferenceSettlement("PUT", 2);
+		diagnostic.settled("PUT", 2);await diagnostic.finish();
   });
+}
+
+export const accountAppearanceDiagnosticExpression = `(() => {
+  const visible=e=>!!e?.getClientRects().length&&getComputedStyle(e).visibility!=='hidden'&&getComputedStyle(e).display!=='none';
+  const tabs=[...document.querySelectorAll('main [role="tablist"] [role="tab"]')].filter(e=>visible(e)&&e.textContent?.trim()==='Appearance'),tab=tabs.length===1?tabs[0]:null;
+  const target=tab?.getAttribute('aria-controls'),panels=target?[...document.querySelectorAll('[role="tabpanel"]')].filter(e=>e.id===target):[];
+  const themes=[...document.querySelectorAll('[role="radiogroup"][aria-label="Color theme"] [role="radio"]')];
+  return {lang:['ja','en'].includes(document.documentElement.lang)?document.documentElement.lang:'other',tabs:tabs.length,enabled:!!tab&&!tab.disabled&&tab.getAttribute('aria-disabled')!=='true',
+    selected:tab?.getAttribute('aria-selected')==='true',panels:panels.length,visiblePanels:panels.filter(visible).length,themes:themes.length,
+    violet:document.querySelectorAll('[role="radio"][aria-label="Violet theme"]').length};
+})()`;
+type AccountDiagnostic = { lang:string; tabs:number; enabled:boolean; selected:boolean; panels:number; visiblePanels:number; themes:number; violet:number };
+
+export function accountAppearanceDiagnostics(browser: BrowserHarness, methods:()=>string[], write:(line:string)=>void=console.log) {
+  const observations:{phase:string;value:AccountDiagnostic;get:number;put:number;getSettled:number;putSettled:number}[]=[],diagnosticErrors:unknown[]=[];
+  const settledRequests={GET:0,PUT:0};let phase:string|undefined;
+  const observe=async(step:string)=>{phase=step;try{const value=await browser.evaluate<AccountDiagnostic>(accountAppearanceDiagnosticExpression);
+    observations.push({phase,value,get:methods().filter(v=>v==="GET").length,put:methods().filter(v=>v==="PUT").length,getSettled:settledRequests.GET,putSettled:settledRequests.PUT});
+  }catch(error){diagnosticErrors.push(error);}};
+  const failed=async(original:unknown):Promise<never>=>{
+    if(!phase)throw original;
+    await observe(phase);
+    try {
+      const count=(n:number)=>Number.isFinite(n)?Math.min(1024,Math.max(0,Math.floor(n))):null;
+      const payload={schemaVersion:1,code:"D013-ACCOUNT",phase,diagnosticFailed:diagnosticErrors.length>0,
+        observations:observations.slice(-6).map(row=>({phase:row.phase,lang:["ja","en"].includes(row.value.lang)?row.value.lang:"other",
+          tabs:count(row.value.tabs),enabled:row.value.enabled===true,selected:row.value.selected===true,panels:count(row.value.panels),
+          visiblePanels:count(row.value.visiblePanels),themes:count(row.value.themes),violet:count(row.value.violet),
+          get:count(row.get),put:count(row.put),getSettled:count(row.getSettled),putSettled:count(row.putSettled)}))};
+      const json=JSON.stringify(payload);assert.ok(Buffer.byteLength(json)<=4096);write("UI_BROWSER_DIAGNOSTIC_013 "+json);
+    }catch(error){diagnosticErrors.push(error);}
+    if(diagnosticErrors.length)throw new AggregateError([original,...diagnosticErrors],"Account failure and diagnostic failure",{cause:original});
+    throw original;
+  };
+  // A local diagnostic view of the same harness. Calls, arguments, this-owner,
+  // deadlines and native input are forwarded unchanged; no method is replaced.
+  const observed=new Proxy(browser,{get(target,property){
+    const value:unknown=Reflect.get(target,property,target);
+    if(typeof value!=="function")return value;
+    if(!["waitFor","waitForRequestHandlersIdle","reload","evaluate","clickAt","pressKey"].includes(String(property)))return value.bind(target);
+    return (...args:unknown[])=>{
+      if(!phase)return Reflect.apply(value,target,args);
+      try{return Promise.resolve(Reflect.apply(value,target,args)).catch(failed);}catch(error){return failed(error);}
+    };
+  }});
+  return {browser:observed,observe,settled:(method:"GET"|"PUT",count:number)=>{settledRequests[method]=count;},
+    finish:async()=>{if(diagnosticErrors.length)await failed(new AggregateError(diagnosticErrors,"Account diagnostic observation failed"));}};
 }

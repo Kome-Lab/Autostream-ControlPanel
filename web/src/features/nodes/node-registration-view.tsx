@@ -12,7 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
@@ -182,14 +182,14 @@ function LegacyNodeRegistrationView({ mode = "registration" }: { mode?: NodeRegi
       <NodeWorkspaceNavigation active={mode === "registered" ? "registered" : "registration"} canRegister={allowed}
         canOperate={allowed || hasPermission(currentUser.data, "workers.read") || hasPermission(currentUser.data, "service_health.read")} />
       {showRegistration ? (
-        <div className="flex justify-end">
-          <Button onClick={() => setCreateOpen(true)} disabled={!allowed}>
-            <Server className="size-4" />
-            {uiText("Nodeを新規作成")}</Button>
-        </div>
-      ) : null}
-      {showRegistration ? (
         <Dialog open={createOpen} onOpenChange={(open) => { if (open) setCreateOpen(true); else createDraftExit.request(() => setCreateOpen(false)); }}>
+          <div className="flex justify-end">
+            <DialogTrigger asChild>
+              <Button disabled={!allowed}>
+                <Server className="size-4" />
+                {uiText("Nodeを新規作成")}</Button>
+            </DialogTrigger>
+          </div>
           <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
             <DialogHeader>
               <DialogTitle>{t("nodeRegistration")}</DialogTitle>
@@ -310,7 +310,7 @@ function LegacyNodeRegistrationView({ mode = "registration" }: { mode?: NodeRegi
             </div>
             <Button variant="outline" size="sm" onClick={() => registeredNodes.refetch()} disabled={registeredNodes.isFetching}>
               <RotateCw className="size-4" />
-              {registeredNodes.isFetching ? uiText("更新中") : uiText("更新")}
+              {registeredNodes.isFetching ? uiText("更新中") : locale === "ja" ? "更新" : "Refresh"}
             </Button>
           </div>
         </CardHeader>

@@ -129,7 +129,7 @@ export async function runNavigationCreateFocusScenario(t: TestContext, browser: 
       /exactly one dialog/,
       "negative fixture: an unclosed navigation Sheet must fail",
     );
-    await closeCreateAndAssertFocusReturn(browser, "ナビゲーションを開く");
+    await closeCreateAndAssertFocusReturn(browser, "ナビゲーションを開く", "same-route");
 
     await browser.navigate(`${server.baseUrl}/admin/`);
     await waitForShell(browser, "ナビゲーションを開く");
@@ -144,7 +144,7 @@ export async function runNavigationCreateFocusScenario(t: TestContext, browser: 
       10_000,
     );
     assertCreateOutcome(crossRoute);
-    await closeCreateAndAssertFocusReturn(browser, "ナビゲーションを開く");
+    await closeCreateAndAssertFocusReturn(browser, "ナビゲーションを開く", "cross-route");
 
     await browser.setViewport(1440, 900);
     await browser.navigate(`${server.baseUrl}/admin/streams/`);

@@ -145,3 +145,38 @@ The runner owns each returned draft restoration action once. A sole body or rest
 `UI-DRAFT-RESTORATION-011/012` run the actual exercise, real driver restoration, condition lifecycle and outer writer against controlled input/native-setter boundaries. `UI-DRAFT-OUTPUT-011/012` run the actual main exercise/catch/writer with existing socket fixtures and owned temporary files. They cover normal, primary-only, restore-only, dual and marker-composite failures, independent edits/owner replacement, exact error identities, single restoration, bounded non-secret output, real `wx` collision preservation and next-condition stop. The driver and its fresh Node defaults/original-value protection are unchanged. Existing suite entry points register these tests once; suite overlap is not added to an aggregate PASS count.
 
 These are local source, controlled DOM/callback, and exact dependency checks. They do not establish native browser focus/geometry, UI images, official CI success, or UI acceptance. The fixed-history capture failure, 152 NOT_PROVEN, native 200% zoom, history without Navigation API, UA keyboard, Preview playback, and unaccepted images remain separate. All 4,144 IDs/order/applicability, status-only 40, and the original 35 browser registrations remain. Cross-repository naming/removal/build/CI/distribution cleanup: **NOT_STARTED**.
+<!-- ui-regression correction 013 -->
+
+013では、Worker表示結合の欠落optional値と明示不正値を区別し、既存normalizerと再起動controllerへ接続した。3つの読取り権限が全てない場合は日英の権限statusと未確認統計を表示し、認証取得中・失敗を区別する。query・permission・mutation ownerは維持する。
+
+Visual ModeSelectの4通常用途と2preset用途は、用途を示す日英の可視labelと一意なSelectTrigger参照を持つ。Node作成の実triggerは同じcontrolled Dialogに属し、既存draft判断とRadixのfocus cleanupを使用する。runnerはdialog消滅後、同じopening targetへのfocus成立を既存期限内で待つ。Streams Refreshの対象はPageActions secondary、Nodesの英語ボタン名はRefreshとし、更新日時sortや共通辞書は変更しない。
+
+datetime-localは実host内のTab反復と脱出を区別し、hostごと各方向16step、観測全体128stepの上限、両方向の順序・focus・値不変・実section activationを検査する。内部segment identityは `UA_DATETIME_SEGMENT_IDENTITY_PENDING` として残す。普通のcontrol、真のtrap、不可視・交換・編集・focus逸脱は拒否する。
+
+旧35のMobile createとAccount Appearanceには、実段階・DOM状態・既存GET/PUT settlementの有限診断を追加した。失敗時だけ `UI_BROWSER_DIAGNOSTIC_013` の固定JSONを出し、原error/causeと診断失敗を保持する。原因未確定の製品focus/locale変更や再操作は行わない。
+
+同じpackage/lockの所有exact環境で、実caller・発行式・制御DOM・callback・harness/socketによる正負回帰、strict、product typecheck、対象lint、current/history、source/binding/assembly/LOCを確認する。局所証拠は実ブラウザー、公式CI、画像、実focus、UI受入の代替ではない。旧35、4,144条件とstatus-only40のID・順序・目的・分母を維持する。
+
+既存の52到達性・12focus位置、固定historyのbefore失敗、旧NOT_PROVEN、native200%、Navigation APIなし履歴、UA内部keyboard、Preview再生、新UI画像は未解決・未証明として保持する。全repoの改名・削除・build/CI整理はNOT_STARTED。013は非署名・未commit candidateで停止し、Bundle10 COMPLETEとは扱わない。
+<!-- ui-regression correction 014 -->
+
+014は013全sourceを継続し、Worker viewだけを補正する。`mergeOperationalNodes`は両方で互換idが欠落するときにown undefinedを生成しない。片側・両側の有効idと既存優先関係、013のoptional metadata処理を維持する。明示undefined/null/空/不正型/不一致/accessorは既存normalizerとcontrollerで拒否され、APIやfixtureのwireへidを追加しない。
+
+成功済み認証dataのbackground refetch中は、同じsnapshotで許可された一覧の取得済みrowsを保持する。権限再確認中の日英copyで値の意味を示し、Worker queryのpartial/stale/background refresh通知を別に保持する。初回未取得、認証error、確定した読取り権限喪失ではcacheを表示根拠にしない。既存のquery・hasPermission・controllerは不変であり、auth fetching中の再起動evaluate/open/submitは引き続き拒否する。
+
+`UI-WORKER-WIRE-014`は既存service_id-only factoryから実merge→normalizer→controllerへ接続し、/nodesなしを含む6結合形、同一identity、非破壊、GET/POST0のopen、fresh確認とPOST1のsubmit、重複・pending・権限・refresh拒否を検査する。`UI-WORKER-REFRESH-014`は実WorkersView/renderUIと同じQueryClientのidle→fetching→idleを日英・3読取り権限全8組合せで検査する。権限減少、実auth取得失敗、初回・denied・session終了、partial/stale、既存action拒否を含む。実宣言から作るrows消失・cache優先・auth gate緩和の変異も拒否する。両testは既存入口に一度だけ追加し、旧testとassertionを保持する。
+
+同じ固定package/lockと所有exact依存で、変更sourceと実import closureのstrict193＋継承6root、product typecheck、warning0 lint、既存suite、source/binding/assembly/LOCを照合する。局所実行と再利用はprivate RESULTのhash対応で区別し、途中FAILを保存する。Worker244を含む全4,144条件のID・object・順序・分母、旧35とstatus-only40は不変であり、計画条件を実browser PASSへ換算しない。
+
+013のVisual label、Node Dialog/focus、datetime有限観測とpending、Refresh selector、D013診断、protected733と歴史authorityを保持する。既存の未解決・未証明と旧FAILは継続する。全9repo cleanupは **NOT_STARTED**。014の到達点は非署名・未commit candidateと局所証拠であり、公式CI成功・実UI受入・Bundle10 COMPLETEを意味しない。
+<!-- ui-regression correction 015 -->
+
+015は既存restart controllerのprivate `permissionSnapshot` だけで、fetching→refreshingの後にauth queryの存在とstatus=successを必要条件とする。error/pending/不存在を残存permissionsでreadyにせず、既存copyStringArray、正規空配列のdenied、共通gate、submit順序・fingerprint・duplicate lock・POST/409/ambiguous処理は維持する。014のWorkersViewと013の各補正は変更しない。
+
+`UI-WORKER-AUTH-015`は既存service_id-only factory→014の実merge/normalizer→実restart controllerと、実WorkersView.submitRestart callbackを接続する。実QueryClient.fetchQueryのreject後もdataが残る状態で、Worker GET前のauth errorはGET0/POST0、保留GET中のauth errorはGET1/POST0となる。onMutationStart・invalidate・成功noticeは発生せず、既存revalidation-unavailableへ戻る。GET/POSTは注入spyであり実サーバーへ送信しない。
+
+fetching継続、cacheなしerror、pending、query除去、malformed/missing permissions、denied、success/wildcardを区別する。finallyの同一Worker lock解放と別Workerの独立性、回復後の新しい明示操作によるPOST1を検査し、自動再送は認めない。実関数本体を使うstatus確認削除・GET後の再判定省略・error時cache優先の変異も、同じ実callbackと保留GET経路で拒否する。旧22個のliteral testと全assertionを保持し、新しいtestを既存入口へ一度だけ追加する。
+
+014原sourceでGET1/POST1となるbefore FAILと修正後の原ログを分離保存する。同じ固定package/lock・454manifest・HLS1.7.0の所有exact環境で、strict193＋継承6rootの実closure、product typecheck、warning0 lint、必要既存回帰、source/binding/assembly/LOCを候補へ対応付ける。再利用は動的readerを含むhash対応を示し、新実行へ加算しない。旧35、全4,144条件とstatus-only40は不変。
+
+このcontrollerは既存226変更pathの外の既存fileであり、累計集合の増加を実差分として記録する。旧FAIL、D013実原因、52到達性/12focus位置、native200%、未対応履歴、UA keyboard、Preview再生、新UI画像等の未証明は保持する。全9repo整理は **NOT_STARTED**。非署名・未commit候補と局所証拠の提出で停止し、公式CI成功・UI受入・Bundle10 COMPLETEとは扱わない。

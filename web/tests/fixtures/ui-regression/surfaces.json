@@ -149,7 +149,7 @@
             "selector": "main [data-slot=page-actions-primary] button"
           },
           {
-            "selector": "main button",
+            "selector": "main [data-slot=page-actions-secondary] button",
             "name": "^(Refresh|更新|最新状態に更新)$"
           },
           {
