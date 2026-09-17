@@ -133,7 +133,7 @@ export function AccountView() {
           </div>
           </DetailSection>
         </TabsContent>
-        <TabsContent value="security">
+        <TabsContent value="security" className="scroll-mt-20">
           <DetailSection title={ja ? "パスワード・MFA・Passkey" : "Password, MFA and passkeys"} description={ja ? "復旧コードや秘密値は必要な操作の中で一度だけ表示します。" : "Recovery codes and secrets are revealed only within their individual actions."}>
           <div className="grid items-start gap-6 xl:grid-cols-2 min-[1800px]:grid-cols-3">
             <PasswordPanel setNotice={setNotice} actionController={actionController} authority={authority} refreshAuthority={refreshAuthority} accountResourceID={accountResourceID} />

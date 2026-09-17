@@ -62,7 +62,7 @@ export async function runWorkerRestartScenario(t: TestContext, browser: BrowserH
       await browser.waitForRequestCount("/auth/me", refreshingAuthRequestCount, 20_000);
       browser.clearRequestCounts(restartPath);
       await clickWorkerAction(browser, "Restart worker");
-      const unknown = await waitForWorkerAction(browser, "Restart worker", "Worker One", (value) => value.disabled && value.reason.length > 0);
+      const unknown = await waitForWorkerAction(browser, "Restart worker", "Worker One", (value) => value.disabled && /permission could not be verified/i.test(value.reason));
       assert.match(unknown.reason, /permission could not be verified/i);
       assert.equal(await workerRestartDialogCount(browser), 0, "an unknown restart permission must not open a confirmation");
       assert.equal(browser.requests.get(restartPath) || 0, 0, "an unknown restart permission must not send POST");
@@ -73,7 +73,7 @@ export async function runWorkerRestartScenario(t: TestContext, browser: BrowserH
 
       fixture.authResponse = { body: permissionUser(["workers.read"]) };
       await browser.reload();
-      const denied = await waitForWorkerAction(browser, "Restart worker", "Worker One", (value) => value.disabled && value.reason.length > 0);
+      const denied = await waitForWorkerAction(browser, "Restart worker", "Worker One", (value) => value.disabled && /do not have permission to restart workers/i.test(value.reason));
       assert.match(denied.reason, /do not have permission to restart workers/i);
       browser.clearRequestCounts(restartPath);
       await clickWorkerAction(browser, "Restart worker");
@@ -159,7 +159,8 @@ export async function runWorkerRestartScenario(t: TestContext, browser: BrowserH
       const revokedAuthResponseCount = (browser.responses.get("/auth/me") || 0) + 1;
       fixture.authResponse = { body: permissionUser(["workers.read"]) };
       await browser.waitForResponseCount("/auth/me", revokedAuthResponseCount, 20_000);
-      const revoked = await waitForWorkerAction(browser, "Restart worker", "Worker One", (value) => value.disabled && value.reason.length > 0);
+      await browser.waitForRequestHandlersIdle({ pathname: "/auth/me", method: "GET" });
+      const revoked = await waitForWorkerAction(browser, "Restart worker", "Worker One", (value) => value.disabled && /do not have permission to restart workers/i.test(value.reason));
       assert.match(revoked.reason, /do not have permission to restart workers/i);
       fixture.workerRestartMethods = [];
       browser.clearRequestCounts(restartPath);

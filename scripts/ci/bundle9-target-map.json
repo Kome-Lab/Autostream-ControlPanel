@@ -1362,18 +1362,22 @@
       },
       {
         "path": "web/tests/ui-browser-account-scenarios.mts",
-        "sha256": "87b601e7bf77f9c865f222c17a86eb92a5ba277c08d24aded946482373898aaa",
+        "sha256": "1ce83295dc3b4d18e3d57ceae4c3ea5541bbf2a896a985ca9fe77ab90e02fb8b",
         "symbols": [
           "accountAppearanceDiagnostics",
           "accountAppearancePointerStart",
+          "bootstrap",
           "count",
           "failed",
           "observe",
           "point",
           "preferenceRequestCount",
+          "safePhase",
+          "settle",
+          "settlement",
           "waitForPreferenceSettlement"
         ],
-        "physical_lines": 250
+        "physical_lines": 299
       },
       {
         "path": "web/tests/ui-browser-fixture.mts",
@@ -1483,9 +1487,9 @@
       },
       {
         "path": "web/tests/ui-browser-worker-restart-scenarios.mts",
-        "sha256": "7b991800957247609b470ef645c574eda4cdfd055b50a0746aabbd2411414544",
+        "sha256": "ad57213c249e87577b977f955cf487fe9e238ff884433c08240df9de0d4f968a",
         "symbols": [],
-        "physical_lines": 355
+        "physical_lines": 356
       },
       {
         "path": "web/tests/ui-foundation-browser.test.mts",

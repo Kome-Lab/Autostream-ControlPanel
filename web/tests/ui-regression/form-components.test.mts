@@ -22,6 +22,24 @@ const { DetailSection, SectionNavigation } = await import("../../src/components/
 const { Input }=await import('../../src/components/ui/input.tsx');
 const { createUICopy }=await import('../../src/lib/i18n/ui-v2/copy.ts');
 
+test('UI-PANEL-SCROLL-019: actual Account security and Audit panels emit the header-clearance utility without changing their tab identity',async t=>{
+ const {AccountView}=await import('../../src/features/account/account-view.tsx'),{AuditLogsView}=await import('../../src/features/audit/audit-logs-view.tsx');
+ for(const locale of ['ja','en'] as const)for(const [View,route,tabName] of [[AccountView,'/admin/account/',locale==='ja'?'セキュリティ':'Security'],[AuditLogsView,'/admin/audit-logs/',null]] as const){
+  const dom=actualMarkupDOM(renderUI(createElement(View),locale,route));
+  const tab=dom.document.querySelectorAll('[role=tab]').find(e=>tabName?e.textContent.trim()===tabName:e.getAttribute('aria-selected')==='true');assert.ok(tab);
+  const panel=dom.document.getElementById(tab.getAttribute('aria-controls')!);assert.ok(panel);assert.equal(panel.getAttribute('role'),'tabpanel');assert.equal(panel.getAttribute('aria-labelledby'),tab.id);assert.equal(panel.tabIndex,0);
+  assert.ok((panel.getAttribute('class')||'').split(' ').includes('scroll-mt-20'),'actual scoped panel needs 5rem header clearance');
+  assert.equal(dom.document.querySelectorAll('[role=tabpanel]').filter(e=>(e.getAttribute('class')||'').includes('scroll-mt-20')).length,1,'only the authorized panel gains clearance');
+ }
+ const from=fileURLToPath(new URL('../../src/app/globals.css',import.meta.url)),generated=await postcss([tailwind({base:fileURLToPath(new URL('../../',import.meta.url)),optimize:false})]).process(readFileSync(from,'utf8'),{from});
+ let margin='',spacing='',header='';generated.root.walkDecls(d=>{if(d.prop==='--spacing')spacing=d.value;});
+ generated.root.walkRules(r=>{if(r.selector==='.scroll-mt-20')r.walkDecls('scroll-margin-top',d=>{margin=d.value;});if(r.selector.includes('min-h-')&&r.selector.includes('4\\.5rem'))r.walkDecls('min-height',d=>{header=d.value;});});
+ assert.equal(spacing,'0.25rem');assert.equal(margin,'calc(var(--spacing) * 20)');assert.equal(header,'4.5rem');
+ const clearance=(rem:number,scale:number)=>assert.ok(rem*16*scale>=Number.parseFloat(header)*16*scale+4*scale,'sticky header plus real outline and offset must fit');
+ for(const scale of [1,2]){clearance(Number.parseFloat(spacing)*20,scale);for(const insufficient of [0,.5])assert.throws(()=>clearance(insufficient,scale));}
+ t.diagnostic('Actual JSX/SSR and emitted Tailwind/PostCSS declarations; CSS scale is not native zoom and official 12 focus cases remain unaccepted.');
+});
+
 function actualMarkupDOM(html:string){
  const dom=observerDOM();dom.main.children=dom.main.children.filter(e=>e.tagName==='H1');const stack=[dom.main];
  for(const token of html.matchAll(/<\/?([a-z][\w-]*)\b([^>]*)>|([^<]+)/gi)){

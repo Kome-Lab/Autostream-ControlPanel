@@ -56,12 +56,17 @@ export async function runAccountAppearanceScenario(t: TestContext, rawBrowser: B
     await browser.setViewport(1440, 1000);
     await setStoredDisplay(browser, "ja", "light");
 		await browser.evaluate(`localStorage.setItem('autostream.ui_preference', JSON.stringify({ theme_id: 'cyan', color_mode: 'light' })); true`);
+		await diagnostic.bootstrap("mirror-written");
+		await diagnostic.bootstrap("before-navigate");
 		await browser.navigate(`${server.baseUrl}/admin/account/`);
+		try {
 		assert.equal(
-			await browser.evaluate<string>(`document.documentElement.dataset.theme + '/' + document.documentElement.dataset.colorMode`),
+			await diagnostic.bootstrap("after-navigate"),
 			"cyan/light",
 			"external pre-hydration bootstrap did not apply the validated local mirror before the DB response",
 		);
+		} catch (error) { await diagnostic.failed(error); }
+		diagnostic.bootstrapComplete();
 		await browser.waitFor(
       `document.documentElement.dataset.theme + '/' + document.documentElement.dataset.colorMode`,
       (value: string) => value === "ocean/dark",
@@ -200,9 +205,45 @@ export const accountAppearanceDiagnosticExpression = `(() => {
 type AccountPointer = {marked:boolean;connected:boolean;role:boolean;planned:number[];rect:number[]|null;plannedHit:boolean;sameTarget:boolean;targetConnected:boolean;events:{kind:string;trusted:boolean;point:number[];sameTarget:boolean;connected:boolean;eventInside:boolean;hitInside:boolean}[]};
 type AccountDiagnostic = { pointer?:AccountPointer|null; lang:string; tabs:number; enabled:boolean; selected:boolean; panels:number; visiblePanels:number; themes:number; violet:number };
 
+const bootstrapThemes = ["autostream","slate","ocean","cyan","indigo","violet","magenta","rose","crimson","amber","emerald","monochrome"];
+const bootstrapModes = ["system","light","dark"];
+const bootstrapPhases = ["mirror-written","before-navigate","after-navigate"] as const;
+type BootstrapPhase = typeof bootstrapPhases[number];
+export const accountBootstrapExpression = `(() => {
+  const themes=${JSON.stringify(bootstrapThemes)},modes=${JSON.stringify(bootstrapModes)};
+  const theme=themes.includes(document.documentElement.dataset.theme)?document.documentElement.dataset.theme:'other';
+  const mode=modes.includes(document.documentElement.dataset.colorMode)?document.documentElement.dataset.colorMode:'other';
+  let mirror='missing';try {const raw=localStorage.getItem('autostream.ui_preference');if(raw!==null){mirror='invalid';if(raw.length<=2048){try{const parsed=JSON.parse(raw);if(parsed&&typeof parsed==='object'&&!Array.isArray(parsed)&&themes.includes(parsed.theme_id)&&modes.includes(parsed.color_mode))mirror=parsed.theme_id==='cyan'&&parsed.color_mode==='light'?'valid-cyan-light':'valid-other';}catch{mirror='invalid';}}}}catch{mirror='unavailable';}
+  const fixed=value=>{if(typeof value!=='string'||value.length>2048)return false;try{const url=new URL(value,location.href);return url.origin===location.origin&&url.pathname==='/theme-bootstrap.js'&&!url.search&&!url.hash;}catch{return false;}};
+  const scripts=[...document.querySelectorAll('script[src]')],links=[...document.querySelectorAll('link[rel=preload][href]')];
+  const queue=globalThis.__next_s,resources=typeof performance?.getEntriesByType==='function'?performance.getEntriesByType('resource'):null;
+  return {theme,mode,mirror,readyState:['loading','interactive','complete'].includes(document.readyState)?document.readyState:'other',
+    timeOrigin:Number.isFinite(performance?.timeOrigin)?performance.timeOrigin:null,
+    scripts:scripts.slice(0,128).filter(e=>fixed(e.getAttribute('src'))).length,preloads:links.slice(0,128).filter(e=>fixed(e.getAttribute('href'))).length,
+    queue:Array.isArray(queue)?queue.slice(0,128).filter(e=>Array.isArray(e)&&fixed(e[0])).length:null,
+    resources:Array.isArray(resources)?resources.slice(0,128).filter(e=>fixed(e.name)).length:null,
+    scanLimited:scripts.length>128||links.length>128||Array.isArray(queue)&&queue.length>128||Array.isArray(resources)&&resources.length>128};
+})()`;
+type BootstrapObservation = {theme:string;mode:string;mirror:string;readyState:string;timeOrigin:number|null;scripts:number;preloads:number;queue:number|null;resources:number|null;scanLimited:boolean};
+
 export function accountAppearanceDiagnostics(browser: BrowserHarness, methods:()=>string[], write:(line:string)=>void=console.log) {
   const observations:{phase:string;value:AccountDiagnostic;get:number;put:number;getSettled:number;putSettled:number}[]=[],diagnosticErrors:unknown[]=[];
   const settledRequests={GET:0,PUT:0};let phase:string|undefined,reported=false,reportedFailure:unknown;
+  const lastSettlement:Partial<Record<"GET"|"PUT",{count:number;batch:string[]}>>={};
+  const settle=(method:"GET"|"PUT",count:number)=>{settledRequests[method]=count;lastSettlement[method]={count,batch:methods()};};
+  const count=(n:number|null)=>n!==null&&Number.isFinite(n)?Math.min(1024,Math.max(0,Math.floor(n))):null;
+  const safePhase=(value:string|undefined)=>[...bootstrapPhases,"before-reload","after-reload","after-tab","preference-settled"].includes(value||"")?value:"other";
+  const bootstrapRows:{phase:BootstrapPhase;value:BootstrapObservation;documentChanged:boolean|null;get:number;put:number;lastGetSettlement:{count:number|null;sameBatch:boolean}|null;lastPutSettlement:{count:number|null;sameBatch:boolean}|null}[]=[];
+  let documentOrigin:number|null=null;
+  const bootstrap=async(step:BootstrapPhase):Promise<string|undefined>=>{phase=step;
+    try {const value=await browser.evaluate<BootstrapObservation>(accountBootstrapExpression),batch=methods();
+      const settlement=(method:"GET"|"PUT")=>lastSettlement[method]?{count:count(lastSettlement[method]!.count),sameBatch:lastSettlement[method]!.batch===batch}:null;
+      const changed=documentOrigin===null||value.timeOrigin===null?null:documentOrigin!==value.timeOrigin;
+      if(step!=="after-navigate")documentOrigin=value.timeOrigin;
+      bootstrapRows.push({phase:step,value,documentChanged:changed,get:batch.filter(v=>v==="GET").length,put:batch.filter(v=>v==="PUT").length,lastGetSettlement:settlement("GET"),lastPutSettlement:settlement("PUT")});
+      return value.theme+"/"+value.mode;
+    }catch(error){if(step==="after-navigate")return failed(error);diagnosticErrors.push(error);}
+  };
   const observe=async(step:string)=>{phase=step;try{const value=await browser.evaluate<AccountDiagnostic>(accountAppearanceDiagnosticExpression);
     observations.push({phase,value,get:methods().filter(v=>v==="GET").length,put:methods().filter(v=>v==="PUT").length,getSettled:settledRequests.GET,putSettled:settledRequests.PUT});
   }catch(error){diagnosticErrors.push(error);}};
@@ -210,15 +251,19 @@ export function accountAppearanceDiagnostics(browser: BrowserHarness, methods:()
     if(reported)throw reportedFailure;
     if(!phase)throw original;
     reported=true;
-    await observe(phase);
+    const bootstrapFailure=bootstrapPhases.some(step=>step===phase);
+    if(!bootstrapFailure)await observe(phase);
     try {
-      const count=(n:number)=>Number.isFinite(n)?Math.min(1024,Math.max(0,Math.floor(n))):null;
       const point=(value:number[]|null|undefined)=>value?.slice(0,4).map(n=>Number.isFinite(n)?Math.max(-100000,Math.min(100000,Math.round(n))):null)||null;
       const pointer=observations.at(-1)?.value.pointer;
-      const payload={schemaVersion:2,code:"D013-ACCOUNT",detailCode:"D017-ACCOUNT",phase,diagnosticFailed:diagnosticErrors.length>0,
+      const payload={schemaVersion:3,code:"D013-ACCOUNT",detailCode:bootstrapFailure?"D019-ACCOUNT-BOOTSTRAP":"D017-ACCOUNT",phase:safePhase(phase),diagnosticFailed:diagnosticErrors.length>0,
+        bootstrap:bootstrapRows.slice(-3).map(row=>({phase:row.phase,theme:bootstrapThemes.includes(row.value.theme)?row.value.theme:"other",mode:bootstrapModes.includes(row.value.mode)?row.value.mode:"other",
+          mirror:["valid-cyan-light","valid-other","missing","invalid","unavailable"].includes(row.value.mirror)?row.value.mirror:"invalid",readyState:["loading","interactive","complete"].includes(row.value.readyState)?row.value.readyState:"other",
+          documentChanged:row.documentChanged,scripts:count(row.value.scripts),preloads:count(row.value.preloads),queue:count(row.value.queue),resources:count(row.value.resources),scanLimited:row.value.scanLimited===true,execution:"UNOBSERVED",
+          get:count(row.get),put:count(row.put),lastGetSettlement:row.lastGetSettlement,lastPutSettlement:row.lastPutSettlement})),
         pointer:pointer?{marked:pointer.marked===true,connected:pointer.connected===true,role:pointer.role===true,planned:point(pointer.planned),rect:point(pointer.rect),plannedHit:pointer.plannedHit===true,sameTarget:pointer.sameTarget===true,targetConnected:pointer.targetConnected===true,
           events:pointer.events.slice(0,6).map(e=>({kind:["mousedown","mouseup","click"].includes(e.kind)?e.kind:"other",trusted:e.trusted===true,point:point(e.point),sameTarget:e.sameTarget===true,connected:e.connected===true,eventInside:e.eventInside===true,hitInside:e.hitInside===true}))}:null,
-        observations:observations.slice(-6).map(row=>({phase:row.phase,lang:["ja","en"].includes(row.value.lang)?row.value.lang:"other",
+        observations:observations.slice(-6).map(row=>({phase:safePhase(row.phase),lang:["ja","en"].includes(row.value.lang)?row.value.lang:"other",
           tabs:count(row.value.tabs),enabled:row.value.enabled===true,selected:row.value.selected===true,panels:count(row.value.panels),
           visiblePanels:count(row.value.visiblePanels),themes:count(row.value.themes),violet:count(row.value.violet),
           get:count(row.get),put:count(row.put),getSettled:count(row.getSettled),putSettled:count(row.putSettled)}))};
@@ -234,6 +279,10 @@ export function accountAppearanceDiagnostics(browser: BrowserHarness, methods:()
     if(typeof value!=="function")return value;
     if(!["waitFor","waitForRequestHandlersIdle","reload","evaluate","clickAt","pressKey"].includes(String(property)))return value.bind(target);
     return (...args:unknown[])=>{
+      const filter=args[0];
+      if(property==="waitForRequestHandlersIdle"&&filter&&typeof filter==="object"&&"pathname" in filter&&filter.pathname==="/account/preferences/ui"&&"method" in filter&&(filter.method==="GET"||filter.method==="PUT")){
+        const method=filter.method;return Promise.resolve(Reflect.apply(value,target,args)).then(result=>{settle(method,methods().filter(v=>v===method).length);return result;}).catch(error=>{if(phase)return failed(error);throw error;});
+      }
       if(!phase)return Reflect.apply(value,target,args);
       if(property==="clickAt"&&phase==="after-reload")return (async()=>{
         try{await browser.evaluate(accountAppearancePointerStart(Number(args[0]),Number(args[1])));}catch(error){diagnosticErrors.push(error);}
@@ -245,6 +294,6 @@ export function accountAppearanceDiagnostics(browser: BrowserHarness, methods:()
       try{return Promise.resolve(Reflect.apply(value,target,args)).catch(failed);}catch(error){return failed(error);}
     };
   }});
-  return {browser:observed,observe,failed,dispose:async()=>{try{await browser.evaluate(accountAppearancePointerDispose);}catch(error){if(reported)throw new AggregateError([reportedFailure,error],"Account diagnostic cleanup failed",{cause:reportedFailure});throw error;}},settled:(method:"GET"|"PUT",count:number)=>{settledRequests[method]=count;},
+  return {browser:observed,observe,bootstrap,bootstrapComplete:()=>{phase=undefined;},failed,dispose:async()=>{try{await browser.evaluate(accountAppearancePointerDispose);}catch(error){if(reported)throw new AggregateError([reportedFailure,error],"Account diagnostic cleanup failed",{cause:reportedFailure});throw error;}},settled:settle,
     finish:async()=>{if(diagnosticErrors.length)await failed(new AggregateError(diagnosticErrors,"Account diagnostic observation failed"));}};
 }

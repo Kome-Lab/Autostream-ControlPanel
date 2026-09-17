@@ -127,7 +127,7 @@ export function AuditLogsView() {
           <TabsTrigger value="operations" className="h-auto min-w-0 max-w-full whitespace-normal [overflow-wrap:anywhere]">{uiText("操作履歴")}</TabsTrigger>
           <TabsTrigger value="node-activity" className="h-auto min-w-0 max-w-full whitespace-normal [overflow-wrap:anywhere]">{uiText("Node報告・通信")}</TabsTrigger>
         </TabsList>
-        <TabsContent value={view}>
+        <TabsContent value={view} className="scroll-mt-20">
           <Card>
             <CardHeader className="gap-3 border-b md:flex-row md:items-center md:justify-between">
               <div>

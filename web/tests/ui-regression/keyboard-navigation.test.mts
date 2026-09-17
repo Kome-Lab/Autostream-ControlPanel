@@ -4,7 +4,7 @@ import { createHarnessFixture } from "../helpers/browser-cdp-socket-fixture.mts"
 import { nativeKeyTypeDiagnostics, formatDiagnostic } from "../helpers/browser-native-input-oracle.mts";
 import { observerDOM, Element } from './observer-dom.mts';
 import { prepareActivation, exerciseActivation } from './keyboard-activation.mts';
-import { keyboardContract, exerciseAccessibility, prepareKeyboardExpression } from './observation.mts';
+import { keyboardContract, exerciseAccessibility, prepareKeyboardExpression, focusExpression, assertFocus, type FocusObservation } from './observation.mts';
 import { conditions } from './matrix.mts';
 import { actualJSXCallback } from './source-callback.mts';
 import { readFileSync } from 'node:fs';
@@ -12,6 +12,37 @@ import type { BrowserHarness } from '../helpers/browser-harness.mts';
 import './component-loader.mts';
 import {createElement} from 'react';
 import {renderUI} from './render-ui.mts';
+
+test('UI-PANEL-TAB-019: unchanged observer and native Tab socket retain both directions below sticky header and reject insufficient or invalid panels',async t=>{
+ const source=(name:string)=>readFileSync(new URL('../../src/features/'+name,import.meta.url),'utf8');
+ for(const [family,path,panelTag] of [['security-settings','account/account-view.tsx','security'],['audit-logs','audit/audit-logs-view.tsx','view']] as const){
+  const opening=source(path).match(panelTag==='security'?/<TabsContent\s+value="security"[^>]*>/:/<TabsContent\s+value=\{view\}[^>]*>/)?.[0];assert.ok(opening);assert.match(opening,/className="scroll-mt-20"/);
+  for(const locale of ['ja','en'] as const)for(const width of [390,1440])for(const scale of [1,2])for(const height of [300,915,1450])for(const forced of [false,true]){
+   const faults=locale==='en'&&width===390&&scale===1&&height===915&&!forced?['none','zero','insufficient','covered','ordinary','inactive','duplicate','wrong-reference','wrong-owner','unselected','hidden','inert','clip','indicator']:['none'];
+   for(const fault of faults){
+    const condition=conditions.find(c=>c.family===family&&c.locale===locale&&c.exercise===(forced?'forced-colors':'keyboard'))!,dom=observerDOM();dom.main.children=[];
+    Object.assign(dom.context,{innerWidth:width,innerHeight:900,matchMedia:()=>({matches:forced})});
+    const refresh=dom.main.add(new Element('BUTTON',locale==='ja'?'更新':'Refresh')),root=dom.main.add(new Element('DIV'));root.setAttribute('data-slot','tabs');
+    const tab=root.add(new Element('BUTTON',locale==='ja'?'セキュリティ':'Security'));tab.setAttribute('role','tab');tab.setAttribute('aria-selected',fault==='unselected'?'false':'true');tab.setAttribute('aria-controls','panel');tab.id='tab';
+    const panel=root.add(new Element(fault==='ordinary'?'BUTTON':'DIV'));panel.id='panel';panel.setAttribute('role',fault==='ordinary'?'button':'tabpanel');panel.setAttribute('data-slot','tabs-content');panel.setAttribute('data-state',fault==='inactive'?'inactive':'active');panel.setAttribute('tabindex','0');panel.setAttribute('aria-labelledby',fault==='wrong-reference'?'other':'tab');
+    const next=panel.add(new Element(family==='audit-logs'?'A':'INPUT',family==='audit-logs'?'CSV':''));if(family==='audit-logs')next.setAttribute('href','/synthetic.csv');else{next.type='number';next.setAttribute('type','number');next.setAttribute('min','8');}
+    if(fault==='duplicate'){const duplicate=root.add(new Element('DIV'));duplicate.id='panel';}if(fault==='wrong-owner')root.setAttribute('data-slot','other');if(fault==='hidden')panel.hidden=true;if(fault==='inert')panel.setAttribute('inert','');if(fault==='indicator')panel.style.outlineStyle='none';
+    const margin=(fault==='zero'?0:fault==='insufficient'?8:80)*scale,header=72*scale;
+    Object.assign(panel.style,{outlineWidth:2*scale+'px',outlineOffset:2*scale+'px',outlineColor:forced?'Highlight':'rgb(0,0,255)'});panel.rect={left:8*scale,right:width-8*scale,top:margin,bottom:margin+height*scale,width:width-16*scale,height:height*scale};
+    if(fault==='clip'){root.style.overflowY='hidden';root.rect={left:0,right:width,top:margin+1,bottom:900,width,height:900-margin-1};}
+    const topBar=dom.body.add(new Element('HEADER'));dom.document.elementFromPoint=(_x,y)=>fault==='covered'||y<header?topBar:panel;
+    const owner=createHarnessFixture(),nativeTab=owner.harness.pressTab.bind(owner.harness),nodes=family==='audit-logs'?[refresh,tab,panel,next]:[refresh,panel,next];let index=-1;const steps:string[]=[];
+    owner.harness.evaluate=async<T,>(e:string)=>dom.run<T>(e);owner.harness.pressTab=async direction=>{await nativeTab(direction);index+=direction==='forward'?1:-1;assert.ok(index>=0&&index<nodes.length);dom.document.activeElement=nodes[index];steps.push(direction+':'+index);};
+    try{
+     if(fault==='none'){await exerciseAccessibility(owner.harness,condition);const expected=nodes.map((_,i)=>'forward:'+i).concat(nodes.slice(0,-1).map((_,i)=>'backward:'+(nodes.length-2-i)));assert.deepEqual(steps,expected);assert.equal(owner.socket.commandsFor('Input.dispatchKeyEvent').length,expected.length*2);}
+     else {await assert.rejects(exerciseAccessibility(owner.harness,condition));for(const direction of ['forward','backward'] as const){index=nodes.indexOf(panel)+(direction==='forward'?-1:1);await owner.harness.pressTab(direction);assert.throws(()=>assertFocus(dom.run<FocusObservation>(focusExpression)),/hidden|offscreen|indicator/);}}
+     assert.equal('__uiKeyboardPlan' in dom.context,false);
+    }finally{await owner.harness.close();}
+   }
+  }
+ }
+ t.diagnostic('Controlled geometry with actual unchanged exercise/observer/Tab socket; locale, width, forced colors and CSS scale purposes preserved. No real browser or official 12-condition PASS claimed.');
+});
 
 test('UI-DATETIME-013: actual exercise and harness Tab socket distinguish host repeats, both exits and pending internal identity',async()=>{
  const condition=conditions.find(c=>c.family==='stream-create-edit'&&c.exercise==='keyboard')!;

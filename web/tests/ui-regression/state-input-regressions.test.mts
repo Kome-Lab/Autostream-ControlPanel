@@ -25,6 +25,32 @@ const {ResourceTable}=await import("../../src/features/resources/resource-table.
 const {resourcePages}=await import("../../src/features/resources/resource-config.ts");
 const {enrichResourceRow,visibleColumns}=await import("../../src/features/resources/resource-presentation.tsx");
 const base={...conditions[0],locale:"en"};
+test('UI-WORKER-DENIAL-019: actual scenario phases and waitForWorkerAction distinguish interim unknown, handler settlement and final denied',async()=>{
+ const {waitForWorkerAction}=await import('../ui-browser-worker-helpers.mts');
+ const source=readFileSync(new URL('../ui-browser-worker-restart-scenarios.mts',import.meta.url),'utf8'),file=ts.createSourceFile('worker.mts',source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TS);
+ const phases=new Map<string,ts.CallExpression>();const visit=(n:ts.Node)=>{if(ts.isVariableDeclaration(n)&&['unknown','denied','revoked'].includes(n.name.getText(file))&&n.initializer&&ts.isAwaitExpression(n.initializer)&&ts.isCallExpression(n.initializer.expression))phases.set(n.name.getText(file),n.initializer.expression);ts.forEachChild(n,visit);};visit(file);assert.equal(phases.size,3);
+ const unknown='The restart permission could not be verified.',denied='You do not have permission to restart workers.';
+ for(const [phase,call] of phases){
+  assert.equal(call.expression.getText(file),'waitForWorkerAction');assert.equal(call.arguments[1].getText(file),'"Restart worker"');assert.equal(call.arguments[2].getText(file),'"Worker One"');
+  const predicate=actualCallback('const accept='+call.arguments[3].getText(file),'accept',{}) as Parameters<typeof waitForWorkerAction>[3];
+  const oracle=phase==='unknown'?/permission could not be verified/i:/do not have permission to restart workers/i;
+  async function wait(states:({disabled:boolean;reason:string}|null)[],accept=predicate){let seen=0;const dom=observerDOM();Object.assign(dom.context,{HTMLButtonElement:Element});dom.main.children=[];const row=dom.main.add(new Element('TR','Worker One')),button=row.add(new Element('BUTTON'));button.setAttribute('aria-label','Restart worker');button.setAttribute('aria-describedby','reason');const reason=row.add(new Element('SPAN'));reason.id='reason';
+   const browser={waitFor:async(expression:string,check:(v:Parameters<typeof predicate>[0])=>boolean,_description:string,timeout:number)=>{assert.equal(timeout,15_000);for(const state of states){seen++;row.ownText=state?'Worker One':'Other Worker';button.disabled=state?.disabled??true;reason.ownText=state?.reason??'';const value=dom.run<Parameters<typeof predicate>[0]>(expression);if(check(value))return value;}throw Error('same deadline: expected state never reached');}} as unknown as BrowserHarness;
+   return {result:await waitForWorkerAction(browser,'Restart worker','Worker One',accept),seen};}
+  const good={disabled:true,reason:phase==='unknown'?unknown:denied},interim={disabled:true,reason:phase==='unknown'?denied:unknown};
+  const reached=await wait([interim,interim,good]);assert.equal(reached.seen,3);assert.match(reached.result.reason,oracle);
+  for(const bad of [interim,{disabled:true,reason:'Unrelated error'},{disabled:true,reason:''},{disabled:false,reason:good.reason},null])await assert.rejects(wait([bad,bad]),/expected state never reached/);
+  const broad=await wait([interim,good],value=>value.disabled&&value.reason.length>0);assert.equal(broad.seen,1);assert.throws(()=>assert.match(broad.result.reason,oracle),'original assertion rejects the broad-predicate mutant');
+ }
+ const revoked=phases.get('revoked')!;let statements:ts.Node=revoked;while(!ts.isBlock(statements)&&statements.parent)statements=statements.parent;assert.ok(ts.isBlock(statements));
+ const index=statements.statements.findIndex(n=>n.getText(file).includes('const revokedAuthResponseCount'));
+ const end=statements.statements.findIndex(n=>n.getText(file).includes('assert.match(revoked.reason'));assert.ok(index>=0&&end>index);
+ const code='const run=async()=>{'+statements.statements.slice(index,end+1).map(n=>n.getText(file)).join('\n')+'}';
+ let arrived=false,settled=false,rendered=false,polls=0;const events:string[]=[],fixture={authResponse:{}};
+ const predicate=actualCallback('const accept='+revoked.arguments[3].getText(file),'accept',{}) as Parameters<typeof waitForWorkerAction>[3];
+ const browser={responses:new Map([['/auth/me',2]]),waitForResponseCount:async(path:string,count:number,timeout:number)=>{assert.equal(path,'/auth/me');assert.equal(count,3);assert.equal(timeout,20_000);arrived=true;events.push('arrival');},waitForRequestHandlersIdle:async(filter:unknown)=>{assert.deepEqual(filter,{pathname:'/auth/me',method:'GET'});assert.equal(arrived,true);assert.equal(rendered,false);settled=true;events.push('settlement');},waitFor:async(_expression:string,accept:(v:Parameters<typeof predicate>[0])=>boolean,_message:string,timeout:number)=>{assert.equal(timeout,15_000);assert.ok(settled,'response count alone cannot settle the handler');const shape={disabled:true,reason:unknown} as Parameters<typeof predicate>[0];polls++;assert.equal(accept(shape),false,'idle alone cannot establish rendered denial');await Promise.resolve();rendered=true;polls++;const value={...shape,reason:denied};assert.ok(accept(value));events.push('rendered-denied');return value;}} as unknown as BrowserHarness;
+ await actualCallback(code,'run',{browser,fixture,permissionUser:(permissions:string[])=>({permissions}),waitForWorkerAction,assert})();assert.equal(polls,2);assert.deepEqual(events,['arrival','settlement','rendered-denied']);
+});
 test('UI-WORKER-AUTH-015: actual QueryClient and submitRestart revalidate auth failure before and after the held Worker GET without replay',async t=>{
  const {createWorkerRestartController}=await import('../../src/features/workers/workers-action-controller.ts'),{mergeOperationalNodes}=await import('../../src/features/workers/workers-view.tsx');
  const normalizer=await import('../../src/features/workers/workers-wire-normalizer.ts'),descriptors=await import('../../src/features/workers/workers-action-descriptors.ts'),confirmation=await import('../../src/lib/foundation/actions/confirmation-revalidation.ts'),permissions=await import('../../src/lib/foundation/permissions/evaluator.ts'),errors=await import('../../src/lib/foundation/api-errors/adapter.ts');

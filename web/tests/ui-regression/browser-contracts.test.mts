@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { resolve, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
-import { actualCallback } from "./source-callback.mts";
+import { actualCallback, actualFunction } from "./source-callback.mts";
 import { createHarnessFixture } from "../helpers/browser-cdp-socket-fixture.mts";
 import { createConditionRunner, ConditionFailure } from "./condition-lifecycle.mts";
 import { DraftRestorationFailure, ConditionOutputFailure, conditionFailureStatus, writeConditionFailure, ownedOutput } from "./run-browser.mts";
@@ -19,9 +19,85 @@ import { observationExpression } from "./observation.mts";
 import { requiredScenarioNames, EXPECTED_UI_FOUNDATION_BROWSER_TESTS } from "../helpers/run-ui-foundation-browser.mts";
 import { Element, observerDOM } from "./observer-dom.mts";
 import { closeCreateAndAssertFocusReturn, mobileFocusDiagnosticExpression } from "../ui-browser-query-auth-helpers.mts";
-import { accountAppearanceDiagnostics, accountAppearanceDiagnosticExpression, accountAppearancePointerStart, accountAppearancePointerStop } from "../ui-browser-account-scenarios.mts";
+import { accountAppearanceDiagnostics, accountAppearanceDiagnosticExpression, accountAppearancePointerStart, accountAppearancePointerStop, accountAppearancePointerDispose, accountBootstrapExpression } from "../ui-browser-account-scenarios.mts";
 import { setStoredDisplay } from "../ui-browser-navigation-helpers.mts";
 import { clickVisible } from "./visible-trigger.mts";
+
+test('UI-D019-ACCOUNT-CALLER: actual child callback reports its immediate bootstrap assertion once even when t.test absorbs rejection',async()=>{
+ const source=readFileSync(new URL('../ui-browser-account-scenarios.mts',import.meta.url),'utf8');
+ const {currentUser}=await import('../ui-browser-fixture.mts');
+ const dom=observerDOM(),storage=new Map<string,string>(),lines:string[]=[],events:string[]=[],failures:unknown[]=[];let navigations=0,original:unknown;
+ Object.assign(dom.context.localStorage,{getItem:(key:string)=>storage.get(key)??null,setItem:(key:string,value:string)=>storage.set(key,value),removeItem:(key:string)=>storage.delete(key)});
+ Object.assign(dom.document,{readyState:'complete'});Object.assign(dom.context,{URL,performance:{timeOrigin:100,getEntriesByType:()=>[]}});Object.assign(dom.context.location,{href:'http://fixture.test/login/',origin:'http://fixture.test'});
+ const fixture={uiPreferenceMethods:[] as string[],uiPreferenceBodies:[],authResponse:{},uiPreferenceResponse:{},uiPreferenceWriteResponse:{}};
+ const browser={setViewport:async()=>{},evaluate:async(e:string)=>dom.run(e),navigate:async(url:string)=>{navigations++;events.push('navigate:'+navigations);dom.context.location.pathname=new URL(url).pathname;Object.assign(dom.html.dataset,{theme:'autostream',colorMode:'system'});if(navigations>1)fixture.uiPreferenceMethods.push('GET');if(navigations===2)storage.set('autostream.ui_preference',JSON.stringify({theme_id:'autostream',color_mode:'system'}));if(navigations===3)Object.assign(dom.context,{performance:{timeOrigin:200,getEntriesByType:()=>[]}});},waitFor:async(e:string,p:(v:unknown)=>boolean)=>{events.push('wait');const value=dom.run(e);assert.ok(p(value));return value;},waitForRequestHandlersIdle:async(filter:{pathname:string;method:string})=>{assert.deepEqual(filter,{pathname:'/account/preferences/ui',method:'GET'});events.push('settled:GET');}} as unknown as BrowserHarness;
+ const actualAssert={...assert,equal:(actual:unknown,expected:unknown,message:string)=>{try{assert.equal(actual,expected,message);}catch(error){original=error;events.push('immediate-assert-failed');throw error;}}};
+ const owner=actualFunction(source.replace('export async function runAccountAppearanceScenario','async function runAccountAppearanceScenario'),'runAccountAppearanceScenario',{assert:actualAssert,currentUser,setStoredDisplay,clickVisible,accountAppearanceDiagnostics:(b:BrowserHarness,methods:()=>string[])=>accountAppearanceDiagnostics(b,methods,line=>lines.push(line))});
+ await owner({test:async(name:string,callback:()=>Promise<void>)=>{assert.equal(name,'Account appearance persists 12 themes and 3 modes with DB fallback and save rollback');try{await callback();}catch(error){failures.push(error);}}},browser,{baseUrl:'http://fixture.test'},fixture);
+ assert.equal(navigations,3);assert.equal(failures.length,1);assert.equal(failures[0],original);assert.ok(original instanceof assert.AssertionError);assert.match(original.message,/external pre-hydration bootstrap/);
+ const value=diagnosticOutput(lines,'D013-ACCOUNT');assert.equal(value.detailCode,'D019-ACCOUNT-BOOTSTRAP');assert.equal(value.phase,'after-navigate');
+ assert.deepEqual(value.bootstrap.map((r:{phase:string})=>r.phase),['mirror-written','before-navigate','after-navigate']);
+ assert.equal(value.bootstrap[2].theme,'autostream');assert.equal(value.bootstrap[2].mode,'system');assert.equal(value.bootstrap[2].mirror,'valid-cyan-light');assert.equal(value.bootstrap[2].documentChanged,true);
+ assert.equal(value.bootstrap[2].get,1);assert.equal(value.bootstrap[2].lastGetSettlement.sameBatch,false);assert.equal(value.bootstrap[2].execution,'UNOBSERVED');
+ assert.equal(events.filter(e=>e==='settled:GET').length,1,'no DB settlement is advanced before the original immediate assertion');assert.equal(events.at(-1),'immediate-assert-failed');
+});
+
+test('UI-D019-ACCOUNT-BOUNDS: real bootstrap expression, original local assertion/catch and writer retain finite classifications and diagnostic causes',async()=>{
+ const source=readFileSync(new URL('../ui-browser-account-scenarios.mts',import.meta.url),'utf8'),file=ts.createSourceFile('account.mts',source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TS);let boundary:ts.TryStatement|undefined;
+ const visit=(n:ts.Node)=>{if(ts.isTryStatement(n)&&n.tryBlock.getText(file).includes('external pre-hydration bootstrap'))boundary=n;ts.forEachChild(n,visit);};visit(file);assert.ok(boundary?.catchClause);
+ const assertion='const check=async()=>{'+boundary.getText(file)+'}';
+ for(const fault of ['none','assertion','observation','output','cleanup','after-evaluation']){
+  const dom=observerDOM(),methods:string[]=['GET'],lines:string[]=[],seen:string[]=[];let origin=1,reads=0,disposed=0,original:unknown;
+  Object.assign(dom.html.dataset,{theme:'cyan',colorMode:'light'});Object.assign(dom.document,{readyState:'interactive'});Object.assign(dom.context.location,{href:'http://fixture.test/admin/account/',origin:'http://fixture.test'});
+  Object.assign(dom.context,{URL,performance:{get timeOrigin(){return origin;},getEntriesByType:()=>[{name:'http://fixture.test/theme-bootstrap.js'},{name:'https://PRIVATE.test/theme-bootstrap.js?secret=PRIVATE'}]},__next_s:[['/theme-bootstrap.js',{}],['https://PRIVATE.test/script.js',{}]]});
+  Object.assign(dom.context.localStorage,{getItem:()=>JSON.stringify({theme_id:'cyan',color_mode:'light',ignored:'PRIVATE'})});
+  const script=dom.body.add(new Element('SCRIPT'));script.setAttribute('src','/theme-bootstrap.js');const link=dom.body.add(new Element('LINK'));link.setAttribute('rel','preload');link.setAttribute('href','/theme-bootstrap.js');
+  const problem=Error('PRIVATE diagnostic',{cause:Error('PRIVATE diagnostic cause')});
+  const browser={evaluate:async(e:string)=>{if(e===accountAppearancePointerDispose){disposed++;if(fault==='cleanup')throw problem;}if(e===accountBootstrapExpression){reads++;seen.push('bootstrap:'+reads);if(fault==='observation'&&reads===1||fault==='after-evaluation'&&reads===3)throw problem;}return dom.run(e);},waitForRequestHandlersIdle:async()=>{seen.push('settled');}} as unknown as BrowserHarness;
+  const diagnostic=accountAppearanceDiagnostics(browser,()=>methods,line=>{if(fault==='output')throw problem;lines.push(line);});
+  await diagnostic.browser.waitForRequestHandlersIdle({pathname:'/account/preferences/ui',method:'GET'});
+  await diagnostic.bootstrap('mirror-written');await diagnostic.bootstrap('before-navigate');origin=2;methods.push('GET');
+  if(fault!=='none')Object.assign(dom.html.dataset,{theme:'autostream',colorMode:'system'});
+  const actualAssert={...assert,equal:(a:unknown,b:unknown,message:string)=>{try{assert.equal(a,b,message);}catch(error){original=error;throw error;}}};
+  const check=actualCallback(assertion,'check',{diagnostic,assert:actualAssert});let caught:unknown;
+  try{await check();diagnostic.bootstrapComplete();await diagnostic.finish();}catch(error){caught=error;}
+  if(fault==='none'){assert.equal(caught,undefined);assert.equal(lines.length,0);}else{
+   if(fault==='observation'||fault==='output'){assert.ok(caught instanceof AggregateError);assert.equal(caught.cause,original);assert.ok(caught.errors.includes(problem));}else assert.equal(caught,fault==='after-evaluation'?problem:original);
+   if(fault!=='output'){const value=diagnosticOutput(lines,'D013-ACCOUNT');assert.equal(value.detailCode,'D019-ACCOUNT-BOOTSTRAP');assert.equal(value.phase,'after-navigate');assert.equal(value.diagnosticFailed,fault==='observation');
+    const last=value.bootstrap.at(-1);assert.equal(last.scripts,1);assert.equal(last.preloads,1);assert.equal(last.queue,1);assert.equal(last.resources,1);assert.equal(last.execution,'UNOBSERVED','fetched or queued is not executed');
+    if(fault!=='after-evaluation'){assert.equal(last.documentChanged,true);assert.equal(last.get,2);assert.deepEqual(last.lastGetSettlement,{count:1,sameBatch:true});}
+   }
+   await assert.rejects(diagnostic.failed(Error('PRIVATE second failure')),error=>error===caught);assert.equal(lines.length,fault==='output'?0:1,'same owner cannot emit twice');
+  }
+  if(fault==='cleanup')await assert.rejects(diagnostic.dispose(),error=>error instanceof AggregateError&&error.cause===caught&&error.errors.includes(problem));else await diagnostic.dispose();
+  assert.equal(disposed,1);assert.equal(seen.filter(e=>e==='settled').length,1);assert.equal(reads,3,'failure writer must not replace the immediate root snapshot with a later sample');
+ }
+ for(const [stored,expected] of [[null,'missing'],['PRIVATE malformed','invalid'],[JSON.stringify({theme_id:'PRIVATE',color_mode:'light'}),'invalid'],[JSON.stringify({theme_id:'ocean',color_mode:'dark'}),'valid-other']] as const){
+  const dom=observerDOM();Object.assign(dom.html.dataset,{theme:'PRIVATE root',colorMode:'PRIVATE mode'});Object.assign(dom.document,{readyState:'PRIVATE state'});Object.assign(dom.context,{URL,performance:{timeOrigin:1,getEntriesByType:()=>Array.from({length:130},()=>({name:'/theme-bootstrap.js'}))},__next_s:Array.from({length:130},()=>['/theme-bootstrap.js',{}])});Object.assign(dom.context.location,{href:'http://fixture.test/',origin:'http://fixture.test'});Object.assign(dom.context.localStorage,{getItem:()=>stored});
+  const value=dom.run<{theme:string;mode:string;mirror:string;readyState:string;resources:number;queue:number;scanLimited:boolean}>(accountBootstrapExpression);assert.equal(value.theme,'other');assert.equal(value.mode,'other');assert.equal(value.mirror,expected);assert.equal(value.readyState,'other');assert.equal(value.queue,128);assert.equal(value.resources,128);assert.equal(value.scanLimited,true);assert.doesNotMatch(JSON.stringify(value),/PRIVATE|https:/);
+  Object.assign(dom.context.localStorage,{getItem:()=>{throw Error('PRIVATE storage');}});assert.equal(dom.run<{mirror:string}>(accountBootstrapExpression).mirror,'unavailable');
+ }
+ // The same owner can reach D017 after all three bootstrap snapshots. Exercise
+ // its maximum retained records without changing the one native input call.
+ {
+  const dom=observerDOM(),tab=dom.button,lines:string[]=[],captures=new Map<string,(event:unknown)=>void>();let origin=1,clicks=0,methods=Array.from({length:2048},(_,i)=>i%2?'GET':'PUT');
+  dom.main.children=[];const list=dom.main.add(new Element('DIV'));list.setAttribute('role','tablist');list.add(tab);tab.ownText='Appearance';tab.setAttribute('role','tab');tab.setAttribute('aria-controls','panel');tab.setAttribute('data-ui-scenario-target','');
+  const panel=dom.main.add(new Element('DIV'));panel.id='panel';panel.setAttribute('role','tabpanel');Object.assign(dom.context,{__uiScenarioTarget:tab});dom.document.elementFromPoint=()=>tab;
+  Object.assign(dom.document,{readyState:'interactive',addEventListener:(name:string,fn:(event:unknown)=>void)=>captures.set(name,fn),removeEventListener:(name:string)=>captures.delete(name)});
+  Object.assign(dom.html.dataset,{theme:'autostream',colorMode:'system'});Object.assign(dom.context.location,{href:'http://fixture.test/',origin:'http://fixture.test'});
+  Object.assign(dom.context,{URL,performance:{get timeOrigin(){return origin;},getEntriesByType:()=>Array.from({length:130},()=>({name:'/theme-bootstrap.js'}))},__next_s:Array.from({length:130},()=>['/theme-bootstrap.js',{}])});
+  Object.assign(dom.context.localStorage,{getItem:()=>JSON.stringify({theme_id:'cyan',color_mode:'light'})});
+  for(let i=0;i<130;i++){const script=dom.body.add(new Element('SCRIPT'));script.setAttribute('src','/theme-bootstrap.js');const preload=dom.body.add(new Element('LINK'));preload.setAttribute('rel','preload');preload.setAttribute('href','/theme-bootstrap.js');}
+  const original=Error('PRIVATE original',{cause:Error('PRIVATE cause')});
+  const browser={evaluate:async(e:string)=>dom.run(e),clickAt:async(x:number,y:number)=>{clicks++;for(const type of ['mousedown','mouseup','click','mousedown','mouseup','click'])captures.get(type)?.({type,isTrusted:false,clientX:x,clientY:y,target:dom.input});throw original;}} as unknown as BrowserHarness;
+  const watched=accountAppearanceDiagnostics(browser,()=>methods,line=>lines.push(line));watched.settled('GET',1024);watched.settled('PUT',1024);methods=[...methods];
+  await watched.bootstrap('mirror-written');await watched.bootstrap('before-navigate');origin=2;await watched.bootstrap('after-navigate');watched.bootstrapComplete();
+  for(let i=0;i<6;i++)await watched.observe(i===5?'after-reload':'preference-settled');
+  await assert.rejects(watched.browser.clickAt(-100000,100000),error=>error===original);await watched.dispose();
+  const value=diagnosticOutput(lines,'D013-ACCOUNT');assert.equal(value.detailCode,'D017-ACCOUNT');assert.equal(value.bootstrap.length,3);assert.equal(value.observations.length,6);assert.equal(value.pointer.events.length,6);assert.equal(clicks,1);assert.equal(captures.size,0);assert.equal('__uiAccountPointer017' in dom.context,false);
+  tab.removeAttribute('data-ui-scenario-target');delete (dom.context as Record<string,unknown>).__uiScenarioTarget;
+ }
+});
 
 test('UI-NODE-FOCUS-013: actual runner waits for cleanup on its exact remembered trigger, rejecting disappearance or substitutes',async()=>{
  const text=readFileSync(new URL('./run-browser.mts',import.meta.url),'utf8'),file=ts.createSourceFile('runner.mts',text,ts.ScriptTarget.Latest,true,ts.ScriptKind.TS);let call:ts.CallExpression|undefined;
