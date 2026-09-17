@@ -33,14 +33,30 @@ export async function runWorkerRestartScenario(t: TestContext, browser: BrowserH
       const actionOnlyAuthResponseCount = (browser.responses.get("/auth/me") || 0) + 1;
       fixture.authResponse = { body: permissionUser(["workers.restart"]) };
       await browser.waitForResponseCount("/auth/me", actionOnlyAuthResponseCount, 20_000);
-      const actionOnly = await waitForWorkerAction(browser, "Restart worker", "Worker One", (value) => value.disabled === false);
-      assert.equal(actionOnly.reason, "", "workers.restart must not depend on page or Configuration permissions after the row is loaded");
+      // A retained cache is not page read authority. WKR-01's independent
+      // action-only policy is exercised against the real controller in UI-WORKER-READ-ACTION-017.
+      await browser.waitFor(`(() => {const root=document.querySelector('[data-screen-family=workers]');
+        const denied=[...(root?.querySelectorAll('[role=status]')||[])].some(e=>e.getClientRects().length&&getComputedStyle(e).visibility!=='hidden'&&e.textContent?.includes('Permission denied: no Worker information is available to read.'));
+        return !!root&&denied&&!root.querySelector('tbody td[headers]')&&!root.querySelector('button[aria-label="Restart worker"]');})()`,
+        (value: boolean) => value === true, "read permission loss must remove Worker rows and restart triggers");
+      const readPaths = ["/workers", "/nodes", "/service-health"];
+      for (const pathname of readPaths) await browser.waitForRequestHandlersIdle({ pathname, method: "GET" });
+      const deniedReadCounts = readPaths.map(path => browser.requests.get(path) || 0);
+      const deniedRestartCount = browser.requests.get(restartPath) || 0;
+      await waitForAnimationFrames(browser);
+      assert.deepEqual(readPaths.map(path => browser.requests.get(path) || 0), deniedReadCounts, "no read requests while read authority is denied");
+      assert.equal(browser.requests.get(restartPath) || 0, deniedRestartCount, "read loss cannot initiate a restart");
+      assert.equal(await workerRestartDialogCount(browser), 0);
+      const readRestoredAuthResponseCount = (browser.responses.get("/auth/me") || 0) + 1;
+      fixture.authResponse = { body: permittedUser };
+      await browser.waitForResponseCount("/auth/me", readRestoredAuthResponseCount, 20_000);
+      await waitForWorkerRestartReady(browser, "Worker One");
 
       await browser.waitForRequestHandlersIdle({ pathname: "/auth/me", method: "GET" });
       const refreshingAuthRequestCount = (browser.requests.get("/auth/me") || 0) + 1;
       authRefreshRelease = deferred();
       fixture.authResponse = {
-        body: permissionUser(["workers.restart"]),
+        body: permittedUser,
         waitUntil: authRefreshRelease.promise,
       };
       await browser.waitForRequestCount("/auth/me", refreshingAuthRequestCount, 20_000);
@@ -51,7 +67,7 @@ export async function runWorkerRestartScenario(t: TestContext, browser: BrowserH
       assert.equal(await workerRestartDialogCount(browser), 0, "an unknown restart permission must not open a confirmation");
       assert.equal(browser.requests.get(restartPath) || 0, 0, "an unknown restart permission must not send POST");
       authRefreshRelease.resolve();
-      fixture.authResponse = { body: permissionUser(["workers.restart"]) };
+      fixture.authResponse = { body: permittedUser };
       await browser.waitForRequestHandlersIdle({ pathname: "/auth/me", method: "GET" });
       authRefreshRelease = undefined;
 

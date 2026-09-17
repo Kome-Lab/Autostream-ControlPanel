@@ -379,6 +379,17 @@ textarea {
 }
 
 /* A row keeps its identity and action owners at every viewport. */
+input[data-slot="input"][type="datetime-local"]:focus-within {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+@media (forced-colors: active) {
+  input[data-slot="input"][type="datetime-local"]:focus-within {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+  }
+}
+
 .ui-record-label,
 .ui-record-disclosure {
   display: none;

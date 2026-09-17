@@ -178,6 +178,7 @@ function actualLayout(text:string,needle:string,bindings:Record<string,unknown>)
 }
 function mobileFocusCase(sameRoute: boolean, sourceText=streams, api=true, hookText=forms, eagerSetter=false) {
   const dom=observerDOM(),target=dom.button,document=new EventTarget();
+  Object.assign(target,{ownerDocument:document});
   let url=new URL(sameRoute?'/admin/streams/?view=retained':'/admin/workers/?view=retained','https://panel.example');
   const stats={assignments:0,hashchanges:0,replaces:0,mounts:0,listeners:0,opens:0,created:0,notices:0,cancelled:0,guardEvents:0,guardListeners:0};
   const historyState={framework:'retained'},events:string[]=[],state={dirty:true,pending:false,discard:false,prompts:0};
@@ -265,14 +266,15 @@ function mobileFocusCase(sameRoute: boolean, sourceText=streams, api=true, hookT
   const onSaved=jsxAt(sourceText,'StreamSlotForm','onSaved',0,{requestCreateClose,createDraftExit,setCreateOpen,setCreatedStreams(update:(rows:unknown[])=>unknown[]){stats.created++;update([]);},setActionNotice(){stats.notices++;},uiText:(s:string)=>s});
   const pageOpen=jsxAt(sourceText,'Button','onClick',0,{cancelStreamCreateFocus:focus.cancelStreamCreateFocus,createFocus,createTrigger,setCreateOpen,requestCreateOpen});
   const menuCleanup=actualEffect(mobile,'() => { pendingNavigationRef.current = null;', {pendingNavigationRef,createFocusRef})();
-  const cancelFocus=actualEffect(sourceText,'() => { createFocus.current?.cancel(); }',{createFocus})();
-  const createCleanup=()=>{mounted=false;scheduled=undefined;sessionCleanup?.();sessionCleanup=undefined;hookCleanup?.();hookCleanup=undefined;cancelFocus();};
+  const cancelFocus=sourceText.includes('() => { createFocus.current?.cancel(); }')?actualEffect(sourceText,'() => { createFocus.current?.cancel(); }',{createFocus})():undefined;
+  const createCleanup=()=>{hashCleanup?.();hashCleanup=undefined;mounted=false;scheduled=undefined;sessionCleanup?.();sessionCleanup=undefined;hookCleanup?.();hookCleanup=undefined;cancelFocus?.();};
   return {dom,target,surface,focus,events,createFocus,createFocusRef,pendingNavigationRef,state,createDraftExit,stats,onSaved,historyState,commit,createCloseIntent,createGeneration,historyError,
     begin:()=>linkClick({preventDefault(){}}),menuClose:()=>menuClose({preventDefault(){}}),menuOpen:()=>menuOpen(true),close:()=>requestClose(false),pageOpen:(target:Element)=>pageOpen({currentTarget:target}),
     losePermission:()=>{canCreate=false;commit();},allowPermission:()=>{canCreate=true;commit();},
     setHistoryMode:(mode:typeof historyMode)=>{historyMode=mode;},
     move:(path:string)=>{url=new URL(path,url);},menuCleanup,createCleanup,get open(){return open;},get focusCalls(){return focusCalls;},
-    dispose(){hashCleanup?.();menuCleanup();createCleanup();focus.cancelStreamCreateFocus();assert.equal(stats.listeners,0);assert.equal(stats.guardListeners,0);}};
+    replay(){const stale=hashCleanup;hashCleanup?.();cancelFocus?.();hashCleanup=actualEffect(sourceText,'const syncFromHash',createBindings)();return stale;},
+    dispose(){menuCleanup();createCleanup();focus.cancelStreamCreateFocus();assert.equal(stats.listeners,0);assert.equal(stats.guardListeners,0);}};
 }
 
 test('UI-CREATE-FOCUS-009: actual Menu, navigation, hash and Sheet close transfer the original target once after cleanup',async()=>{
@@ -446,4 +448,38 @@ test("UI-DRAFT-FLOW-010: real missing-visual-ack and current-instead-of-submitte
   const delayed = createFlow(false, wrongSnapshot), intent = delayed.prepare(); delayed.renderBasic(["Later edit"]);
   delayed.result({ kind: "succeeded", value: { id: "created", name: "Created" } }, intent);
   assert.throws(() => assert.equal(delayed.controller.dirty(), true), /false !== true/, "current data cannot be marked saved by an older request");
+});
+
+test('UI-CREATE-REPLAY-017: actual effect replay reconnects only the same lease and real close restores once',async()=>{
+  for(const sameRoute of [false,true])for(const saved of [false,true]){
+    const flow=mobileFocusCase(sameRoute);
+    try{flow.begin();flow.menuClose();await settleEvents();const lease=flow.createFocus.current;
+      flow.replay();await settleEvents();assert.equal(flow.createFocus.current,lease);assert.equal(lease?.active(),true);assert.equal(flow.stats.mounts,1);
+      if(saved)flow.onSaved({id:'created',name:'Created'});else flow.close();await settleEvents();
+      assert.equal(flow.focusCalls,1);assert.equal(flow.surface.location.hash,'');assert.equal(flow.createCloseIntent.current,null);
+      flow.begin();flow.menuClose();await settleEvents();assert.notEqual(flow.createFocus.current,lease);flow.close();await settleEvents();assert.equal(flow.focusCalls,2);
+    }finally{flow.dispose();await settleEvents();}
+  }
+});
+test('UI-CREATE-REPLAY-018: replay retains Stay/pending and token cleanup cannot revive invalid owners',async()=>{
+  for(const fault of ['unmount','permission','session','route','search','target','superseded','stay','pending']){
+    const flow=mobileFocusCase(false);
+    try{flow.begin();flow.menuClose();await settleEvents();const lease=flow.createFocus.current!;flow.replay();await settleEvents();
+      if(fault==='stay'||fault==='pending'){flow.createDraftExit.register({isDirty:()=>true,pending:()=>fault==='pending',saved(){}});flow.close();await settleEvents();assert.equal(flow.open,true);assert.equal(lease.active(),true);}
+      else{if(fault==='unmount')flow.createCleanup();if(fault==='permission')flow.losePermission();if(fault==='session')notifyDraftSessionExit();
+        if(fault==='route')flow.move('/admin/workers/#create-stream');if(fault==='search')flow.move('/admin/streams/?other=1#create-stream');
+        if(fault==='target')flow.target.hidden=true;if(fault==='superseded')flow.focus.offerStreamCreateFocus(flow.dom.input as unknown as HTMLButtonElement);
+        flow.close();lease.restoreAfterClose();await settleEvents();assert.equal(lease.active(),false);}
+      assert.equal(flow.focusCalls,0,fault);
+    }finally{flow.dispose();await settleEvents();}
+  }
+});
+
+test('UI-CREATE-REPLAY-019: an older release cannot cancel a later setup and document replacement cannot revive the old lease',async()=>{
+ for(const replaced of [false,true]){const flow=mobileFocusCase(false);try{
+  flow.begin();flow.menuClose();await settleEvents();const lease=flow.createFocus.current!;
+  const context={document:(flow.target as unknown as HTMLButtonElement).ownerDocument,pathname:flow.surface.location.pathname,search:flow.surface.location.search};
+  const stale=lease.connect(context);lease.connect({...context,...(replaced?{document:new EventTarget() as unknown as Document}:{})});stale();await settleEvents();
+  assert.equal(lease.active(),!replaced);flow.close();await settleEvents();assert.equal(flow.focusCalls,replaced?0:1);assert.equal(lease.active(),false);
+ }finally{flow.dispose();await settleEvents();}}
 });

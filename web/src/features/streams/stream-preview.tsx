@@ -198,8 +198,8 @@ export function StreamPreview({ stream, controller }: { stream: Stream; controll
       <ParticipantAccessibilityList participants={participants} />
       {sceneCapabilityUnavailable ? <p className="text-sm text-destructive" role="alert">{uiText("v2 scene capabilityが未適用のため、参加者表示の準備が完了していません。")}</p> : null}
       {participantFeedError ? <p className="text-xs text-amber-600 dark:text-amber-400" role="status">{uiText("VC参加者情報を更新できません。映像の再生は継続します。")}</p> : null}
-      <div className="grid gap-2 sm:flex sm:flex-wrap sm:items-center">
-        <Button type="button" variant="outline" size="sm" className="w-full sm:w-auto" onClick={() => void issuePreviewLink()} disabled={issuePending}>
+      <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-2 sm:flex sm:flex-wrap sm:items-center">
+        <Button type="button" variant="outline" size="sm" className="h-auto min-w-0 max-w-full whitespace-normal [overflow-wrap:anywhere] w-full sm:w-auto" onClick={() => void issuePreviewLink()} disabled={issuePending}>
           {issuePending ? <LoaderCircle className="size-4 animate-spin" /> : <Link2 className="size-4" />}
           {uiText("ネットワーク再生URLを発行")}</Button>
         {previewLink ? (
@@ -213,7 +213,7 @@ export function StreamPreview({ stream, controller }: { stream: Stream; controll
             </Button>
           </div>
         ) : null}
-        <Button type="button" variant="ghost" size="sm" onClick={() => void issuePreviewLink()} disabled={issuePending}>
+        <Button type="button" variant="ghost" size="sm" className="h-auto min-w-0 max-w-full whitespace-normal [overflow-wrap:anywhere]" onClick={() => void issuePreviewLink()} disabled={issuePending}>
           {uiText("再試行")}</Button>
       </div>
       {previewLink ? <p className="text-xs text-muted-foreground">{uiText("有効期限:")}{new Date(previewLink.expires_at).toLocaleString("ja-JP")}</p> : null}

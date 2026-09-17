@@ -11,7 +11,8 @@ export async function runAccountAppearanceScenario(t: TestContext, rawBrowser: B
 
   const diagnostic=accountAppearanceDiagnostics(rawBrowser,()=>fixture.uiPreferenceMethods);
   const browser=diagnostic.browser;
-  await t.test("Account appearance persists 12 themes and 3 modes with DB fallback and save rollback", async () => {
+  try {
+    await t.test("Account appearance persists 12 themes and 3 modes with DB fallback and save rollback", async () => {
 		const preferenceRequestCount = (method: "GET" | "PUT") => fixture.uiPreferenceMethods.filter((value) => value === method).length;
 		const waitForPreferenceSettlement = async (method: "GET" | "PUT", minimumRequests: number) => {
 			assert.ok(minimumRequests > 0, "settlement needs an observed request phase");
@@ -162,40 +163,69 @@ export async function runAccountAppearanceScenario(t: TestContext, rawBrowser: B
 		diagnostic.settled("GET", translatedGet);await diagnostic.observe("preference-settled");
 		await waitForPreferenceSettlement("PUT", 2);
 		diagnostic.settled("PUT", 2);await diagnostic.finish();
-  });
+    });
+  } catch (error) { await diagnostic.failed(error); } finally { await diagnostic.dispose(); }
 }
+
+export const accountAppearancePointerStart = (x: number, y: number) => `(() => {
+  const target=globalThis.__uiScenarioTarget,record={target,planned:[${JSON.stringify(Number.isFinite(x)?x:null)},${JSON.stringify(Number.isFinite(y)?y:null)}],events:[]};
+  const finite=n=>Number.isFinite(n)?Math.max(-100000,Math.min(100000,Math.round(n))):null;
+  const rect=target?.getBoundingClientRect();record.rect=rect?[rect.left,rect.top,rect.width,rect.height].map(finite):null;
+  record.marked=!!target&&document.querySelector('[data-ui-scenario-target]')===target;
+  record.connected=!!target?.isConnected;record.role=target?.getAttribute('role')==='tab';
+  const hit=document.elementFromPoint(record.planned[0],record.planned[1]);record.plannedHit=!!target&&!!hit&&(hit===target||target.contains(hit));
+  record.listener=event=>{if(record.events.length>=6)return;
+    const hit=document.elementFromPoint(event.clientX,event.clientY);
+    record.events.push({kind:['mousedown','mouseup','click'].includes(event.type)?event.type:'other',trusted:event.isTrusted===true,
+      point:[finite(event.clientX),finite(event.clientY)],sameTarget:globalThis.__uiScenarioTarget===target,connected:!!target?.isConnected,
+      eventInside:!!target&&!!event.target&&(event.target===target||target.contains(event.target)),hitInside:!!target&&!!hit&&(hit===target||target.contains(hit))});
+  };
+  globalThis.__uiAccountPointer017=record;
+  for(const type of ['mousedown','mouseup','click'])document.addEventListener(type,record.listener,true);
+  return true;
+})()`;
+export const accountAppearancePointerStop = `(() => {const r=globalThis.__uiAccountPointer017;if(r)for(const type of ['mousedown','mouseup','click'])document.removeEventListener(type,r.listener,true);return true;})()`;
+export const accountAppearancePointerDispose = `(() => {const r=globalThis.__uiAccountPointer017;if(r)for(const type of ['mousedown','mouseup','click'])document.removeEventListener(type,r.listener,true);delete globalThis.__uiAccountPointer017;return true;})()`;
 
 export const accountAppearanceDiagnosticExpression = `(() => {
   const visible=e=>!!e?.getClientRects().length&&getComputedStyle(e).visibility!=='hidden'&&getComputedStyle(e).display!=='none';
   const tabs=[...document.querySelectorAll('main [role="tablist"] [role="tab"]')].filter(e=>visible(e)&&e.textContent?.trim()==='Appearance'),tab=tabs.length===1?tabs[0]:null;
   const target=tab?.getAttribute('aria-controls'),panels=target?[...document.querySelectorAll('[role="tabpanel"]')].filter(e=>e.id===target):[];
   const themes=[...document.querySelectorAll('[role="radiogroup"][aria-label="Color theme"] [role="radio"]')];
-  return {lang:['ja','en'].includes(document.documentElement.lang)?document.documentElement.lang:'other',tabs:tabs.length,enabled:!!tab&&!tab.disabled&&tab.getAttribute('aria-disabled')!=='true',
+  const pointer=globalThis.__uiAccountPointer017;
+  return {pointer:pointer?{marked:pointer.marked,connected:pointer.connected,role:pointer.role,planned:pointer.planned,rect:pointer.rect,plannedHit:pointer.plannedHit,events:pointer.events,sameTarget:tab===pointer.target,targetConnected:!!pointer.target?.isConnected}:null,lang:['ja','en'].includes(document.documentElement.lang)?document.documentElement.lang:'other',tabs:tabs.length,enabled:!!tab&&!tab.disabled&&tab.getAttribute('aria-disabled')!=='true',
     selected:tab?.getAttribute('aria-selected')==='true',panels:panels.length,visiblePanels:panels.filter(visible).length,themes:themes.length,
     violet:document.querySelectorAll('[role="radio"][aria-label="Violet theme"]').length};
 })()`;
-type AccountDiagnostic = { lang:string; tabs:number; enabled:boolean; selected:boolean; panels:number; visiblePanels:number; themes:number; violet:number };
+type AccountPointer = {marked:boolean;connected:boolean;role:boolean;planned:number[];rect:number[]|null;plannedHit:boolean;sameTarget:boolean;targetConnected:boolean;events:{kind:string;trusted:boolean;point:number[];sameTarget:boolean;connected:boolean;eventInside:boolean;hitInside:boolean}[]};
+type AccountDiagnostic = { pointer?:AccountPointer|null; lang:string; tabs:number; enabled:boolean; selected:boolean; panels:number; visiblePanels:number; themes:number; violet:number };
 
 export function accountAppearanceDiagnostics(browser: BrowserHarness, methods:()=>string[], write:(line:string)=>void=console.log) {
   const observations:{phase:string;value:AccountDiagnostic;get:number;put:number;getSettled:number;putSettled:number}[]=[],diagnosticErrors:unknown[]=[];
-  const settledRequests={GET:0,PUT:0};let phase:string|undefined;
+  const settledRequests={GET:0,PUT:0};let phase:string|undefined,reported=false,reportedFailure:unknown;
   const observe=async(step:string)=>{phase=step;try{const value=await browser.evaluate<AccountDiagnostic>(accountAppearanceDiagnosticExpression);
     observations.push({phase,value,get:methods().filter(v=>v==="GET").length,put:methods().filter(v=>v==="PUT").length,getSettled:settledRequests.GET,putSettled:settledRequests.PUT});
   }catch(error){diagnosticErrors.push(error);}};
   const failed=async(original:unknown):Promise<never>=>{
+    if(reported)throw reportedFailure;
     if(!phase)throw original;
+    reported=true;
     await observe(phase);
     try {
       const count=(n:number)=>Number.isFinite(n)?Math.min(1024,Math.max(0,Math.floor(n))):null;
-      const payload={schemaVersion:1,code:"D013-ACCOUNT",phase,diagnosticFailed:diagnosticErrors.length>0,
+      const point=(value:number[]|null|undefined)=>value?.slice(0,4).map(n=>Number.isFinite(n)?Math.max(-100000,Math.min(100000,Math.round(n))):null)||null;
+      const pointer=observations.at(-1)?.value.pointer;
+      const payload={schemaVersion:2,code:"D013-ACCOUNT",detailCode:"D017-ACCOUNT",phase,diagnosticFailed:diagnosticErrors.length>0,
+        pointer:pointer?{marked:pointer.marked===true,connected:pointer.connected===true,role:pointer.role===true,planned:point(pointer.planned),rect:point(pointer.rect),plannedHit:pointer.plannedHit===true,sameTarget:pointer.sameTarget===true,targetConnected:pointer.targetConnected===true,
+          events:pointer.events.slice(0,6).map(e=>({kind:["mousedown","mouseup","click"].includes(e.kind)?e.kind:"other",trusted:e.trusted===true,point:point(e.point),sameTarget:e.sameTarget===true,connected:e.connected===true,eventInside:e.eventInside===true,hitInside:e.hitInside===true}))}:null,
         observations:observations.slice(-6).map(row=>({phase:row.phase,lang:["ja","en"].includes(row.value.lang)?row.value.lang:"other",
           tabs:count(row.value.tabs),enabled:row.value.enabled===true,selected:row.value.selected===true,panels:count(row.value.panels),
           visiblePanels:count(row.value.visiblePanels),themes:count(row.value.themes),violet:count(row.value.violet),
           get:count(row.get),put:count(row.put),getSettled:count(row.getSettled),putSettled:count(row.putSettled)}))};
       const json=JSON.stringify(payload);assert.ok(Buffer.byteLength(json)<=4096);write("UI_BROWSER_DIAGNOSTIC_013 "+json);
     }catch(error){diagnosticErrors.push(error);}
-    if(diagnosticErrors.length)throw new AggregateError([original,...diagnosticErrors],"Account failure and diagnostic failure",{cause:original});
-    throw original;
+    reportedFailure=diagnosticErrors.length?new AggregateError([original,...diagnosticErrors],"Account failure and diagnostic failure",{cause:original}):original;
+    throw reportedFailure;
   };
   // A local diagnostic view of the same harness. Calls, arguments, this-owner,
   // deadlines and native input are forwarded unchanged; no method is replaced.
@@ -205,9 +235,16 @@ export function accountAppearanceDiagnostics(browser: BrowserHarness, methods:()
     if(!["waitFor","waitForRequestHandlersIdle","reload","evaluate","clickAt","pressKey"].includes(String(property)))return value.bind(target);
     return (...args:unknown[])=>{
       if(!phase)return Reflect.apply(value,target,args);
+      if(property==="clickAt"&&phase==="after-reload")return (async()=>{
+        try{await browser.evaluate(accountAppearancePointerStart(Number(args[0]),Number(args[1])));}catch(error){diagnosticErrors.push(error);}
+        let result:unknown,primary:unknown,failedInput=false;
+        try{result=await Reflect.apply(value,target,args);}catch(error){primary=error;failedInput=true;}
+        finally{try{await browser.evaluate(accountAppearancePointerStop);}catch(error){diagnosticErrors.push(error);}}
+        if(failedInput)return failed(primary);return result;
+      })();
       try{return Promise.resolve(Reflect.apply(value,target,args)).catch(failed);}catch(error){return failed(error);}
     };
   }});
-  return {browser:observed,observe,settled:(method:"GET"|"PUT",count:number)=>{settledRequests[method]=count;},
+  return {browser:observed,observe,failed,dispose:async()=>{try{await browser.evaluate(accountAppearancePointerDispose);}catch(error){if(reported)throw new AggregateError([reportedFailure,error],"Account diagnostic cleanup failed",{cause:reportedFailure});throw error;}},settled:(method:"GET"|"PUT",count:number)=>{settledRequests[method]=count;},
     finish:async()=>{if(diagnosticErrors.length)await failed(new AggregateError(diagnosticErrors,"Account diagnostic observation failed"));}};
 }

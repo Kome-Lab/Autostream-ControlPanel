@@ -93,7 +93,25 @@ export const focusExpression = `(() => {${renderedDOM}
   const plan=globalThis.__uiKeyboardPlan;
   const datetime=e.tagName==='INPUT'&&e.type==='datetime-local',host=plan?.datetimes.findIndex(entry=>entry.element===e)??-1;
   const datetimeUnchanged=!plan||plan.datetimes.every(entry=>entry.element.isConnected&&entry.element.type==='datetime-local'&&uiAX(entry.element)&&entry.element.value===entry.value&&uiRoot()===plan.root);
-  return {id:uiIdentity(e),visible:uiAX(e)&&e!==document.body&&r.left>=-1&&r.right<=innerWidth+1&&r.top>=-1&&r.bottom<=innerHeight+1,
+  const tallPanelVisible=()=>{
+    if(e.getAttribute('role')!=='tabpanel'||e.getAttribute('data-slot')!=='tabs-content'||e.getAttribute('data-state')!=='active'||e.tabIndex<0||!uiAX(e)||!indicator||r.height<=innerHeight)return false;
+    const owner=e.closest('[data-slot=tabs]'),label=e.getAttribute('aria-labelledby');
+    const unique=id=>id&&[...document.querySelectorAll('[id]')].filter(n=>n.id===id).length===1;
+    if(!owner||!unique(e.id)||!unique(label))return false;
+    const tabs=[...owner.querySelectorAll('[role=tab]')].filter(t=>t.closest('[data-slot=tabs]')===owner&&t.getAttribute('aria-selected')==='true');
+    if(tabs.length!==1)return false;const tab=tabs[0];
+    if(tab.id!==label||tab.getAttribute('aria-controls')!==e.id||!uiAX(tab)||tab.disabled||tab.getAttribute('aria-disabled')==='true')return false;
+    const edge=Math.max(1,parseFloat(s.outlineWidth)||0)+Math.max(0,parseFloat(s.outlineOffset)||0);
+    let left=0,right=innerWidth,top=0,bottom=innerHeight;
+    for(let p=e.parentElement;p;p=p.parentElement){const ps=getComputedStyle(p),pr=p.getBoundingClientRect();
+      if(/hidden|clip|scroll|auto/.test(ps.overflowX)){left=Math.max(left,pr.left);right=Math.min(right,pr.right);}
+      if(/hidden|clip|scroll|auto/.test(ps.overflowY)){top=Math.max(top,pr.top);bottom=Math.min(bottom,pr.bottom);}
+    }
+    if(![r.left,r.right,r.top,r.bottom,r.width,r.height].every(Number.isFinite)||r.left-edge<left||r.right+edge>right||r.top-edge<top||Math.min(r.bottom,bottom)-r.top<48)return false;
+    const y=Math.min(r.bottom,bottom)-edge-1;
+    return [[r.left+1,r.top+1],[r.right-1,r.top+1],[(r.left+r.right)/2,r.top+1],[r.left+1,y],[r.right-1,y]].every(([x,y])=>{const hit=document.elementFromPoint(x,y);return hit&&(hit===e||e.contains(hit));});
+  };
+  return {id:uiIdentity(e),visible:uiAX(e)&&e!==document.body&&(r.left>=-1&&r.right<=innerWidth+1&&r.top>=-1&&r.bottom<=innerHeight+1||tallPanelVisible()),
     inside:!dialog||dialog.contains(e),indicator,boundary:e===document.body||e===document.documentElement,native:e.tagName==='VIDEO'||e.tagName==='AUDIO',
     datetime,datetimeHost:host,datetimeUnchanged,rect:[r.left,r.top,r.width,r.height],required:plan?plan.targets.indexOf(e):-1,modal:!!dialog};
 })()`;

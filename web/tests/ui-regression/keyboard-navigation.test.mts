@@ -161,3 +161,30 @@ test('UI-KEYBOARD-009: required main section owner survives other navigations an
     else {assert.deepEqual(await exerciseActivation(browser,'section',contract.activationTarget),[]);assert.deepEqual(keys,['Enter','Space']);assert.equal(dom.document.activeElement,section);}
   }
 });
+
+test('UI-DATETIME-CSS-017: actual datetime Input and generated scoped focus-within outline keep both normal and forced indicators',async t=>{
+ const {default:postcss}=await import('postcss'),{default:tailwind}=await import('@tailwindcss/postcss'),{fileURLToPath}=await import('node:url');
+ const {Input}=await import('../../src/components/ui/input.tsx');
+ const html=renderUI(createElement(Input,{type:'datetime-local',value:'2026-09-01T12:34',readOnly:true}),'en','/admin/streams/');
+ assert.match(html,/data-slot="input"/);assert.match(html,/type="datetime-local"/);assert.match(html,/value="2026-09-01T12:34"/);
+ const from=fileURLToPath(new URL('../../src/app/globals.css',import.meta.url));
+ const result=await postcss([tailwind({base:fileURLToPath(new URL('../../',import.meta.url)),optimize:false})]).process(readFileSync(from,'utf8'),{from});
+ const rules:import('postcss').Rule[]=[];result.root.walkRules(r=>{if(r.selector==='input[data-slot="input"][type="datetime-local"]:focus-within')rules.push(r);});assert.equal(rules.length,2);
+ for(const rule of rules){const forced=rule.parent?.type==='atrule';if(forced)assert.equal((rule.parent as import('postcss').AtRule).params,'(forced-colors: active)');else assert.equal(rule.parent?.type,'root');
+  assert.ok(rule.nodes.some(n=>n.type==='decl'&&n.prop==='outline'&&n.value===(forced?'2px solid Highlight':'2px solid var(--ring)')));assert.ok(rule.nodes.some(n=>n.type==='decl'&&n.prop==='outline-offset'&&n.value==='2px'));
+ }
+ t.diagnostic('Generated CSS and actual Input only; native datetime segment identity remains pending, bounds 16/128 retained.');
+});
+
+test('UI-TABPANEL-KEYBOARD-017: actual current exercise and harness Tab/ShiftTab traverse the tall active Account panel in order',async()=>{
+ const condition=conditions.find(c=>c.family==='account'&&c.exercise==='keyboard')!,dom=observerDOM();dom.main.children=[];
+ const refresh=dom.main.add(new Element('BUTTON','Refresh')),root=dom.main.add(new Element('DIV'));root.setAttribute('data-slot','tabs');
+ const tab=root.add(new Element('BUTTON','Profile'));tab.setAttribute('role','tab');tab.setAttribute('aria-selected','true');tab.setAttribute('aria-controls','profile');tab.id='profile-tab';
+ const panel=root.add(new Element('DIV'));panel.id='profile';panel.setAttribute('role','tabpanel');panel.setAttribute('data-slot','tabs-content');panel.setAttribute('data-state','active');panel.setAttribute('tabindex','0');panel.setAttribute('aria-labelledby',tab.id);panel.rect={left:10,right:950,top:100,bottom:1550,width:940,height:1450};
+ const choose=panel.add(new Element('BUTTON','Choose image')),nodes=[refresh,tab,panel,choose];dom.document.elementFromPoint=()=>panel;
+ const owner=createHarnessFixture(),tabNative=owner.harness.pressTab.bind(owner.harness);let index=-1;const steps:string[]=[];
+ owner.harness.evaluate=async<T,>(expression:string)=>dom.run<T>(expression);
+ owner.harness.pressTab=async direction=>{await tabNative(direction);index+=direction==='forward'?1:-1;assert.ok(index>=0&&index<nodes.length);dom.document.activeElement=nodes[index];steps.push(direction+':'+index);};
+ try{await exerciseAccessibility(owner.harness,condition);assert.deepEqual(steps,['forward:0','forward:1','forward:2','forward:3','backward:2','backward:1','backward:0']);assert.equal(owner.socket.commandsFor('Input.dispatchKeyEvent').length,14);}
+ finally{await owner.harness.close();}
+});

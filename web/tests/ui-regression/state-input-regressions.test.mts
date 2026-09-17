@@ -632,3 +632,35 @@ test("UI-STATUS-ONLY-003: zero-control admission preserves visible branch, geome
     assert.throws(() => assertCurrentObservation(dom.run(observationExpression), dom.run(layoutExpression), condition, browser, primary), /unreachable/);
   });
 });
+
+test('UI-WORKER-READ-ACTION-017: read-loss hides the actual view while WKR-01 independently revalidates action-only cached authority',async()=>{
+ const {WorkersView}=await import('../../src/features/workers/workers-view.tsx'),{createWorkerRestartController}=await import('../../src/features/workers/workers-action-controller.ts');
+ const factorySource=readFileSync(new URL('../workers-pilot-fixture.mts',import.meta.url),'utf8');const factory:(id:string,name:string)=>WorkerNode=actualFunction(factorySource.replace('export function worker(','function worker('),'worker',{});
+ const row=factory('worker-read-action-017','Read Authority Worker');
+ for(const locale of ['ja','en'] as const){
+  const client=new QueryClient({defaultOptions:{queries:{retry:false,staleTime:Infinity,gcTime:Infinity,retryOnMount:false}}});client.setQueryData(['workers'],[row]);client.setQueryData(['auth','me'],{permissions:['workers.read','workers.restart']});
+  const render=()=>renderUI(createElement(QueryClientProvider,{client},createElement(WorkersView)),locale,'/admin/workers/');let gets=0,posts=0;const held=Promise.withResolvers<unknown>();
+  const controller=createWorkerRestartController({queryClient:client,fetchWorkers:async()=>{gets++;return held.promise;},postRestart:async()=>{posts++;}});
+  try{assert.match(render(),/Read Authority Worker/);client.setQueryData(['auth','me'],{permissions:['workers.restart']});
+    const denied=render();assert.doesNotMatch(denied,/Read Authority Worker|aria-label="(?:Restart worker|Workerを再起動)"/);assert.match(denied,/Permission denied|権限がありません/);assert.deepEqual([gets,posts],[0,0]);assert.deepEqual(client.getQueryData(['workers']),[row]);
+    const opened=controller.open(row);assert.equal(opened.kind,'allowed');if(opened.kind!=='allowed')assert.fail('WKR-01 does not require read or Configuration permissions');
+    const pending=controller.submit(opened);assert.deepEqual([gets,posts],[1,0]);assert.equal(controller.isPending(row),true);assert.equal((await controller.submit(opened)).state.kind,'revalidation-unavailable');
+    held.resolve([row]);assert.equal((await pending).outcome?.kind,'succeeded');assert.deepEqual([gets,posts],[1,1]);assert.equal(controller.isPending(row),false);
+    client.setQueryData(['auth','me'],{permissions:['workers.read']});assert.match(render(),/Read Authority Worker/);assert.equal(controller.open(row).kind,'blocked');
+    client.setQueryData(['auth','me'],{permissions:['workers.read','workers.restart']});assert.equal(controller.open(row).kind,'allowed');
+    client.getQueryCache().find({queryKey:['auth','me'],exact:true})!.setState({fetchStatus:'fetching'});assert.match(render(),/Read Authority Worker/);assert.equal(controller.open(row).kind,'blocked');assert.deepEqual([gets,posts],[1,1]);
+  }finally{held.resolve([row]);client.clear();}
+ }
+});
+
+test('UI-WORKER-SCENARIO-017: actual browser read-loss predicate accepts the real empty-table row only with denied evidence and no data or action',async()=>{
+ const source=readFileSync(new URL('../ui-browser-worker-restart-scenarios.mts',import.meta.url),'utf8'),file=ts.createSourceFile('worker.mts',source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TS);let expression='';
+ const visit=(n:ts.Node)=>{if(ts.isCallExpression(n)&&n.arguments.some(a=>ts.isStringLiteral(a)&&a.text==='read permission loss must remove Worker rows and restart triggers')){const first=n.arguments[0];assert.ok(ts.isNoSubstitutionTemplateLiteral(first));expression=first.text;}ts.forEachChild(n,visit);};visit(file);assert.ok(expression);
+ const {WorkersView}=await import('../../src/features/workers/workers-view.tsx');const html=renderUI(createElement(WorkersView),'en','/admin/workers/',client=>client.setQueryData(['auth','me'],{permissions:['workers.restart']}));assert.match(html,/No results/);assert.match(html,/<td[^>]*colSpan/i);
+ const dom=observerDOM();dom.main.children=[];const stack=[dom.main];
+ for(const token of html.matchAll(/<\/?([a-z][\w-]*)\b([^>]*)>|([^<]+)/gi)){if(token[3]){stack.at(-1)!.ownText+=token[3];continue;}const tag=token[1].toUpperCase();if(token[0].startsWith('</')){if(stack.at(-1)?.tagName===tag)stack.pop();continue;}const e=stack.at(-1)!.add(new Element(tag));for(const a of token[2].matchAll(/([\w-]+)="([^"]*)"/g))e.setAttribute(a[1],a[2]);if(!['INPUT','IMG','BR','HR','META','LINK'].includes(tag))stack.push(e);}
+ assert.equal(dom.run(expression),true);const root=dom.document.querySelector('[data-screen-family=workers]')!,body=root.querySelector('tbody')!;
+ const cell=body.add(new Element('TD','Private cached Worker'));cell.setAttribute('headers','workers-service_name');assert.equal(dom.run(expression),false);body.children=body.children.filter(e=>e!==cell);
+ const trigger=root.add(new Element('BUTTON'));trigger.setAttribute('aria-label','Restart worker');assert.equal(dom.run(expression),false);root.children=root.children.filter(e=>e!==trigger);
+ const notice=root.querySelectorAll('[role=status]').find(e=>e.textContent.includes('Permission denied:'))!;notice.hidden=true;assert.equal(dom.run(expression),false);notice.hidden=false;notice.ownText='Checking Worker read permissions.';assert.equal(dom.run(expression),false);
+});

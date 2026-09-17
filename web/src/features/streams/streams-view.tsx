@@ -103,15 +103,26 @@ export function StreamsView() {
     window.history.replaceState(window.history.state, "", window.location.pathname + window.location.search);
   });
   useEffect(() => {
-    const syncFromHash = () => { createCloseIntent.current = null; const open = window.location.hash === "#create-stream"; if (open) { if (canCreate && !createFocus.current) { createFocus.current = takeStreamCreateFocus(); if (createFocus.current) createTrigger.current = null; } requestCreateOpen(); } else createDraftExit.request(() => setCreateOpen(false)); };
+    let connectedFocus: StreamCreateFocus | null = null;
+    let releaseFocus: (() => void) | undefined;
+    const syncFromHash = () => {
+      createCloseIntent.current = null;
+      if (window.location.hash === "#create-stream") {
+        if (canCreate && !createFocus.current) { createFocus.current = takeStreamCreateFocus(); if (createFocus.current) createTrigger.current = null; }
+        if (canCreate && createFocus.current && createFocus.current !== connectedFocus) {
+          releaseFocus?.(); connectedFocus = createFocus.current;
+          releaseFocus = connectedFocus.connect({ document, pathname: window.location.pathname, search: window.location.search });
+        }
+        requestCreateOpen();
+      } else createDraftExit.request(() => setCreateOpen(false));
+    };
     const navigation = (window as unknown as { navigation?: EventTarget }).navigation;
     const invalidateClose = () => { createCloseIntent.current = null; };
     syncFromHash();
     window.addEventListener("hashchange", syncFromHash);
     navigation?.addEventListener("navigate", invalidateClose);
-    return () => { window.removeEventListener("hashchange", syncFromHash); navigation?.removeEventListener("navigate", invalidateClose); };
+    return () => { window.removeEventListener("hashchange", syncFromHash); navigation?.removeEventListener("navigate", invalidateClose); releaseFocus?.(); };
   }, [canCreate, createDraftExit, requestCreateOpen]);
-  useEffect(() => () => { createFocus.current?.cancel(); }, []);
   useEffect(() => { if (!canCreate) { createFocus.current?.cancel(); createFocus.current = null; createTrigger.current = null; } }, [canCreate]);
   const handleStreamActionResult = useCallback((result: StreamActionExecutionResult, intent: StreamActionIntent) => {
     if (result.kind === "succeeded") {

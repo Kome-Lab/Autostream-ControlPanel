@@ -102,24 +102,25 @@ export function EmailPanel({
   const [email, setEmail] = useState(currentEmail);
   const outcomeUnknown = () => setNotice({ tone: "error", text: uiText("操作結果を確認できません。再送せず、アカウント状態または監査ログを確認してください。") });
   return (
-    <Card>
+    <Card className="min-w-0 max-w-full">
       <CardHeader>
         <CardTitle className="flex items-center gap-2 text-lg">
           <Mail className="size-5" />
           {uiText("メール・OAuth連携")}</CardTitle>
         <CardDescription>{uiText("通知や本人確認に使うメールとログイン連携を管理します。")}</CardDescription>
       </CardHeader>
-      <CardContent className="space-y-4">
+      <CardContent className="min-w-0 space-y-4">
         <div className="space-y-2 rounded-md border p-3">
           <label htmlFor="account-email" className="text-sm font-medium">{uiText("アカウントメール")}</label>
-          <div className="flex flex-col gap-2 sm:flex-row">
-            <Input id="account-email" type="email" autoComplete="email" placeholder="operator@example.jp" value={email} onChange={(event) => setEmail(event.target.value)} />
+          <div className="flex min-w-0 flex-wrap gap-2">
+            <Input className="min-w-0 max-w-full flex-[1_1_12rem]" id="account-email" type="email" autoComplete="email" placeholder="operator@example.jp" value={email} onChange={(event) => setEmail(event.target.value)} />
             <AccountActionConfirmation
               controller={actionController}
               intent={{ id: "AUTH-12", resourceId: accountResourceID }}
               authority={authority}
               refreshAuthority={refreshAuthority}
               label={uiText("確認メール送信")}
+              className="h-auto min-w-0 max-w-full whitespace-normal [overflow-wrap:anywhere]"
               variant="default"
               disabled={email.trim() === currentEmail.trim() || !email.trim()}
               handler={() => apiPut<{ status: string; target?: string }>("/auth/email", { email: email.trim() })}
@@ -142,7 +143,7 @@ export function EmailPanel({
               refreshAuthority={refreshAuthority}
               label={uiText("{0}を連携", provider.name || providerLabel(provider.provider_type))}
               icon={<Plus className="size-4" />}
-              className="justify-start"
+              className="h-auto min-w-0 max-w-full whitespace-normal [overflow-wrap:anywhere] w-full justify-start text-left"
               handler={async () => {
                 const data = await apiPost<OAuthLinkStartResponse>(`/auth/oauth-links/${encodeURIComponent(provider.id)}/start`, { redirect_after: "/admin/account/" });
                 window.location.assign(validatedOAuthRedirect(data.authorization_url));
@@ -157,7 +158,7 @@ export function EmailPanel({
           <div className="text-sm font-medium">{uiText("連携済みログイン")}</div>
           {links.length === 0 ? <div className="text-sm text-muted-foreground">{loading ? uiText("読み込み中") : uiText("連携済みログインはありません。")}</div> : null}
           {links.map((link) => (
-            <div key={link.id} className="flex items-center justify-between gap-3 rounded-md border px-3 py-2">
+            <div key={link.id} className="flex min-w-0 flex-wrap items-center justify-between gap-3 rounded-md border px-3 py-2">
               <div className="min-w-0">
                 <div className="flex items-center gap-2 text-sm font-medium">
                   <Link2 className="size-4" />
@@ -171,6 +172,7 @@ export function EmailPanel({
                 authority={authority}
                 refreshAuthority={refreshAuthority}
                 label={uiText("OAuth連携を解除")}
+                className="h-auto min-w-0 max-w-full whitespace-normal [overflow-wrap:anywhere]"
                 icon={<Trash2 />}
                 handler={() => apiDelete<{ status: string }>(`/auth/oauth-links/${encodeURIComponent(link.id)}`)}
                 onSucceeded={() => {

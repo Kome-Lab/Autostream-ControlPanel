@@ -123,9 +123,9 @@ export function AuditLogsView() {
         actions={<Button variant="outline" disabled={auditLogs.isFetching} onClick={() => void auditLogs.refetch()}>{ja ? "更新" : "Refresh"}</Button>} />
       {remoteState.kind !== "ready" || remoteState.freshness.kind !== "fresh" ? <RemainingStateNotice state={remoteState} consumer="audit" /> : null}
       <Tabs value={view} onValueChange={(value) => setView(value as AuditView)} className="space-y-4">
-        <TabsList variant="line" className="h-auto w-full justify-start border-b pb-1">
-          <TabsTrigger value="operations">{uiText("操作履歴")}</TabsTrigger>
-          <TabsTrigger value="node-activity">{uiText("Node報告・通信")}</TabsTrigger>
+        <TabsList variant="line" className="h-auto w-full min-w-0 max-w-full flex-wrap justify-start border-b pb-1">
+          <TabsTrigger value="operations" className="h-auto min-w-0 max-w-full whitespace-normal [overflow-wrap:anywhere]">{uiText("操作履歴")}</TabsTrigger>
+          <TabsTrigger value="node-activity" className="h-auto min-w-0 max-w-full whitespace-normal [overflow-wrap:anywhere]">{uiText("Node報告・通信")}</TabsTrigger>
         </TabsList>
         <TabsContent value={view}>
           <Card>
@@ -137,11 +137,11 @@ export function AuditLogsView() {
               <Button asChild variant="outline" size="sm"><a href={exportURL}><Download />CSV</a></Button>
             </CardHeader>
             <CardContent className="space-y-4">
-              <form className="grid gap-3 lg:grid-cols-[minmax(220px,1fr)_180px_180px_160px_auto]" onSubmit={(event) => { event.preventDefault(); setQuery(queryInput.trim()); }}>
+              <form className="grid min-w-0 gap-3 sm:grid-cols-2 2xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_auto] [&>*]:min-w-0 [&>*]:max-w-full" onSubmit={(event) => { event.preventDefault(); setQuery(queryInput.trim()); }}>
                 <label className="relative"><Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" /><Input value={queryInput} onChange={(event) => setQueryInput(event.target.value)} placeholder={nodeActivityView ? uiText("Node ID・シグナル・結果") : uiText("配信枠ID・操作名・ユーザー")} className="pl-9" aria-label={uiText("監査ログの検索語")} /></label>
                 <Field label={ja ? "開始日時" : "From"}><Input type="datetime-local" value={from} onChange={(event) => setFrom(event.target.value)} aria-label={uiText("開始日時")} /></Field>
                 <Field label={ja ? "終了日時" : "To"}><Input type="datetime-local" value={to} onChange={(event) => setTo(event.target.value)} aria-label={uiText("終了日時")} /></Field>
-                <Select value={result} onValueChange={setResult}><SelectTrigger aria-label={uiText("操作結果")}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">{uiText("すべての結果")}</SelectItem><SelectItem value="success">{uiText("成功")}</SelectItem><SelectItem value="failure">{uiText("失敗")}</SelectItem></SelectContent></Select>
+                <Select value={result} onValueChange={setResult}><SelectTrigger className="w-full min-w-0 max-w-full" aria-label={uiText("操作結果")}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">{uiText("すべての結果")}</SelectItem><SelectItem value="success">{uiText("成功")}</SelectItem><SelectItem value="failure">{uiText("失敗")}</SelectItem></SelectContent></Select>
                 <Button type="submit" variant="outline"><Search className="size-4" />{uiText("検索")}</Button>
               </form>
               {query ? <div className="text-xs text-muted-foreground">「{query}{uiText("」に一致する履歴を表示しています。")}</div> : null}

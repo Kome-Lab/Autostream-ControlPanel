@@ -202,8 +202,8 @@ function UpdateAgentStatus({
                   <div className="mt-0.5 text-muted-foreground">{uiText("最終Heartbeat:")}{formatOptionalDate(updater.last_heartbeat_at, timezone)}</div>
                   {updater.policy_error_code || updater.policy_error ? <div className="mt-1 break-words text-destructive">{uiText("反映情報:")}{fixedPresentationText(systemUpdatePolicyErrorMessage(updater.policy_error_code || updater.policy_error), uiText)}</div> : null}
                 </div>
-                <div className="flex items-center gap-2">
-                  <Badge variant={policy.tone}>{updater.status && !["online", "offline"].includes(updater.status) ? uiText("不明") : fixedPresentationText(policy.label, uiText)}</Badge>
+                <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2">
+                  <Badge variant={policy.tone} className="max-w-full whitespace-normal [overflow-wrap:anywhere]">{updater.status && !["online", "offline"].includes(updater.status) ? uiText("不明") : fixedPresentationText(policy.label, uiText)}</Badge>
                   <UpdaterSettingsPanel updater={updater} availableTargets={targets} jobs={jobs} canEdit={canEdit} canManageSecrets={canManageSecrets} />
                 </div>
               </div>

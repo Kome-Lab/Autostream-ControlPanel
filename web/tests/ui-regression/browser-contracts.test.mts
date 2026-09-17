@@ -19,7 +19,7 @@ import { observationExpression } from "./observation.mts";
 import { requiredScenarioNames, EXPECTED_UI_FOUNDATION_BROWSER_TESTS } from "../helpers/run-ui-foundation-browser.mts";
 import { Element, observerDOM } from "./observer-dom.mts";
 import { closeCreateAndAssertFocusReturn, mobileFocusDiagnosticExpression } from "../ui-browser-query-auth-helpers.mts";
-import { accountAppearanceDiagnostics, accountAppearanceDiagnosticExpression } from "../ui-browser-account-scenarios.mts";
+import { accountAppearanceDiagnostics, accountAppearanceDiagnosticExpression, accountAppearancePointerStart, accountAppearancePointerStop } from "../ui-browser-account-scenarios.mts";
 import { setStoredDisplay } from "../ui-browser-navigation-helpers.mts";
 import { clickVisible } from "./visible-trigger.mts";
 
@@ -49,23 +49,24 @@ test('UI-D013-MOBILE: actual close helper records phases only on failure and pre
 test('UI-D013-ACCOUNT: actual English scenario uses one real tab operation and bounded DOM/request-settlement diagnostics',async()=>{
  const source=readFileSync(new URL('../ui-browser-account-scenarios.mts',import.meta.url),'utf8'),file=ts.createSourceFile('account.mts',source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TS),matches:ts.CallExpression[]=[];
  const visit=(node:ts.Node)=>{if(ts.isCallExpression(node)&&ts.isPropertyAccessExpression(node.expression)&&node.expression.expression.getText(file)==='t'&&node.expression.name.text==='test'&&node.arguments.some(argument=>ts.isStringLiteral(argument)&&argument.text==='Account appearance persists 12 themes and 3 modes with DB fallback and save rollback'))matches.push(node);ts.forEachChild(node,visit);};visit(file);
- assert.equal(matches.length,1,'one actual registered Account scenario');const callback=matches[0].arguments.find(ts.isArrowFunction);assert.ok(callback&&ts.isBlock(callback.body));const body=callback.body;
+ assert.equal(matches.length,1,'one actual registered Account scenario');const callback=matches[0].arguments.find(ts.isArrowFunction);assert.ok(callback&&ts.isBlock(callback.body));const owner=file.statements.find((statement):statement is ts.FunctionDeclaration=>ts.isFunctionDeclaration(statement)&&statement.name?.text==='runAccountAppearanceScenario');const boundary=owner?.body?.statements.find(ts.isTryStatement);assert.ok(boundary?.finallyBlock&&boundary.catchClause);const body=callback.body;
  const start=body.statements.findIndex(statement=>statement.getText(file).includes('revision: 7'));assert.ok(start>=0);
- const actualEnglish='const run=async()=>{'+body.statements.slice(start).map(statement=>statement.getText(file)).join('\n')+'}';
+ const actualEnglish='const run=async()=>{try{'+body.statements.slice(start).map(statement=>statement.getText(file)).join('\n')+'}'+boundary.catchClause.getText(file)+' finally '+boundary.finallyBlock.getText(file)+'}';
  for(const fault of ['none','theme','observation','output']){
    const dom=observerDOM();dom.main.children=[];const list=dom.main.add(new Element('DIV'));list.setAttribute('role','tablist');const tab=list.add(new Element('BUTTON','Appearance'));tab.setAttribute('role','tab');tab.setAttribute('aria-controls','panel');tab.setAttribute('aria-selected','false');
    const panel=dom.main.add(new Element('DIV'));panel.id='panel';panel.setAttribute('role','tabpanel');panel.hidden=true;const themes=panel.add(new Element('DIV'));themes.setAttribute('role','radiogroup');themes.setAttribute('aria-label','Color theme');
    const radios=['Violet theme','Ocean theme','Cyan theme','System mode','Dark mode'].map(name=>{const e=themes.add(new Element('BUTTON'));e.setAttribute('role','radio');e.setAttribute('aria-label',name);return e;});
+   const captures=new Map<string,(event:unknown)=>void>();Object.assign(dom.document,{addEventListener:(name:string,fn:(event:unknown)=>void)=>captures.set(name,fn),removeEventListener:(name:string)=>captures.delete(name)});
    Object.assign(dom.context.localStorage,{setItem(){},removeItem(){}});Object.assign(dom.html.dataset,{theme:'violet',colorMode:'light'});dom.document.elementFromPoint=()=>tab;
    const original=new Error('PRIVATE theme',{cause:Error('PRIVATE original cause')}),diagnostic=Error('PRIVATE diagnostic'),lines:string[]=[];let clicks=0,reloads=0;
    const fixture={uiPreferenceMethods:['GET','PUT','PUT'],uiPreferenceResponse:{body:{theme_id:'violet',color_mode:'light',revision:7}}};const settled={GET:1,PUT:2};
-   const browser={evaluate:async(e:string)=>{if(e===accountAppearanceDiagnosticExpression&&fault==='observation')throw diagnostic;return dom.run(e);},reload:async()=>{reloads++;fixture.uiPreferenceMethods.push('GET');},clickAt:async()=>{clicks++;tab.setAttribute('aria-selected','true');panel.hidden=false;},pressKey:async(key:string)=>{const e=key==='ArrowRight'?radios[2]:radios[4];e.focus();e.setAttribute('aria-checked','true');},waitFor:async(e:string,p:(v:unknown)=>boolean)=>{if(e.includes('Violet theme')&&fault!=='none')throw original;assert.ok(p(dom.run(e)));}} as unknown as BrowserHarness;
+   const browser={evaluate:async(e:string)=>{if(e===accountAppearanceDiagnosticExpression&&fault==='observation')throw diagnostic;return dom.run(e);},reload:async()=>{reloads++;fixture.uiPreferenceMethods.push('GET');},clickAt:async(x:number,y:number)=>{clicks++;for(const type of ['mousedown','mouseup','click'])captures.get(type)?.({type,isTrusted:true,clientX:x,clientY:y,target:tab});tab.setAttribute('aria-selected','true');panel.hidden=false;},pressKey:async(key:string)=>{const e=key==='ArrowRight'?radios[2]:radios[4];e.focus();e.setAttribute('aria-checked','true');},waitFor:async(e:string,p:(v:unknown)=>boolean)=>{if(e.includes('Violet theme')&&fault!=='none')throw original;assert.ok(p(dom.run(e)));}} as unknown as BrowserHarness;
    const settle=async(method:'GET'|'PUT',minimum:number)=>{assert.ok(fixture.uiPreferenceMethods.filter(v=>v===method).length>=minimum);settled[method]=minimum;};
    const observed=accountAppearanceDiagnostics(browser,()=>fixture.uiPreferenceMethods,line=>{if(fault==='output')throw diagnostic;lines.push(line);});
    const run=actualCallback(actualEnglish,'run',{browser:observed.browser,fixture,diagnostic:observed,preferenceRequestCount:(method:string)=>fixture.uiPreferenceMethods.filter(v=>v===method).length,waitForPreferenceSettlement:settle,clickVisible,setStoredDisplay});
    let caught:unknown;try{await run();}catch(error){caught=error;}
-   assert.equal(clicks,1);assert.equal(reloads,1);assert.equal(fixture.uiPreferenceMethods.filter(v=>v==='PUT').length,2);
-   if(fault==='none'){assert.equal(caught,undefined);assert.equal(lines.length,0);assert.equal(settled.GET,2);}else if(fault==='theme'){assert.equal(caught,original);const value=diagnosticOutput(lines,'D013-ACCOUNT');assert.equal(value.phase,'after-tab');const last=value.observations.at(-1);assert.equal(last.lang,'en');assert.equal(last.tabs,1);assert.equal(last.selected,true);assert.equal(last.panels,1);assert.equal(last.get,2);assert.equal(last.getSettled,1);}else{assert.ok(caught instanceof AggregateError);assert.equal(caught.cause,original);assert.ok(caught.errors.includes(diagnostic));if(fault==='observation')assert.equal(diagnosticOutput(lines,'D013-ACCOUNT').diagnosticFailed,true);}
+   assert.equal(clicks,1);assert.equal(reloads,1);assert.equal(fixture.uiPreferenceMethods.filter(v=>v==='PUT').length,2);assert.equal(captures.size,0);assert.equal('__uiAccountPointer017' in dom.context,false);
+   if(fault==='none'){assert.equal(caught,undefined);assert.equal(lines.length,0);assert.equal(settled.GET,2);}else if(fault==='theme'){assert.equal(caught,original);const value=diagnosticOutput(lines,'D013-ACCOUNT');assert.equal(value.phase,'after-tab');const last=value.observations.at(-1);assert.equal(last.lang,'en');assert.equal(last.tabs,1);assert.equal(last.selected,true);assert.equal(last.panels,1);assert.equal(last.get,2);assert.equal(last.getSettled,1);assert.equal(value.detailCode,'D017-ACCOUNT');assert.equal(value.pointer.sameTarget,true);assert.equal(value.pointer.events.length,3);assert.ok(value.pointer.events.every((e:{trusted:boolean;eventInside:boolean;hitInside:boolean})=>e.trusted&&e.eventInside&&e.hitInside));}else{assert.ok(caught instanceof AggregateError);assert.equal(caught.cause,original);assert.ok(caught.errors.includes(diagnostic));if(fault==='observation')assert.equal(diagnosticOutput(lines,'D013-ACCOUNT').diagnosticFailed,true);}
  }
 });
 
@@ -258,4 +259,26 @@ test('UI-DRAFT-OUTPUT-012: either evidence write failure stops the next conditio
     assert.ok(failure.original.cause instanceof DraftRestorationFailure);assert.equal(failure.original.cause.primary,value.primary);assert.equal(failure.original.cause.restoration,value.restoration);assert.equal(failure.original.cause.cause,value.primary);assert.deepEqual(failure.original.cleanup,[]);
     if(fault!=='both'){const execution=value.records.get('execution.json');assert.ok(execution&&typeof execution==='object'&&'results' in execution&&Array.isArray(execution.results));assert.deepEqual(execution.results.map(row=>row.status),['FAIL','NOT_REACHED']);}
   }
+});
+
+test('UI-D017-ACCOUNT: actual marked target and one native call retain finite hit diagnostics, identity, primary causes and finally cleanup',async()=>{
+ for(const fault of ['primary','replacement','off-target','untrusted','missing-events','capture-failure','stop-failure','output-failure']){
+  const dom=observerDOM(),tab=dom.button;tab.ownText='Appearance';tab.setAttribute('role','tab');tab.setAttribute('aria-controls','panel');const list=dom.main.add(new Element('DIV'));list.setAttribute('role','tablist');list.add(tab);dom.main.children=dom.main.children.filter(e=>e!==tab);
+  const panel=dom.main.add(new Element('DIV'));panel.id='panel';panel.setAttribute('role','tabpanel');
+  const captures=new Map<string,(e:unknown)=>void>();Object.assign(dom.document,{addEventListener:(n:string,fn:(e:unknown)=>void)=>captures.set(n,fn),removeEventListener:(n:string)=>captures.delete(n)});dom.document.elementFromPoint=()=>tab;
+  const original=Error('PRIVATE original',{cause:Error('PRIVATE cause')}),diagnostic=Error('PRIVATE diagnostic');const lines:string[]=[];let clicks=0,stopFailed=false;
+  const browser={evaluate:async(e:string)=>{if(fault==='capture-failure'&&e===accountAppearancePointerStart(80,22))throw diagnostic;if(fault==='stop-failure'&&e===accountAppearancePointerStop&&!stopFailed){stopFailed=true;throw diagnostic;}return dom.run(e);},waitFor:async(e:string,p:(v:unknown)=>boolean)=>{assert.ok(p(dom.run(e)));},clickAt:async(x:number,y:number)=>{
+    assert.deepEqual([x,y],[80,22]);clicks++;if(fault==='replacement'){tab.ownText='PRIVATE old';const replacement=list.add(new Element('BUTTON','Appearance'));replacement.setAttribute('role','tab');replacement.setAttribute('aria-controls','panel');}
+    if(fault==='off-target')dom.document.elementFromPoint=()=>dom.input;
+    if(fault!=='missing-events')for(const type of ['mousedown','mouseup','click'])captures.get(type)?.({type,isTrusted:fault!=='untrusted',clientX:x,clientY:y,target:fault==='off-target'?dom.input:tab});
+    throw original;
+  }} as unknown as BrowserHarness;
+  const watched=accountAppearanceDiagnostics(browser,()=>['GET','GET','PUT','PUT'],line=>{if(fault==='output-failure')throw diagnostic;lines.push(line);});watched.settled('GET',1);await watched.observe('after-reload');
+  let caught:unknown;try{await clickVisible(watched.browser,'main [role="tablist"] [role="tab"]',/^Appearance$/);}catch(error){caught=error;}finally{await watched.dispose();}
+  assert.equal(clicks,1);assert.equal(captures.size,0);assert.equal('__uiAccountPointer017' in dom.context,false);assert.equal('__uiScenarioTarget' in dom.context,false);
+  if(['capture-failure','stop-failure','output-failure'].includes(fault)){assert.ok(caught instanceof AggregateError);assert.equal(caught.cause,original);assert.ok(caught.errors.includes(diagnostic));}else assert.equal(caught,original);
+  if(fault!=='output-failure'){const value=diagnosticOutput(lines,'D013-ACCOUNT');assert.equal(value.detailCode,'D017-ACCOUNT');
+    if(fault==='capture-failure')assert.equal(value.pointer,null);else{const p=value.pointer;assert.deepEqual(p.planned,[80,22]);assert.equal(p.sameTarget,fault!=='replacement');assert.equal(p.events.length,fault==='missing-events'?0:3);for(const e of p.events){assert.equal(e.trusted,fault!=='untrusted');assert.equal(e.hitInside,fault!=='off-target');assert.equal(e.eventInside,fault!=='off-target');}}
+  }
+ }
 });

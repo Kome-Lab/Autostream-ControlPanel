@@ -1362,16 +1362,18 @@
       },
       {
         "path": "web/tests/ui-browser-account-scenarios.mts",
-        "sha256": "67daa4470ca0b66dccfc8bbdb4aef2860da29a755b4fd0ec6b2320cfeac0afec",
+        "sha256": "87b601e7bf77f9c865f222c17a86eb92a5ba277c08d24aded946482373898aaa",
         "symbols": [
           "accountAppearanceDiagnostics",
+          "accountAppearancePointerStart",
           "count",
           "failed",
           "observe",
+          "point",
           "preferenceRequestCount",
           "waitForPreferenceSettlement"
         ],
-        "physical_lines": 213
+        "physical_lines": 250
       },
       {
         "path": "web/tests/ui-browser-fixture.mts",
@@ -1481,9 +1483,9 @@
       },
       {
         "path": "web/tests/ui-browser-worker-restart-scenarios.mts",
-        "sha256": "d9bedf4fd56b21b9903ff7da9fac16f37ab62da8dc7902222922e02b8886a936",
+        "sha256": "7b991800957247609b470ef645c574eda4cdfd055b50a0746aabbd2411414544",
         "symbols": [],
-        "physical_lines": 339
+        "physical_lines": 355
       },
       {
         "path": "web/tests/ui-foundation-browser.test.mts",
@@ -5585,7 +5587,7 @@
       },
       {
         "path": "web/src/features/streams/stream-preview.tsx",
-        "sha256": "aafedffe258eb6b4a6c1dc30e154d2ae6a3152a9adbed90934ce01dc93165954",
+        "sha256": "5ed99810725f45e26c8decc35c66483c1229a94e8b8c9c5592163ea19425cd89",
         "symbols": [
           "ParticipantAccessibilityList",
           "PreviewStatus",
@@ -5677,7 +5679,7 @@
       },
       {
         "path": "web/src/features/application/updater-settings-panel.tsx",
-        "sha256": "46a6f34cc10d675b4b8fe83563d33754a8db0d4c43220945f5eac15dc37c3a78",
+        "sha256": "e1fd6f9aaf5bf397b90db05a2c869dd8f2af7390cdd0eef44061a54168ea0920",
         "symbols": [
           "UpdaterSettingsPanel",
           "currentFoundationAuthority",

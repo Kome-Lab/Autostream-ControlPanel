@@ -201,3 +201,44 @@ test("UI-DETAIL-001: section navigation does not overwrite an existing create/de
   assert.match(html, /<h2 id=/);
   assert.equal((html.match(/>Action<\/button>/g) || []).length, 1);
 });
+
+async function privateSourceComponent017(path:string,name:string){
+ const url=new URL('../../src/'+path,import.meta.url),source=readFileSync(url,'utf8'),file=ts.createSourceFile(path,source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);
+ const modules=new Map<string,unknown>(),{existsSync}=await import('node:fs');
+ for(const node of file.statements)if(ts.isImportDeclaration(node)&&!node.importClause?.isTypeOnly&&ts.isStringLiteral(node.moduleSpecifier)){
+  const key=node.moduleSpecifier.text;let specifier=key;
+  if(key.startsWith('.')){const base=new URL(key,url);specifier=['.ts','.tsx'].map(s=>base.href+s).find(s=>existsSync(new URL(s)))||base.href;}
+  modules.set(key,await import(specifier));
+ }
+ const compiled=ts.transpileModule(source+'\nexport { '+name+' as Selected017 };',{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX}}).outputText;
+ const output:{Selected017?:ComponentType<Record<string,unknown>>}={};new Function('exports','require',compiled)(output,(key:string)=>modules.get(key)||createRequire(import.meta.url)(key));assert.ok(output.Selected017);return output.Selected017;
+}
+test('UI-BOUNDS-017: actual scoped controls keep complete localized labels and bounded intrinsic sizing through JSX SSR and generated CSS',async t=>{
+ const {AccountView}=await import('../../src/features/account/account-view.tsx'),{EmailPanel}=await import('../../src/features/account/account-security-panels.tsx'),{MetricsView}=await import('../../src/features/metrics/metrics-view.tsx'),{ResourcePage}=await import('../../src/features/resources/resource-page.tsx'),{AuditLogsView}=await import('../../src/features/audit/audit-logs-view.tsx');
+ const {SystemUpdatesCard}=await import('../../src/features/application/system-updates-card.tsx'),{createAccountActionController}=await import('../../src/features/account/account-action-policy.ts');
+ const StreamSelect=await privateSourceComponent017('features/archive/archive-view.tsx','StreamSelect'),ArchiveAction=await privateSourceComponent017('features/archive/archive-view.tsx','ArchiveActionConfirmation');
+ const long='SyntheticName'.repeat(40),authority={session:'authenticated',freshness:'fresh',revision:'synthetic'} as const;
+ const accountController=createAccountActionController({readAuthority:()=>authority});
+ const bounded=(element:Element|null)=>{assert.ok(element);const classes=element.getAttribute('class')||'';assert.match(classes,/min-w-0/);assert.match(classes,/max-w-full/);return classes;};
+ const wrapped=(element:Element|null)=>{const classes=bounded(element);assert.match(classes,/whitespace-normal/);assert.match(classes,/h-auto/);assert.doesNotMatch(classes,/overflow-hidden|truncate/);};
+ const archiveSource=readFileSync(new URL('../../src/features/archive/archive-view.tsx',import.meta.url),'utf8'),archiveAST=ts.createSourceFile('archive.tsx',archiveSource,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);let shareClass='';
+ const findShare=(n:ts.Node)=>{if(ts.isJsxSelfClosingElement(n)&&n.tagName.getText(archiveAST)==='ArchiveActionConfirmation'&&n.getText(archiveAST).includes('baseIntent("ARC-03")')){const a=n.attributes.properties.find(a=>ts.isJsxAttribute(a)&&a.name.getText(archiveAST)==='className');assert.ok(a&&ts.isJsxAttribute(a)&&a.initializer&&ts.isStringLiteral(a.initializer));shareClass=a.initializer.text;}ts.forEachChild(n,findShare);};findShare(archiveAST);assert.ok(shareClass);
+ for(const locale of ['ja','en'] as const){
+  const account=renderUI(createElement(AccountView),locale,'/admin/account/');assert.match(account,/xl:grid-cols-\[minmax\(0,0.75fr\)_minmax\(0,1.25fr\)\]/);assert.doesNotMatch(account,/minmax\(300px|(?:minmax\(320px)/);
+  const email=actualMarkupDOM(renderUI(createElement(EmailPanel,{currentEmail:'synthetic@example.test',links:[],providers:[{id:'synthetic-provider',provider_type:'oidc',name:long,enabled:true}],loading:false,setNotice(){},onUpdated(){},onDeleted(){},actionController:accountController,authority,refreshAuthority:async()=>authority,accountResourceID:'synthetic-account'}),locale));
+  bounded(email.document.getElementById('account-email'));for(const button of email.document.querySelectorAll('button'))wrapped(button);assert.ok(email.main.textContent.includes(long),'full provider label retained');
+  const {isValidElement,Children}=await import('react');let fullOption=false;
+  const InspectSelect=()=>{const element=Reflect.apply(StreamSelect,undefined,[{streams:[{id:'synthetic-stream',name:long}],value:'synthetic-stream',onChange(){assert.fail('SSR must not change selection');}}]) as import('react').ReactElement;
+    const inspect=(node:import('react').ReactNode)=>{if(node===long)fullOption=true;if(isValidElement<{children?:import('react').ReactNode}>(node))Children.forEach(node.props.children,inspect);};inspect(element);return element;};
+  const select=actualMarkupDOM(renderUI(createElement(InspectSelect),locale));wrapped(select.document.querySelector('[role=combobox]'));assert.equal(fullOption,true,'real SelectItem JSX retains the full name; Radix portal options are absent from SSR');
+  const action=actualMarkupDOM(renderUI(createElement(ArchiveAction,{controller:{open:()=>({kind:'blocked',reason:'permission-denied'})},intent:{id:'ARC-03',streamId:'s',artifactId:'a',artifactLabel:'Synthetic'},label:locale==='ja'?'共有リンク作成':'Create share link',className:shareClass,submit(){assert.fail('render cannot submit');},onResult(){}}),locale));wrapped(action.document.querySelector('button'));assert.equal(action.document.querySelectorAll('button').length,1);
+  const metrics=actualMarkupDOM(renderUI(createElement(MetricsView),locale,'/admin/metrics/'));bounded(metrics.document.getElementById('metrics-range'));bounded(metrics.document.getElementById('metrics-range')!.parentElement);assert.doesNotMatch(metrics.document.getElementById('metrics-range')!.parentElement!.getAttribute('class')||'',/shrink-0/);
+  const resources=actualMarkupDOM(renderUI(createElement(ResourcePage,{pageId:'discord'}),locale,'/admin/discord/'));for(const tab of resources.document.querySelectorAll('[role=tab]'))wrapped(tab);assert.match(resources.document.querySelector('[role=tablist]')?.getAttribute('class')||'',/h-auto/);
+  const audit=actualMarkupDOM(renderUI(createElement(AuditLogsView),locale,'/admin/audit-logs/'));for(const tab of audit.document.querySelectorAll('[role=tab]'))wrapped(tab);assert.match(audit.document.querySelector('form')?.getAttribute('class')||'',/sm:grid-cols-2/);assert.doesNotMatch(audit.document.querySelector('form')?.getAttribute('class')||'',/220px|180px/);
+  const system=actualMarkupDOM(renderUI(createElement(SystemUpdatesCard,{canRead:true,canExecute:true,canManageUpdaterSecrets:false,updaters:[{updater_id:'synthetic-host',name:long,status:'online',online:true,version:'1.0.0'}],hosts:[],targets:[],jobs:[],jobsByTarget:new Map(),isLoading:false,isError:false,error:null,isCreating:false,batchProgress:null,onRefresh(){},batchAction:null,renderTargetAction:()=>null,renderCancelAction:()=>null}),locale));
+  const settings=system.document.querySelector('button[aria-label]');wrapped(settings);assert.ok(settings?.getAttribute('aria-label')?.includes(long));assert.match(settings?.parentElement?.getAttribute('class')||'',/flex-wrap/);
+ }
+ const from=fileURLToPath(new URL('../../src/app/globals.css',import.meta.url)),generated=await postcss([tailwind({base:fileURLToPath(new URL('../../',import.meta.url)),optimize:false})]).process(readFileSync(from,'utf8'),{from});
+ for(const [selector,property,value] of [['.min-w-0','min-width','0px'],['.max-w-full','max-width','100%'],['.h-auto','height','auto'],['.whitespace-normal','white-space','normal'],['.flex-wrap','flex-wrap','wrap']]){let found=false;generated.root.walkRules(rule=>{if(rule.selector===selector)rule.walkDecls(property,d=>{if(d.value.replace(/\s+/g,'')===value.replace(/\s+/g,''))found=true;});});assert.equal(found,true,selector+' actual declaration');}
+ t.diagnostic('Actual JSX/SSR + generated CSS; 390/1920/CSS200 geometry and all 52 official reachability cases still require browser observation. No shortened fixture or hidden overflow introduced.');
+});

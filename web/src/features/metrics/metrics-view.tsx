@@ -147,10 +147,10 @@ export function MetricsView() {
             </SelectContent>
           </Select>
         </div>
-        <div className="w-48 shrink-0 space-y-2">
+        <div className="w-48 min-w-0 max-w-full space-y-2">
           <label className="text-sm font-medium" htmlFor="metrics-range">{ja ? "表示範囲" : "Time range"}</label>
           <Select value={timeRange} onValueChange={setTimeRange}>
-            <SelectTrigger id="metrics-range" className="w-full">
+            <SelectTrigger id="metrics-range" className="w-full min-w-0 max-w-full">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>

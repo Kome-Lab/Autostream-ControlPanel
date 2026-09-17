@@ -29,9 +29,9 @@ export function ResourcePage({ pageId }: { pageId: ResourcePageId }) {
         <ResourcePanel resource={page.resources[0]} currentUser={currentUser.data} />
       ) : (
         <Tabs value={tab} onValueChange={(value) => draftExit.request(() => setTab(value))} className="space-y-4">
-          <TabsList className="max-w-full flex-wrap justify-start">
+          <TabsList className="h-auto min-w-0 max-w-full flex-wrap justify-start">
             {page.resources.map((resource) => (
-              <TabsTrigger key={resource.path} value={resource.path}>
+              <TabsTrigger key={resource.path} value={resource.path} className="h-auto min-w-0 max-w-full whitespace-normal [overflow-wrap:anywhere]">
                 {resourceCopy(resource, locale).title}
               </TabsTrigger>
             ))}

@@ -168,3 +168,23 @@ test('UI-STREAM-PREVIEW-009: actual public-label guard accepts 1/128 and rejects
     } finally {fixture.release();}
   }
 });
+
+test('UI-STREAM-BOUNDS-017: real DialogContent, Events and Preview keep available-height scrolling and the same close owner',async t=>{
+ const {renderUI}=await import('./render-ui.mts'),{StreamPreview}=await import('../../src/features/streams/stream-preview.tsx'),{Button}=await import('../../src/components/ui/button.tsx'),{default:Link}=await import('next/link');
+ const {default:postcss}=await import('postcss'),{default:tailwind}=await import('@tailwindcss/postcss'),{fileURLToPath}=await import('node:url'),{createRequire}=await import('node:module');
+ const text=readFileSync(new URL('../../src/features/streams/stream-details-dialog.tsx',import.meta.url),'utf8'),file=ts.createSourceFile('detail.tsx',text,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);let classes='',events:ts.JsxElement|undefined;
+ const visit=(n:ts.Node)=>{if(ts.isJsxElement(n)&&n.openingElement.tagName.getText(file)==='DialogContent'){const a=n.openingElement.attributes.properties.find(a=>ts.isJsxAttribute(a)&&a.name.getText(file)==='className');assert.ok(a&&ts.isJsxAttribute(a)&&a.initializer&&ts.isStringLiteral(a.initializer));classes=a.initializer.text;}
+  if(ts.isJsxElement(n)&&n.openingElement.tagName.getText(file)==='Button'&&n.getText(file).includes('/admin/audit-logs/'))events=n;ts.forEachChild(n,visit);};visit(file);assert.ok(events);assert.match(classes,/max-h-\[calc\(100%-2rem\)\]/);assert.match(classes,/overflow-y-auto/);assert.doesNotMatch(classes,/dvh|overflow-hidden/);
+ const code=ts.transpileModule('exports.Events=()=>'+events.getText(file),{compilerOptions:{jsx:ts.JsxEmit.ReactJSX,module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
+ const controller=createStreamActionController({getPermissions:()=>({kind:'ready',permissions:['*']}),getState:()=>({kind:'ready',freshness:'fresh',fingerprint:'same'}),mutate:async()=>{throw Error('SSR cannot issue Preview');}});
+ for(const locale of ['ja','en'] as const)for(const name of ['Short','SyntheticLongName'.repeat(40)]){
+  const current={...stream,name,id:'synthetic-id-'+name,status:'live'},exports:{Events?:()=>import('react').ReactElement}={};new Function('exports','require','Button','Link','stream','ja',code)(exports,createRequire(import.meta.url),Button,Link,current,locale==='ja');assert.ok(exports.Events);
+  const html=renderUI(createElement(exports.Events),locale);assert.match(html,/h-auto/);assert.match(html,/min-w-0/);assert.match(html,/max-w-full/);assert.match(html,/whitespace-normal/);assert.ok(html.includes(encodeURIComponent(current.id)));assert.match(html,locale==='ja'?/この配信枠の操作履歴を確認/:/View stream audit history/);
+  const preview=renderUI(createElement(StreamPreview,{stream:current,controller}),locale);assert.match(preview,/grid-cols-\[minmax\(0,1fr\)\]/);assert.match(preview,/h-auto min-w-0 max-w-full whitespace-normal/);assert.match(preview,/<video[^>]*controls=""/);
+ }
+ const from=fileURLToPath(new URL('../../src/app/globals.css',import.meta.url)),css=await postcss([tailwind({base:fileURLToPath(new URL('../../',import.meta.url)),optimize:false})]).process(readFileSync(from,'utf8'),{from});let cap='';css.root.walkDecls('max-height',d=>{if(d.parent?.type==='rule'&&(d.parent as import('postcss').Rule).selector.includes('100'))if(d.value==='calc(100% - 2rem)')cap=d.value;});assert.equal(cap,'calc(100% - 2rem)');
+ for(const width of [390,1920])for(const zoom of [1,2])for(const content of [200,2200]){const available=900/zoom,height=Math.min(content,available-32),top=(available-height)/2,scrollExtent=Math.max(0,content-height);assert.ok(top*zoom>=16);assert.ok((top+height)*zoom<=900-16);assert.ok(width/zoom>32);assert.ok(content-scrollExtent<=height);}
+ assert.ok((900*0.9)*2>900,'old dvh cap fails the same CSS zoom geometry model');
+ const shared=readFileSync(new URL('../../src/components/ui/dialog.tsx',import.meta.url),'utf8');assert.match(shared,/showCloseButton = true/);assert.match(shared,/data-slot="dialog-close"/);let focuses=0,prevents=0;actualJSXCallback(text,'DialogContent','onCloseAutoFocus',{returnFocus(){focuses++;}})({preventDefault(){prevents++;}});assert.deepEqual([focuses,prevents],[1,1]);
+ t.diagnostic('Actual JSX/SSR and emitted percentage cap, controlled geometry model only; no native zoom, real scroll reachability, Preview playback or UI acceptance claim.');
+});

@@ -54,7 +54,7 @@ export function StreamDetailsDialog({ returnFocus, stream, actionController, onA
   ];
   return (
     <Dialog open onOpenChange={onOpenChange}>
-      <DialogContent onCloseAutoFocus={(event) => { event.preventDefault(); returnFocus(); }} className="max-h-[90dvh] overflow-y-auto sm:max-w-5xl" data-screen-family="stream-detail">
+      <DialogContent onCloseAutoFocus={(event) => { event.preventDefault(); returnFocus(); }} className="max-h-[calc(100%-2rem)] overflow-y-auto sm:max-w-5xl" data-screen-family="stream-detail">
         <DialogHeader>
           <DialogTitle className="text-xl [overflow-wrap:anywhere]">{stream.name}</DialogTitle>
           <DialogDescription>{ja ? "開始準備、担当、出力、現在のRunを順に確認します。" : "Review readiness, assignments, outputs and the current run."}</DialogDescription>
@@ -102,7 +102,7 @@ export function StreamDetailsDialog({ returnFocus, stream, actionController, onA
         <DetailSection id="stream-runtime" title={sections[4].label}><StreamControlPlatformPanel stream={stream} /></DetailSection>
         {isPreviewableStreamStatus(stream.status) ? <DetailSection id="stream-preview" title="Preview"><StreamPreview stream={stream} controller={actionController} /></DetailSection> : null}
         <DetailSection id="stream-events" title={ja ? "操作履歴" : "Events"}>
-          <Button asChild variant="outline" size="sm"><Link href={`/admin/audit-logs/?q=${encodeURIComponent(stream.id)}`}>{ja ? "この配信枠の操作履歴を確認" : "View stream audit history"}</Link></Button>
+          <Button asChild variant="outline" size="sm" className="h-auto min-w-0 max-w-full whitespace-normal [overflow-wrap:anywhere]"><Link href={`/admin/audit-logs/?q=${encodeURIComponent(stream.id)}`}>{ja ? "この配信枠の操作履歴を確認" : "View stream audit history"}</Link></Button>
         </DetailSection>
       </DialogContent>
     </Dialog>

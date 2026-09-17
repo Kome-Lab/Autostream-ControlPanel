@@ -223,7 +223,7 @@ export function UpdaterSettingsPanel({ updater, availableTargets, jobs, canEdit,
   return (
     <DraftExitContext.Provider value={draftExit}><Dialog open={open} onOpenChange={setDialogOpen}>
       <DialogTrigger asChild>
-        <Button variant="outline" size="sm" aria-label={uiText("{0} の設定", updater.name || updater.updater_id)}>
+        <Button variant="outline" size="sm" className="h-auto min-w-0 max-w-full whitespace-normal [overflow-wrap:anywhere]" aria-label={uiText("{0} の設定", updater.name || updater.updater_id)}>
           <Settings2 className="size-4" />
           {uiText("設定")}</Button>
       </DialogTrigger>

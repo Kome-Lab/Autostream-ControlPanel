@@ -254,3 +254,24 @@ test("UI-OBSERVER-008: keyboard trace is condition-labelled, bounded and exclude
   assert.ok(Buffer.byteLength(JSON.stringify(result))<=4096);assert.doesNotMatch(JSON.stringify(result),/SECRET_REQUEST_VALUE/);
   assert.ok(result.entries.every(entry=>entry.id==="OTHER"));
 });
+
+test('UI-TABPANEL-017: emitted focus observer accepts only a mutually linked active tall panel with visible focus edges',()=>{
+ for(const fault of ['none','button','div','body','inactive','hidden','inert','wrong-role','wrong-slot','wrong-owner','wrong-reference','duplicate-panel','duplicate-tab','disabled-tab','unselected','offscreen','covered','clipped','tiny-band','indicator']){
+  const dom=observerDOM(),root=dom.main.add(new Element('DIV'));root.setAttribute('data-slot','tabs');
+  const tab=root.add(new Element('BUTTON','Profile'));tab.id='profile-tab';tab.setAttribute('role','tab');tab.setAttribute('aria-selected','true');tab.setAttribute('aria-controls','profile-panel');
+  const panel=root.add(new Element(fault==='button'?'BUTTON':'DIV'));panel.id='profile-panel';panel.setAttribute('role','tabpanel');panel.setAttribute('data-slot','tabs-content');panel.setAttribute('data-state','active');panel.setAttribute('aria-labelledby',tab.id);panel.setAttribute('tabindex','0');
+  panel.rect={left:10,right:950,top:100,bottom:1550,width:940,height:1450};dom.document.activeElement=panel;dom.document.elementFromPoint=()=>panel;
+  if(fault==='button'||fault==='div')panel.removeAttribute('role');if(fault==='body')dom.document.activeElement=dom.body;
+  if(fault==='inactive')panel.setAttribute('data-state','inactive');if(fault==='hidden')panel.hidden=true;if(fault==='inert')root.setAttribute('inert','');
+  if(fault==='wrong-role')panel.setAttribute('role','region');if(fault==='wrong-slot')panel.setAttribute('data-slot','other');
+  if(fault==='wrong-owner'){root.children=root.children.filter(e=>e!==tab);dom.main.add(tab);}
+  if(fault==='wrong-reference')tab.setAttribute('aria-controls','other');
+  if(fault==='duplicate-panel')dom.main.add(new Element('DIV')).id=panel.id;if(fault==='duplicate-tab')dom.main.add(new Element('BUTTON')).id=tab.id;
+  if(fault==='disabled-tab')tab.disabled=true;if(fault==='unselected')tab.setAttribute('aria-selected','false');
+  if(fault==='offscreen'){panel.rect.left=-10;panel.rect.right=930;}if(fault==='covered')dom.document.elementFromPoint=()=>dom.button;
+  if(fault==='clipped'){root.style.overflowX='hidden';root.rect.right=500;}if(fault==='tiny-band'){panel.rect.top=899;panel.rect.bottom=2349;}
+  if(fault==='indicator')panel.style.outlineStyle='none';
+  const value=dom.run<Parameters<typeof assertFocus>[0]>(focusExpression);
+  if(fault==='none'){assertFocus(value);assert.equal(value.rect[3],1450);}else assert.throws(()=>assertFocus(value),/hidden|offscreen|indicator/,fault);
+ }
+});

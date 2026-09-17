@@ -208,10 +208,10 @@ function StreamSelect({ streams, value, onChange }: { streams: Stream[]; value: 
   const uiText = useUICopy();
   const { locale } = useI18n();
   return (
-    <div className="max-w-xl">
+    <div className="w-full min-w-0 max-w-xl">
       <Select value={value} onValueChange={onChange}>
-        <SelectTrigger aria-label={locale === "ja" ? "成果物のある配信枠" : "Stream with completed artifacts"}>
-          <SelectValue />
+        <SelectTrigger className="w-full min-w-0 max-w-full whitespace-normal data-[size=default]:h-auto *:data-[slot=select-value]:line-clamp-none" aria-label={locale === "ja" ? "成果物のある配信枠" : "Stream with completed artifacts"}>
+          <SelectValue className="min-w-0 whitespace-normal text-left [overflow-wrap:anywhere]" />
         </SelectTrigger>
         <SelectContent>
           {streams.map((stream) => (
@@ -432,6 +432,7 @@ function ArchiveArtifactRow({ streamID, artifact, timezone, canDownload, canModi
             controller={actionController}
             intent={baseIntent("ARC-03")}
             label={uiText("共有リンク作成")}
+            className="h-auto min-w-0 max-w-full whitespace-normal [overflow-wrap:anywhere]"
             icon={<Share2 className="size-4" />}
             disabled={!shareHoursReady}
             submit={(opened) => actionController.submit(opened, { confirmed: true }, async () => {
@@ -510,6 +511,7 @@ function ArchiveActionConfirmation({
   label,
   icon,
   variant = "outline",
+  className,
   disabled = false,
   submit,
   onResult,
@@ -519,6 +521,7 @@ function ArchiveActionConfirmation({
   label: string;
   icon?: ReactNode;
   variant?: "outline" | "destructive";
+  className?: string;
   disabled?: boolean;
   submit: (opened: Extract<ArchiveOpenResult, { kind: "allowed" }>) => Promise<ArchiveActionResult>;
   onResult: (result: ArchiveActionResult) => void | Promise<void>;
@@ -558,7 +561,7 @@ function ArchiveActionConfirmation({
           state={state}
           translate={t}
           trigger={(confirmationProps) => (
-            <Button type="button" size="sm" variant={variant} {...availabilityProps} disabled={disabled || availabilityProps.disabled || confirmationProps.disabled}>
+            <Button type="button" size="sm" variant={variant} className={className} {...availabilityProps} disabled={disabled || availabilityProps.disabled || confirmationProps.disabled}>
               {icon}{label}
             </Button>
           )}

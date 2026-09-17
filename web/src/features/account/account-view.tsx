@@ -72,7 +72,7 @@ export function AccountView() {
       ) : null}
 
       <Card>
-        <CardContent className="grid gap-5 md:grid-cols-[minmax(0,1fr)_minmax(320px,0.7fr)] md:items-center">
+        <CardContent className="grid gap-5 md:grid-cols-[minmax(0,1fr)_minmax(0,0.7fr)] md:items-center">
           <div className="flex min-w-0 items-center gap-4">
             <AccountAvatar name={username} src={user?.avatar_url} alt={uiText("{0}のアカウントアイコン", username)} className="size-20" sizes="80px" />
             <div className="min-w-0">
@@ -104,7 +104,7 @@ export function AccountView() {
         </TabsList>
         <TabsContent value="profile">
           <DetailSection title={ja ? "プロフィールとログイン連携" : "Profile and connected logins"}>
-          <div className="grid gap-4 xl:grid-cols-[minmax(300px,0.75fr)_minmax(0,1.25fr)]">
+          <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,0.75fr)_minmax(0,1.25fr)] [&>*]:min-w-0">
             <AvatarPanel
               username={username}
               currentAvatarURL={user?.avatar_url}
