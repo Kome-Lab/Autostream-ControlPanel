@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import { longIdentifier, longText } from "./fixture-inputs.mts";
-import { exerciseActivation, type ActivationTarget } from "./keyboard-activation.mts";
+import { exerciseActivation, exerciseSurfaceActivation, surfaceActivation, type ActivationTarget } from "./keyboard-activation.mts";
 import type { BrowserHarness } from "../helpers/browser-harness.mts";
 import { bundle9SyntheticMFASecret } from "../helpers/bundle9-browser-fixtures.mts";
 import type { Condition } from "./matrix.mts";
 import { readFileSync } from "node:fs";
 import { renderedDOM } from "./render-state.mts";
 import { assertStatusOnly, type RequestEvidence } from "./state-drivers.mts";
+import { assertMediaIdentity, assertMediaFixture, exerciseUnavailableMedia, mediaExpectation } from "./media-keyboard-contract.mts";
+import type { NativeFocusObservation } from "../helpers/browser-ua-focus.mts";
 
 export type ControlObservation = { tag: string; role?: string | null; name: string; labelled: boolean; disabled?: boolean; value?: string; left: number; right: number; width: number; height: number; clipped: boolean };
 export type StatusPageObservation = { url: string; mainCount: number; painted: boolean; rect: number[]; controlCandidates: number; overlays: number; headings: { text: string; rect: number[] }[]; messages: { role: string; text: string; rect: number[] }[] };
@@ -92,9 +94,10 @@ export const focusExpression = `(() => {${renderedDOM}
   const indicator=outline||!matchMedia('(forced-colors: active)').matches&&e.matches(':focus-visible')&&ring!==''&&ring!=='none'&&ring!=='0 0 #0000'&&/[1-9][0-9]*(?:\\.[0-9]+)?px/.test(ring);
   const plan=globalThis.__uiKeyboardPlan;
   const datetime=e.tagName==='INPUT'&&e.type==='datetime-local',host=plan?.datetimes.findIndex(entry=>entry.element===e)??-1;
+  const mediaUnchanged=!plan||plan.medias.every(entry=>entry.element.isConnected&&uiAX(entry.element)&&entry.element.paused===entry.paused&&entry.element.currentTime===entry.time&&entry.element.volume===entry.volume&&entry.element.muted===entry.muted&&uiRoot()===plan.root);
   const datetimeUnchanged=!plan||plan.datetimes.every(entry=>entry.element.isConnected&&entry.element.type==='datetime-local'&&uiAX(entry.element)&&entry.element.value===entry.value&&uiRoot()===plan.root);
   const tallPanelVisible=()=>{
-    if(e.getAttribute('role')!=='tabpanel'||e.getAttribute('data-slot')!=='tabs-content'||e.getAttribute('data-state')!=='active'||e.tabIndex<0||!uiAX(e)||!indicator||r.height<=innerHeight)return false;
+    if(e.getAttribute('role')!=='tabpanel'||e.getAttribute('data-slot')!=='tabs-content'||e.getAttribute('data-state')!=='active'||e.tabIndex<0||!uiAX(e)||!indicator)return false;
     const owner=e.closest('[data-slot=tabs]'),label=e.getAttribute('aria-labelledby');
     const unique=id=>id&&[...document.querySelectorAll('[id]')].filter(n=>n.id===id).length===1;
     if(!owner||!unique(e.id)||!unique(label))return false;
@@ -107,21 +110,28 @@ export const focusExpression = `(() => {${renderedDOM}
       if(/hidden|clip|scroll|auto/.test(ps.overflowX)){left=Math.max(left,pr.left);right=Math.min(right,pr.right);}
       if(/hidden|clip|scroll|auto/.test(ps.overflowY)){top=Math.max(top,pr.top);bottom=Math.min(bottom,pr.bottom);}
     }
+    const shell=document.querySelector('main')?.parentElement;
+    for(const header of [...(shell?.children||[])].filter(n=>n.tagName==='HEADER'&&uiAX(n))){
+      const hs=getComputedStyle(header),hr=header.getBoundingClientRect();
+      if(['sticky','fixed'].includes(hs.position)&&hr.top<=top&&hr.bottom>top&&hr.left<r.right&&hr.right>r.left)top=hr.bottom;
+    }
+    if(r.height+2*edge<=bottom-top)return false;
     if(![r.left,r.right,r.top,r.bottom,r.width,r.height].every(Number.isFinite)||r.left-edge<left||r.right+edge>right||r.top-edge<top||Math.min(r.bottom,bottom)-r.top<48)return false;
     const y=Math.min(r.bottom,bottom)-edge-1;
     return [[r.left+1,r.top+1],[r.right-1,r.top+1],[(r.left+r.right)/2,r.top+1],[r.left+1,y],[r.right-1,y]].every(([x,y])=>{const hit=document.elementFromPoint(x,y);return hit&&(hit===e||e.contains(hit));});
   };
   return {id:uiIdentity(e),visible:uiAX(e)&&e!==document.body&&(r.left>=-1&&r.right<=innerWidth+1&&r.top>=-1&&r.bottom<=innerHeight+1||tallPanelVisible()),
     inside:!dialog||dialog.contains(e),indicator,boundary:e===document.body||e===document.documentElement,native:e.tagName==='VIDEO'||e.tagName==='AUDIO',
-    datetime,datetimeHost:host,datetimeUnchanged,rect:[r.left,r.top,r.width,r.height],required:plan?plan.targets.indexOf(e):-1,modal:!!dialog};
+    datetime,datetimeHost:host,datetimeUnchanged,mediaUnchanged,rect:[r.left,r.top,r.width,r.height],required:plan?plan.targets.indexOf(e):-1,modal:!!dialog};
 })()`;
-export type FocusObservation = { id: string; visible: boolean; inside: boolean; indicator: boolean; boundary: boolean; native: boolean; rect: number[]; required: number; modal: boolean; datetime?: boolean; datetimeHost?: number; datetimeUnchanged?: boolean };
+export type FocusObservation = { id: string; visible: boolean; inside: boolean; indicator: boolean; boundary: boolean; native: boolean; rect: number[]; required: number; modal: boolean; datetime?: boolean; datetimeHost?: number; datetimeUnchanged?: boolean; mediaUnchanged?: boolean; mediaNegativeProven?:boolean; ua?: NativeFocusReading };
 export function assertFocus(value: FocusObservation, previous?: string) {
   assert.ok(value.visible, "keyboard focus is hidden, inert, body or offscreen");
   assert.ok(value.inside, "keyboard focus escaped the active dialog");
   assert.notEqual(value.id, previous, "Tab must move focus to a different element");
   assert.equal(value.indicator, true, "keyboard focus indicator absent");
 }
+export type NativeFocusReading = {document:number;host:number;node:number;kind:"datetime"|"media";relation:"host"|"ua-descendant";role:string;stable:true;focusedAncestors:number;indicator:boolean;visible:boolean;uaFocusable?:number;mediaState?:string;disabled?:boolean} & Partial<Pick<NativeFocusObservation,"complete"|"focusable"|"focusables"|"media">>;
 type KeyboardTarget = { selector: string; name?: string };
 type KeyboardContract = { required: KeyboardTarget[]; activation: "section" | "disclosure" | "none"; activationTarget?: ActivationTarget; native?: string };
 const keyboardInventory: { surfaces: { id: string; keyboard: KeyboardContract }[] } = JSON.parse(readFileSync(new URL('../fixtures/ui-regression/surfaces.json', import.meta.url), 'utf8'));
@@ -136,34 +146,77 @@ export function prepareKeyboardExpression(contract: KeyboardContract) {
     const name=e=>e.getAttribute('aria-label')||e.textContent?.trim()||'';
     const targets=contract.required.map(spec=>{const candidates=[...document.querySelectorAll(spec.selector)].filter(e=>uiAX(e)&&!e.disabled&&(!spec.name||new RegExp(spec.name).test(name(e))));if(candidates.length!==1)throw Error('required keyboard target missing, disabled or ambiguous');return candidates[0];});
     const modal=uiDialogs().at(-1)||null;
-    const order=modal?uiControls(modal).filter(e=>!e.disabled&&e.tabIndex>=0):[];
+    const medias=[...root.querySelectorAll('video[controls],audio[controls]')].filter(uiAX).map(element=>({element,paused:element.paused,time:element.currentTime,volume:element.volume,muted:element.muted}));
+    const ordinaryOrder=modal?uiControls(modal).filter(e=>!e.disabled&&e.tabIndex>=0):[];
+    const order=modal&&medias.length?[...ordinaryOrder,...medias.map(v=>v.element)].sort((a,b)=>a.compareDocumentPosition(b)&2?1:-1):ordinaryOrder;
     if(modal&&(!order.length||targets.some(e=>!modal.contains(e))))throw Error('modal keyboard inventory missing');
     const datetimes=uiControls(root).filter(e=>e.tagName==='INPUT'&&e.type==='datetime-local'&&!e.disabled&&e.tabIndex>=0).map(element=>({element,value:element.value}));
-    globalThis.__uiKeyboardPlan={targets,order,modal,root,datetimes};return {required:targets.length,modal:!!modal,order:order.map(uiIdentity),native:!!(contract.native&&document.querySelector(contract.native))};
+    globalThis.__uiKeyboardPlan={targets,order,modal,root,datetimes,medias};return {required:targets.length,modal:!!modal,order:order.map(uiIdentity),native:!!(contract.native&&document.querySelector(contract.native))};
   })()`;
 }
-type KeyTrace = { direction: "forward" | "backward"; stage: "seek" | "path" | "reverse" | "boundary"; focus: FocusObservation };
+type KeyTrace = { direction: "forward" | "backward"; stage: "seek" | "path" | "reverse" | "boundary" | "restore"; focus: FocusObservation };
 export function safeKeyboardTrace(condition: Condition, trace: KeyTrace[]) {
   assert.match(condition.id, /^[A-Za-z0-9-]+$/);
+  const bounded=(value:unknown,max:number)=>typeof value==="number"&&Number.isSafeInteger(value)&&value>=0&&value<=max?value:null;
   const entries = trace.map(({direction,stage,focus}) => ({ direction, stage,
     id: /^(?:BODY|HTML|(?:\/[A-Z]+:[0-9]+){1,16})$/.test(focus.id) ? focus.id.slice(0,160) : "OTHER",
-    visible:!!focus.visible, inside:!!focus.inside, type:focus.datetime?"datetime-local":"other", valueUnchanged:focus.datetimeUnchanged===true, rect:focus.rect.slice(0,4).map(v=>Number.isFinite(v)?Math.round(v):null) }));
-  const value = { condition: condition.id, totalSteps: trace.length, entries };
-  while(Buffer.byteLength(JSON.stringify(value))>4096&&entries.length)entries.shift();
-  assert.ok(Buffer.byteLength(JSON.stringify(value))<=4096);return value;
+    visible:!!focus.visible, inside:!!focus.inside, type:focus.datetime?"datetime-local":"other", valueUnchanged:focus.datetimeUnchanged===true, ua:focus.ua?{document:bounded(focus.ua.document,128),host:bounded(focus.ua.host,128),node:bounded(focus.ua.node,128),kind:["datetime","media"].includes(focus.ua.kind)?focus.ua.kind:"other",relation:["host","ua-descendant"].includes(focus.ua.relation)?focus.ua.relation:"other",stable:focus.ua.stable===true,uaFocusable:bounded(focus.ua.uaFocusable,8192),mediaState:["not-media","empty","loading","loaded","error"].includes(focus.ua.mediaState||"")?focus.ua.mediaState:"other"}:undefined, rect:focus.rect.slice(0,4).map(v=>Number.isFinite(v)?Math.round(v):null) }));
+  // Keep the complete bounded UA order even when the detailed tail is trimmed.
+  const uaPaths: {document:number;host:number;kind:string;forward:number[];backward:number[];restored:number[];descendant:boolean;visible:boolean;stable:boolean;indicator:boolean;unchanged:boolean;overflow:boolean;media?:{state:string;complete:boolean;disabled:boolean;negativeKeys:boolean;focusables:{node:number|null;relation:string;disabled:boolean}[]}}[]=[];
+  let uaPathOverflow=false;
+  for(const {direction,stage,focus}of trace){const ua=focus.ua;if(!ua||![ua.document,ua.host,ua.node].every(n=>bounded(n,128)!==null&&n>0)||!["datetime","media"].includes(ua.kind))continue;
+    let path=uaPaths.find(p=>p.document===ua.document&&p.host===ua.host);
+    if(!path){if(uaPaths.length===8){uaPathOverflow=true;continue;}path={document:ua.document,host:ua.host,kind:ua.kind,forward:[],backward:[],restored:[],descendant:false,visible:true,stable:true,indicator:true,unchanged:true,overflow:false};uaPaths.push(path);}
+    const nodes=stage==="restore"?path.restored:path[direction];if(nodes.length<16)nodes.push(ua.node);else path.overflow=true;
+    path.descendant ||=ua.relation==="ua-descendant";path.visible&&=ua.visible&&focus.visible;path.stable&&=ua.stable===true;path.indicator&&=focus.indicator;path.unchanged&&=ua.kind==="datetime"?focus.datetimeUnchanged===true:focus.mediaUnchanged===true;
+    if(ua.kind==="media")path.media={state:["empty","loaded","error","loading"].includes(ua.mediaState||"")?ua.mediaState!:"other",complete:ua.complete===true,disabled:ua.disabled===true,negativeKeys:!!(path.media?.negativeKeys||focus.mediaNegativeProven),focusables:(ua.focusables||[]).slice(0,32).map(n=>({node:bounded(n.node,128),relation:["host","ua-descendant"].includes(n.relation)?n.relation:"other",disabled:n.disabled===true}))};
+  }
+  const value = { condition: condition.id, totalSteps: trace.length, uaPaths, uaPathOverflow, entries };
+  const outputBytes=()=>Buffer.byteLength(JSON.stringify(value,null,2)+"\n");
+  while(outputBytes()>4096&&entries.length)entries.shift();
+  assert.ok(outputBytes()<=4096,"actual serialized keyboard trace exceeds output bound");return value;
 }
-export async function exerciseAccessibility(browser: BrowserHarness, condition: Condition, saveTrace: (value: unknown) => void = () => {}) {
+export async function exerciseKeyboardPath(browser: BrowserHarness, condition: Condition, saveTrace: (value: unknown) => void = () => {}) {
   const pending: string[] = [];
   if (["keyboard", "forced-colors"].includes(condition.exercise || "") || ["Confirmation", "Form", "Detail"].includes(condition.exercise || "")) {
     const trace: KeyTrace[] = [], contract = keyboardContract(condition);
-    let previous: string | undefined; let inputFailed = false, mediaPending = false;
+    let previous: string | undefined; let inputFailed = false, mediaPending = false, mediaRestorationTabs=0;
     let last: FocusObservation | undefined;
     const datetimeHosts=new Set<number>(),exits=new Set<string>(),hostSteps=new Map<string,number>();
+    const observer=(browser as unknown as {observeNativeFocus?:()=>Promise<NativeFocusReading>}).observeNativeFocus;
+    const uaPaths=new Map<string,{host:number;document:number;kind:string;descendant:boolean;forward:number[];backward:number[];negative?:boolean;mediaSnapshot?:string;mediaNodes?:number[]}>();
+    const mediaExits=new Set<string>();let observedDocument:number|undefined;
+    const observeUA=async(focus:FocusObservation,direction:"forward"|"backward",restoring=false)=>{
+      if(!observer||!focus.datetime&&!focus.native)return;
+      const ua=await observer.call(browser);focus.ua=ua;
+      if(focus.datetime)assert.notEqual(ua.disabled,true,"datetime operation target disabled");
+      assert.equal(ua.stable,true,"unstable UA focus evidence");
+      assert.equal(ua.visible,true,"UA focused leaf is hidden or clipped");
+      assert.equal(ua.kind,focus.datetime?"datetime":"media","UA host type mismatch");
+      assert.ok([ua.document,ua.host,ua.node].every(value=>Number.isSafeInteger(value)&&value>0&&value<=128),"bounded UA identities required");
+      if(observedDocument!==undefined)assert.equal(ua.document,observedDocument,"UA document changed");observedDocument=ua.document;
+      const path:NonNullable<ReturnType<typeof uaPaths.get>>=uaPaths.get(focus.id)||{host:ua.host,document:ua.document,kind:ua.kind,descendant:false,forward:[],backward:[]};
+      assert.equal(ua.host,path.host,"UA host replaced");assert.equal(ua.document,path.document,"UA host document replaced");
+      assert.ok(["host","ua-descendant"].includes(ua.relation),"unbound UA leaf");
+      path.descendant ||=ua.relation==="ua-descendant";
+      if(restoring)assert.equal(ua.node,path.forward[0],"restore the original UA entry segment");
+      else{assert.notEqual(path[direction].at(-1),ua.node,"native Tab must leave the current UA segment");path[direction].push(ua.node);}uaPaths.set(focus.id,path);
+      if(focus.native){
+        assert.equal(focus.mediaUnchanged,true,"media was replaced, played or edited");assert.ok(focus.visible&&ua.visible,"native focus target hidden, clipped or outside viewport");focus.indicator=focus.indicator||ua.indicator;
+        const status=assertMediaIdentity(ua as NativeFocusObservation,mediaExpectation(condition));await assertMediaFixture(browser,condition);
+        const snapshot=JSON.stringify({media:ua.media,focusables:ua.focusables});
+        if(path.mediaSnapshot!==undefined)assert.equal(snapshot,path.mediaSnapshot,"media state or complete set changed during traversal");else path.mediaSnapshot=snapshot;
+        path.mediaNodes=ua.focusables!.filter(n=>status==="unavailable"||!n.disabled).map(n=>n.node);
+        if(status==="unavailable"&&path.negative===undefined){assert.ok(trace.length+mediaRestorationTabs+2<=128,"media negative restoration retains existing keyboard step budget");mediaRestorationTabs+=await exerciseUnavailableMedia(browser,condition,ua as NativeFocusObservation);path.negative=true;focus.mediaNegativeProven=true;}
+      }
+    };
     const press = async (direction: "forward"|"backward", stage: KeyTrace["stage"]) => {
       for (;;) {
-        assert.ok(trace.length<128,"keyboard traversal exceeded the existing 128 step bound");
+        assert.ok(trace.length+mediaRestorationTabs<128,"keyboard traversal exceeded the existing 128 step bound");
+        if(last?.native&&observer)assert.ok((hostSteps.get(last.id+":"+direction)||0)<16,"media host did not exit within 16 native Tab steps");
         if(last?.datetime)assert.ok((hostSteps.get(last.datetimeHost+":"+direction)||0)<16,"datetime host did not exit within 16 native Tab steps");
         await browser.pressTab(direction); const focus=await browser.evaluate<FocusObservation>(focusExpression);trace.push({direction,stage,focus});
+        await observeUA(focus,direction,stage==="restore");
         assert.notEqual(focus.datetimeUnchanged,false,"datetime host was replaced, hidden, moved or edited");
         if(focus.datetime){assertFocus(focus);assert.ok(Number.isInteger(focus.datetimeHost)&&focus.datetimeHost!>=0,"unobserved datetime host");datetimeHosts.add(focus.datetimeHost!);}
         if(last?.datetime){
@@ -171,6 +224,10 @@ export async function exerciseAccessibility(browser: BrowserHarness, condition: 
           assert.ok(count<=16,"datetime host did not exit within 16 native Tab steps");
           if(focus.id===last.id){assert.equal(focus.datetime,true,"datetime host type changed");assert.equal(focus.datetimeHost,last.datetimeHost,"datetime host identity changed");last=focus;continue;}
           exits.add(key);
+        }
+        if(last?.native&&observer){
+          const key=last.id+":"+direction,count=(hostSteps.get(key)||0)+1;hostSteps.set(key,count);assert.ok(count<=16,"media host did not exit within 16 native Tab steps");
+          if(focus.id===last.id){assert.equal(focus.native,true,"native media host type changed");assertFocus(focus);last=focus;continue;}mediaExits.add(key);
         }
         last=focus;return focus;
       }
@@ -181,7 +238,7 @@ export async function exerciseAccessibility(browser: BrowserHarness, condition: 
       // A fixed maximum bounds broken navigation; it is not an expected count.
       for(let step=0;step<128;step++) {
         const focus=await press("forward",required?"path":"seek");
-        if(focus.native){mediaPending=true;pending.push("UA_KEYBOARD_IDENTITY_PENDING: native media internals cannot be observed");break;}
+        if(focus.native&&!observer){mediaPending=true;pending.push("UA_KEYBOARD_IDENTITY_PENDING: native media internals cannot be observed");break;}
         if(focus.boundary&&!plan.modal){assert.equal(required,plan.required,"document ended before required keyboard path");break;}
         assertFocus(focus,previous);previous=focus.id;
         if(plan.modal){
@@ -190,8 +247,8 @@ export async function exerciseAccessibility(browser: BrowserHarness, condition: 
           if(focus.required>=0)seenRequired.add(focus.required);required=seenRequired.size;
         } else if(focus.required>=0&&focus.required===required)required++;
         else if(focus.required>=required)assert.fail("required keyboard trigger was skipped");
-        if(required||plan.modal)order.push(focus.id);
-        if(!plan.modal&&required===plan.required&&!focus.datetime)break;
+        if(required||plan.modal||order.length||focus.datetime||focus.native)order.push(focus.id);
+        if(!plan.modal&&required===plan.required&&!focus.datetime&&!focus.native)break;
       }
       if(!mediaPending) {
         assert.equal(required,plan.required,"required keyboard path not reached within bound");
@@ -203,11 +260,21 @@ export async function exerciseAccessibility(browser: BrowserHarness, condition: 
         // A one-control page still proves reverse movement through its preceding
         // document control/boundary, without asserting a nonexistent 13th item.
         if(!plan.modal&&order.length===1){const focus=await press("backward","boundary");if(!focus.boundary)assertFocus(focus,previous);const restored=await press("forward","boundary");assertFocus(restored);assert.equal(restored.id,order[0],"reverse boundary must restore the actual page target");}
+        if(!plan.modal&&observer&&(last?.native||last?.datetime)){
+          const anchor=last.id,escaped=await press("backward","boundary");if(!escaped.boundary)assertFocus(escaped);
+          const restored=await press("forward","restore");assertFocus(restored);assert.equal(restored.id,anchor,"UA reverse boundary restores exact entry host");
+        }
         for(const host of datetimeHosts)for(const direction of ["forward","backward"])assert.ok(exits.has(host+":"+direction),"datetime host must exit in both directions");
         pending.push(...await exerciseActivation(browser,contract.activation,contract.activationTarget));
       }
-      if(datetimeHosts.size)pending.push("UA_DATETIME_SEGMENT_IDENTITY_PENDING");
-      if(plan.native&&!pending.some(value=>value.startsWith("UA_KEYBOARD_")))pending.push("UA_KEYBOARD_IDENTITY_PENDING: native media keyboard behavior remains required");
+      let datetimeProven=!!observer,mediaProven=!!observer;let mediaHosts=0;
+      for(const [id,path]of uaPaths){
+        assert.deepEqual(path.backward,[...path.forward].reverse(),"UA reverse Tab must revisit actual forward segment order");
+        assert.ok(path.forward.length>0&&path.forward.length<=16,"bounded nonzero UA path required");
+        if(path.kind==="media"){mediaHosts++;for(const direction of ["forward","backward"])assert.ok(mediaExits.has(id+":"+direction),"media host must exit both directions");assert.deepEqual(new Set(path.forward),new Set(path.mediaNodes),"native path must visit the complete expected media focusable set");mediaProven&&=path.negative===true||path.descendant;}else datetimeProven&&=path.descendant;
+      }
+      if(datetimeHosts.size&&(!datetimeProven||[...uaPaths.values()].filter(p=>p.kind==="datetime").length!==datetimeHosts.size))pending.push("UA_DATETIME_SEGMENT_IDENTITY_PENDING");
+      if(plan.native&&(!mediaProven||mediaHosts===0)&&!pending.some(value=>value.startsWith("UA_KEYBOARD_")))pending.push("UA_KEYBOARD_IDENTITY_PENDING: native media keyboard behavior remains required");
     } catch (error) { inputFailed = true; throw error; } finally {
       const cleanup: unknown[] = [];
       try { saveTrace(safeKeyboardTrace(condition,trace)); } catch (error) { cleanup.push(error); }
@@ -224,4 +291,16 @@ export async function exerciseAccessibility(browser: BrowserHarness, condition: 
     assert.equal(await browser.evaluate("location.href"), before);
   }
   return { pending };
+}
+
+// The original path evidence remains independently testable; only a successful
+// same-condition native activation can discharge its specific missing evidence.
+export async function exerciseAccessibility(browser:BrowserHarness,condition:Condition,saveTrace:(value:unknown)=>void=()=>{}){
+ const result=await exerciseKeyboardPath(browser,condition,saveTrace);
+ if(result.pending.some(reason=>reason.startsWith("ENTER_SPACE_ACTIVATION_EVIDENCE_PENDING"))&&surfaceActivation(condition)){
+  const remaining=await exerciseSurfaceActivation(browser,condition,async()=>result.pending);
+  assert.deepEqual(remaining,[],"registered activation must complete before clearing its pending reason");
+  return {pending:result.pending.filter(reason=>!reason.startsWith("ENTER_SPACE_ACTIVATION_EVIDENCE_PENDING"))};
+ }
+ return result;
 }

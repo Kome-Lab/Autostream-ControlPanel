@@ -31,15 +31,40 @@ export const visibleTriggerPoint = (disabled = false) => `(() => {${renderedDOM}
   if(!hit||!(e===hit||e.contains(hit)||blockedSurface))throw Error('marked trigger center is obstructed or clipped');
   return {x,y};
 })()`;
+export const beginTriggerSettlement = (disabled = false) => `(() => {
+  if(globalThis.__uiTriggerSettlement)throw Error('trigger settlement already owned');
+  const owner=globalThis.__uiScenarioTarget,state={owner,previous:null,stable:0,frame:0,failure:null,point:null};
+  globalThis.__uiTriggerSettlement=state;
+  const sample=()=>{try {
+    if(globalThis.__uiScenarioTarget!==owner)throw Error('marked trigger owner replaced during settlement');
+    const point=${visibleTriggerPoint(disabled)},r=owner.getBoundingClientRect(),rect=[r.left,r.top,r.width,r.height];
+    state.stable=state.previous&&rect.every((v,i)=>v===state.previous[i])?state.stable+1:0;
+    state.previous=rect;state.point=point;
+    if(state.stable<2)state.frame=requestAnimationFrame(sample);
+  }catch(error){state.failure=error;}};
+  state.frame=requestAnimationFrame(sample);return true;
+})()`;
+export const settledTriggerPoint = (disabled = false) => `(() => {
+  const state=globalThis.__uiTriggerSettlement;if(!state)throw Error('trigger settlement missing');
+  if(state.failure)throw state.failure;if(state.stable<2)return null;
+  if(globalThis.__uiScenarioTarget!==state.owner)throw Error('marked trigger replaced after settlement');
+  const point=${visibleTriggerPoint(disabled)},r=state.owner.getBoundingClientRect();
+  if(![r.left,r.top,r.width,r.height].every((v,i)=>v===state.previous[i]))throw Error('marked trigger moved after settlement');
+  return point;
+})()`;
 async function clickTarget(browser: BrowserHarness, selector: string, pattern: RegExp | undefined, remember: boolean, disabled: boolean) {
-  await browser.waitFor(visibleTriggerExpression(selector, pattern, disabled), Boolean, disabled ? "one visible disabled negative target" : "one visible enabled trigger");
+  const deadline = Date.now() + 10_000;
   try {
-    const point = await browser.evaluate<{ x: number; y: number }>(visibleTriggerPoint(disabled));
-    assert.ok(point && Number.isFinite(point.x) && Number.isFinite(point.y), "native input needs the measured target point");
+    await browser.waitFor(visibleTriggerExpression(selector, pattern, disabled), Boolean, disabled ? "one visible disabled negative target" : "one visible enabled trigger", Math.max(0, deadline - Date.now()));
     if (remember) await browser.evaluate("globalThis.__uiReturnTrigger=globalThis.__uiScenarioTarget;true");
+    await browser.evaluate(beginTriggerSettlement(disabled));
+    await browser.waitFor(settledTriggerPoint(disabled), Boolean, "same trigger geometry settles before its first native press", Math.max(0, deadline - Date.now()));
+    const point = await browser.evaluate<{ x: number; y: number }>(settledTriggerPoint(disabled));
+    assert.ok(point && Number.isFinite(point.x) && Number.isFinite(point.y), "native input needs the measured target point");
+    assert.ok(Date.now() < deadline, "native input target exceeded its original deadline");
     await browser.clickAt(point.x, point.y);
   }
-  finally { await browser.evaluate("globalThis.__uiScenarioTarget?.removeAttribute('data-ui-scenario-target');delete globalThis.__uiScenarioTarget;true"); }
+  finally { await browser.evaluate("if(globalThis.__uiTriggerSettlement)cancelAnimationFrame(globalThis.__uiTriggerSettlement.frame);delete globalThis.__uiTriggerSettlement;globalThis.__uiScenarioTarget?.removeAttribute('data-ui-scenario-target');delete globalThis.__uiScenarioTarget;true"); }
 }
 export async function clickVisible(browser: BrowserHarness, selector: string, pattern?: RegExp, remember = false) {
   return clickTarget(browser, selector, pattern, remember, false);

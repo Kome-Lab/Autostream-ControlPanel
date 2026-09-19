@@ -106,6 +106,28 @@ const behaviorCases: [string, Case, boolean, number][] = [
   ["successful required fulfill counts status once", { timing: "same", required: true, success: true }, false, 0],
   ...phases.map((phase): [string, Case, boolean, number] => [`same generation stays fatal in ${phase}`, { timing: "same", phase }, true, 0]),
 ];
+test('021 history/current late pause after navigate response preserves unknown ownership and exact fatal cause',async t=>{
+ for(const resourceType of ['Script','XHR']){
+  const {harness,socket,profile}=createHarnessFixture(),logs:string[]=[];
+  const logger=t.mock.method(console,'error',(line:string)=>logs.push(line));
+  socket.hold('Page.navigate');socket.hold('Fetch.continueRequest');socket.hold('Runtime.evaluate');socket.autoLoadEvent=false;
+  context(harness,{scenario:'archive-1440',side:'before',phase:'to-blank'});socket.emitEvent('Page.frameNavigated',{frame:{id:'main-015'}});
+  try{
+   const navigation=harness.navigate('about:blank');socket.respond(await socket.waitForCommand('Page.navigate'),{result:{}});await Promise.resolve();
+   paused(socket,{resourceType,networkId:undefined});const command=await socket.waitForCommand('Fetch.continueRequest');
+   socket.emitEvent('Page.frameNavigated',{frame:{id:'main-015'}});socket.emitEvent('Page.loadEventFired',{});await navigation;
+   const idle=harness.waitForRequestHandlersIdle().catch(error=>error),pending=harness.evaluate('true').catch(error=>error);
+   socket.respond(command,{error:{message:invalid}});const cause=await idle;
+   assert.ok(cause instanceof Error);assert.equal(cause.message,invalid);assert.equal(await pending,cause);assert.throws(()=>harness.assertNoFatalError(),error=>error===cause);
+   const value=parsed(logs),failure=JSON.parse(logs[0].slice(newPrefix.length));
+   assert.equal(value.origin,'unknown');assert.equal(value.resource.resource_type,resourceType);assert.equal(value.resource.network_id_present,false);
+   assert.equal(value.paused.page_navigate_response_received,true);assert.equal(value.paused.top_level_navigation_pending,true);assert.equal(value.failure.top_level_navigation_pending,false);
+   assert.ok(value.paused.navigation_begin_order<value.paused.order&&value.paused.order<value.settlement.order&&value.settlement.order<value.failure.order);
+   assert.equal(failure.request_generation,failure.current_generation);assert.equal(failure.cancellation_context_present,false);assert.equal(harness.safeFetchCancellationCount,0);
+   assert.equal(socket.commandsFor('Fetch.continueRequest').length,1);assert.equal(socket.commandsFor('Fetch.fulfillRequest').length,0);
+  }finally{await harness.close();logger.mock.restore();assert.equal(existsSync(profile),false);}
+ }
+});
 for (const [name, config, fatal, cancellations] of behaviorCases) {
   test(`015 behavior: ${name}`, async (t) => {
     const result = await runCase(t, config);
@@ -288,4 +310,3 @@ for (const invalidRequest of ["missing request body", "duplicate request ID"]) {
     } finally { await harness.close(); }
   });
 }
-

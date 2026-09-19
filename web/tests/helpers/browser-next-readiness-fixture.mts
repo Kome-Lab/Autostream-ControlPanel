@@ -6,6 +6,7 @@ import { basename, dirname, resolve } from "node:path";
 import ts from "typescript";
 import { FetchRequestLifecycle, RejectableEventWaiters } from "./browser-request-lifecycle.mts";
 import { browserHarnessPath } from "./browser-lifecycle-source-paths.mts";
+import { NativeFocusObserver } from "./browser-ua-focus.mts";
 
 
 type NextReadyServer = { baseUrl: string; close: () => Promise<void> };
@@ -211,6 +212,7 @@ export function createNextReadinessFixture(options: NextReadinessOptions = {}) {
     "node:os": { tmpdir },
     "node:path": { basename, dirname, resolve },
     "./browser-request-lifecycle.mts": { FetchRequestLifecycle, RejectableEventWaiters },
+    "./browser-ua-focus.mts": { NativeFocusObserver },
     "./browser-process-attempt.mts": {},
     "./browser-launch-profile.mts": {},
   };

@@ -22,6 +22,46 @@ const { DetailSection, SectionNavigation } = await import("../../src/components/
 const { Input }=await import('../../src/components/ui/input.tsx');
 const { createUICopy }=await import('../../src/lib/i18n/ui-v2/copy.ts');
 
+test('UI-DOWNSTREAM-COPY-021: actual updater runtime and Node endpoint renders preserve localized meaning, authority values and heartbeat bounds',async()=>{
+ const {UpdaterRuntimeSettingsSection}=await import('../../src/features/application/updater-runtime-settings-section.tsx');
+ const {NodeEndpointStateView}=await import('../../src/features/nodes/node-endpoint-state-view.tsx');
+ const {renderedSource}=await import('./source-render.mts');
+ const runtimeProps={formID:'runtime-021',executionHostID:'host-021',canEdit:true,pollInterval:'15',heartbeatInterval:'30',localExecutorPolicySHA256:'',changePollInterval(){},changeHeartbeatInterval(){},changePolicyDigest(){}};
+ for(const locale of ['ja','en'] as const){
+  const copy=createUICopy(locale);
+  const checkRuntime=(html:string)=>{const dom=actualMarkupDOM(html),heading=dom.document.querySelector('h3');assert.ok(heading);assert.equal(heading.textContent,copy('Host Agentの動作'));
+   const input=dom.document.getElementById('runtime-021-heartbeat-interval');assert.ok(input);assert.equal(input.getAttribute('min'),'5');assert.equal(input.getAttribute('max'),'60');
+   assert.equal(input.labels.length,1);assert.equal(input.labels[0].textContent,copy('Heartbeat間隔（秒）'));assert.ok(html.includes(copy('5〜60秒の範囲で設定してください。')));
+   assert.ok(html.includes(copy('Host AgentからControl Panelへoutbound HTTPSで接続します。受信APIや管理用ポートは使用しません。')));};
+  checkRuntime(renderUI(createElement(UpdaterRuntimeSettingsSection,runtimeProps),locale));
+  const runtimeURL=new URL('../../src/features/application/updater-runtime-settings-section.tsx',import.meta.url),runtimeSource=readFileSync(runtimeURL,'utf8');
+  for(const changed of [runtimeSource.replace('const uiText = useUICopy();','const uiText = (_key: string) => "";'),runtimeSource.replace('max={60}','max={3600}')]){
+   assert.notEqual(changed,runtimeSource);const mutant=await renderedSource(changed,runtimeURL);assert.throws(()=>checkRuntime(renderUI(createElement(mutant.UpdaterRuntimeSettingsSection,runtimeProps),locale)));
+  }
+  for(const known of [false,true])for(const compact of [false,true]){
+   const node:import('../../src/types/domain.ts').WorkerNode={id:'updater-021',service_id:'updater-021',service_type:'update_agent',service_name:'Synthetic updater',status:'online',transport_mode:'pull_v2',...(known?{execution_host_id:'host-021',ownership_epoch:7}:{})};
+   const props={node,compact,copied:'',onCopy:async()=>{throw Error('SSR must not perform an action');}};
+   const checkNode=(html:string)=>{const body=actualMarkupDOM(html).main.textContent;assert.ok(body.includes('execution_host_id: '+(known?'host-021':copy('未報告'))));assert.ok(body.includes('ownership_epoch: '+(known?'7':copy('未報告'))));assert.ok(body.includes(copy('受信ポートなし（Outbound HTTPS）')));};
+   checkNode(renderUI(createElement(NodeEndpointStateView,props),locale));
+   if(!known&&!compact){const url=new URL('../../src/features/nodes/node-endpoint-state-view.tsx',import.meta.url),source=readFileSync(url,'utf8');
+    const mutant=await renderedSource(source.replaceAll('const uiText = useUICopy();','const uiText = (_key: string) => "";'),url);assert.throws(()=>checkNode(renderUI(createElement(mutant.NodeEndpointStateView,props),locale)));}
+  }
+ }
+});
+
+test('UI-SECURITY-PANEL-021: actual ResourcePage security owner receives emitted header clearance and retains reciprocal tab references',async()=>{
+ const {ResourcePage}=await import('../../src/features/resources/resource-page.tsx');
+ for(const locale of ['ja','en'] as const)for(const pageId of ['security','discord'] as const){
+  const dom=actualMarkupDOM(renderUI(createElement(ResourcePage,{pageId}),locale,'/admin/'+pageId+'/'));
+  const tabs=dom.document.querySelectorAll('[role=tab]');assert.ok(tabs.length>1);
+  for(const tab of tabs){const panel=dom.document.getElementById(tab.getAttribute('aria-controls')!);assert.ok(panel);assert.equal(panel.getAttribute('role'),'tabpanel');assert.equal(panel.getAttribute('aria-labelledby'),tab.id);assert.equal(panel.tabIndex,0);
+   assert.equal((panel.getAttribute('class')||'').split(' ').includes('scroll-mt-20'),pageId==='security');}
+ }
+ const from=fileURLToPath(new URL('../../src/app/globals.css',import.meta.url));
+ const css=await postcss([tailwind({base:fileURLToPath(new URL('../../',import.meta.url)),optimize:false})]).process(readFileSync(from,'utf8'),{from});
+ let value='';css.root.walkRules(r=>{if(r.selector==='.scroll-mt-20')r.walkDecls('scroll-margin-top',d=>{value=d.value;});});assert.equal(value,'calc(var(--spacing) * 20)');
+});
+
 test('UI-PANEL-SCROLL-019: actual Account security and Audit panels emit the header-clearance utility without changing their tab identity',async t=>{
  const {AccountView}=await import('../../src/features/account/account-view.tsx'),{AuditLogsView}=await import('../../src/features/audit/audit-logs-view.tsx');
  for(const locale of ['ja','en'] as const)for(const [View,route,tabName] of [[AccountView,'/admin/account/',locale==='ja'?'セキュリティ':'Security'],[AuditLogsView,'/admin/audit-logs/',null]] as const){

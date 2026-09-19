@@ -255,12 +255,12 @@ test("updater node description identifies its portless per-host responsibility",
   assert.match(source, /このHost Agentを稼働させる対象ホストで1回実行/);
   assert.match(source, /受信API endpointや専用portは作成しません/);
   assert.match(source, /transport_mode: \{state\.transportMode\}/);
-  assert.match(source, /execution_host_id: \{state\.executionHostID \|\| "未報告"\}/);
-  assert.match(source, /ownership_epoch: \{state\.ownershipEpoch \?\? "未報告"\}/);
-  assert.match(source, /label="希望値"/);
+  assert.match(source, /execution_host_id: \{state\.executionHostID \|\| uiText\("未報告"\)\}/);
+  assert.match(source, /ownership_epoch: \{state\.ownershipEpoch \?\? uiText\("未報告"\)\}/);
+  assert.match(source, /label=\{uiText\("希望値"\)\}/);
   assert.match(source, /反映済み \(legacy\)/);
-  assert.match(source, /label="Node報告"/);
-  assert.match(source, /Revision \{state\.revision \?\? "未報告"\}/);
+  assert.match(source, /label=\{uiText\("Node報告"\)\}/);
+  assert.match(source, /Revision \{state\.revision \?\? uiText\("未報告"\)\}/);
   assert.doesNotMatch(source, /port_reconfigure/);
   assert.doesNotMatch(source, /表示されたコマンドを中央Updaterホストで/);
 });

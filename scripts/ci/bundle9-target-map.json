@@ -214,7 +214,7 @@
       },
       {
         "path": "web/tests/helpers/browser-harness.mts",
-        "sha256": "27996f457c56c94de29e02d8bc302c8cbe28502c11eab2023a0c07ec8f669a02",
+        "sha256": "cad3e3dc3ce9df075a72a1929bd914aa913adcde80a63a404e197b115010d0ed",
         "symbols": [
           "BrowserHarness",
           "createCommandSender",
@@ -224,7 +224,7 @@
           "waitForChildExit",
           "waitForMapCount"
         ],
-        "physical_lines": 700
+        "physical_lines": 709
       },
       {
         "path": "web/tests/helpers/browser-lifecycle-source-paths.mts",
@@ -261,7 +261,7 @@
       },
       {
         "path": "web/tests/helpers/browser-next-readiness-fixture.mts",
-        "sha256": "6c2992af0937a6bfb50401854fd673aefa1d5b6924d67f4b800ab5b64535e70c",
+        "sha256": "2afff945c0a8959740cae661a11b0b49705124f4552e3b99e9418e1994c102da",
         "symbols": [
           "NextReadinessChild",
           "NextReadinessClock",
@@ -287,7 +287,7 @@
           "setTimeout",
           "unref"
         ],
-        "physical_lines": 337
+        "physical_lines": 339
       },
       {
         "path": "web/tests/helpers/browser-next-server.mts",
@@ -1265,7 +1265,7 @@
       },
       {
         "path": "web/tests/system-updates-node-authority-cases.mts",
-        "sha256": "56f0b2ee2cc5301e6ac248cae7227fa398c819cdc0d4c45606006865bd10063c",
+        "sha256": "9bba3c26a13e9eca97ea0c0c8457c8e846920d8215c1071367b0662157748382",
         "symbols": [
           "assertEndpointlessNode",
           "assertEndpointlessResponse",
@@ -1293,7 +1293,7 @@
       },
       {
         "path": "web/tests/system-updates-presentation-cases.mts",
-        "sha256": "952d5ed79bdd9888e7f8df5c7ac0833601241bf407851d819fffef99799d34eb",
+        "sha256": "1c1f5202893e58d93ceac25ad62cbc7cb9f0c4da3020374cf84b91aee27b7164",
         "symbols": [],
         "physical_lines": 422
       },
@@ -1336,7 +1336,7 @@
     "destinations": [
       {
         "path": "web/tests/helpers/browser-harness.mts",
-        "sha256": "27996f457c56c94de29e02d8bc302c8cbe28502c11eab2023a0c07ec8f669a02",
+        "sha256": "cad3e3dc3ce9df075a72a1929bd914aa913adcde80a63a404e197b115010d0ed",
         "symbols": [
           "BrowserHarness",
           "createCommandSender",
@@ -1346,7 +1346,7 @@
           "waitForChildExit",
           "waitForMapCount"
         ],
-        "physical_lines": 700
+        "physical_lines": 709
       },
       {
         "path": "web/tests/helpers/browser-next-server.mts",
@@ -5097,7 +5097,7 @@
     "destinations": [
       {
         "path": "web/tests/helpers/browser-harness.mts",
-        "sha256": "27996f457c56c94de29e02d8bc302c8cbe28502c11eab2023a0c07ec8f669a02",
+        "sha256": "cad3e3dc3ce9df075a72a1929bd914aa913adcde80a63a404e197b115010d0ed",
         "symbols": [
           "BrowserHarness",
           "assertNoFatalError",
@@ -5119,6 +5119,7 @@
           "handleSocketClose",
           "launch",
           "navigate",
+          "observeNativeFocus",
           "pressKey",
           "pressNativeKey",
           "receive",
@@ -5143,7 +5144,7 @@
           "waitForRequestHandlersIdle",
           "waitForResponseCount"
         ],
-        "physical_lines": 700
+        "physical_lines": 709
       },
       {
         "path": "web/tests/helpers/browser-next-server.mts",
@@ -5278,7 +5279,7 @@
       },
       {
         "path": "web/tests/helpers/browser-harness.mts",
-        "sha256": "27996f457c56c94de29e02d8bc302c8cbe28502c11eab2023a0c07ec8f669a02",
+        "sha256": "cad3e3dc3ce9df075a72a1929bd914aa913adcde80a63a404e197b115010d0ed",
         "symbols": [
           "BrowserHarness",
           "createCommandSender",
@@ -5288,7 +5289,7 @@
           "waitForChildExit",
           "waitForMapCount"
         ],
-        "physical_lines": 700
+        "physical_lines": 709
       },
       {
         "path": "web/tests/helpers/browser-next-server.mts",

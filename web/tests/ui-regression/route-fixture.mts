@@ -62,7 +62,11 @@ export function createUIFixture(baseURL: string) {
       return { status: 502, body: { code: "ui_external_request_forbidden" } };
     }
     if (request.method === "GET" && ["/archive/share", "/setup", "/auth/email/confirm"].includes(path)) return null;
-    if (request.method === "POST" && /^\/streams\/[^/]+\/preview-links$/.test(path)) {
+    // Only the pre-existing public fixture anchor may issue this harmless GET.
+    // 204 proves default navigation/settlement while writing no download bytes.
+    if (condition.family === "public-archive-share" && condition.state === "ready" && ["keyboard", "forced-colors"].includes(condition.exercise || "") && request.method === "GET" && url.pathname === "/archive-shares/ui-synthetic-share/download" && url.search === "") {
+      response = { status: 204, body: "" };
+    } else if (request.method === "POST" && /^\/streams\/[^/]+\/preview-links$/.test(path)) {
       response = { status: 403, body: { code: "forbidden" } };
     } else if (path === "/account/preferences/ui") {
       response = { body: { theme_id: condition?.theme || "autostream", color_mode: condition?.exercise === "system-mode" ? "system" : condition?.mode || "light", revision: 4 } };

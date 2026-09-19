@@ -1,3 +1,4 @@
+import { NativeFocusObserver } from "./browser-ua-focus.mts";
 import { spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -111,6 +112,7 @@ export class BrowserHarness {
   private fatalError: Error | undefined;
   private fetchFailureReported = false;
   private closed = false;
+  private readonly nativeFocusObserver = new NativeFocusObserver((method, params) => this.send(method, params));
 
   private constructor(
     browserProcess: ChildProcessWithoutNullStreams,
@@ -176,6 +178,12 @@ export class BrowserHarness {
     await this.send("Emulation.setTimezoneOverride", { timezoneId: options.timezone });
     await this.send("Emulation.setLocaleOverride", { locale: options.locale });
     await this.send("Page.addScriptToEvaluateOnNewDocument", { source: options.source });
+  }
+
+  async observeNativeFocus() {
+    this.assertNoFatalError();
+    if (this.closed) throw new Error("Browser harness closed");
+    return this.nativeFocusObserver.observe();
   }
 
   async browserVersion() {
@@ -434,6 +442,7 @@ export class BrowserHarness {
   async close() {
     if (this.closed) return;
     this.closed = true;
+    this.nativeFocusObserver.clear();
     this.requestLifecycle.beginNavigation("close");
     const closeError = new Error("Browser harness closed");
     this.eventWaiters.rejectAll(closeError);

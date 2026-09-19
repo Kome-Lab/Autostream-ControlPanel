@@ -37,7 +37,7 @@ export function ResourcePage({ pageId }: { pageId: ResourcePageId }) {
             ))}
           </TabsList>
           {page.resources.map((resource) => (
-            <TabsContent key={resource.path} value={resource.path}>
+            <TabsContent key={resource.path} value={resource.path} className={pageId === "security" ? "scroll-mt-20" : undefined}>
                 <ResourcePanel resource={resource} currentUser={currentUser.data} />
             </TabsContent>
           ))}

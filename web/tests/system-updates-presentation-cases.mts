@@ -171,7 +171,7 @@ test("system update UI manages updater policy in the panel and never instructs m
   assert.match(settingsSource, /expected_revision: expectedRevision/);
   assert.doesNotMatch(settingsSource, /expected_revision: settings\.revision/);
   assert.match(settingsSource, /updater\.transport_mode !== "pull_v2"/);
-  assert.match(settingsSource, /<h3[^>]*>Host Agentの動作<\/h3>/);
+  assert.match(settingsSource, /<h3[^>]*>\{uiText\("Host Agentの動作"\)\}<\/h3>/);
   assert.match(settingsSource, /受信APIや管理用ポートは使用しません/);
   assert.doesNotMatch(settingsSource, /APIポート/);
   assert.match(settingsSource, /SSHポート/);
@@ -181,7 +181,7 @@ test("system update UI manages updater policy in the panel and never instructs m
   assert.match(settingsSource, /new Set\(targets\.map\(\(target\) => target\.service_id\)\)/);
   assert.match(settingsSource, /local_executor_policy_sha256: digest/);
   assert.doesNotMatch(settingsSource, /\.\.\.\(digest \? \{ local_executor_policy_sha256: digest \} : \{\}\)/);
-  assert.match(settingsSource, /label="MariaDBデータベース名"/);
+  assert.match(settingsSource, /label=\{uiText\("MariaDBデータベース名"\)\}/);
   assert.match(settingsSource, /ユーザー名・パスワード・DSNは入力しません/);
   assert.match(settingsSource, /updaterSettingsTargetRequiresDatabase\(transportMode, target\)/);
   assert.match(settingsSource, /transportMode=\{settings\.transport_mode\}/);
@@ -190,15 +190,15 @@ test("system update UI manages updater policy in the panel and never instructs m
   assert.match(settingsSource, /updaterSettingsTargetOptions\(availableTargets, targets, index\)/);
   assert.match(settingsSource, /firstUnusedUpdaterSettingsTarget\(settings\.transport_mode, availableTargets, current\.targets, hostID\)/);
   assert.match(settingsSource, /applyUpdaterSettingsTargetSelection\(settings\.transport_mode, target/);
-  assert.match(settingsSource, /label="サービス種別（自動）"[\s\S]*?readOnly/);
+  assert.match(settingsSource, /label=\{uiText\("サービス種別（自動）"\)\}[\s\S]*?readOnly/);
   assert.doesNotMatch(settingsSource, /onChange=\{\(event\) => updateTarget\(index, \{ target_id:/);
   assert.match(settingsSource, /normalizeUpdaterSettingsTargetDatabaseName\(/);
   assert.match(settingsSource, /maxLength=\{64\}/);
   assert.match(settingsSource, /Host Agentのconfigureを再実行すると反映されます/);
   assert.match(settingsSource, /\{ value: "docker", label: "Docker" \}/);
   assert.match(settingsSource, /min=\{5\}[\s\S]*max=\{3600\}/);
-  const heartbeatField = settingsSource.match(/label="Heartbeat間隔（秒）"[\s\S]*?<\/Field>/)?.[0] ?? "";
-  assert.match(heartbeatField, /hint="5〜60秒の範囲で設定してください。"/);
+  const heartbeatField = settingsSource.match(/label=\{uiText\("Heartbeat間隔（秒）"\)\}[\s\S]*?<\/Field>/)?.[0] ?? "";
+  assert.match(heartbeatField, /hint=\{uiText\("5〜60秒の範囲で設定してください。"\)\}/);
   assert.match(heartbeatField, /min=\{5\}[\s\S]*max=\{60\}/);
   assert.doesNotMatch(heartbeatField, /max=\{3600\}/);
   assert.match(settingsSource, /requiredHeartbeatInterval\(form\.heartbeatInterval\)/);

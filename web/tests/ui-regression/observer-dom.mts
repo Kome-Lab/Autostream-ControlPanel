@@ -68,6 +68,7 @@ export function observerDOM() {
   const context={document,innerWidth:1024,innerHeight:900,scrollX:8,scrollY:60,
     location:{pathname:"/admin/streams/",search:"",hash:""},localStorage:{},sessionStorage:{},
     getComputedStyle:(e:Element)=>e.style,matchMedia:()=>({matches:false}),
+    requestAnimationFrame:(callback:()=>void)=>{callback();return 1;},cancelAnimationFrame:(frame:number)=>{void frame;},
     scrollTo:({left,top}:{left:number;top:number})=>{context.scrollX=left;context.scrollY=top;}};
   return {html,body,main,label,input,button,document,context,run:<T=unknown,>(expression:string)=>JSON.parse(JSON.stringify(runInNewContext(expression,context))) as T};
 }

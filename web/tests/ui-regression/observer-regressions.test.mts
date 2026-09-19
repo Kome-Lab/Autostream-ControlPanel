@@ -1,13 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFileSync } from "node:fs";
 import { observerDOM, Element } from "./observer-dom.mts";
-import { observationExpression, assertObservation, focusExpression, assertFocus, exerciseAccessibility, safeKeyboardTrace, type UIObservation } from "./observation.mts";
+import { observationExpression, assertObservation, focusExpression, assertFocus, exerciseKeyboardPath as exerciseAccessibility, safeKeyboardTrace, type UIObservation } from "./observation.mts";
 import { layoutExpression, assertLayout, type LayoutObservation } from "./layout-observation.mts";
-import { visibleTriggerExpression, clickVisible, clickDisabledVisible, clickStreamPrimary, clickWorkerRestart } from "./visible-trigger.mts";
+import { visibleTriggerExpression, beginTriggerSettlement, settledTriggerPoint, clickVisible, clickDisabledVisible, clickStreamPrimary, clickWorkerRestart } from "./visible-trigger.mts";
 import { createUIFixture } from "./route-fixture.mts";
 import { assertPageText, exerciseTableSort, pageCounterExpression } from "./table-browser.mts";
 import { conditions } from "./matrix.mts";
 import type { BrowserHarness } from "../helpers/browser-harness.mts";
+import { createHarnessFixture } from "../helpers/browser-cdp-socket-fixture.mts";
 const condition={...conditions[0],locale:"en" as const,mode:"light" as const,theme:"autostream" as const};
 const check=(dom:ReturnType<typeof observerDOM>,exercise?:string)=>assertObservation(dom.run<UIObservation>(observationExpression),{...condition,exercise} as typeof condition);
 const keyboardCondition=conditions.find(row=>row.family==="login"&&row.exercise==="keyboard")!;
@@ -206,6 +208,41 @@ test("UI-DRIVER-010: disabled permission and pending negatives keep a native att
   dom.document.elementFromPoint=()=>dom.input;
   await assert.rejects(clickDisabledVisible(browser,"button"),/obstructed/);assert.equal(clicks,1);
 });
+
+test('UI-POINTER-021: real settlement expressions retain identity across layout frames and reject post-settlement movement',()=>{
+ for(const fault of ['none','replacement','hidden','disabled','covered','nonfinite','after-settlement']){
+  const dom=observerDOM(),frames:(()=>void)[]=[];Object.assign(dom.context,{requestAnimationFrame:(callback:()=>void)=>{frames.push(callback);return frames.length;}});
+  assert.equal(dom.run(visibleTriggerExpression('button',/^Open$/)),true);dom.run(beginTriggerSettlement());
+  const frame=()=>{const callback=frames.shift();assert.ok(callback);callback();};
+  frame();assert.equal(dom.run(settledTriggerPoint()),null,'first frame cannot authorize a press');
+  dom.button.rect.top=60;dom.button.rect.bottom=84;frame();assert.equal(dom.run(settledTriggerPoint()),null,'layout shift resets stability');
+  frame();assert.equal(dom.run(settledTriggerPoint()),null,'one equal frame is insufficient');
+  if(fault==='replacement')dom.button.parentElement=null;if(fault==='hidden')dom.button.hidden=true;if(fault==='disabled')dom.button.disabled=true;
+  if(fault==='covered')dom.document.elementFromPoint=()=>dom.input;if(fault==='nonfinite')dom.button.rect.left=NaN;
+  frame();if(fault==='after-settlement')dom.button.rect.top=70;
+  if(fault==='none'){assert.deepEqual(dom.run(settledTriggerPoint()),{x:80,y:72});assert.equal(frames.length,0,'settled owner stops sampling');}
+  else assert.throws(()=>dom.run(settledTriggerPoint()),/marked trigger/,fault);
+ }
+ const source=readFileSync(new URL('./visible-trigger.mts',import.meta.url),'utf8');
+ assert.equal(source.match(/browser\.clickAt\(/g)?.length,1,'one native actuator call, never resend');
+ assert.equal(source.match(/deadline - Date\.now\(\)/g)?.length,2,'selection and settlement share the original deadline');
+ assert.match(source,/cancelAnimationFrame/);
+});
+
+test('UI-POINTER-SOCKET-021: actual native mouseMoved press release use the settled point once and never resend a failed press',async t=>{
+ for(const failPress of [false,true]){
+  const dom=observerDOM(),{harness,socket}=createHarnessFixture();let frame=0;
+  Object.assign(dom.context,{requestAnimationFrame:(callback:()=>void)=>{if(++frame===2){dom.button.rect.top=60;dom.button.rect.bottom=84;}callback();return frame;}});
+  t.mock.method(harness,'evaluate',async <T,>(expression:string)=>dom.run<T>(expression));
+  const send=socket.send.bind(socket);socket.hold('Input.dispatchMouseEvent');
+  t.mock.method(socket,'send',(raw:string)=>{send(raw);const command=JSON.parse(raw);if(command.method==='Input.dispatchMouseEvent')queueMicrotask(()=>socket.respond(command,failPress&&command.params.type==='mousePressed'?{error:{message:'pointer press failed'}}:{result:{}}));});
+  try{
+   if(failPress)await assert.rejects(clickVisible(harness,'button',/^Open$/),/pointer press failed/);else await clickVisible(harness,'button',/^Open$/);
+   const commands=socket.commandsFor('Input.dispatchMouseEvent');assert.deepEqual(commands.map(c=>c.params.type),failPress?['mouseMoved','mousePressed']:['mouseMoved','mousePressed','mouseReleased']);
+   assert.ok(commands.every(c=>c.params.x===80&&c.params.y===72));assert.equal('__uiScenarioTarget' in dom.context,false);assert.equal('__uiTriggerSettlement' in dom.context,false);
+  }finally{await harness.close();}
+ }
+});
 test("UI-OBSERVER-005: modal paths require every observed control, bidirectional wrap and no document escape",async()=>{
   const modalCondition=conditions.find(row=>row.exercise==="Confirmation")!;
   for(const fault of ["none","skip","escape","missing"] as const) {
@@ -252,7 +289,16 @@ test("UI-OBSERVER-008: keyboard trace is condition-labelled, bounded and exclude
   const result=safeKeyboardTrace(current,Array.from({length:128},()=>({direction:"forward" as const,stage:"path" as const,focus})));
   assert.equal(result.condition,current.id);assert.equal(result.totalSteps,128);
   assert.ok(Buffer.byteLength(JSON.stringify(result))<=4096);assert.doesNotMatch(JSON.stringify(result),/SECRET_REQUEST_VALUE/);
+  assert.ok(Buffer.byteLength(JSON.stringify(result,null,2)+"\n")<=4096,"actual pretty-JSON writer output bound");
   assert.ok(result.entries.every(entry=>entry.id==="OTHER"));
+  const unsafe={...focus,ua:{document:Infinity,host:129,node:-1,kind:'RAW_SECRET',relation:'RAW_SECRET',stable:true,uaFocusable:99999,mediaState:'RAW_SECRET'}};
+  const closed=safeKeyboardTrace(current,[{direction:'forward',stage:'path',focus:unsafe as unknown as Parameters<typeof safeKeyboardTrace>[1][number]['focus']}]);
+  assert.doesNotMatch(JSON.stringify(closed),/RAW_SECRET|Infinity/);
+  assert.equal(closed.entries[0].ua?.document,null);assert.equal(closed.entries[0].ua?.host,null);assert.equal(closed.entries[0].ua?.node,null);
+  const steps=Array.from({length:32},(_,i)=>({direction:i<16?'forward' as const:'backward' as const,stage:'path' as const,focus:{...focus,datetimeUnchanged:true,ua:{document:1,host:2,node:i<16?i+3:34-i,kind:'datetime' as const,relation:'ua-descendant' as const,role:'spinbutton',focusedAncestors:1,stable:true as const,visible:true,indicator:true}}}));
+  const complete=safeKeyboardTrace(current,steps);assert.ok(Buffer.byteLength(JSON.stringify(complete))<=4096);assert.deepEqual(complete.uaPaths[0].forward,[...complete.uaPaths[0].backward].reverse());assert.equal(complete.uaPaths[0].forward.length,16);assert.equal(complete.uaPaths[0].overflow,false);assert.equal(complete.uaPathOverflow,false);assert.ok(Buffer.byteLength(JSON.stringify(complete,null,2)+"\n")<=4096,"complete UA path must fit actual writer output");
+
+
 });
 
 test('UI-TABPANEL-017: emitted focus observer accepts only a mutually linked active tall panel with visible focus edges',()=>{
@@ -273,5 +319,24 @@ test('UI-TABPANEL-017: emitted focus observer accepts only a mutually linked act
   if(fault==='indicator')panel.style.outlineStyle='none';
   const value=dom.run<Parameters<typeof assertFocus>[0]>(focusExpression);
   if(fault==='none'){assertFocus(value);assert.equal(value.rect[3],1450);}else assert.throws(()=>assertFocus(value),/hidden|offscreen|indicator/,fault);
+ }
+});
+
+test('UI-PANEL-AVAILABLE-021: actual observer uses header and ancestor clip height without exempting fitting panels or ordinary controls',()=>{
+ for(const fault of ['none','covered-header','fits-available','ordinary','inactive','wrong-owner','indicator','clipped','inert','covered-hit']){
+  const dom=observerDOM(),root=dom.main.add(new Element('DIV'));root.setAttribute('data-slot','tabs');
+  const header=dom.body.add(new Element('HEADER'));header.style.position='sticky';header.rect={left:0,top:0,right:1024,bottom:72,width:1024,height:72};
+  const tab=root.add(new Element('BUTTON'));tab.id='tab';tab.setAttribute('role','tab');tab.setAttribute('aria-selected','true');tab.setAttribute('aria-controls','panel');
+  const panel=root.add(new Element('DIV'));panel.id='panel';panel.setAttribute('role','tabpanel');panel.setAttribute('data-slot','tabs-content');panel.setAttribute('data-state','active');panel.setAttribute('aria-labelledby','tab');panel.setAttribute('tabindex','0');
+  panel.rect={left:16,top:80,right:1008,bottom:975,width:992,height:895};dom.document.activeElement=panel;dom.document.elementFromPoint=()=>panel;
+  if(fault==='covered-header')panel.rect.top=71;
+  if(fault==='fits-available'){panel.rect.top=800;panel.rect.height=200;panel.rect.bottom=1000;}
+  if(fault==='ordinary')panel.removeAttribute('role');if(fault==='inactive')panel.setAttribute('data-state','inactive');
+  if(fault==='wrong-owner')tab.parentElement=dom.main;if(fault==='indicator')panel.style.outlineStyle='none';
+  if(fault==='clipped'){root.style.overflowY='hidden';root.rect.top=100;root.rect.bottom=600;}
+  if(fault==='inert')root.setAttribute('inert','');if(fault==='covered-hit')dom.document.elementFromPoint=()=>header;
+  const value=dom.run<Parameters<typeof assertFocus>[0]>(focusExpression);
+  if(fault==='none'){assertFocus(value);assert.ok(panel.rect.height<dom.context.innerHeight,'the former viewport-height branch rejects this real geometry');}
+  else assert.throws(()=>assertFocus(value),/hidden|offscreen|indicator/,fault);
  }
 });

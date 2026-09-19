@@ -16,10 +16,14 @@ const approval = {
     {
       "path": "web/tests/helpers/browser-harness.mts",
       "original_sha256": "bd45673d96e20aaea5927fa6b57c1c4d1445c36bb515e8e14758554bfa5ab5de",
-      "transform": "add-closed-press-tab-only",
-      "reason": "One closed Tab direction API; all existing class members and native-key contracts remain fixed."
+      "transform": "add-closed-press-tab-and-readonly-focus-only",
+      "reason": "Retain the exact Tab transform; remove only the four reviewed readonly focus additions before restoring the fixed original."
     }
   ],
+  "readonlyFocusDelta": {
+    "transform": "remove-four-exact-readonly-focus-additions",
+    "baseline_sha256": "27996f457c56c94de29e02d8bc302c8cbe28502c11eab2023a0c07ec8f669a02"
+  },
   "runnerTypeDelta": {
     "path": "web/tests/helpers/run-ui-foundation-browser.mts",
     "original_sha256": "31eaadac62a427fedb59be8fca91b23b995c7cf5d93da014159b634ad221d3e3",
@@ -50,7 +54,16 @@ export function assertApprovedSourceDelta(path: string, before: Buffer, after: B
   assert.ok(record, "unknown protected source-delta path");
   assert.equal(hash(before), record.original_sha256, "source-delta fixed original hash mismatch");
   let stripped = normalized(after);
-  if (record.transform === "add-closed-press-tab-only") {
+  if (record.transform === "add-closed-press-tab-and-readonly-focus-only") {
+    let rawBaseline = after.toString("utf8");
+    for (const addition of [
+      'import { NativeFocusObserver } from "./browser-ua-focus.mts";\n',
+      '  private readonly nativeFocusObserver = new NativeFocusObserver((method, params) => this.send(method, params));\n',
+      '  async observeNativeFocus() {\n    this.assertNoFatalError();\n    if (this.closed) throw new Error("Browser harness closed");\n    return this.nativeFocusObserver.observe();\n  }\n\n',
+      '    this.nativeFocusObserver.clear();\n',
+    ]) rawBaseline = exactlyOnce(rawBaseline, addition, "");
+    assert.equal(hash(Buffer.from(rawBaseline)), manifest.readonlyFocusDelta.baseline_sha256, "original AST/raw baseline must match after only four reviewed readonly additions");
+    stripped = normalized(Buffer.from(rawBaseline));
     const parsed = ts.createSourceFile(path, stripped, ts.ScriptTarget.Latest, true);
     const owner = parsed.statements.find((node): node is ts.ClassDeclaration => ts.isClassDeclaration(node) && node.name?.text === "BrowserHarness");
     assert.ok(owner);

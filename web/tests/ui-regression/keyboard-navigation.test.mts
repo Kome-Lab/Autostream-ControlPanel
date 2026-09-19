@@ -4,7 +4,7 @@ import { createHarnessFixture } from "../helpers/browser-cdp-socket-fixture.mts"
 import { nativeKeyTypeDiagnostics, formatDiagnostic } from "../helpers/browser-native-input-oracle.mts";
 import { observerDOM, Element } from './observer-dom.mts';
 import { prepareActivation, exerciseActivation } from './keyboard-activation.mts';
-import { keyboardContract, exerciseAccessibility, prepareKeyboardExpression, focusExpression, assertFocus, type FocusObservation } from './observation.mts';
+import { keyboardContract, exerciseKeyboardPath as exerciseAccessibility, prepareKeyboardExpression, focusExpression, assertFocus, type FocusObservation } from './observation.mts';
 import { conditions } from './matrix.mts';
 import { actualJSXCallback } from './source-callback.mts';
 import { readFileSync } from 'node:fs';
@@ -15,8 +15,12 @@ import {renderUI} from './render-ui.mts';
 
 test('UI-PANEL-TAB-019: unchanged observer and native Tab socket retain both directions below sticky header and reject insufficient or invalid panels',async t=>{
  const source=(name:string)=>readFileSync(new URL('../../src/features/'+name,import.meta.url),'utf8');
- for(const [family,path,panelTag] of [['security-settings','account/account-view.tsx','security'],['audit-logs','audit/audit-logs-view.tsx','view']] as const){
-  const opening=source(path).match(panelTag==='security'?/<TabsContent\s+value="security"[^>]*>/:/<TabsContent\s+value=\{view\}[^>]*>/)?.[0];assert.ok(opening);assert.match(opening,/className="scroll-mt-20"/);
+ // Preserve the Account security assertion, and bind the Security route to its
+ // actual ResourcePage owner instead of substituting the Account panel.
+ assert.match(source('account/account-view.tsx'),/<TabsContent\s+value="security"\s+className="scroll-mt-20"/);
+ for(const [family,path,panelTag] of [['security-settings','resources/resource-page.tsx','resource'],['audit-logs','audit/audit-logs-view.tsx','view']] as const){
+  const opening=source(path).match(panelTag==='resource'?/<TabsContent\s+key=\{resource.path\}[^>]*>/:/<TabsContent\s+value=\{view\}[^>]*>/)?.[0];assert.ok(opening);
+  assert.match(opening,panelTag==='resource'?/className=\{pageId === "security" \? "scroll-mt-20" : undefined\}/:/className="scroll-mt-20"/);
   for(const locale of ['ja','en'] as const)for(const width of [390,1440])for(const scale of [1,2])for(const height of [300,915,1450])for(const forced of [false,true]){
    const faults=locale==='en'&&width===390&&scale===1&&height===915&&!forced?['none','zero','insufficient','covered','ordinary','inactive','duplicate','wrong-reference','wrong-owner','unselected','hidden','inert','clip','indicator']:['none'];
    for(const fault of faults){
@@ -46,16 +50,21 @@ test('UI-PANEL-TAB-019: unchanged observer and native Tab socket retain both dir
 
 test('UI-DATETIME-013: actual exercise and harness Tab socket distinguish host repeats, both exits and pending internal identity',async()=>{
  const condition=conditions.find(c=>c.family==='stream-create-edit'&&c.exercise==='keyboard')!;
- for(const fault of ['none','forward-trap','backward-trap','ordinary-text','ordinary-button','value','replacement','hidden','owner','escape','order','indicator']){
+ for(const fault of ['none','forward-trap','backward-trap','ordinary-text','ordinary-button','value','replacement','hidden','owner','escape','order','indicator','ua-positive','ua-stationary','ua-reverse','ua-owner','ua-hidden']){
    const dom=observerDOM(),dialog=dom.body.add(new Element('DIV'));dialog.setAttribute('role','dialog');
    const query=dialog.querySelectorAll.bind(dialog);dialog.querySelectorAll=(selector)=>query(selector).sort((a,b)=>dialog.all().indexOf(a)-dialog.all().indexOf(b));
    const form=dialog.add(new Element('DIV'));form.id='create-stream';const content=form.add(new Element('DIV'));content.setAttribute('data-slot','card-content');const nav=content.add(new Element('NAV'));nav.setAttribute('data-slot','section-navigation');
    const first=nav.add(new Element('BUTTON','Basic')),date=dialog.add(new Element(fault==='ordinary-button'?'BUTTON':'INPUT')),last=dialog.add(new Element('BUTTON','Close'));first.setAttribute('aria-controls','create-stream-basic');const section=dialog.add(new Element('SECTION'));section.id='create-stream-basic';
    date.type=fault==='ordinary-text'?'text':'datetime-local';date.value='2026-09-01T12:34';date.setAttribute('aria-label','Schedule');const nodes=[first,date,last];
    const owner=createHarnessFixture(),nativeTab=owner.harness.pressTab.bind(owner.harness),trace:unknown[]=[];let index=-1,remaining=0,activation=0,repeatForward=0,repeatBackward=0;
+   let lastDirection:"forward"|"backward"="forward",uaCalls=0;
+   Object.defineProperty(owner.harness,'observeNativeFocus',{value:undefined,writable:true});
+   if(fault.startsWith('ua-'))Object.defineProperty(owner.harness,'observeNativeFocus',{value:async()=>{
+    uaCalls++;return {document:1,host:fault==='ua-owner'&&uaCalls>1?99:2,node:fault==='ua-stationary'?3:lastDirection==='forward'||fault==='ua-reverse'?9-remaining:3+remaining,kind:'datetime',relation:'ua-descendant',role:'spinbutton',stable:true,focusedAncestors:1,indicator:true,visible:fault!=='ua-hidden'};
+   }});
    owner.harness.evaluate=async<T,>(expression:string)=>{if(expression.includes('const targets=kind'))activation++;return dom.run<T>(expression);};
    owner.harness.pressTab=async(direction)=>{
-     await nativeTab(direction);if(dom.document.activeElement===section)index=-1;const wasDate=dom.document.activeElement===date;
+     lastDirection=direction;await nativeTab(direction);if(dom.document.activeElement===section)index=-1;const wasDate=dom.document.activeElement===date;
      if(wasDate){if(direction==='forward')repeatForward++;else repeatBackward++;}
      const trapped=wasDate&&(fault===direction+'-trap'||fault==='ordinary-text'||fault==='ordinary-button');
      if(wasDate&&(remaining>0||trapped))remaining--;else{index=(index+(direction==='forward'?1:nodes.length-1))%nodes.length;if(fault==='order'&&index===1)index=2;dom.document.activeElement=nodes[index];remaining=index===1?6:0;}
@@ -67,8 +76,8 @@ test('UI-DATETIME-013: actual exercise and harness Tab socket distinguish host r
    const activate=actualJSXCallback(readFileSync(new URL('../../src/components/layout/detail-section.tsx',import.meta.url),'utf8'),'button','onClick',{document:dom.document,item:{id:'create-stream-basic'}}),nativeKey=owner.harness.pressNativeKey.bind(owner.harness);
    owner.harness.pressNativeKey=async key=>{await nativeKey(key);first.dispatchEvent(new Event('click'));activate();};owner.harness.waitFor=async<T,>(expression:string,predicate:(value:T)=>boolean)=>{const value=dom.run<T>(expression);assert.ok(predicate(value));return value;};
    try{
-     if(fault==='none'){const result=await exerciseAccessibility(owner.harness,condition,value=>trace.push(value));assert.ok(result.pending.includes('UA_DATETIME_SEGMENT_IDENTITY_PENDING'));assert.equal(result.pending.some(p=>p.startsWith('ENTER_SPACE')),false);assert.ok(activation>0);assert.equal(date.value,'2026-09-01T12:34');assert.ok(repeatForward>=7&&repeatBackward>=7);}
-     else await assert.rejects(exerciseAccessibility(owner.harness,condition,value=>trace.push(value)),/datetime|Tab must move|escaped|hidden|indicator|reordered/);
+     if(fault==='none'||fault==='ua-positive'){const result=await exerciseAccessibility(owner.harness,condition,value=>trace.push(value));assert.equal(result.pending.includes('UA_DATETIME_SEGMENT_IDENTITY_PENDING'),fault==='none');if(fault==='ua-positive')assert.ok(uaCalls>=14);assert.equal(result.pending.some(p=>p.startsWith('ENTER_SPACE')),false);assert.ok(activation>0);assert.equal(date.value,'2026-09-01T12:34');assert.ok(repeatForward>=7&&repeatBackward>=7);}
+     else await assert.rejects(exerciseAccessibility(owner.harness,condition,value=>trace.push(value)),/datetime|Tab must move|escaped|hidden|indicator|reordered|UA/);
      const commands=owner.socket.commandsFor('Input.dispatchKeyEvent').filter(c=>c.params.key==='Tab');assert.ok(commands.length<=256);assert.equal(commands.length%2,0);
      for(let i=0;i<commands.length;i+=2){assert.equal(commands[i].params.type,'keyDown');assert.equal(commands[i+1].params.type,'keyUp');assert.equal(commands[i].params.key,'Tab');assert.ok([0,8].includes(Number(commands[i].params.modifiers)));}
      if(fault==='forward-trap')assert.equal(repeatForward,16);if(fault==='backward-trap')assert.equal(repeatBackward,16);
@@ -218,4 +227,210 @@ test('UI-TABPANEL-KEYBOARD-017: actual current exercise and harness Tab/ShiftTab
  owner.harness.pressTab=async direction=>{await tabNative(direction);index+=direction==='forward'?1:-1;assert.ok(index>=0&&index<nodes.length);dom.document.activeElement=nodes[index];steps.push(direction+':'+index);};
  try{await exerciseAccessibility(owner.harness,condition);assert.deepEqual(steps,['forward:0','forward:1','forward:2','forward:3','backward:2','backward:1','backward:0']);assert.equal(owner.socket.commandsFor('Input.dispatchKeyEvent').length,14);}
  finally{await owner.harness.close();}
+});
+
+
+test('UI-ACTIVATION-024: current wrapper clears only same-condition activation after native keys, real state change and exact restoration',async()=>{
+ const {exerciseAccessibility:current}=await import('./observation.mts');
+ const condition=conditions.find(c=>c.family==='login'&&c.exercise==='keyboard')!;
+ for(const fault of ['none','missing','hidden','disabled','duplicate','covered','no-change','duplicate-key','duplicate-click','restore-failure','owner-replaced','untrusted']){
+  const dom=observerDOM();dom.main.children=[];const form=dom.main.add(new Element('FORM'));
+  const username=form.add(new Element('INPUT'));username.setAttribute('autocomplete','username');
+  const password=form.add(new Element('INPUT'));password.type='password';password.setAttribute('type','password');
+  const submit=form.add(new Element('BUTTON','Login'));submit.setAttribute('type','submit');
+  const theme=dom.main.add(new Element('BUTTON'));theme.setAttribute('aria-label','Theme');
+  if(fault==='missing')theme.removeAttribute('aria-label');if(fault==='hidden')theme.hidden=true;if(fault==='disabled')theme.disabled=true;
+  if(fault==='duplicate'){const other=dom.main.add(new Element('BUTTON'));other.setAttribute('aria-label','Theme');}
+  Object.assign(dom.context.localStorage,{getItem:()=>'{"color_mode":"light"}'});Object.assign(dom.context.location,{href:'http://ui.test/login/'});
+  const nodes=[username,password,submit,theme],owner=createHarnessFixture();let index=-1,acts=0;const keys:string[]=[],tabs:string[]=[];
+  const nativeTab=owner.harness.pressTab.bind(owner.harness),nativeKey=owner.harness.pressNativeKey.bind(owner.harness);
+  owner.harness.evaluate=async<T,>(e:string)=>dom.run<T>(e);dom.document.elementFromPoint=()=>fault==='covered'?submit:theme;
+  owner.harness.pressTab=async direction=>{await nativeTab(direction);tabs.push(direction);index=(index+(direction==='forward'?1:nodes.length-1))%nodes.length;dom.document.activeElement=nodes[index];};
+  const emit=(code:string)=>{const event=new Event('keydown');Object.defineProperties(event,{code:{value:code},repeat:{value:false},isTrusted:{value:fault!=='untrusted'}});theme.dispatchEvent(event);};
+  owner.harness.pressNativeKey=async key=>{await nativeKey(key);keys.push(key);assert.equal(dom.document.activeElement,theme);acts++;emit(key);if(fault==='duplicate-key')emit(key);
+   theme.dispatchEvent(new Event('click'));if(fault==='duplicate-click')theme.dispatchEvent(new Event('click'));if(fault==='owner-replaced'&&acts===2)theme.parentElement=null;
+   if(fault!=='no-change'&&!(fault==='restore-failure'&&acts===2))dom.html.className=dom.html.className==='dark'?'':'dark';};
+  owner.harness.waitFor=async<T,>(e:string,predicate:(v:T)=>boolean)=>{const value=dom.run<T>(e);assert.ok(predicate(value),'actual activation state did not change or restore');return value;};
+  try{
+   if(fault==='none'){
+    const result=await current(owner.harness,condition);assert.deepEqual(result.pending,[]);assert.deepEqual(keys,['Enter','Space']);assert.equal(dom.html.className,'');
+    assert.deepEqual(tabs.slice(0,5),['forward','forward','forward','backward','backward'],'original positive reverse order remains unchanged before activation');
+    assert.equal(owner.socket.commandsFor('Input.dispatchKeyEvent').filter(c=>c.params.key==='Enter'||c.params.key===' ').length,4);
+   }else await assert.rejects(current(owner.harness,condition),/missing|ambiguous|clipped|covered|activation|key|callback/);
+   assert.equal('__uiKeyboardPlan'in dom.context,false);assert.equal('__uiSurfaceActivation'in dom.context,false);
+   assert.equal(owner.harness.requests.size,0,'controlled keys issue no business request');
+  }finally{await owner.harness.close();}
+ }
+});
+
+test('UI-UA-IDENTITY-024: typed read-only harness binds focused AX leaf to exact document/frame/UA host and releases objects',async()=>{
+ for(const fault of ['none','missing-leaf','wrong-host','wrong-frame','root-mismatch','two-leaves','ignored','missing-backend','disabled-leaf','changed-leaf','changed-loader','changed-host','ax-bound','read-failure','release-failure','both-failures','final-disabled','final-role','final-frame','final-root','final-ancestry','final-owner','final-duplicate']){
+  const owner=createHarnessFixture();let frameReads=0,hostReads=0,axReads=0,hostDescriptions=0;const sent:{method:string;params:Record<string,unknown>}[]=[];
+  owner.socket.send=(raw:string)=>{const cmd=JSON.parse(raw);sent.push(cmd);let result:Record<string,unknown>={};let error:{message:string}|undefined;
+   if(cmd.method==='Page.getFrameTree')result={frameTree:{frame:{id:'frame-one',loaderId:fault==='changed-loader'&&++frameReads>1?'replaced':'loader-one'}}};
+   if(cmd.method==='Runtime.evaluate')result={result:{objectId:cmd.params.expression==='document'?'document':'host'}};
+   if(cmd.method==='DOM.describeNode')result={node:cmd.params.objectId==='document'?{nodeName:'#document',backendNodeId:1}:{nodeName:'INPUT',backendNodeId:10,shadowRoots:[{nodeName:'#document-fragment',backendNodeId:20,shadowRootType:'user-agent',children:[{nodeName:'SPAN',backendNodeId:11},{nodeName:'SPAN',backendNodeId:12}]}]}};
+   if(cmd.method==='DOM.describeNode'&&cmd.params.objectId==='host'&&++hostDescriptions>1&&fault==='final-owner'){const node=result.node as {shadowRoots:{children:{backendNodeId:number}[]}[]};node.shadowRoots[0].children=node.shadowRoots[0].children.filter(n=>n.backendNodeId!==11);}
+   if(cmd.method==='Runtime.callFunctionOn')result={result:{value:cmd.params.objectId==='leaf'?{indicator:true,visible:true}:String(cmd.params.functionDeclaration).includes('matches(')?'datetime':!(fault==='changed-host'&&++hostReads>0)}};
+   if(cmd.method==='DOM.resolveNode')result={object:{objectId:'leaf'}};
+   if(cmd.method==='Accessibility.getFullAXTree'){axReads++;
+    const focused=[{name:'focused',value:{value:true}}];
+    const nodes: {nodeId:string;backendDOMNodeId?:number;role:{value:string};frameId?:string;properties?:typeof focused;childIds?:string[];ignored?:boolean;name?:{value:string};value?:{value:string}}[]=[{nodeId:'root',backendDOMNodeId:fault==='root-mismatch'?999:1,role:{value:'RootWebArea'},frameId:fault==='wrong-frame'?'other':'frame-one',properties:focused,childIds:['host']},{nodeId:'host',backendDOMNodeId:10,role:{value:'DateTime'},childIds:['leaf','second']},{nodeId:'leaf',backendDOMNodeId:fault==='missing-backend'?undefined:fault==='wrong-host'?999:fault==='changed-leaf'&&axReads>1?12:11,ignored:fault==='ignored',role:{value:'spinbutton'},name:{value:'DO-NOT-LOG-NAME'},value:{value:'DO-NOT-LOG-VALUE'},properties:fault==='missing-leaf'?[]:fault==='disabled-leaf'?[...focused,{name:'disabled',value:{value:true}}]:focused}];
+    if(axReads>1){
+     if(fault==='final-disabled')nodes[2].properties=[...focused,{name:'disabled',value:{value:true}}];
+     if(fault==='final-role')nodes[2].role={value:'slider'};
+     if(fault==='final-frame')nodes[0]={...nodes[0],frameId:'other'};
+     if(fault==='final-root')nodes[0].backendDOMNodeId=999;
+     if(fault==='final-ancestry')nodes[0].childIds=[];
+     if(fault==='final-duplicate')nodes.push({...nodes[1]});
+    }
+    if(fault==='two-leaves')nodes.push({nodeId:'second',backendDOMNodeId:12,role:{value:'spinbutton'},properties:focused,ignored:false}as typeof nodes[number]);
+    if(fault==='ax-bound')while(nodes.length<=8192)nodes.push({...nodes[1],nodeId:'overflow-'+nodes.length});
+    result={nodes};if(['read-failure','both-failures'].includes(fault))error={message:'bounded-read-failure'};
+   }
+   if(cmd.method==='Runtime.releaseObjectGroup'&&['release-failure','both-failures'].includes(fault))error={message:'bounded-release-failure'};
+   queueMicrotask(()=>owner.socket.respond(cmd,error?{error}:{result}));
+  };
+  try{
+   if(fault==='none'){
+    const first=await owner.harness.observeNativeFocus(),second=await owner.harness.observeNativeFocus();assert.deepEqual(first,second);
+    assert.equal(first.kind,'datetime');assert.equal(first.relation,'ua-descendant');assert.equal(first.role,'spinbutton');assert.equal(first.focusedAncestors,1);assert.ok(first.indicator&&first.visible);
+    assert.ok(Buffer.byteLength(JSON.stringify(first))<1024);assert.doesNotMatch(JSON.stringify(first),/DO-NOT-LOG|frame-one|loader-one|nodeId|backendDOM/);
+    assert.equal(sent.filter(c=>c.method==='Accessibility.enable').length,1);
+   }else{
+    await assert.rejects(owner.harness.observeNativeFocus(),error=>{assert.ok(error instanceof Error);if(fault==='both-failures'){assert.ok(error instanceof AggregateError);assert.equal(error.errors.length,2);assert.equal(error.cause,error.errors[0]);assert.equal(error.errors[0].message,'bounded-read-failure');assert.equal(error.errors[1].message,'bounded-release-failure');}return true;});
+   }
+   assert.equal(sent.filter(c=>c.method==='Runtime.releaseObjectGroup').length,fault==='none'?2:1);
+   assert.equal(sent.some(c=>/Input\.|DOM\.focus|scroll|Fetch\./.test(c.method)),false,'observer never acts, changes interception or exposes raw send');
+   assert.equal(owner.harness.requests.size,0);assert.equal(owner.harness.responses.size,0);
+  }finally{await owner.harness.close();}
+ }
+});
+
+test('UI-MEDIA-025: actual readonly observer separates complete stable media identity from independently expected operability',async()=>{
+ const {assertMediaIdentity}=await import('./media-keyboard-contract.mts');
+ for(const state of ['empty','error','loaded']as const)for(const fault of ['none','state-change','set-change','missing-host','ambiguous-host','wrong-leaf','read-failure','release-failure','unknown-error']){
+  const owner=createHarnessFixture();let states=0,axes=0;const methods:string[]=[];
+  owner.socket.send=(raw:string)=>{const cmd=JSON.parse(raw);methods.push(cmd.method);let result:Record<string,unknown>={};let error:{message:string}|undefined;
+   if(cmd.method==='Page.getFrameTree')result={frameTree:{frame:{id:'owned-frame',loaderId:'owned-loader'}}};
+   if(cmd.method==='Runtime.evaluate')result={result:{objectId:cmd.params.expression==='document'?'document':'host'}};
+   if(cmd.method==='DOM.describeNode')result={node:cmd.params.objectId==='document'?{nodeName:'#document',backendNodeId:1}:{nodeName:'VIDEO',backendNodeId:10,shadowRoots:[{nodeName:'#document-fragment',backendNodeId:20,shadowRootType:'user-agent',children:[{nodeName:'BUTTON',backendNodeId:11}]}]}};
+   if(cmd.method==='Runtime.callFunctionOn'){
+    const expression=String(cmd.params.functionDeclaration);
+    const facts={ready:state==='loaded'?4:0,network:state==='empty'?0:state==='loaded'?1:3,error:state==='error'?4:0,source:state!=='empty',currentSource:state!=='empty',paused:true,atStart:true};
+    if(expression.includes('readyState')){states++;if(fault==='state-change'&&states>1)facts.ready=1;if(fault==='unknown-error')facts.error=9;}
+    result={result:{value:cmd.params.objectId==='leaf'?{indicator:true,visible:true}:expression.includes('matches(')?'media':expression.includes('readyState')?facts:true}};
+   }
+   if(cmd.method==='DOM.resolveNode')result={object:{objectId:'leaf'}};
+   if(cmd.method==='Accessibility.getFullAXTree'){
+    axes++;const enabled=state==='loaded',property=(name:string,value:boolean)=>({name,value:{value}});
+    const nodes=[{nodeId:'root',backendDOMNodeId:1,ignored:false,frameId:'owned-frame',role:{value:'RootWebArea'},childIds:['host'],properties:[property('focused',true)]},
+     {nodeId:'host',backendDOMNodeId:10,ignored:false,frameId:'owned-frame',role:{value:'Video'},childIds:['control'],properties:[property('focused',!enabled),property('focusable',fault!=='missing-host'),property('disabled',!enabled)]},
+     {nodeId:'control',backendDOMNodeId:fault==='wrong-leaf'?99:11,ignored:false,frameId:'owned-frame',role:{value:'button'},childIds:[],properties:[property('focused',enabled),property('focusable',enabled||fault==='set-change'&&axes>1),property('disabled',!enabled)]}];
+    if(fault==='ambiguous-host')nodes.push({...nodes[1],nodeId:'duplicate-host'});
+    result={nodes};if(fault==='read-failure')error={message:'closed-read-failure'};
+   }
+   if(cmd.method==='Runtime.releaseObjectGroup'&&fault==='release-failure')error={message:'closed-cleanup-failure'};
+   queueMicrotask(()=>owner.socket.respond(cmd,error?{error}:{result}));
+  };
+  try{
+   if(fault==='none'||fault==='wrong-leaf'&&state!=='loaded'){
+    const actual=await owner.harness.observeNativeFocus();assert.equal(actual.complete,true);assert.equal(actual.disabled,state!=='loaded');assert.equal(actual.focusable,true);
+    assert.equal(assertMediaIdentity(actual,state==='empty'?'preview-403-empty':state==='error'?'public-fixture-error':'available'),state==='loaded'?'available':'unavailable');
+    assert.equal(actual.focusables.length,state==='loaded'?2:1);assert.equal(actual.uaFocusable,state==='loaded'?1:0);
+    assert.doesNotMatch(JSON.stringify(actual),/owned-frame|owned-loader|backendDOM|nodeId/);
+    const mutations:((v:typeof actual)=>unknown)[]=[v=>({...v,complete:false}),v=>({...v,visible:false}),v=>({...v,focusable:false}),v=>({...v,media:null}),v=>({...v,focusables:[]}),v=>({...v,mediaState:'loading'}),v=>({...v,media:{...v.media!,paused:false}})];
+    for(const mutate of mutations)assert.throws(()=>assertMediaIdentity(mutate(actual)as typeof actual,state==='empty'?'preview-403-empty':state==='error'?'public-fixture-error':'available'));
+    if(state!=='loaded')assert.throws(()=>assertMediaIdentity(actual,'available'),/loaded/);
+   }else if(fault==='set-change'&&state==='loaded')await owner.harness.observeNativeFocus();
+   else await assert.rejects(owner.harness.observeNativeFocus());
+   assert.equal(methods.filter(m=>m==='Runtime.releaseObjectGroup').length,1);
+   assert.equal(methods.some(m=>/Input\.|Fetch\.|DOM\.focus|Target\./.test(m)),false);
+  }finally{await owner.harness.close();}
+ }
+});
+
+test('UI-READONLY-025: four exact additions compose with original Tab protection and reject API, owner, fatal, closed, cleanup and old-body changes',async()=>{
+ const {execFileSync}=await import('node:child_process');const {assertApprovedSourceDelta}=await import('./approved-source-delta.mts');
+ const root=new URL('../../..',import.meta.url),path='web/tests/helpers/browser-harness.mts';
+ const protectedFixture=JSON.parse(readFileSync(new URL('../fixtures/ui-regression/protected.json',import.meta.url),'utf8'));
+ const manifest=JSON.parse(readFileSync(new URL('../fixtures/ui-regression/approved-source-deltas.json',import.meta.url),'utf8'));
+ const before=execFileSync('git',['show',protectedFixture.base_commit+':'+path],{cwd:root}),after=readFileSync(new URL('../helpers/browser-harness.mts',import.meta.url),'utf8');
+ assertApprovedSourceDelta(path,before,Buffer.from(after),manifest);
+ for(const [from,to]of[
+  ['return this.nativeFocusObserver.observe();','await this.send("Fetch.enable"); return this.nativeFocusObserver.observe();'],
+  ['(method, params) => this.send(method, params)','(method, params) => this.sendBrowser(method, params)'],
+  ['async observeNativeFocus() {\n    this.assertNoFatalError();','async observeNativeFocus() {'],
+  ['if (this.closed) throw new Error("Browser harness closed");\n    return this.nativeFocusObserver.observe();','return this.nativeFocusObserver.observe();'],
+  ['    this.nativeFocusObserver.clear();\n',''],
+  ['async observeNativeFocus() {','async observeNativeFocus(method: string) {'],
+  ['modifiers: direction === "backward" ? 8 : 0','modifiers: 0'],
+ ]){
+  assert.ok(after.includes(from));
+  const changed=after.replace(from,to);assert.notEqual(changed,after);assert.throws(()=>assertApprovedSourceDelta(path,before,Buffer.from(changed),manifest));
+ }
+ const fixture=createHarnessFixture();await fixture.harness.close();await assert.rejects(fixture.harness.observeNativeFocus(),/closed/);
+});
+
+test('UI-MEDIA-INPUT-025: real negative-key caller observes finite native scroll and exact keyboard restoration, rejects state/action/owner faults and removes listeners',async()=>{
+ const {exerciseUnavailableMedia,mediaInputSettled,mediaReturnPeer}=await import('./media-keyboard-contract.mts');
+ const {runInNewContext}=await import('node:vm');
+ for(const family of ['stream-detail','public-archive-share'])for(const fault of ['none','state','played','untrusted','wrong-peer','wrong-host','covered-peer','input-error','cleanup-error']){
+  const condition=conditions.find(c=>c.family===family&&c.state==='ready'&&['keyboard','Detail'].includes(c.exercise||''))!;
+  const listeners=new Map<object,Map<string,Set<(e:unknown)=>void>>>();
+  const node=()=>{const n={isConnected:true,parentElement:null as unknown,scrollLeft:0,scrollTop:0,getAttribute:(name:string)=>name==='src'?(family==='stream-detail'?null:'data:video/mp4;base64,AAAAHGZ0eXBtcDQyAAAAAG1wNDJpc29t'):null,closest:()=>null,contains:(e:unknown)=>e===n,getBoundingClientRect:()=>({x:0,y:0,left:0,top:0,right:100,bottom:50,width:100,height:50}),addEventListener:(type:string,f:(e:unknown)=>void)=>{let m=listeners.get(n);if(!m){m=new Map();listeners.set(n,m);}if(!m.has(type))m.set(type,new Set());m.get(type)!.add(f);},removeEventListener:(type:string,f:(e:unknown)=>void)=>{listeners.get(n)?.get(type)?.delete(f);}};return n;};
+  const root=node(),host=node(),peer=node();host.parentElement=root;peer.parentElement=root;
+  const document={activeElement:host as unknown,querySelectorAll:(selector:string)=>selector.includes('a[href')?[peer]:[host],elementFromPoint:()=>fault==='covered-peer'?root:peer};
+  const context={document,innerWidth:390,innerHeight:844,requestAnimationFrame:(f:()=>void)=>f(),getComputedStyle:()=>({visibility:'visible',display:'block',opacity:'1',outlineStyle:'solid',outlineWidth:'2'}),__uiKeyboardPlan:{medias:[{element:host}]}};
+  const ua={document:1,host:2,node:3,kind:'media',relation:'host',role:'media',stable:true,focusedAncestors:1,uaFocusable:0,mediaState:family==='stream-detail'?'empty':'error',indicator:true,visible:true,disabled:true,focusable:true,complete:true,media:{ready:0,network:family==='stream-detail'?0:3,error:family==='stream-detail'?0:4,source:family!=='stream-detail',currentSource:family!=='stream-detail',paused:true,atStart:true},focusables:[{node:3,relation:'host',role:'media',disabled:true}]} as const;
+  const inputs:string[]=[],cause=new Error('actual-input-cause');let cleanupCalls=0;
+  const fixture={requests:new Map([['/streams/ui-stream-1/preview-links',1]]),responseStatuses:new Map([['/streams/ui-stream-1/preview-links',[403]]]),
+   evaluate:async(e:string)=>{if(e.includes("v.host.removeEventListener")){cleanupCalls++;if(fault==='cleanup-error')throw cause;}return JSON.parse(JSON.stringify(await runInNewContext(e,context)));},
+   pressNativeKey:async(key:string)=>{inputs.push(key);if(fault==='input-error')throw cause;for(const f of listeners.get(host)?.get('keydown')||[])f({target:host,code:key,isTrusted:fault!=='untrusted',repeat:false});if(fault==='played')for(const f of listeners.get(host)?.get('play')||[])f({});},
+   observeNativeFocus:async()=>fault==='state'?{...ua,media:{...ua.media,ready:1}}:ua,
+   pressTab:async(direction:string)=>{inputs.push(direction);document.activeElement=direction==='forward'?(fault==='wrong-peer'?root:peer):(fault==='wrong-host'?root:host);},
+   waitFor:async(e:string,p:(v:unknown)=>boolean)=>{let value:unknown;for(let n=0;n<5;n++){value=await runInNewContext(e,context);if(p(value))return value;}throw Error('existing deadline');}
+  } as unknown as BrowserHarness;
+  const relevant=family==='public-archive-share'||!['wrong-peer','wrong-host','covered-peer'].includes(fault);
+  if(fault==='none'||!relevant){assert.equal(await exerciseUnavailableMedia(fixture,condition,ua),family==='public-archive-share'?2:0);assert.deepEqual(inputs,family==='public-archive-share'?['Enter','Space','forward','backward']:['Enter','Space']);}
+  else await assert.rejects(exerciseUnavailableMedia(fixture,condition,ua),error=>{if(['input-error','cleanup-error'].includes(fault))assert.equal(error,cause);return true;});
+  assert.equal(cleanupCalls,1);
+  if(fault!=='cleanup-error'){assert.equal('__uiUnavailableMedia'in context,false);assert.equal([...listeners.values()].flatMap(m=>[...m.values()].map(s=>s.size)).reduce((a,b)=>a+b,0),0);}
+ }
+ const parent={scrollLeft:0,scrollTop:0,parentElement:null},host={parentElement:parent,isConnected:true,getBoundingClientRect:()=>({x:0,y:0,width:100,height:100})};
+ const state={host,owners:[parent],pending:new Set<object>(),last:null,stable:0},context={__uiUnavailableMedia:state,document:{activeElement:host},requestAnimationFrame:(f:()=>void)=>f()};
+ const sample=()=>runInNewContext(mediaInputSettled,context) as Promise<boolean>;
+ assert.equal(await sample(),false);parent.scrollTop=10;assert.equal(await sample(),false);state.pending.add(parent);for(let i=0;i<4;i++)assert.equal(await sample(),false,'unsettled native scroll cannot pass');state.pending.clear();assert.equal(await sample(),false);assert.equal(await sample(),true);
+ host.isConnected=false;await assert.rejects(sample(),/owner replaced/);host.isConnected=true;state.owners=[];await assert.rejects(sample(),/scroll owner replaced/);
+ assert.ok(mediaReturnPeer.includes('elementFromPoint'),'restoration observes the real hit target');
+});
+
+test('UI-LINK-025: native link expectations require default navigation and exact settled fixture GET while Space stays inactive',async()=>{
+ const {assertLinkActivation,publicDownloadPath}=await import('./native-link-activation.mts');const {createUIFixture}=await import('./route-fixture.mts');
+ const condition=conditions.find(c=>c.family==='public-archive-share'&&c.exercise==='keyboard')!;
+ const good={keys:1,clicks:0,navigations:0,invalid:false,sameDocument:true,sameTarget:true};
+ assertLinkActivation(good,'Space');assertLinkActivation({...good,keys:2,clicks:1,navigations:1},'Enter');
+ for(const key of ['Space','Enter']as const){const expected=key==='Space'?good:{...good,keys:2,clicks:1,navigations:1};for(const change of [{keys:0},{clicks:2},{navigations:key==='Space'?1:0},{invalid:true},{sameDocument:false},{sameTarget:false}])assert.throws(()=>assertLinkActivation({...expected,...change},key));}
+ for(const fault of ['none','post','query','other-path','external','wrong-condition']){
+  const fixture=createUIFixture('http://127.0.0.1:4100');fixture.reset(fault==='wrong-condition'?{...condition,family:'archive'}:condition,'/archive-shares/ui-synthetic-share');
+  const response=await fixture.resolver({method:fault==='post'?'POST':'GET',url:(fault==='external'?'https://unexpected.example':'http://127.0.0.1:4100')+publicDownloadPath+(fault==='query'?'?extra=1':fault==='other-path'?'/extra':'')});
+  if(fault==='none'){assert.equal(response?.status,204);assert.equal(response?.body,'');assert.equal(response?.requiredResponse,true);assert.equal(fixture.trace.length,1);assert.deepEqual(fixture.unexpected,[]);}else assert.notEqual(response?.status,204);
+ }
+ const fixture=createUIFixture('http://127.0.0.1:4100');fixture.reset(condition,'/archive-shares/ui-synthetic-share');
+ const response=await fixture.resolver({method:'GET',url:'http://127.0.0.1:4100/archive-shares/ui-synthetic-share'});
+ assert.equal((response?.body as {playback_url:string}).playback_url,(await import('./media-keyboard-contract.mts')).publicFixtureMedia,'unhealthy original fixture media is unchanged');
+});
+
+
+test('UI-ACTIVATION-MUTATION-024: actual current callback keeps unknown API and business mutations fatal after harmless input',async()=>{
+ const source=readFileSync(new URL('./run-browser.mts',import.meta.url),'utf8');
+ const start=source.indexOf('        assert.deepEqual(fixture.unexpected'),end=source.indexOf('        if (condition.state === "ready")',start);
+ assert.ok(start>0&&end>start);const body=source.slice(start,end);
+ const {default:ts}=await import('typescript');
+ const js=ts.transpileModule('async function current(fixture,condition,surface){'+body+'}',{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText;
+ const current=new Function('assert','previewExpectation','assertPreviewIssue',js+';return current;')(assert,()=>{throw Error('not Preview');},()=>{throw Error('not Preview');}) as (fixture:unknown,condition:unknown,surface:unknown)=>Promise<void>;
+ const condition=conditions.find(c=>c.family==='login'&&c.exercise==='keyboard')!;
+ for(const trace of [[],[{method:'POST',path:'/auth/session/refresh'}]])await current({unexpected:[],trace},condition,{stage:'page'});
+ for(const method of ['POST','PUT','PATCH','DELETE'])await assert.rejects(current({unexpected:[],trace:[{method,path:'/nodes'}]},condition,{stage:'page'}),/display\/cancel must not mutate/);
+ await assert.rejects(current({unexpected:['unknown'],trace:[]},condition,{stage:'page'}),/unknown API\/external request/);
 });
