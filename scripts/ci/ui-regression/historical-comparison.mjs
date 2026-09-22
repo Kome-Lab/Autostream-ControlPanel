@@ -8,6 +8,7 @@ import { pathToFileURL } from "node:url";
 import { exportWeb, buildExport } from "./source-export.mjs";
 import { staticExportServer } from "../../../web/tests/ui-regression/static-server.mts";
 import { ownedOutput } from "../../../web/tests/ui-regression/run-browser.mts";
+import { prepareHistoricalExecution, compareHistoricalCaptures } from "./historical-execution.mts";
 
 assert.equal(process.env.CI, "true");
 assert.equal(process.platform, "linux");
@@ -21,8 +22,7 @@ ownedOutput(process.env.RUNNER_TEMP || "", output);
 mkdirSync(output);
 const contract = await import(pathToFileURL(resolve(root, "web/tests/helpers/bundle9-browser-contract.mts")));
 const { fontInventory } = await import(pathToFileURL(resolve(root, "web/tests/helpers/run-bundle9-ui-comparison.mts")));
-const { captureBundle9Source } = await import(pathToFileURL(resolve(root, "web/tests/helpers/bundle9-browser-scenarios.mts")));
-const { BUNDLE9_BROWSER_BEFORE: before, BUNDLE9_BROWSER_CLOCK: clock, assertSameObservation, assertPixelIdentity, bundle9ExpectedCaptureNames } = contract;
+const { BUNDLE9_BROWSER_BEFORE: before, BUNDLE9_BROWSER_CLOCK: clock, bundle9ExpectedCaptureNames } = contract;
 const write = (name, data) => writeFileSync(resolve(output, name), JSON.stringify(data, null, 2) + "\n", { flag: "wx" });
 write("sources.json", { workflowCommit: process.env.GITHUB_SHA, before, after: fixedAfter, actualHistoricalHEAD: git("rev-parse", "HEAD"), comparison: "historical-only", pixelThreshold: 0, mask: false });
 const expectedLock = readFileSync(resolve(root, "web/package-lock.json"));
@@ -34,6 +34,9 @@ const helpers = helperPaths.map(path => {
   assert.deepEqual(readFileSync(resolve(root, path)), raw, "historical helper must match fixed raw source");
   return { path, sha256: digest(raw) };
 });
+const execution = prepareHistoricalExecution(root, resolve(output, "history-execution"));
+write("historical-execution-transform.json", execution.proof);
+const { captureBundle9Source } = await import(execution.moduleURL);
 const beforeTree = git("rev-parse", before + ":web/src"), afterTree = git("rev-parse", fixedAfter + ":web/src");
 assert.notEqual(beforeTree, afterTree, "different fixed UI source trees required");
 const fonts = fontInventory();
@@ -57,14 +60,6 @@ for (const side of ["before", "after"]) {
   try { captures[side] = await captureBundle9Source(server.baseURL, resolve(output, side)); }
   finally { await server.close(); }
 }
-assertSameObservation(captures.before.browserVersion, captures.after.browserVersion);
-const results = [];
-for (const name of bundle9ExpectedCaptureNames) {
-  const left = captures.before.captures.find(item => item.name === name);
-  const right = captures.after.captures.find(item => item.name === name);
-  assert.ok(left && right, "missing historical capture");
-  assertSameObservation(left.observation, right.observation);
-  results.push({ name, ...assertPixelIdentity(await decode(resolve(output, "before", name + ".png")), await decode(resolve(output, "after", name + ".png"))) });
-}
-assert.equal(results.length, 41);
+const results = await compareHistoricalCaptures(captures.before, captures.after, contract,
+  (side, name) => decode(resolve(output, side, name + ".png")));
 write("result.json", { historical: true, before, after: fixedAfter, expected: 41, comparisons: results, status: "PASS" });

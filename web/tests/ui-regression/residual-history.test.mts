@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import "./history-execution.test.mts";
 import {
   nodeResidualEntry,
   orderedNodeResidualEvidence,
