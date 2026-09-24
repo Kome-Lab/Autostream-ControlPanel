@@ -192,7 +192,7 @@ export async function main() {
         restoreForm = await driveFormContent(target, condition, freshNodeDraft);
         await paint(target);
         await settleRender(target, undefined, reportRender);
-        const accessibility = await exerciseAccessibility(target, condition, value => write(condition.id + ".keyboard-trace.json", value));
+        const accessibility = await exerciseAccessibility(target, condition, value => write(condition.id + ".keyboard-trace.json", value),value=>write(condition.id+".ua-stability.json",value));
         if (!["initial-loading", "background-refresh"].includes(condition.state)) await target.waitForRequestHandlersIdle();
         if (["blocking-error", "partial", "stale"].includes(condition.state)) {
           await target.waitFor(failureTextExpression, hasFailureCopy, "existing retry policy reaches visible failure");

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { isUAOutputFailure } from "../helpers/browser-ua-diagnostic.mts";
 import { BrowserHarness } from "../helpers/browser-harness.mts";
 import { createUIFixture } from "./route-fixture.mts";
 import { preserveFetchDiagnostic } from "./capture.mts";
@@ -49,7 +50,7 @@ export function createConditionRunner(baseURL: string, write: Writer, launch = (
       browser.assertNoFatalError(); stage = "exercise";
       result = await exercise(browser, fixture);
       browser.assertNoFatalError();
-    } catch (error) { failure = error; failed = true; failedStage = stage; }
+    } catch (error) { failure = error; failed = true; failedStage = stage;if(isUAOutputFailure(error))stopped=true; }
     finally {
       // Release held required responses before draining or closing their sole owner.
       for (const [step, action] of [

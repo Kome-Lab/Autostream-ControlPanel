@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import {uaSnapshot,summarizeUA,bindUADiagnostic,type UASnapshot,type UADiagnostic} from "./browser-ua-diagnostic.mts";
 
 // Read-only, same-document UA identity observations; callers decide operability.
 // No names, values, URLs, raw AX objects or protocol identifiers leave this owner.
@@ -20,9 +21,10 @@ export class NativeFocusObserver {
   private readonly identities=new Map<string,number>();
   private documentKey:string|undefined;
   private readonly hostNodes=new Map<number,Set<number>>();
+  private readonly snapshots=new Map<number,UASnapshot>();
   private readonly send:Send;
   constructor(send:Send){this.send=send;}
-  clear(){this.identities.clear();this.hostNodes.clear();this.documentKey=undefined;}
+  clear(){this.identities.clear();this.hostNodes.clear();this.snapshots.clear();this.documentKey=undefined;}
   private id(key:string){
     const old=this.identities.get(key);if(old)return old;
     assert.ok(this.identities.size<128,"UA identity observation bound");
@@ -61,6 +63,7 @@ export class NativeFocusObserver {
     if(!this.enabled){await this.send("DOM.enable");await this.send("Accessibility.enable");this.enabled=true;}
     const group="ui-native-focus-observation";
     let primary: unknown;
+    let diagnostic:UADiagnostic|undefined;
     try{
       const frame=await this.frame();
       const result=await this.send("Runtime.evaluate",{expression:"document.activeElement",objectGroup:group,returnByValue:false});
@@ -81,9 +84,17 @@ export class NativeFocusObserver {
       this.documentKey=key;
       const descendants=this.descendants(host);
       const previous=this.hostNodes.get(host.backendNodeId);
-      if(previous)assert.ok(descendants.size===previous.size&&[...descendants].every(id=>previous.has(id)),"UA subtree identity replaced during traversal");else this.hostNodes.set(host.backendNodeId,descendants);
-      const response=await this.send("Accessibility.getFullAXTree",{frameId:frame.id});
-      const nodes=response.nodes as AXNode[];assert.ok(Array.isArray(nodes)&&nodes.length<=8192,"UA AX tree unavailable or over bound");
+      let subtreeFailure:unknown;
+      if(previous){try{assert.ok(descendants.size===previous.size&&[...descendants].every(id=>previous.has(id)),"UA subtree identity replaced during traversal");}catch(error){subtreeFailure=error;}}
+      let nodes:AXNode[],firstSnapshot:UASnapshot;
+      try{
+        const response=await this.send("Accessibility.getFullAXTree",{frameId:frame.id});
+        nodes=response.nodes as AXNode[];assert.ok(Array.isArray(nodes)&&nodes.length<=8192,"UA AX tree unavailable or over bound");
+        firstSnapshot=uaSnapshot(host,nodes,frame,key,media);
+        diagnostic=summarizeUA(this.snapshots.get(host.backendNodeId),firstSnapshot,"between");
+      }catch(error){throw subtreeFailure?new AggregateError([subtreeFailure,error],"UA identity and diagnostic observation failed",{cause:subtreeFailure}):error;}
+      if(subtreeFailure)throw subtreeFailure;
+      if(!previous)this.hostNodes.set(host.backendNodeId,descendants);
       const roots=nodes.filter(n=>n.role?.value==="RootWebArea"&&n.backendDOMNodeId===documentNode.backendNodeId);
       assert.ok(roots.length===1&&roots[0].frameId===frame.id,"UA document/frame binding unavailable or mismatched");
       const byId=new Map(nodes.map(n=>[n.nodeId,n]));assert.equal(byId.size,nodes.length,"ambiguous AX node identity");
@@ -133,15 +144,26 @@ export class NativeFocusObserver {
       const finalOwner=(await this.send("DOM.describeNode",{objectId,depth:-1,pierce:true})).node as DOMNode;
       assert.equal(finalOwner.backendNodeId,host.backendNodeId,"UA final DOM host replaced");
       const finalDescendants=this.descendants(finalOwner);
-      assert.ok(finalDescendants.size===descendants.size&&[...descendants].every(id=>finalDescendants.has(id)),"UA final subtree owner or identity changed");
+      try{assert.ok(finalDescendants.size===descendants.size&&[...descendants].every(id=>finalDescendants.has(id)),"UA final subtree owner or identity changed");}
+      catch(error){
+        try{const observedFrame=await this.frame(),observedMedia=media?await this.mediaFacts(objectId):null;diagnostic=summarizeUA(firstSnapshot,uaSnapshot(finalOwner,finalNodes,observedFrame,key,observedMedia),"within");}
+        catch(observation){throw new AggregateError([error,observation],"UA final identity and diagnostic observation failed",{cause:error});}
+        throw error;
+      }
       const finalHost=await this.send("Runtime.callFunctionOn",{objectId,functionDeclaration:"function(){return this===document.activeElement&&this.isConnected}",returnByValue:true});
       assert.equal((finalHost.result as {value?:unknown})?.value,true,"UA host changed after paint observation");
-      const finalFrame=await this.frame();assert.ok(finalFrame.id===frame.id&&finalFrame.loaderId===frame.loaderId,"UA document changed after paint observation");
-      if(media)assert.deepEqual(await this.mediaFacts(objectId),media,"media state changed during identity observation");
+      const finalFrame=await this.frame();
+      assert.ok(finalFrame.id===frame.id&&finalFrame.loaderId===frame.loaderId,"UA document changed after paint observation");
+      const finalMedia=media?await this.mediaFacts(objectId):null;
+      if(media)assert.deepEqual(finalMedia,media,"media state changed during identity observation");
+      const within=summarizeUA(firstSnapshot,uaSnapshot(finalOwner,finalNodes,finalFrame,key,finalMedia),"within");
+      if(within.delta.some(n=>n>0))diagnostic=within;
       const role=(value:string|undefined):ClosedRole=>value==="spinbutton"||value==="button"||value==="slider"?value:kind==="media"?"media":"other";
-      return {document:this.id("document:"+key),host:this.id("host:"+host.backendNodeId),node:this.id("node:"+leaf.backendDOMNodeId),kind,relation:leaf.backendDOMNodeId===host.backendNodeId?"host":"ua-descendant",role:role(leaf.role?.value),stable:true,focusedAncestors:focused.length-1,uaFocusable,mediaState,indicator:painted.indicator,visible:painted.visible,disabled:disabled(leaf),focusable:focusable(leaf),complete:true,media,focusables:firstSet.map(n=>({node:this.id("node:"+n.backend),relation:n.backend===host.backendNodeId?"host":"ua-descendant",role:role(n.role),disabled:n.disabled}))};
-    }catch(error){primary=error;throw error;}finally{
-      try{await this.send("Runtime.releaseObjectGroup",{objectGroup:group});}catch(error){throw primary?new AggregateError([primary,error],"UA observation and cleanup failed",{cause:primary}):error;}
+      const observation:NativeFocusObservation={document:this.id("document:"+key),host:this.id("host:"+host.backendNodeId),node:this.id("node:"+leaf.backendDOMNodeId),kind,relation:leaf.backendDOMNodeId===host.backendNodeId?"host":"ua-descendant",role:role(leaf.role?.value),stable:true,focusedAncestors:focused.length-1,uaFocusable,mediaState,indicator:painted.indicator,visible:painted.visible,disabled:disabled(leaf),focusable:focusable(leaf),complete:true,media,focusables:firstSet.map(n=>({node:this.id("node:"+n.backend),relation:n.backend===host.backendNodeId?"host":"ua-descendant",role:role(n.role),disabled:n.disabled}))};
+      if(!this.snapshots.has(host.backendNodeId))this.snapshots.set(host.backendNodeId,firstSnapshot);
+      bindUADiagnostic(observation,diagnostic);return observation;
+    }catch(error){primary=error;bindUADiagnostic(error,diagnostic);throw error;}finally{
+      try{await this.send("Runtime.releaseObjectGroup",{objectGroup:group});}catch(error){const failure=primary?new AggregateError([primary,error],"UA observation and cleanup failed",{cause:primary}):error;bindUADiagnostic(failure,diagnostic);throw failure;}
     }
   }
 }

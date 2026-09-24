@@ -434,3 +434,224 @@ test('UI-ACTIVATION-MUTATION-024: actual current callback keeps unknown API and 
  for(const method of ['POST','PUT','PATCH','DELETE'])await assert.rejects(current({unexpected:[],trace:[{method,path:'/nodes'}]},condition,{stage:'page'}),/display\/cancel must not mutate/);
  await assert.rejects(current({unexpected:['unknown'],trace:[]},condition,{stage:'page'}),/unknown API\/external request/);
 });
+
+test('UI-UA-STABILITY-030: real observer retains subtree rejection and original cause while recording closed complete delta classes',async()=>{
+ const {readUADiagnostic}=await import('../helpers/browser-ua-diagnostic.mts');
+ for(const fault of ['stable','decoration-replaced','control-added','owner-replaced','read-and-identity','cleanup-and-identity']){
+  const owner=createHarnessFixture();let hostReads=0,axReads=0,releases=0;const sent:string[]=[];
+  owner.socket.send=(raw:string)=>{const cmd=JSON.parse(raw);sent.push(cmd.method);let result:Record<string,unknown>={},error:{message:string}|undefined;
+   const changed=hostReads>=3,backend=changed&&fault!=='stable'?31:30;
+   if(cmd.method==='Page.getFrameTree')result={frameTree:{frame:{id:'DO-NOT-LOG-frame',loaderId:'DO-NOT-LOG-loader'}}};
+   if(cmd.method==='Runtime.evaluate')result={result:{objectId:cmd.params.expression==='document'?'document':'host'}};
+   if(cmd.method==='DOM.describeNode'){
+    if(cmd.params.objectId==='document')result={node:{nodeName:'#document',backendNodeId:1}};
+    else{hostReads++;const id=hostReads>=3&&fault!=='stable'?31:30;result={node:{nodeName:'VIDEO',backendNodeId:10,shadowRoots:[{nodeName:'#document-fragment',backendNodeId:hostReads>=3&&fault==='owner-replaced'?21:20,shadowRootType:'user-agent',children:[{nodeName:'SPAN',backendNodeId:id}]}]}};}
+   }
+   if(cmd.method==='DOM.resolveNode')result={object:{objectId:'leaf'}};
+   if(cmd.method==='Runtime.callFunctionOn'){const expression=String(cmd.params.functionDeclaration);result={result:{value:cmd.params.objectId==='leaf'?{indicator:true,visible:true}:expression.includes('matches(')?'media':expression.includes('readyState')?{ready:0,network:3,error:4,source:true,currentSource:true,paused:true,atStart:true}:true}};}
+   if(cmd.method==='Accessibility.getFullAXTree'){
+    axReads++;const property=(name:string,value:boolean)=>({name,value:{value}});
+    result={nodes:[{nodeId:'secret-root',backendDOMNodeId:1,ignored:false,frameId:'DO-NOT-LOG-frame',role:{value:'RootWebArea'},childIds:['secret-host'],properties:[property('focused',true)]},{nodeId:'secret-host',backendDOMNodeId:10,ignored:false,role:{value:'Video'},childIds:['secret-decoration'],properties:[property('focused',true),property('focusable',true),property('disabled',true)]},{nodeId:'secret-decoration',backendDOMNodeId:backend,ignored:false,role:{value:changed&&fault==='control-added'?'button':'StaticText'},name:{value:'DO-NOT-LOG-name'},properties:[property('focusable',changed&&fault==='control-added')]}]};
+    if(changed&&fault==='read-and-identity')error={message:'fixed diagnostic read failure'};
+   }
+   if(cmd.method==='Runtime.releaseObjectGroup'){releases++;if(releases===2&&fault==='cleanup-and-identity')error={message:'fixed diagnostic cleanup failure'};}
+   queueMicrotask(()=>owner.socket.respond(cmd,error?{error}:{result}));
+  };
+  try{
+   const first=await owner.harness.observeNativeFocus();assert.ok(readUADiagnostic(first));
+   if(fault==='stable'){assert.deepEqual(await owner.harness.observeNativeFocus(),first);assert.equal(readUADiagnostic(first)!.baseline,false);}
+   else await assert.rejects(owner.harness.observeNativeFocus(),error=>{
+    assert.ok(error instanceof Error);const original=error instanceof AggregateError?error.cause:error;assert.ok(original instanceof Error);assert.equal(original.message,'UA subtree identity replaced during traversal');
+    if(fault==='read-and-identity'||fault==='cleanup-and-identity'){assert.ok(error instanceof AggregateError);assert.equal(error.errors[0],original);assert.equal(error.errors.length,2);assert.match(String(error.errors[1]),fault==='read-and-identity'?/read failure/:/cleanup failure/);}
+    if(fault!=='read-and-identity'){
+     const diagnostic=readUADiagnostic(error)!;assert.ok(diagnostic);assert.ok(diagnostic.delta[0]>0&&diagnostic.delta[1]>0);assert.equal(diagnostic.overflow,false);assert.deepEqual(diagnostic.same!.slice(0,4),[true,true,true,true]);
+     assert.equal(diagnostic.focusable,fault==='control-added'?2:1);assert.doesNotMatch(JSON.stringify(diagnostic),/DO-NOT-LOG|secret-|backendNode|nodeId|objectId/);
+    }
+    return true;
+   });
+   assert.ok(axReads>=3,'current delta obtains an actual subsequent AX snapshot, not only a DOM-ID mismatch');assert.equal(releases,2);
+   assert.equal(sent.some(m=>/Input\.|Fetch\.|DOM\.focus|Target\./.test(m)),false);
+  }finally{await owner.harness.close();}
+ }
+});
+
+test('UI-UA-WRITER-030: actual condition writer bounds closed output, preserves cause identity, and stops after output failure',async()=>{
+ const {UAConditionDiagnostic,bindUADiagnostic,UAOutputFailure}=await import('../helpers/browser-ua-diagnostic.mts');
+ const {createConditionRunner,ConditionFailure}=await import('./condition-lifecycle.mts');
+ const {inventory}=await import('./matrix.mts');
+ const record={boundary:'between',baseline:true,total:4,delta:[1,1,0],classes:[[{classification:'SPAN|StaticText|1|0|0|0|0',count:1}],[{classification:'SPAN|StaticText|1|0|0|0|0',count:1}],[]],same:[true,true,true,true,true,true,true],mediaStates:["error","error"],focusable:1,focused:2,unknown:1,overflow:false} as const;
+ for(const fault of ['none','primary','writer','primary-writer','overflow']){
+  const diagnostic=new UAConditionDiagnostic(),primary=new Error('DO-NOT-LOG secret-value'),output=new Error('fixed writer failure');const saved:unknown[]=[];
+  const owner=createHarnessFixture();let launches=0,attempts=0;const condition=conditions.find(c=>c.family==='public-archive-share'&&c.exercise==='keyboard')!,surface=inventory.surfaces.find(s=>s.id===condition.family)!;
+  const write=(name:string,value:unknown)=>{if(name.endsWith('.ua-stability.json')){attempts++;if(fault.includes('writer'))throw output;saved.push(value);}};
+  const run=createConditionRunner('http://ui.test',write,async()=>{launches++;return owner.harness;});
+  const operation=async()=>{
+   let cause:unknown;try{
+    const value={};bindUADiagnostic(fault.startsWith('primary')?primary:value,record as unknown as Parameters<typeof bindUADiagnostic>[1]);
+    await diagnostic.observe('negative-enter',async()=>{if(fault.startsWith('primary'))throw primary;return value;});
+    if(fault==='overflow')for(let i=0;i<128;i++)await diagnostic.observe('negative-space-return',async()=>value);
+   }catch(error){cause=error;throw error;}finally{
+    try{diagnostic.write(condition.id,value=>write(condition.id+'.ua-stability.json',value));}
+    catch(error){throw cause?new AggregateError([cause,error],'primary and diagnostic writer',{cause}):error;}
+   }
+  };
+  if(fault==='none')await run(condition,surface,operation);
+  else await assert.rejects(run(condition,surface,operation),error=>{
+   assert.ok(error instanceof ConditionFailure);const cause=error.cause;
+   if(fault==='primary')assert.equal(cause,primary);
+   if(fault==='writer'){assert.ok(cause instanceof UAOutputFailure);assert.equal(cause.cause,output);}
+   if(fault==='primary-writer'){assert.ok(cause instanceof AggregateError);assert.equal(cause.cause,primary);assert.equal(cause.errors[0],primary);assert.equal(cause.errors[1].cause,output);}
+   if(fault.includes('writer')||fault==='overflow')assert.equal(error.stop,true);
+   return true;
+  });
+  assert.equal(attempts,1);assert.equal(owner.socket.commandsFor('Browser.close').length,1);
+  if(fault.includes('writer')||fault==='overflow'){await assert.rejects(run({...condition,id:condition.id+'-next'},surface,async()=>{}),/stopped/);assert.equal(launches,1);}
+  for(const value of saved){assert.ok(Buffer.byteLength(JSON.stringify(value,null,2)+'\n')<=4096);assert.doesNotMatch(JSON.stringify(value),/DO-NOT-LOG|secret-value|fixed writer/);}
+  if(fault==='overflow')assert.equal((saved[0]as {overflow:boolean}).overflow,true);
+ }
+ let writes=0;const normal=new UAConditionDiagnostic();await normal.observe('tab-forward',async()=>({}));normal.write('fixed-condition',()=>writes++);assert.equal(writes,0,'stable success does not flood the writer');const invalid=new UAConditionDiagnostic(),value={};bindUADiagnostic(value,record as unknown as Parameters<typeof bindUADiagnostic>[1]);await invalid.observe('negative-enter',async()=>value);assert.throws(()=>invalid.write('/DO-NOT-LOG/raw',()=>{throw Error('must not write invalid identity');}),/outside closed ID/);
+ const {safeKeyboardTrace}=await import('./observation.mts');
+ const condition=conditions.find(c=>c.family==='public-archive-share'&&c.exercise==='keyboard')!;
+ const size=(value:unknown)=>Buffer.byteLength(JSON.stringify(value,null,2)+'\n');
+ const overhead=size(safeKeyboardTrace({...condition,id:'x'},[]))-1;
+ const exact={...condition,id:'x'.repeat(4096-overhead)};
+ assert.equal(size(safeKeyboardTrace(exact,[])),4096,'actual serialized boundary includes pretty spacing and newline');
+ assert.throws(()=>safeKeyboardTrace({...exact,id:exact.id+'x'},[]),/serialized keyboard trace exceeds output bound/);
+ assert.throws(()=>safeKeyboardTrace({...condition,id:'../DO-NOT-LOG'},[]));
+});
+
+test('UI-UA-CALLER-030: real current writer callback and keyboard exercise preserve observer, output and marker failures without another condition',async t=>{
+ const {bindUADiagnostic}=await import('../helpers/browser-ua-diagnostic.mts');
+ const {createConditionRunner,ConditionFailure}=await import('./condition-lifecycle.mts');
+ const {exerciseAccessibility:actualExercise}=await import('./observation.mts');
+ const {inventory}=await import('./matrix.mts');
+ const source=readFileSync(new URL('./run-browser.mts',import.meta.url),'utf8');
+ const expression=source.match(/const accessibility = (await exerciseAccessibility\([^\n]+);/)?.[1];assert.ok(expression);
+ const caller=new Function('exerciseAccessibility','target','condition','write','return (async()=>'+expression+')();') as (exercise:typeof actualExercise,browser:BrowserHarness,condition:typeof conditions[number],write:(name:string,value:unknown)=>void)=>Promise<unknown>;
+ const condition=conditions.find(c=>c.family==='public-archive-share'&&c.exercise==='keyboard')!,surface=inventory.surfaces.find(s=>s.id===condition.family)!;
+ for(const fault of ['primary','primary-writer','primary-marker','primary-writer-marker','caller-type']){
+  const primary=new Error('UA subtree identity replaced during traversal'),output=new Error('closed writer cause'),marker=new Error('closed marker cause');
+  bindUADiagnostic(primary,{boundary:'between',baseline:true,total:3,delta:[1,1,0],classes:[[],[],[]],same:[true,true,true,true,true,true,true],mediaStates:["error","error"],focusable:1,focused:2,unknown:1,overflow:false});
+  const dom=observerDOM();dom.main.children=[];const video=dom.main.add(new Element('VIDEO'));video.setAttribute('controls','');const link=dom.main.add(new Element('A','Open directly'));link.setAttribute('href','/archive-shares/ui-synthetic-share/download');dom.document.activeElement=dom.body;
+  const owner=createHarnessFixture(),tab=owner.harness.pressTab.bind(owner.harness);let observations=0,clears=0,launches=0;const writes:{name:string;value:unknown}[]=[];
+  owner.harness.pressTab=async direction=>{await tab(direction);dom.document.activeElement=video;};
+  owner.harness.observeNativeFocus=async()=>{observations++;if(fault==='caller-type'){const value={document:1,host:2,node:3,kind:'datetime',stable:true,visible:true,indicator:true} as Awaited<ReturnType<BrowserHarness['observeNativeFocus']>>;bindUADiagnostic(value,{boundary:'between',baseline:true,total:3,delta:[0,0,0],classes:[[],[],[]],same:[true,true,true,true,true,true,true],mediaStates:["error","error"],focusable:1,focused:2,unknown:1,overflow:false});return value;}throw primary;};
+  owner.harness.evaluate=async<T,>(expression:string)=>{if(expression==='delete globalThis.__uiKeyboardPlan;true'){clears++;if(fault.includes('marker'))throw marker;}return dom.run<T>(expression);};
+  const write=(name:string,value:unknown)=>{writes.push({name,value});if(name.endsWith('.ua-stability.json')&&fault.includes('writer'))throw output;};
+  const run=createConditionRunner('http://ui.test',write,async()=>{launches++;return owner.harness;});
+  await assert.rejects(run(condition,surface,browser=>caller(actualExercise,browser,condition,write)),error=>{
+   assert.ok(error instanceof ConditionFailure);assert.equal(error.stage,'exercise');assert.equal(error.stop,fault.includes('writer'));
+   if(fault==='caller-type'){assert.ok(error.cause instanceof Error);assert.match(error.cause.message,/UA host type mismatch/);}else if(fault==='primary')assert.equal(error.cause,primary);else{
+    assert.ok(error.cause instanceof AggregateError);assert.equal(error.cause.cause,primary);assert.equal(error.cause.errors[0],primary);
+    if(fault.includes('writer'))assert.equal(error.cause.errors[1].cause,output);
+    if(fault.includes('marker'))assert.equal(error.cause.errors.at(-1),marker);
+   }return true;
+  });
+  assert.equal(observations,1);assert.equal(clears,1);assert.equal(owner.socket.commandsFor('Input.dispatchKeyEvent').length,2);assert.equal(owner.socket.commandsFor('Browser.close').length,1);
+  assert.equal('__uiKeyboardPlan'in dom.context,fault.includes('marker'));
+  assert.equal(writes.filter(r=>r.name.endsWith('.keyboard-trace.json')).length,1);const evidence=writes.filter(r=>r.name.endsWith('.ua-stability.json'));assert.equal(evidence.length,1);
+  assert.ok(Buffer.byteLength(JSON.stringify(evidence[0].value,null,2)+'\n')<=4096);assert.doesNotMatch(JSON.stringify(evidence[0].value),/subtree identity|writer cause|marker cause|Open directly/);
+  if(fault.includes('writer')){await assert.rejects(run({...condition,id:condition.id+'-next'},surface,async()=>{}),/stopped/);assert.equal(launches,1);}
+ }
+ // 031: real run-browser callback -> exercise -> real condition owner/harness.
+ // Controlled I/O boundaries are not counted as native conditions or matrix IDs.
+ const {UAOutputFailure,isUAOutputFailure}=await import('../helpers/browser-ua-diagnostic.mts');
+ const form=conditions.find(c=>c.family==='stream-create-edit'&&c.exercise==='keyboard')!;assert.ok(form);
+ for(const fault of ['normal','trace','serialize','generation','bound','marker','trace-marker','body','body-trace','body-ua','body-both','body-marker','body-trace-marker','body-ua-marker','body-both-marker'])await t.test('031-'+fault,async sub=>{
+  const bodyFailure=fault.startsWith('body'),traceFailure=fault.includes('trace')||fault.includes('both'),uaFailure=fault.includes('ua')||fault.includes('both'),markerFailure=fault.includes('marker');
+  const primary=new Error('DO-NOT-LOG primary'),traceError=new Error('DO-NOT-LOG trace'),uaError=new Error('DO-NOT-LOG ua'),markerError=new Error('DO-NOT-LOG marker'),generationError=new Error('DO-NOT-LOG generation');
+  const ownedCondition=fault==='bound'?{...form,id:'x'.repeat(4096)}:bodyFailure?condition:form;
+  const ownedSurface=inventory.surfaces.find(s=>s.id===ownedCondition.family)!;
+  const dom=observerDOM();dom.main.children=[];dom.document.activeElement=dom.body;
+  const video=dom.main.add(new Element('VIDEO'));video.setAttribute('controls','');
+  const link=dom.main.add(new Element('A','Open directly'));link.setAttribute('href','/archive-shares/ui-synthetic-share/download');
+  const dialog=dom.body.add(new Element('DIV'));dialog.setAttribute('role','dialog');
+  const card=dialog.add(new Element('DIV'));card.id='create-stream';
+  const content=card.add(new Element('DIV'));content.setAttribute('data-slot','card-content');
+  const nav=content.add(new Element('NAV'));nav.setAttribute('data-slot','section-navigation');
+  const sectionButton=nav.add(new Element('BUTTON','Basic'));sectionButton.setAttribute('aria-controls','create-stream-basic');
+  const section=content.add(new Element('SECTION'));section.id='create-stream-basic';
+  const close=dialog.add(new Element('BUTTON','Close'));dialog.hidden=bodyFailure;
+  if(!bodyFailure)dom.main.children=[];
+  const navigate=actualJSXCallback(readFileSync(new URL('../../src/components/layout/detail-section.tsx',import.meta.url),'utf8'),'button','onClick',{item:{id:section.id},document:dom.document});
+  const owner=createHarnessFixture(),nativeTab=owner.harness.pressTab.bind(owner.harness),nativeKey=owner.harness.pressNativeKey.bind(owner.harness);
+  let clears=0,launches=0,nextExercises=0,writerReached=0;const events:string[]=[],writes:{name:string;value:unknown}[]=[];
+  owner.harness.pressTab=async direction=>{await nativeTab(direction);if(bodyFailure){dom.document.activeElement=video;return;}const nodes=[sectionButton,close],i=nodes.indexOf(dom.document.activeElement);dom.document.activeElement=nodes[(i+(direction==='forward'?1:-1)+nodes.length)%nodes.length];};
+  owner.harness.pressNativeKey=async key=>{await nativeKey(key);sectionButton.dispatchEvent(new Event('click'));navigate();};
+  owner.harness.observeNativeFocus=async()=>{throw primary;};
+  owner.harness.evaluate=async<T,>(expression:string)=>{
+   if(expression==='delete globalThis.__uiKeyboardPlan;true'){clears++;events.push('marker');if(markerFailure)throw markerError;}
+   const value=dom.run<T>(expression);
+   if(expression===focusExpression&&fault==='generation')Object.defineProperty(value,'rect',{get(){throw generationError;}});
+   return value;
+  };
+  const closeBrowser=owner.harness.close.bind(owner.harness);owner.harness.close=async()=>{events.push('close');await closeBrowser();};
+  const write=(name:string,value:unknown)=>{
+   writes.push({name,value});if(name.endsWith('.keyboard-trace.json')){
+    writerReached++;events.push('trace');
+    if(fault==='serialize')JSON.stringify(value,()=>{throw traceError;});
+    if(traceFailure)throw traceError;
+   }
+   if(name.endsWith('.ua-stability.json')){events.push('ua');if(uaFailure)throw uaError;}
+  };
+  const nextOwner=createHarnessFixture();
+  sub.after(()=>nextOwner.harness.close());sub.after(()=>closeBrowser());
+  const run=createConditionRunner('http://ui.test',write,async()=>{launches++;return launches===1?owner.harness:nextOwner.harness;});
+  let failure:unknown;
+  try{const result=await run(ownedCondition,ownedSurface,browser=>caller(actualExercise,browser,ownedCondition,write));assert.equal(fault,'normal');assert.deepEqual(result,{pending:[]});}catch(error){failure=error;}
+  const outputFailure=traceFailure||uaFailure||['serialize','generation','bound'].includes(fault);
+  if(fault!=='normal'){
+   assert.ok(failure instanceof ConditionFailure,fault);assert.equal(failure.stage,'exercise');assert.equal(failure.stop,outputFailure,fault);assert.equal(isUAOutputFailure(failure.cause),outputFailure);
+   const causes=failure.cause instanceof AggregateError?failure.cause.errors:[failure.cause];
+   if(bodyFailure){assert.equal(causes[0],primary);if(failure.cause instanceof AggregateError)assert.equal(failure.cause.cause,primary);}
+   const outputs=causes.filter((e:unknown)=>e instanceof UAOutputFailure);
+   assert.equal(outputs.length,(traceFailure||['serialize','generation','bound'].includes(fault)?1:0)+(uaFailure?1:0));
+   if(traceFailure||fault==='serialize')assert.equal(outputs[0].cause,traceError);
+   if(fault==='generation')assert.equal(outputs[0].cause,generationError);
+   if(fault==='bound'){assert.ok(outputs[0].cause instanceof assert.AssertionError);assert.match(outputs[0].cause.message,/serialized keyboard trace exceeds output bound/);}
+   if(uaFailure)assert.equal(outputs.at(-1)!.cause,uaError);
+   if(markerFailure)assert.equal(causes.at(-1),markerError);
+  }else assert.equal(failure,undefined);
+  assert.equal(clears,1,fault);assert.equal(owner.socket.commandsFor('Browser.close').length,1);assert.equal('__uiKeyboardPlan'in dom.context,markerFailure);
+  assert.ok(events.indexOf('marker')<events.indexOf('close'));assert.equal(writerReached,['generation','bound'].includes(fault)?0:1);
+  assert.equal(writes.filter(r=>r.name.endsWith('.ua-stability.json')).length,bodyFailure?1:0,'stable success has no UA diagnostics');
+  const commands=owner.socket.commandsFor('Input.dispatchKeyEvent');assert.equal(commands.length,bodyFailure?2:20,'same native down/up order, no key retry');
+  assert.deepEqual(commands.filter((_,i)=>i%2===0).map(c=>c.params!.code),bodyFailure?['Tab']:['Tab','Tab','Tab','Tab','Tab','Tab','Tab','Enter','Tab','Space']);
+  for(const row of writes.filter(r=>/\.(keyboard-trace|ua-stability)\.json$/.test(r.name))){assert.ok(Buffer.byteLength(JSON.stringify(row.value,null,2)+'\n')<=4096);assert.doesNotMatch(JSON.stringify(row.value),/DO-NOT-LOG|Open directly|Basic/);}
+  const next={...form,id:form.id+'-next'};
+  if(outputFailure){await assert.rejects(run(next,ownedSurface,async()=>{nextExercises++;}),/stopped/);assert.equal(launches,1);assert.equal(nextExercises,0);assert.equal(nextOwner.socket.commandsFor('Browser.close').length,0);await nextOwner.harness.close();}
+  else{await run(next,ownedSurface,async()=>{nextExercises++;});assert.equal(launches,2);assert.equal(nextExercises,1);assert.equal(nextOwner.socket.commandsFor('Browser.close').length,1);}
+ });
+});
+
+test('UI-UA-BOUNDARY-030: successful and late frame/media paths keep the actual signed029 readonly command order',async()=>{
+ const {execFileSync}=await import('node:child_process');const {fileURLToPath}=await import('node:url');
+ const {default:ts}=await import('typescript');const {NativeFocusObserver:Current}=await import('../helpers/browser-ua-focus.mts');
+ const original=execFileSync('git',['show','b77ea391731b3288f4c994c25b75bba2caac7a08:web/tests/helpers/browser-ua-focus.mts'],{cwd:fileURLToPath(new URL('../../..',import.meta.url)),encoding:'utf8'});
+ const compiled=ts.transpileModule(original,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,esModuleInterop:true}}).outputText;
+ const exports:{NativeFocusObserver?:typeof Current}={};new Function('require','exports',compiled)((name:string)=>{assert.equal(name,'node:assert/strict');return assert;},exports);assert.ok(exports.NativeFocusObserver);
+ for(const kind of ['media','datetime'])for(const fault of ['none','final-frame',...(kind==='media'?['final-media']:[])]){
+  const runs: {commands:unknown[];value?:unknown;error?:unknown}[]=[];
+  for(const Observer of [exports.NativeFocusObserver,Current]){
+   const commands:unknown[]=[];let frames=0,media=0;const property=(name:string,value:boolean)=>({name,value:{value}});
+   const observer=new Observer(async(method,params)=>{
+    commands.push({method,params});
+    if(method==='Page.getFrameTree'){frames++;return {frameTree:{frame:{id:'fixed-frame',loaderId:fault==='final-frame'&&frames===3?'other-loader':'fixed-loader'}}};}
+    if(method==='Runtime.evaluate')return {result:{objectId:params?.expression==='document'?'document':'host'}};
+    if(method==='DOM.describeNode')return {node:params?.objectId==='document'?{nodeName:'#document',backendNodeId:1}:{nodeName:kind==='media'?'VIDEO':'INPUT',backendNodeId:10,shadowRoots:[{nodeName:'#document-fragment',backendNodeId:20,shadowRootType:'user-agent',children:[{nodeName:kind==='media'?'SPAN':'INPUT',backendNodeId:30}]}]}};
+    if(method==='Runtime.callFunctionOn'){
+     const expression=String(params?.functionDeclaration);if(expression.includes('readyState')){media++;return {result:{value:{ready:0,network:3,error:fault==='final-media'&&media===2?3:4,source:true,currentSource:true,paused:true,atStart:true}}};}
+     return {result:{value:params?.objectId==='leaf'?{indicator:true,visible:true}:expression.includes('matches(')?kind:true}};
+    }
+    if(method==='DOM.resolveNode')return {object:{objectId:'leaf'}};
+    if(method==='Accessibility.getFullAXTree')return {nodes:[{nodeId:'root',backendDOMNodeId:1,frameId:'fixed-frame',ignored:false,role:{value:'RootWebArea'},childIds:['host'],properties:[property('focused',true)]},{nodeId:'host',backendDOMNodeId:10,ignored:false,role:{value:kind==='media'?'Video':'generic'},childIds:['leaf'],properties:kind==='media'?[property('focused',true),property('focusable',true),property('disabled',true)]:[]},{nodeId:'leaf',backendDOMNodeId:30,ignored:false,role:{value:kind==='media'?'StaticText':'spinbutton'},properties:kind==='datetime'?[property('focused',true),property('focusable',true)]:[]}]};
+    return {};
+   });
+   try{runs.push({commands,value:await observer.observe()});}catch(error){runs.push({commands,error});}finally{observer.clear();}
+  }
+  assert.deepEqual(runs[1].commands,runs[0].commands,'normal and original late-failure boundaries must not move or gain sends');
+  if(fault==='none'){assert.equal(runs[0].error,undefined);assert.deepEqual(runs[1].value,runs[0].value);}else{
+   for(const run of runs){assert.ok(run.error instanceof Error);assert.match(run.error.message,fault==='final-frame'?/document changed after paint/:/media state changed during identity/);}
+  }
+ }
+});

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import type { BrowserHarness } from "../helpers/browser-harness.mts";
 import type { NativeFocusObservation } from "../helpers/browser-ua-focus.mts";
 import type { Condition } from "./matrix.mts";
+import type { UAPhase } from "../helpers/browser-ua-diagnostic.mts";
 
 // Independent expectations for the unchanged synthetic fixture. An observed error
 // cannot choose its own expected state. Playback acceptance is a separate gate.
@@ -47,7 +48,7 @@ export async function assertMediaFixture(browser:BrowserHarness,condition:Condit
   const expectedSource=expected==="preview-403-empty"?null:publicFixtureMedia;
   assert.equal(await browser.evaluate(`(() => {const nodes=[...document.querySelectorAll(${JSON.stringify(selector)})],host=document.activeElement;return nodes.length===1&&nodes[0]===host&&host.isConnected&&host.getAttribute('src')===${JSON.stringify(expectedSource)}&&globalThis.__uiKeyboardPlan.medias.some(item=>item.element===host);})()`),true,"media host/source must belong to this exact fixture and keyboard plan");
 }
-export async function exerciseUnavailableMedia(browser:BrowserHarness,condition:Condition,ua:NativeFocusObservation){
+export async function exerciseUnavailableMedia(browser:BrowserHarness,condition:Condition,ua:NativeFocusObservation,observe:(phase:UAPhase)=>Promise<NativeFocusObservation>=()=>browser.observeNativeFocus()){
   assert.equal(assertMediaIdentity(ua,mediaExpectation(condition)),"unavailable");
   await assertMediaFixture(browser,condition);
   const marker="__uiUnavailableMedia";
@@ -70,7 +71,7 @@ export async function exerciseUnavailableMedia(browser:BrowserHarness,condition:
         await browser.pressTab("backward");restorationTabs++;
         assert.equal(await browser.evaluate(`document.activeElement===globalThis.${marker}.host&&globalThis.${marker}.host.isConnected`),true,"native reverse Tab must restore the original media host");
       }
-      const next=await browser.observeNativeFocus();assert.deepEqual(next,ua,"negative native input must not change the media snapshot");
+      const next=await observe(key==="Enter"?"negative-enter":"negative-space-return");assert.deepEqual(next,ua,"negative native input must not change the media snapshot");
       await assertMediaFixture(browser,condition);
       const actual=await browser.evaluate(`(() => {const v=globalThis.${marker};return {keys:v.keys,clicks:v.clicks,events:v.events,invalid:v.invalid,same:v.host===document.activeElement&&v.host.isConnected};})()`);
       assert.deepEqual(actual,{keys:index+1,clicks:0,events:0,invalid:false,same:true},"unavailable media must receive trusted keys without playback or a control action");

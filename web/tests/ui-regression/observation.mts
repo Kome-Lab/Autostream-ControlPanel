@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { UAConditionDiagnostic, UAOutputFailure } from "../helpers/browser-ua-diagnostic.mts";
 import { longIdentifier, longText } from "./fixture-inputs.mts";
 import { exerciseActivation, exerciseSurfaceActivation, surfaceActivation, type ActivationTarget } from "./keyboard-activation.mts";
 import type { BrowserHarness } from "../helpers/browser-harness.mts";
@@ -176,11 +177,12 @@ export function safeKeyboardTrace(condition: Condition, trace: KeyTrace[]) {
   while(outputBytes()>4096&&entries.length)entries.shift();
   assert.ok(outputBytes()<=4096,"actual serialized keyboard trace exceeds output bound");return value;
 }
-export async function exerciseKeyboardPath(browser: BrowserHarness, condition: Condition, saveTrace: (value: unknown) => void = () => {}) {
+export async function exerciseKeyboardPath(browser: BrowserHarness, condition: Condition, saveTrace: (value: unknown) => void = () => {}, saveUA:(value:unknown)=>void=()=>{}) {
   const pending: string[] = [];
   if (["keyboard", "forced-colors"].includes(condition.exercise || "") || ["Confirmation", "Form", "Detail"].includes(condition.exercise || "")) {
     const trace: KeyTrace[] = [], contract = keyboardContract(condition);
-    let previous: string | undefined; let inputFailed = false, mediaPending = false, mediaRestorationTabs=0;
+    let previous: string | undefined; let inputFailed = false, mediaPending = false, mediaRestorationTabs=0, inputFailure:unknown;
+    const diagnostic=new UAConditionDiagnostic();
     let last: FocusObservation | undefined;
     const datetimeHosts=new Set<number>(),exits=new Set<string>(),hostSteps=new Map<string,number>();
     const observer=(browser as unknown as {observeNativeFocus?:()=>Promise<NativeFocusReading>}).observeNativeFocus;
@@ -188,7 +190,7 @@ export async function exerciseKeyboardPath(browser: BrowserHarness, condition: C
     const mediaExits=new Set<string>();let observedDocument:number|undefined;
     const observeUA=async(focus:FocusObservation,direction:"forward"|"backward",restoring=false)=>{
       if(!observer||!focus.datetime&&!focus.native)return;
-      const ua=await observer.call(browser);focus.ua=ua;
+      const ua=await diagnostic.observe(restoring?"restore":direction==="forward"?"tab-forward":"tab-backward",()=>observer.call(browser));focus.ua=ua;
       if(focus.datetime)assert.notEqual(ua.disabled,true,"datetime operation target disabled");
       assert.equal(ua.stable,true,"unstable UA focus evidence");
       assert.equal(ua.visible,true,"UA focused leaf is hidden or clipped");
@@ -207,7 +209,7 @@ export async function exerciseKeyboardPath(browser: BrowserHarness, condition: C
         const snapshot=JSON.stringify({media:ua.media,focusables:ua.focusables});
         if(path.mediaSnapshot!==undefined)assert.equal(snapshot,path.mediaSnapshot,"media state or complete set changed during traversal");else path.mediaSnapshot=snapshot;
         path.mediaNodes=ua.focusables!.filter(n=>status==="unavailable"||!n.disabled).map(n=>n.node);
-        if(status==="unavailable"&&path.negative===undefined){assert.ok(trace.length+mediaRestorationTabs+2<=128,"media negative restoration retains existing keyboard step budget");mediaRestorationTabs+=await exerciseUnavailableMedia(browser,condition,ua as NativeFocusObservation);path.negative=true;focus.mediaNegativeProven=true;}
+        if(status==="unavailable"&&path.negative===undefined){assert.ok(trace.length+mediaRestorationTabs+2<=128,"media negative restoration retains existing keyboard step budget");mediaRestorationTabs+=await exerciseUnavailableMedia(browser,condition,ua as NativeFocusObservation,phase=>diagnostic.observe(phase,()=>browser.observeNativeFocus()));path.negative=true;focus.mediaNegativeProven=true;}
       }
     };
     const press = async (direction: "forward"|"backward", stage: KeyTrace["stage"]) => {
@@ -275,11 +277,12 @@ export async function exerciseKeyboardPath(browser: BrowserHarness, condition: C
       }
       if(datetimeHosts.size&&(!datetimeProven||[...uaPaths.values()].filter(p=>p.kind==="datetime").length!==datetimeHosts.size))pending.push("UA_DATETIME_SEGMENT_IDENTITY_PENDING");
       if(plan.native&&(!mediaProven||mediaHosts===0)&&!pending.some(value=>value.startsWith("UA_KEYBOARD_")))pending.push("UA_KEYBOARD_IDENTITY_PENDING: native media keyboard behavior remains required");
-    } catch (error) { inputFailed = true; throw error; } finally {
+    } catch (error) { inputFailed = true; inputFailure=error; diagnostic.fail(); throw error; } finally {
       const cleanup: unknown[] = [];
-      try { saveTrace(safeKeyboardTrace(condition,trace)); } catch (error) { cleanup.push(error); }
+      try { saveTrace(safeKeyboardTrace(condition,trace)); } catch (error) { cleanup.push(new UAOutputFailure("keyboard trace output failed", { cause: error })); }
+      try { diagnostic.write(condition.id,saveUA); } catch (error) { cleanup.push(error); }
       try { await browser.evaluate("delete globalThis.__uiKeyboardPlan;true"); } catch (error) { cleanup.push(error); }
-      if (!inputFailed && cleanup.length) throw new AggregateError(cleanup, "keyboard evidence/cleanup failure");
+      if (cleanup.length) throw new AggregateError(inputFailed?[inputFailure,...cleanup]:cleanup, "keyboard evidence/cleanup failure",inputFailed?{cause:inputFailure}:undefined);
     }
   }
   if (condition.exercise === "system-mode") {
@@ -295,8 +298,8 @@ export async function exerciseKeyboardPath(browser: BrowserHarness, condition: C
 
 // The original path evidence remains independently testable; only a successful
 // same-condition native activation can discharge its specific missing evidence.
-export async function exerciseAccessibility(browser:BrowserHarness,condition:Condition,saveTrace:(value:unknown)=>void=()=>{}){
- const result=await exerciseKeyboardPath(browser,condition,saveTrace);
+export async function exerciseAccessibility(browser:BrowserHarness,condition:Condition,saveTrace:(value:unknown)=>void=()=>{},saveUA:(value:unknown)=>void=()=>{}){
+ const result=await exerciseKeyboardPath(browser,condition,saveTrace,saveUA);
  if(result.pending.some(reason=>reason.startsWith("ENTER_SPACE_ACTIVATION_EVIDENCE_PENDING"))&&surfaceActivation(condition)){
   const remaining=await exerciseSurfaceActivation(browser,condition,async()=>result.pending);
   assert.deepEqual(remaining,[],"registered activation must complete before clearing its pending reason");
