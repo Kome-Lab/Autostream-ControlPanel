@@ -1,7 +1,11 @@
+"use client";
+
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
+import { useUICopy } from "@/lib/i18n/ui-v2/use-ui-copy";
+import type { UICopyKey } from "@/lib/i18n/ui-v2/copy";
 
-const statusMap: Record<string, { label: string; detail: string; className: string }> = {
+const statusMap: Record<string, { label: UICopyKey; detail: UICopyKey; className: string }> = {
   live: { label: "配信中", detail: "映像と録画を監視中", className: "border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-200" },
   starting: { label: "開始中", detail: "開始処理を実行中", className: "border-sky-300 bg-sky-50 text-sky-800 dark:border-sky-700 dark:bg-sky-950/60 dark:text-sky-200" },
   scheduled: { label: "待機中", detail: "開始トリガーを待機中", className: "border-teal-300 bg-teal-50 text-teal-800 dark:border-teal-700 dark:bg-teal-950/60 dark:text-teal-200" },
@@ -37,7 +41,7 @@ const statusMap: Record<string, { label: string; detail: string; className: stri
   failure: { label: "失敗", detail: "操作に失敗", className: "border-red-300 bg-red-50 text-red-800 dark:border-red-700 dark:bg-red-950/60 dark:text-red-200" },
 };
 
-export function statusDescriptor(status?: string) {
+export function statusDescriptor(status?: string): { label: UICopyKey; detail: UICopyKey; className: string } {
   const normalized = String(status || "").toLowerCase();
   return statusMap[normalized] ?? {
     label: "状態不明",
@@ -47,13 +51,14 @@ export function statusDescriptor(status?: string) {
 }
 
 export function StatusBadge({ status, showDetail = false }: { status?: string; showDetail?: boolean }) {
+  const uiText = useUICopy();
   const descriptor = statusDescriptor(status);
   return (
     <div className="flex min-w-28 flex-col gap-1">
       <Badge variant="outline" className={cn("w-fit whitespace-nowrap", descriptor.className)}>
-        {descriptor.label}
+        {uiText(descriptor.label)}
       </Badge>
-      {showDetail ? <span className="text-xs leading-tight text-muted-foreground">{descriptor.detail}</span> : null}
+      {showDetail ? <span className="text-xs leading-tight text-muted-foreground">{uiText(descriptor.detail)}</span> : null}
     </div>
   );
 }

@@ -21,7 +21,7 @@ export function PermissionNotice({ resource, action, permission }: { resource: R
         <CardDescription>{copy.description}</CardDescription>
       </CardHeader>
       <CardContent className="py-5">
-        <p className="text-sm">{uiText("この項目を")}{action}{uiText("する権限がありません。")}</p>
+        <p className="text-sm">{uiText("この項目を{0}する権限がありません。", action)}</p>
         <p className="mt-1 text-sm text-muted-foreground">{requiredPermissionText(permission, uiText)}</p>
       </CardContent>
     </Card>

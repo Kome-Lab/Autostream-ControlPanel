@@ -1,5 +1,6 @@
 // Fixed UI copy. Interpolated values retain their original meaning.
 export const messages = {
+  "この項目を{0}する権限がありません。": "You do not have permission to {0} this item.",
   "この操作には「{0}」権限が必要です。管理者に権限付与を依頼してください。": "This action requires “{0}”. Ask an administrator for permission.",
   "この操作を実行する権限がありません。管理者に権限付与を依頼してください。": "You do not have permission to perform this action. Ask an administrator.",
   "ユーザー管理": "User management",

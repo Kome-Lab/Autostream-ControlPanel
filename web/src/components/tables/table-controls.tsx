@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { tablePageSizes, tablePageSize } from "@/lib/ui-v2/table-state";
 
 export type TableFilter = { id: string; label: string; options: readonly { value: string; label: string }[] };
-export type ColumnPresentation = { label?: string; priority?: 0 | 1 | 2 | 3; required?: boolean };
+export type ColumnPresentation = { label?: string; priority?: 0 | 1 | 2 | 3; required?: boolean; className?: string };
 
 export function columnLabel<T>(column: Column<T, unknown>): string {
   const meta = column.columnDef.meta as ColumnPresentation | undefined;

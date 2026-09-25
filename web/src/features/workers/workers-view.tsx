@@ -185,7 +185,7 @@ export function WorkersView() {
   const columns: ColumnDef<WorkerNode>[] = [
     {
       accessorKey: "service_name",
-      meta: { required: true, priority: 0 },
+      meta: { required: true, priority: 0, className: "min-w-60" },
       header: t("name"),
       cell: ({ row }) => {
         const nodeID = row.original.service_id || row.original.id;
@@ -201,10 +201,10 @@ export function WorkersView() {
         );
       },
     },
-    { accessorKey: "service_type", header: t("nodeType"), cell: ({ row }) => serviceTypeLabel(row.original.service_type) },
+    { accessorKey: "service_type", header: t("nodeType"), meta: { className: "min-w-36" }, cell: ({ row }) => serviceTypeLabel(row.original.service_type) },
     {
       id: "endpoint",
-      meta: { priority: 2 },
+      meta: { priority: 2, className: "min-w-40" },
       header: t("workerEndpoint"),
       cell: ({ row }) => {
         const node = row.original;
@@ -224,6 +224,7 @@ export function WorkersView() {
     {
       accessorKey: "status",
       header: t("status"),
+      meta: { className: "min-w-56 max-w-72" },
       cell: ({ row }) => (
         <DomainStatusBadge
           presentation={presentWorkerOperationalStatus(row.original)}
@@ -232,10 +233,10 @@ export function WorkersView() {
         />
       ),
     },
-    { id: "assignment", header: locale === "ja" ? "接続・担当・ジョブ" : "Connection / assignment / jobs", meta: { priority: 1 }, cell: ({ row }) => <NodeStateDetails node={row.original} /> },
+    { id: "assignment", header: locale === "ja" ? "接続・担当・ジョブ" : "Connection / assignment / jobs", meta: { priority: 1, className: "min-w-60" }, cell: ({ row }) => <NodeStateDetails node={row.original} /> },
     {
       id: "reported",
-      meta: { priority: 2 },
+      meta: { priority: 2, className: "min-w-44" },
       header: t("workerReportedInformation"),
       cell: ({ row }) => (
         <div className="text-sm">
@@ -250,11 +251,13 @@ export function WorkersView() {
     {
       accessorKey: "heartbeat_age_sec",
       header: t("workerHeartbeat"),
+      meta: { className: "min-w-28" },
       cell: ({ row }) => formatWorkerHeartbeat(row.original, undefined, uiText),
     },
     {
       id: "load",
       header: t("workerLoad"),
+      meta: { className: "min-w-36" },
       cell: ({ row }) => (
         <div className="text-sm">
           <div>CPU {formatNodeMetricPercent(row.original.metrics, "cpu", uiText)}</div>
@@ -265,6 +268,7 @@ export function WorkersView() {
     {
       id: "actions",
       header: t("actions"),
+      meta: { className: "min-w-36" },
       cell: WorkerActionsCell,
     },
   ];

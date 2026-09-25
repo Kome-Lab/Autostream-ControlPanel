@@ -6,6 +6,7 @@ import { useI18n } from "@/components/admin/i18n-provider";
 import { HighRiskConfirmation, type ConfirmationDialogState } from "@/components/foundation/confirmation/high-risk-confirmation";
 import { ActionAvailabilityBoundary } from "@/components/foundation/permissions/action-availability-boundary";
 import { Button } from "@/components/ui/button";
+import { useUICopy } from "@/lib/i18n/ui-v2/use-ui-copy";
 import {
   buildObservabilityActionDescriptor,
   type ObservabilityActionController,
@@ -28,6 +29,11 @@ export function ObservabilityActionControl({
   onResult: (plan: ObservabilityActionPlan, result: ObservabilityActionExecutionResult) => void | Promise<void>;
 }>) {
   const { t } = useI18n();
+  const uiText = useUICopy();
+  const label = plan.id === "OBS-01" ? uiText("確認済みにする")
+    : plan.id === "OBS-02" ? uiText("解決済みにする")
+      : plan.id === "OBS-03" ? uiText("診断を再評価")
+        : plan.id === "OBS-04" ? uiText("承認") : plan.id === "OBS-05" ? uiText("実行") : plan.label;
   const [open, setOpen] = useState(false);
   const [state, setState] = useState<ConfirmationDialogState>({ kind: "ready" });
   const descriptor = buildObservabilityActionDescriptor(plan);
@@ -71,7 +77,7 @@ export function ObservabilityActionControl({
               {...availabilityProps}
               disabled={availabilityProps.disabled || confirmationProps.disabled}
             >
-              {plan.label}
+              {label}
             </Button>
           )}
           onOpenIntent={() => {

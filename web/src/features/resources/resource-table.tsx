@@ -127,20 +127,35 @@ export function ResourceTable({
   const statusPresenter = resource.path === "/observability/incidents" ? presentIncidentStatus
     : resource.path === "/observability/diagnostics" ? presentDiagnosticStatus
       : resource.path === "/observability/remediation-actions" ? presentRemediationStatus : undefined;
+  // These are existing public display fields, not action targets or row IDs.
+  const familyIdentity: Readonly<Record<string, string>> = {
+    "/users": "username", "/service-health": "service_name",
+    "/observability/incidents": "title", "/observability/diagnostics": "rule",
+    "/observability/remediation-actions": "action", "/observability/notification-deliveries": "event_name",
+    "/integrations/oauth-accounts": "oauth_account_display_name", "/secrets/status": "secret_label",
+    "/stream-logs": "stream_name", "/audit-logs": "actor_username",
+  };
+  const identity = [familyIdentity[resource.path], "name", "username", "service_name", "id"].find((column) => column && columns.includes(column));
   const definitions: ColumnDef<ResourceRow>[] = columns.map((column, index) => ({
     id: column,
     accessorFn: (row) => typeof row[column] === "object" ? "" : row[column],
     header: locale === "ja" ? columnLabel(column, uiText) : column.replaceAll("_", " "),
     meta: {
-      required: index === 0 || ["name", "id", "status", "severity"].includes(column),
-      priority: ["name", "id", "status", "severity"].includes(column) ? 0 : ["updated_at", "created_at", "confidence", "evidence"].includes(column) ? 1 : 2,
+      required: column === identity || index === 0 || ["name", "id", "status", "severity"].includes(column),
+      priority: column === identity || ["name", "id", "status", "severity"].includes(column) ? 0 : ["updated_at", "created_at", "confidence", "evidence"].includes(column) ? 1 : 2,
     },
     cell: ({ row }) => resource.path === "/service-health" && (column === "status" || column === "health_status")
       ? <DomainStatusBadge presentation={(column === "status" ? presentNodeConnectivityStatus : presentNodeHealthStatus)(row.original[column])} translate={t} showDetail />
       : column === "status" && statusPresenter
       ? <DomainStatusBadge presentation={statusPresenter(row.original[column])} translate={t} showDetail />
+      : column === identity && (row.original[column] === undefined || row.original[column] === null || row.original[column] === "")
+      ? resourceRowLabel(row.original, uiText)
       : formatResourceCell(resource, row.original[column], column, timezone, uiText),
   }));
+  if (!identity) definitions.unshift({
+    id: "record-identity", header: uiText("名前"), meta: { required: true, priority: 0 },
+    cell: ({ row }) => resourceRowLabel(row.original, uiText),
+  });
   if (showActions) definitions.push({
     id: "actions", header: t("actions"), meta: { required: true, priority: 0 },
     cell: ({ row }) => rowActions(row.original),

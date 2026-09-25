@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createElement, type ComponentType } from "react";
 import { renderUI } from "./render-ui.mts";
+import { readFileSync } from "node:fs";
+import { renderedSource } from "./source-render.mts";
 const { createUICopy } = await import("../../src/lib/i18n/ui-v2/copy.ts");
 const { fixedPresentationText, oauthAccountName, serviceAssignmentPresentation } = await import("../../src/lib/i18n/ui-v2/presentation-copy.ts");
 const { formatResourceCell } = await import("../../src/features/resources/resource-presentation.tsx");
@@ -12,6 +14,56 @@ const { StreamSummary } = await import("../../src/features/streams/stream-summar
 const { ResourcePage } = await import("../../src/features/resources/resource-page.tsx");
 const { StreamDetailOperations } = await import("../../src/features/streams/stream-detail-operations.tsx");
 const { createStreamActionController } = await import("../../src/features/streams/stream-action-controller.ts");
+
+test("UI-MONITORING-COPY-034: actual legacy badges translate labels and detail without changing classification or unknown safety", async () => {
+  const { StatusBadge, statusDescriptor } = await import("../../src/components/admin/status-badge.tsx");
+  const statuses = ["live", "starting", "scheduled", "ready", "created", "draft", "stopped", "completed", "failed", "error", "recording", "recording_started", "recording_completed", "online", "assigned", "pass", "ok", "healthy", "resolved", "closed", "acknowledged", "open", "offline", "unconfigured", "stopping", "degraded", "warning", "pending", "success", "executed", "retrying", "pending_approval", "failure", "UNRECOGNIZED-秘密値"];
+  for (const status of statuses) {
+    const before = structuredClone(statusDescriptor(status));
+    const ja = renderUI(createElement(StatusBadge, { status, showDetail: true }), "ja");
+    const en = renderUI(createElement(StatusBadge, { status, showDetail: true }), "en");
+    const text = en.replace(/<[^>]*>/g, "");
+    assert.doesNotMatch(text, /[\u3040-\u30ff\u3400-\u9fff]/, status);
+    assert.ok(ja.includes(before.label) && ja.includes(before.detail));
+    assert.deepEqual(statusDescriptor(status), before);
+    assert.ok(en.includes(before.className), "status color meaning remains unchanged");
+    if (status.startsWith("UNRECOGNIZED")) { assert.match(en, /Unknown state/); assert.doesNotMatch(en, /秘密値|UNRECOGNIZED/); }
+  }
+  const url = new URL("../../src/components/admin/status-badge.tsx", import.meta.url), source = readFileSync(url, "utf8");
+  const mutant = await renderedSource(source.replace('uiText = useUICopy()', 'uiText = (key: string) => key'), url);
+  assert.match(renderUI(createElement(mutant.StatusBadge, { status: "healthy", showDetail: true }), "en"), /Nodeの監視は正常/);
+});
+
+test("UI-OBSERVABILITY-COPY-034: real resource actions translate only the trigger and preserve fixed authority plans", async () => {
+  const { ResourcePage } = await import("../../src/features/resources/resource-page.tsx");
+  const { observabilityActionPlans } = await import("../../src/features/observability/action-policy.ts");
+  const plans = observabilityActionPlans("/observability/incidents", { id: "incident", title: "固有名", status: "open" });
+  const before = structuredClone(plans);
+  const en = renderUI(createElement(ResourcePage, { pageId: "incidents" }), "en");
+  assert.match(en, />Acknowledge</); assert.match(en, />Resolve</);
+  assert.doesNotMatch(en, />確認済みにする<|>解決済みにする</);
+  const ja = renderUI(createElement(ResourcePage, { pageId: "incidents" }), "ja");
+  assert.match(ja, />確認済みにする</); assert.match(ja, />解決済みにする</);
+  assert.deepEqual(plans, before, "no locale re-creation of action authority");
+  const { ObservabilityActionControl } = await import("../../src/features/observability/observability-action-control.tsx");
+  const allPlans = [...plans,
+    ...observabilityActionPlans("/observability/diagnostics", { id: "diagnostic", incident_id: "incident" }),
+    ...observabilityActionPlans("/observability/remediation-actions", { id: "remediation", action: "restart", mode: "manual", status: "pending_approval" }),
+    ...observabilityActionPlans("/observability/remediation-actions", { id: "remediation", action: "restart_worker", mode: "manual", status: "approved" }),
+  ];
+  assert.deepEqual(allPlans.map(plan => plan.id), ["OBS-01", "OBS-02", "OBS-03", "OBS-04", "OBS-05"]);
+  for (const plan of allPlans) {
+    const original = structuredClone(plan);
+    for (const allowed of [true, false]) {
+      const control = createElement(ObservabilityActionControl, { plan, allowed, controller: {
+        execute: async () => { throw Error("render must not mutate"); }, reconcile() { throw Error("render must not reconcile"); },
+      }, onResult() { throw Error("render must not report a mutation"); } });
+      assert.doesNotMatch(renderUI(control, "en").replace(/<[^>]*>/g, ""), /[\u3040-\u30ff\u3400-\u9fff]/);
+      assert.ok(renderUI(control, "ja").includes(plan.label));
+      assert.deepEqual(plan, original);
+    }
+  }
+});
 const controller=createStreamActionController({getPermissions:()=>({kind:"ready",permissions:["*"]}),getState:()=>({kind:"ready",freshness:"fresh",fingerprint:"current"}),mutate:async()=>{throw Error("render cannot mutate");}});
 const callbacks={actionController:controller,onActionResult(){},onSaved(){},canCreate:true,canUpdate:true,canAssignEncoder:true,canAssignWorker:true};
 const specs=[

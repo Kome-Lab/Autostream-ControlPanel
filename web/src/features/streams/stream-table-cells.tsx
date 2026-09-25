@@ -40,44 +40,46 @@ export function streamTableColumns({ t, ja, uiText, discordLabels }: Pick<Stream
     {
       accessorKey: "name",
       header: t("name"),
+      meta: { className: "min-w-56" },
       cell: StreamNameCell,
     },
-    { accessorKey: "status", header: t("status"), cell: StreamStatusCell },
-    { id: "readiness", header: "Readiness", meta: { priority: 0, required: true }, cell: StreamReadinessCell },
+    { accessorKey: "status", header: t("status"), meta: { className: "min-w-56 max-w-72" }, cell: StreamStatusCell },
+    { id: "readiness", header: "Readiness", meta: { priority: 0, required: true, className: "min-w-40" }, cell: StreamReadinessCell },
     {
       id: "actions",
       header: t("actions"),
+      meta: { className: "min-w-36" },
       cell: StreamActionsCell,
     },
     {
       id: "route",
       accessorFn: (stream) => compactList([stream.encoder_input_url, stream.input_source, stream.output_target, stream.youtube_output_id]).join(" "),
       header: ja ? "入力 / YouTube" : "Input / YouTube",
-      meta: { priority: 1 },
+      meta: { priority: 1, className: "min-w-56" },
       cell: StreamRouteCell,
     },
     {
       id: "recording",
       accessorFn: (stream) => compactList([fixedPresentationText(recordingDescriptor(stream).label, uiText), stream.archive_file_name, stream.archive_masked_folder_id]).join(" "),
       header: ja ? "録画・保存" : "Recording / archive",
-      meta: { priority: 1 },
+      meta: { priority: 1, className: "min-w-44" },
       cell: StreamRecordingCell,
     },
     {
       id: "discord",
       accessorFn: (stream) => compactList([optionLabel(discordLabels, stream.discord_config_id), stream.discord_config_id, stream.auto_start_trigger === "discord_voice_join" ? uiText("VC参加で自動開始") : uiText("手動開始")]).join(" "),
       header: ja ? "開始条件" : "Trigger",
-      meta: { priority: 1 },
+      meta: { priority: 1, className: "min-w-40" },
       cell: StreamDiscordCell,
     },
     {
       id: "nodes",
       accessorFn: (stream) => compactList([stream.assigned_worker_id, stream.assigned_encoder_id]).join(" "),
       header: ja ? "担当Node" : "Assignments",
-      meta: { priority: 1 },
+      meta: { priority: 1, className: "min-w-36" },
       cell: StreamNodesCell,
     },
-    { id: "updated", accessorFn: (stream) => stream.updated_at || stream.created_at || "", header: ja ? "更新" : "Updated", meta: { priority: 1 }, cell: StreamUpdatedCell },
+    { id: "updated", accessorFn: (stream) => stream.updated_at || stream.created_at || "", header: ja ? "更新" : "Updated", meta: { priority: 1, className: "min-w-28" }, cell: StreamUpdatedCell },
   ];
 }
 export function StreamNameCell(props: CellContext<Stream, unknown>) {

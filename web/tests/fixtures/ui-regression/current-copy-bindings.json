@@ -262,6 +262,7 @@
           "再試行",
           "再試行",
           "再試行",
+          "取得済みの値を表示しながら更新中です。",
           "対応または確認が必要",
           "映像生成イベント",
           "更新に失敗しました。直前に取得したNode状態を表示しています。",
@@ -269,6 +270,7 @@
           "更新に失敗しました。直前の診断結果を表示しています。",
           "最終更新:",
           "未取得",
+          "未取得または更新前の情報があるため、要対応の全件数は確定していません。",
           "未登録の対象",
           "未解決インシデント",
           "状態",
@@ -1844,8 +1846,7 @@
       "path": "web/src/features/resources/resource-notices.tsx",
       "binding": {
         "keys": [
-          "この項目を",
-          "する権限がありません。",
+          "この項目を{0}する権限がありません。",
           "データを取得できませんでした。",
           "更新を再試行",
           "通信状態とログイン状態を確認して、もう一度お試しください。"
@@ -1869,7 +1870,8 @@
           "{0} へテスト送信",
           "テスト送信",
           "テスト送信しました。",
-          "データがありません。"
+          "データがありません。",
+          "名前"
         ],
         "hooks": [
           "uiText",
@@ -2889,6 +2891,72 @@
           "秘密鍵とパスフレーズは今回のセットアップだけに使用し、保存・再表示しません。選択した全ホストで同じ認証情報を使用します。",
           "秘密鍵パスフレーズ（任意）",
           "表示されたUpdater暗号鍵と各ホストのSSHホスト鍵Fingerprintを、独立した安全な経路で確認しました。"
+        ],
+        "hooks": [
+          "uiText"
+        ],
+        "defaults": [],
+        "imports": [
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/components/admin/status-badge.tsx",
+      "binding": {
+        "keys": [],
+        "hooks": [
+          "uiText"
+        ],
+        "defaults": [],
+        "imports": [
+          "@/lib/i18n/ui-v2/copy",
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/observability/observability-action-control.tsx",
+      "binding": {
+        "keys": [
+          "実行",
+          "承認",
+          "確認済みにする",
+          "解決済みにする",
+          "診断を再評価"
+        ],
+        "hooks": [
+          "uiText"
+        ],
+        "defaults": [],
+        "imports": [
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/workers/workers-view.tsx",
+      "binding": {
+        "keys": [],
+        "hooks": [
+          "uiText"
+        ],
+        "defaults": [],
+        "imports": [
+          "@/lib/i18n/ui-v2/use-ui-copy"
+        ]
+      }
+    },
+    {
+      "path": "web/src/features/monitoring/monitoring-metric.tsx",
+      "binding": {
+        "keys": [
+          "この情報は取得中です。",
+          "この情報を参照する権限がありません。",
+          "この情報を取得できません。",
+          "前回取得した値です。更新に失敗しました。",
+          "取得済みですが、対象データはありません。",
+          "取得済みの値を表示しながら更新中です。"
         ],
         "hooks": [
           "uiText"

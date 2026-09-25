@@ -3,6 +3,12 @@ import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import test from "node:test";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import postcss from "postcss";
+import tailwind from "@tailwindcss/postcss";
+import { renderUI } from "./render-ui.mts";
+import { renderedSource } from "./source-render.mts";
 import type { Stream } from "../../src/types/domain.ts";
 import type { StreamTablePresentation } from "../../src/features/streams/stream-table-cells.tsx";
 
@@ -68,4 +74,37 @@ test("UI-STREAM-TABLE-001: actual stream cells retain component/row identity whi
   assert.equal((html.match(/data-slot="stream-primary-trigger"/g) || []).length, 1); assert.match(html, /data-stream-id="stable-stream"/);
   assert.notEqual(initial, html); assert.doesNotMatch(html, /aria-label="Current row name を開始"/);
   assert.equal(mutationCalls, 0, "render and permission refresh cannot create a mutation owner");
+});
+
+test("UI-TABLE-READING-WIDTH-034: real Streams/Workers columns emit readable widths with local overflow and the same mobile model", async t => {
+  const { StreamsView } = await import("../../src/features/streams/streams-view.tsx");
+  const { WorkersView } = await import("../../src/features/workers/workers-view.tsx");
+  const from = fileURLToPath(new URL("../../src/app/globals.css", import.meta.url));
+  const css = await postcss([tailwind({ base: fileURLToPath(new URL("../../", import.meta.url)), optimize: false })]).process(readFileSync(from, "utf8"), { from });
+  const widths = new Map<string, number>();
+  css.root.walkRules(rule => { rule.walkDecls("min-width", decl => { const m = decl.value.match(/^calc\(var\(--spacing\) \* (\d+)\)$/); if (m) widths.set(rule.selector.slice(1), Number(m[1]) / 4); }); });
+  const check = (html: string, column: string, minimum: number) => {
+    const cell = html.match(new RegExp(`<td[^>]*headers="[^"]*-${column}"[^>]*>`))?.[0];
+    assert.ok(cell, "actual column "+column);
+    const classes = cell.match(/class="([^"]*)"/)?.[1].split(" ") || [];
+    assert.ok(classes.some(c => (widths.get(c) || 0) >= minimum), column+": minimum readable width");
+    assert.ok(classes.includes("align-top"), "align reasons and actions at row start");
+    const header = html.match(new RegExp(`<th[^>]*id="[^"]*-${column}"[^>]*>`))?.[0];
+    assert.ok(header && classes.filter(c => widths.has(c)).every(c => header.includes(c)), "header shares column presentation");
+  };
+  for (const locale of ["ja", "en"] as const) for (const View of [StreamsView, WorkersView]) {
+    const html = renderUI(createElement(View), locale);
+    check(html, "status", 12); check(html, "actions", 8);
+    for (const [id, minimum] of View === StreamsView ? [["readiness", 10]] as const : [["assignment", 14], ["reported", 10], ["load", 8]] as const) check(html, id, minimum);
+    assert.match(html, /data-slot="table-container"[^>]*overflow-x-auto/);
+    assert.equal((html.match(/<table\b/g) || []).length, 1);
+    assert.match(html, /data-responsive="true"/); assert.match(html, /overflow-wrap:anywhere/);
+    assert.throws(() => check(html.replaceAll(/min-w-\d+/g, "min-w-0"), "status", 12), /minimum readable width/);
+  }
+  const cssSource = readFileSync(from, "utf8");
+  assert.match(cssSource, /@media \(max-width: 48rem\)[\s\S]*?td \{\s*display: block;\s*min-width: 0;/);
+  const url = new URL("../../src/features/workers/workers-view.tsx", import.meta.url);
+  const source = readFileSync(url, "utf8"), mutant = await renderedSource(source.replaceAll('className: "min-w-56 max-w-72"', 'className: ""'), url);
+  assert.throws(() => check(renderUI(createElement(mutant.WorkersView), "en"), "status", 12));
+  t.diagnostic("Actual SSR and emitted CSS: desktop widths 1024/1280/1440/1920 keep minima; 390/430/768 use existing mobile override. No new rendered image or browser geometry acceptance claimed.");
 });

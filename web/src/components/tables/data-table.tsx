@@ -10,7 +10,7 @@ import { useI18n } from "@/components/admin/i18n-provider";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { boundedPageIndex, type TableURLPolicy } from "@/lib/ui-v2/table-state";
 import { useTableURL } from "@/lib/ui-v2/use-table-url";
-import { TablePagination, TableToolbar, type TableFilter } from "./table-controls";
+import { TablePagination, TableToolbar, type TableFilter, type ColumnPresentation } from "./table-controls";
 import { TableRecord } from "./table-record";
 
 type DataTableProps<TData, TValue> = {
@@ -72,6 +72,7 @@ export function DataTable<TData, TValue>({
               const sortable = header.column.getCanSort();
               const Icon = sorting === "desc" ? ArrowDown : sorting === "asc" ? ArrowUp : ArrowUpDown;
               return <TableHead key={header.id} id={tableId + "-" + header.column.id} scope="col"
+                className={(header.column.columnDef.meta as ColumnPresentation | undefined)?.className}
                 aria-sort={sortable ? (sorting === "desc" ? "descending" : sorting === "asc" ? "ascending" : "none") : undefined}>
                 {header.isPlaceholder ? null : sortable ? <button type="button"
                   className="flex min-h-11 items-center gap-2 text-left focus-visible:outline-2 focus-visible:outline-ring"
