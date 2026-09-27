@@ -1,3 +1,4 @@
+import type { G3Operation, G3Options, G3Record } from "./browser-g3-operation.mts";
 import { NativeFocusObserver } from "./browser-ua-focus.mts";
 import { spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync, rmSync } from "node:fs";
@@ -26,6 +27,13 @@ export type StubRequest = {
 export type RouteResolver = (request: StubRequest) => StubResponse | null;
 
 export type BrowserNativeKey = "Enter" | "Space" | "Escape";
+
+export type BrowserOwnedLaunchFacts = Readonly<{
+  pid: number;
+  executable: string;
+  profile: string;
+  endpoint: string;
+}>;
 
 type BrowserNativeKeyInput = Readonly<{
   key: string;
@@ -96,6 +104,8 @@ export class BrowserHarness {
   private readonly socket: WebSocket;
   private readonly sessionId: string;
   private readonly browserLaunchSession: BrowserLaunchSession | undefined;
+  private g3Operation: G3Operation | undefined;
+  private g3Headed = false;
   private nextCommandId = 0;
   private diagnosticNavigateId: number | undefined;
   private diagnosticNavigateResponded = false;
@@ -130,7 +140,8 @@ export class BrowserHarness {
     this.socket.addEventListener("close", () => this.handleSocketClose());
   }
 
-  static async launch() {
+  static async launch(options: Readonly<{ manualZoom?: "headed" }> = {}) {
+    if (options.manualZoom !== undefined && options.manualZoom !== "headed") throw new Error("Unsupported manual zoom launch mode");
     let browserPath: string;
     try {
       browserPath = resolveBrowserPath();
@@ -142,7 +153,7 @@ export class BrowserHarness {
         "executable_unavailable",
       );
     }
-    const browserLaunchSession = await launchBrowserProcessWithRetry({ browserPath });
+    const browserLaunchSession = await launchBrowserProcessWithRetry({ browserPath, ...(options.manualZoom ? { manualZoom: options.manualZoom } : {}) });
     const { browserProcess, userDataDirectory, socket } = browserLaunchSession;
 
     try {
@@ -156,6 +167,7 @@ export class BrowserHarness {
         String(attached.sessionId),
         browserLaunchSession,
       );
+      harness.g3Headed = options.manualZoom === "headed";
       await harness.send("Page.enable");
       await harness.send("Runtime.enable");
       await harness.send("Fetch.enable", { patterns: [{ urlPattern: "*" }] });
@@ -174,6 +186,20 @@ export class BrowserHarness {
     }
   }
 
+  // Explicit G3 opt-in. Default suite transport and dialog policy stay unchanged.
+  async runG3Operation<T>(options: G3Options, write: (record: G3Record) => void, action: () => Promise<T>): Promise<T> {
+    const { G3Operation } = await import("./browser-g3-operation.mts");
+    if (!this.g3Headed || this.g3Operation || this.closed || this.fatalError) throw new Error("G3 operation requires an idle owned headed target");
+    const scope = new G3Operation(options, {
+      write,
+      abort: (error) => this.recordFatalError(error),
+      acceptDiscard: () => this.send("Page.handleJavaScriptDialog", { accept: true }),
+    });
+    this.g3Operation = scope;
+    try { return await scope.run(action); }
+    finally { this.g3Operation = undefined; }
+  }
+
   async configureDeterministicDocument(options: Readonly<{ source: string; timezone: string; locale: string }>) {
     await this.send("Emulation.setTimezoneOverride", { timezoneId: options.timezone });
     await this.send("Emulation.setLocaleOverride", { locale: options.locale });
@@ -186,8 +212,46 @@ export class BrowserHarness {
     return this.nativeFocusObserver.observe();
   }
 
+  ownedLaunchFacts(): BrowserOwnedLaunchFacts {
+    this.assertNoFatalError();
+    if (this.closed) throw new Error("Browser harness closed");
+    const pid = this.browserProcess.pid;
+    if (pid === undefined || !Number.isSafeInteger(pid) || pid <= 0) throw new Error("Browser process identity unavailable");
+    return Object.freeze({ pid, executable: this.browserProcess.spawnfile, profile: this.userDataDirectory, endpoint: this.socket.url });
+  }
+
   async browserVersion() {
     return this.sendBrowser("Browser.getVersion");
+  }
+
+  async movePointerToCaptureMargin(point: Readonly<{ x: number; y: number }>): Promise<void> {
+    this.assertNoFatalError();
+    if (this.closed) throw new Error("Browser harness closed");
+    if (![point.x, point.y].every(value => Number.isFinite(value) && value > 0 && value < 30_000)) throw new Error("Invalid bounded pointer margin");
+    const safe = await this.evaluate<boolean>(`(() => {
+      const x=${point.x},y=${point.y},hit=document.elementFromPoint(x,y);
+      return x<Math.min(innerWidth,document.documentElement.clientWidth)-2 && y<Math.min(innerHeight,document.documentElement.clientHeight)-2
+        && !!hit && !hit.closest('button,a,input,select,textarea,[tabindex],[role=button],[role=link],[role=dialog],[role=alertdialog]');
+    })()`);
+    if (safe !== true) throw new Error("Pointer target is not a verified noninteractive viewport margin");
+    await this.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: point.x, y: point.y, button: "none", buttons: 0, modifiers: 0 });
+  }
+
+  async captureViewportEvidence() {
+    this.assertNoFatalError();
+    if (this.closed) throw new Error("Browser harness closed");
+    const layout = await this.send("Page.getLayoutMetrics");
+    const view = layout.cssVisualViewport as { clientWidth?: number; clientHeight?: number; pageX?: number; pageY?: number; scale?: number } | undefined;
+    const width = Math.ceil(view?.clientWidth ?? 0), height = Math.ceil(view?.clientHeight ?? 0);
+    const pageX = view?.pageX, pageY = view?.pageY, scale = view?.scale;
+    if (![width, height, pageX, pageY, scale].every(value => typeof value === "number" && Number.isFinite(value)) || width <= 0 || height <= 0 || width > 30_000 || height > 30_000 || Math.abs(pageX!) > 30_000 || Math.abs(pageY!) > 30_000 || scale !== 1) throw new Error("Invalid bounded viewport evidence geometry");
+    const screenshot = await this.send("Page.captureScreenshot", { format: "png", fromSurface: true, captureBeyondViewport: false });
+    if (typeof screenshot.data !== "string" || !screenshot.data) throw new Error("Viewport evidence was empty");
+    const png = Buffer.from(screenshot.data, "base64");
+    if (png.length < 24 || !png.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) || png.readUInt32BE(16) !== width || png.readUInt32BE(20) !== height) throw new Error("Viewport evidence dimensions mismatch");
+    this.assertNoFatalError();
+    if (this.closed) throw new Error("Browser harness closed during viewport capture");
+    return { png, viewport: { width, height, pageX, pageY, scale } };
   }
 
   async captureScreenshot() {
@@ -474,9 +538,11 @@ export class BrowserHarness {
 
   private sendCommand(method: string, params: Record<string, unknown>, sessionId?: string) {
     if (this.fatalError) return Promise.reject(this.fatalError);
+    const scope = this.g3Operation;
+    const observed = scope?.beforeCommand(method, params);
     const id = ++this.nextCommandId;
     const payload = sessionId ? { id, method, params, sessionId } : { id, method, params };
-    return new Promise<Record<string, unknown>>((resolveCommand, rejectCommand) => {
+    const result = new Promise<Record<string, unknown>>((resolveCommand, rejectCommand) => {
       this.pendingCommands.set(id, { resolve: resolveCommand, reject: rejectCommand });
       if (method === "Page.navigate") {
         this.diagnosticNavigateId = id;
@@ -484,6 +550,9 @@ export class BrowserHarness {
       }
       this.socket.send(JSON.stringify(payload));
     });
+    if (!scope || observed === undefined) return result;
+    return result.then((value) => { scope.afterCommand(observed, true); return value; },
+      (error) => { scope.afterCommand(observed, false, asError(error)); throw error; });
   }
 
   private receive(rawMessage: string) {
@@ -498,6 +567,12 @@ export class BrowserHarness {
       return;
     }
     if (!message.method || (message.sessionId && message.sessionId !== this.sessionId)) return;
+    if (this.g3Operation && message.method === "Page.javascriptDialogOpening") {
+      this.g3Operation.dialogOpening(message.params || {}, message.sessionId === this.sessionId && (message.params?.frameId === undefined || message.params.frameId === this.mainFrameId));
+    }
+    if (this.g3Operation && message.method === "Page.javascriptDialogClosed") {
+      this.g3Operation.dialogClosed(message.params || {}, message.sessionId === this.sessionId && (message.params?.frameId === undefined || message.params.frameId === this.mainFrameId));
+    }
     if (message.method === "Runtime.consoleAPICalled") {
       const type = String(message.params?.type || "");
       if (type === "error" || type === "assert") this.consoleErrorEvents += 1;

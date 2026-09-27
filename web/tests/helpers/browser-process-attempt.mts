@@ -60,6 +60,7 @@ export type BrowserProcessAttemptOwner = {
 };
 
 export type BrowserProcessAttemptContext = Readonly<{
+  manualZoom?: "headed";
   browserPath: string;
   platform: NodeJS.Platform;
   attemptNumber: 1 | 2;
@@ -110,6 +111,7 @@ export type BrowserLaunchSession = BrowserAttemptConnection & Readonly<{
 }>;
 
 export type BrowserLaunchRetryOptions = {
+  manualZoom?: "headed";
   browserPath: string;
   platform?: NodeJS.Platform;
   parentEnvironment?: Readonly<NodeJS.ProcessEnv>;
@@ -146,6 +148,7 @@ export class BrowserLaunchError extends Error {
 }
 
 export class BrowserProcessAttempt implements BrowserProcessAttemptOwner {
+  private readonly manualZoom: "headed" | undefined;
   private readonly browserPath: string;
   private readonly platform: NodeJS.Platform;
   private readonly attemptNumber: 1 | 2;
@@ -167,6 +170,7 @@ export class BrowserProcessAttempt implements BrowserProcessAttemptOwner {
   private closed = false;
 
   constructor(options: BrowserProcessAttemptOptions) {
+    this.manualZoom = options.manualZoom;
     this.browserPath = options.browserPath;
     this.platform = options.platform;
     this.attemptNumber = options.attemptNumber;
@@ -180,6 +184,7 @@ export class BrowserProcessAttempt implements BrowserProcessAttemptOwner {
     this.launchStarted = true;
     this.directories = this.dependencies.createDirectories({ platform: this.platform });
     const profile = buildBrowserLaunchProfile({
+      ...(this.manualZoom ? { manualZoom: this.manualZoom } : {}),
       platform: this.platform,
       attemptNumber: this.attemptNumber,
       userDataDirectory: this.directories.userDataDirectory,
@@ -190,7 +195,7 @@ export class BrowserProcessAttempt implements BrowserProcessAttemptOwner {
       cwd: this.directories.attemptRoot,
       env: profile.environment,
       stdio: "pipe",
-      windowsHide: true,
+      windowsHide: this.manualZoom !== "headed",
       detached: this.platform !== "win32",
     });
     this.browserProcess.stdout.on("data", this.onStdout);
@@ -281,6 +286,7 @@ export async function launchBrowserProcessWithRetry(options: BrowserLaunchRetryO
       throw new BrowserLaunchError(summaries, facts, "total_launch_timeout");
     }
     const owner = createAttempt({
+      ...(options.manualZoom ? { manualZoom: options.manualZoom } : {}),
       browserPath: options.browserPath,
       platform,
       attemptNumber,

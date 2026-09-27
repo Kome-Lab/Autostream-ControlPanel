@@ -12,6 +12,7 @@ import type { BrowserHarness } from '../helpers/browser-harness.mts';
 import './component-loader.mts';
 import {createElement} from 'react';
 import {renderUI} from './render-ui.mts';
+import './ua-identity.test.mts';
 
 test('UI-PANEL-TAB-019: unchanged observer and native Tab socket retain both directions below sticky header and reject insufficient or invalid panels',async t=>{
  const source=(name:string)=>readFileSync(new URL('../../src/features/'+name,import.meta.url),'utf8');
@@ -264,15 +265,17 @@ test('UI-ACTIVATION-024: current wrapper clears only same-condition activation a
 });
 
 test('UI-UA-IDENTITY-024: typed read-only harness binds focused AX leaf to exact document/frame/UA host and releases objects',async()=>{
- for(const fault of ['none','missing-leaf','wrong-host','wrong-frame','root-mismatch','two-leaves','ignored','missing-backend','disabled-leaf','changed-leaf','changed-loader','changed-host','ax-bound','read-failure','release-failure','both-failures','final-disabled','final-role','final-frame','final-root','final-ancestry','final-owner','final-duplicate']){
-  const owner=createHarnessFixture();let frameReads=0,hostReads=0,axReads=0,hostDescriptions=0;const sent:{method:string;params:Record<string,unknown>}[]=[];
+ for(const fault of ['none','missing-leaf','wrong-host','wrong-frame','root-mismatch','two-leaves','ignored','missing-backend','disabled-leaf','changed-leaf','changed-loader','changed-host','ax-bound','read-failure','release-failure','both-failures','final-disabled','final-role','final-frame','final-root','final-ancestry','final-owner','final-duplicate','text-owned','text-foreign','text-detached-final','text-focused','text-focusable','text-property','text-duplicate','text-resolve']){
+  const owner=createHarnessFixture();let frameReads=0,hostReads=0,axReads=0,hostDescriptions=0,textChecks=0;const sent:{method:string;params:Record<string,unknown>}[]=[];
   owner.socket.send=(raw:string)=>{const cmd=JSON.parse(raw);sent.push(cmd);let result:Record<string,unknown>={};let error:{message:string}|undefined;
    if(cmd.method==='Page.getFrameTree')result={frameTree:{frame:{id:'frame-one',loaderId:fault==='changed-loader'&&++frameReads>1?'replaced':'loader-one'}}};
    if(cmd.method==='Runtime.evaluate')result={result:{objectId:cmd.params.expression==='document'?'document':'host'}};
    if(cmd.method==='DOM.describeNode')result={node:cmd.params.objectId==='document'?{nodeName:'#document',backendNodeId:1}:{nodeName:'INPUT',backendNodeId:10,shadowRoots:[{nodeName:'#document-fragment',backendNodeId:20,shadowRootType:'user-agent',children:[{nodeName:'SPAN',backendNodeId:11},{nodeName:'SPAN',backendNodeId:12}]}]}};
    if(cmd.method==='DOM.describeNode'&&cmd.params.objectId==='host'&&++hostDescriptions>1&&fault==='final-owner'){const node=result.node as {shadowRoots:{children:{backendNodeId:number}[]}[]};node.shadowRoots[0].children=node.shadowRoots[0].children.filter(n=>n.backendNodeId!==11);}
    if(cmd.method==='Runtime.callFunctionOn')result={result:{value:cmd.params.objectId==='leaf'?{indicator:true,visible:true}:String(cmd.params.functionDeclaration).includes('matches(')?'datetime':!(fault==='changed-host'&&++hostReads>0)}};
-   if(cmd.method==='DOM.resolveNode')result={object:{objectId:'leaf'}};
+   if(cmd.method==='DOM.resolveNode')result={object:{objectId:cmd.params.backendNodeId===13?'text':'leaf'}};
+   if(cmd.method==='DOM.resolveNode'&&cmd.params.backendNodeId===13&&fault==='text-resolve')result={object:{}};
+   if(cmd.method==='Runtime.callFunctionOn'&&cmd.params.objectId==='text'){textChecks++;result={result:{value:fault!=='text-foreign'&&!(fault==='text-detached-final'&&textChecks>1)}};}
    if(cmd.method==='Accessibility.getFullAXTree'){axReads++;
     const focused=[{name:'focused',value:{value:true}}];
     const nodes: {nodeId:string;backendDOMNodeId?:number;role:{value:string};frameId?:string;properties?:typeof focused;childIds?:string[];ignored?:boolean;name?:{value:string};value?:{value:string}}[]=[{nodeId:'root',backendDOMNodeId:fault==='root-mismatch'?999:1,role:{value:'RootWebArea'},frameId:fault==='wrong-frame'?'other':'frame-one',properties:focused,childIds:['host']},{nodeId:'host',backendDOMNodeId:10,role:{value:'DateTime'},childIds:['leaf','second']},{nodeId:'leaf',backendDOMNodeId:fault==='missing-backend'?undefined:fault==='wrong-host'?999:fault==='changed-leaf'&&axReads>1?12:11,ignored:fault==='ignored',role:{value:'spinbutton'},name:{value:'DO-NOT-LOG-NAME'},value:{value:'DO-NOT-LOG-VALUE'},properties:fault==='missing-leaf'?[]:fault==='disabled-leaf'?[...focused,{name:'disabled',value:{value:true}}]:focused}];
@@ -284,7 +287,13 @@ test('UI-UA-IDENTITY-024: typed read-only harness binds focused AX leaf to exact
      if(fault==='final-ancestry')nodes[0].childIds=[];
      if(fault==='final-duplicate')nodes.push({...nodes[1]});
     }
-    if(fault==='two-leaves')nodes.push({nodeId:'second',backendDOMNodeId:12,role:{value:'spinbutton'},properties:focused,ignored:false}as typeof nodes[number]);
+    // A complete tree includes the referenced second segment even when it is
+    // not focused. The two-leaves negative changes focus, not tree completeness.
+    nodes.push({nodeId:'second',backendDOMNodeId:12,role:{value:'spinbutton'},properties:fault==='two-leaves'?focused:[],ignored:false}as typeof nodes[number]);
+    if(fault.startsWith('text-')){
+     nodes[2].childIds=['separator'];nodes.push({nodeId:'separator',backendDOMNodeId:13,role:{value:'StaticText'},ignored:false,childIds:[],properties:fault==='text-focused'?focused:fault==='text-focusable'?[{name:'focusable',value:{value:true}}]:fault==='text-property'?[{name:'editable',value:{value:true}}]:[]});
+     if(fault==='text-duplicate'){nodes[2].childIds.push('duplicate-text');nodes.push({...nodes.at(-1)!,nodeId:'duplicate-text'});}
+    }
     if(fault==='ax-bound')while(nodes.length<=8192)nodes.push({...nodes[1],nodeId:'overflow-'+nodes.length});
     result={nodes};if(['read-failure','both-failures'].includes(fault))error={message:'bounded-read-failure'};
    }
@@ -292,15 +301,16 @@ test('UI-UA-IDENTITY-024: typed read-only harness binds focused AX leaf to exact
    queueMicrotask(()=>owner.socket.respond(cmd,error?{error}:{result}));
   };
   try{
-   if(fault==='none'){
+   if(fault==='none'||fault==='text-owned'){
     const first=await owner.harness.observeNativeFocus(),second=await owner.harness.observeNativeFocus();assert.deepEqual(first,second);
     assert.equal(first.kind,'datetime');assert.equal(first.relation,'ua-descendant');assert.equal(first.role,'spinbutton');assert.equal(first.focusedAncestors,1);assert.ok(first.indicator&&first.visible);
     assert.ok(Buffer.byteLength(JSON.stringify(first))<1024);assert.doesNotMatch(JSON.stringify(first),/DO-NOT-LOG|frame-one|loader-one|nodeId|backendDOM/);
     assert.equal(sent.filter(c=>c.method==='Accessibility.enable').length,1);
+    if(fault==='text-owned'){assert.equal(textChecks,4);assert.ok(sent.filter(c=>c.method==='Runtime.callFunctionOn'&&c.params.objectId==='text').every(c=>JSON.stringify(c.params.arguments)==='[{"objectId":"host"}]'),'same real host argument at both boundaries');}
    }else{
     await assert.rejects(owner.harness.observeNativeFocus(),error=>{assert.ok(error instanceof Error);if(fault==='both-failures'){assert.ok(error instanceof AggregateError);assert.equal(error.errors.length,2);assert.equal(error.cause,error.errors[0]);assert.equal(error.errors[0].message,'bounded-read-failure');assert.equal(error.errors[1].message,'bounded-release-failure');}return true;});
    }
-   assert.equal(sent.filter(c=>c.method==='Runtime.releaseObjectGroup').length,fault==='none'?2:1);
+   assert.equal(sent.filter(c=>c.method==='Runtime.releaseObjectGroup').length,fault==='none'||fault==='text-owned'?2:1);
    assert.equal(sent.some(c=>/Input\.|DOM\.focus|scroll|Fetch\./.test(c.method)),false,'observer never acts, changes interception or exposes raw send');
    assert.equal(owner.harness.requests.size,0);assert.equal(owner.harness.responses.size,0);
   }finally{await owner.harness.close();}
@@ -334,7 +344,7 @@ test('UI-MEDIA-025: actual readonly observer separates complete stable media ide
    queueMicrotask(()=>owner.socket.respond(cmd,error?{error}:{result}));
   };
   try{
-   if(fault==='none'||fault==='wrong-leaf'&&state!=='loaded'){
+   if(fault==='none'){
     const actual=await owner.harness.observeNativeFocus();assert.equal(actual.complete,true);assert.equal(actual.disabled,state!=='loaded');assert.equal(actual.focusable,true);
     assert.equal(assertMediaIdentity(actual,state==='empty'?'preview-403-empty':state==='error'?'public-fixture-error':'available'),state==='loaded'?'available':'unavailable');
     assert.equal(actual.focusables.length,state==='loaded'?2:1);assert.equal(actual.uaFocusable,state==='loaded'?1:0);
@@ -461,8 +471,8 @@ test('UI-UA-STABILITY-030: real observer retains subtree rejection and original 
    const first=await owner.harness.observeNativeFocus();assert.ok(readUADiagnostic(first));
    if(fault==='stable'){assert.deepEqual(await owner.harness.observeNativeFocus(),first);assert.equal(readUADiagnostic(first)!.baseline,false);}
    else await assert.rejects(owner.harness.observeNativeFocus(),error=>{
-    assert.ok(error instanceof Error);const original=error instanceof AggregateError?error.cause:error;assert.ok(original instanceof Error);assert.equal(original.message,'UA subtree identity replaced during traversal');
-    if(fault==='read-and-identity'||fault==='cleanup-and-identity'){assert.ok(error instanceof AggregateError);assert.equal(error.errors[0],original);assert.equal(error.errors.length,2);assert.match(String(error.errors[1]),fault==='read-and-identity'?/read failure/:/cleanup failure/);}
+    assert.ok(error instanceof Error);const primary=error instanceof AggregateError?error.cause:error;let original=primary;while(original instanceof Error&&original.cause instanceof Error)original=original.cause;assert.ok(original instanceof Error);assert.equal(original.message,'UA subtree identity replaced during traversal');
+    if(fault==='read-and-identity'||fault==='cleanup-and-identity'){assert.ok(error instanceof AggregateError);assert.equal(error.errors[0],primary);assert.equal(error.errors.length,2);assert.match(String(error.errors[1]),fault==='read-and-identity'?/read failure/:/cleanup failure/);if(fault==='cleanup-and-identity'){assert.ok(primary instanceof AggregateError);assert.equal(primary.errors[0],original);assert.equal(primary.cause,original);assert.equal(primary.errors.length,2,'incomplete semantic proof cause is preserved before cleanup');}}
     if(fault!=='read-and-identity'){
      const diagnostic=readUADiagnostic(error)!;assert.ok(diagnostic);assert.ok(diagnostic.delta[0]>0&&diagnostic.delta[1]>0);assert.equal(diagnostic.overflow,false);assert.deepEqual(diagnostic.same!.slice(0,4),[true,true,true,true]);
      assert.equal(diagnostic.focusable,fault==='control-added'?2:1);assert.doesNotMatch(JSON.stringify(diagnostic),/DO-NOT-LOG|secret-|backendNode|nodeId|objectId/);

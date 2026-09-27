@@ -58,6 +58,7 @@ export type BrowserLaunchProfile = Readonly<{
 }>;
 
 export type BrowserLaunchProfileOptions = {
+  manualZoom?: "headed";
   platform: NodeJS.Platform;
   attemptNumber: 1 | 2;
   userDataDirectory: string;
@@ -80,6 +81,7 @@ export type BrowserLaunchFactOptions = {
 };
 
 export function buildBrowserLaunchProfile(options: BrowserLaunchProfileOptions): BrowserLaunchProfile {
+  if (options.manualZoom !== undefined && options.manualZoom !== "headed") throw new Error("Unsupported manual zoom launch mode");
   if (options.attemptNumber !== 1 && options.attemptNumber !== 2) {
     throw new Error("Browser startup attempt must be 1 or 2");
   }
@@ -89,7 +91,7 @@ export function buildBrowserLaunchProfile(options: BrowserLaunchProfileOptions):
   }
 
   const args = [
-    ...commonBrowserArguments,
+    ...commonBrowserArguments.filter(argument => options.manualZoom !== "headed" || argument !== "--headless"),
     ...(options.platform === "linux" ? linuxBrowserArguments : []),
     ...(options.attemptNumber === 2 ? secondAttemptDiagnosticArguments : []),
     "--remote-debugging-address=127.0.0.1",

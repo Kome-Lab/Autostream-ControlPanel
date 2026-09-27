@@ -6,7 +6,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import ts from "typescript";
-import { approvedProtectedPaths, assertApprovedManifest, assertProtectedFixture, assertApprovedSourceDelta, assertRunnerTypeDelta } from "./approved-source-delta.mts";
+import { approvedProtectedPaths, assertApprovedManifest, assertProtectedFixture, assertApprovedSourceDelta, assertRunnerTypeDelta, assertG3OperationSource } from "./approved-source-delta.mts";
 import { ciProtectedPaths, assertCISourceDelta, assertTypeDependencies } from "./ci-source-deltas.mts";
 const root = fileURLToPath(new URL("../../..", import.meta.url));
 const read = (path: string) => readFileSync(resolve(root, path));
@@ -38,11 +38,12 @@ test("UI-PARITY-002: 100 actions keep original permission, payload, duplicate an
     for (const path of row.current_owner_paths) assert.ok(existsSync(resolve(root, path)), row.id + ": missing owner");
   }
 });
-test("UI-PARITY-003: original 733 records, 729 raw sources and four separately bounded approved deltas remain protected", () => {
+test("UI-PARITY-003: original 733 records, 727 raw sources and six separately bounded approved deltas retain the original four plus two044 launch paths", () => {
   const records = fixture("protected").protected;
   assert.ok(records.length > 100);
   const manifest = fixture("approved-source-deltas");
   assertProtectedFixture(read("web/tests/fixtures/ui-regression/protected.json"), manifest);
+  assertG3OperationSource(read(manifest.g3OperationDelta.newSource.path), manifest);
   assert.equal(records.length, 733);
   let rawMatches = 0, deltas = 0, ciDeltas = 0;
   for (const row of records) {
@@ -54,7 +55,7 @@ test("UI-PARITY-003: original 733 records, 729 raw sources and four separately b
       assertCISourceDelta(row.path, rawBase(row.path), read(row.path), fixture("ci-source-deltas")); ciDeltas++;
     } else { assert.equal(sha(read(row.path)), row.sha256, row.path); rawMatches++; }
   }
-  assert.equal(rawMatches, 729); assert.equal(deltas, 2); assert.equal(ciDeltas, 2);
+  assert.equal(rawMatches, 727); assert.equal(deltas, 4); assert.equal(ciDeltas, 2);
 });
 function navigationBindings(source: string) {
   const bindings: { href: string; permissions: string[]; key: string }[] = [];
@@ -100,6 +101,12 @@ test("UI-PARITY-006: only role names register the new suites and the CI job bloc
 
 test("UI-PARITY-007: exact supplement rejects missing, unknown, wrong original, added API and changed old behavior", () => {
   const manifest = fixture("approved-source-deltas"); assertApprovedManifest(manifest);
+  const operation = read(manifest.g3OperationDelta.newSource.path);
+  assertG3OperationSource(operation, manifest);
+  for (const [from, to] of [["10_000", "20_000"], ["this.dialogs === 0", "true"], ["this.port.abort(error)", "void error"]]) {
+    const changed = operation.toString("utf8").replace(from, to); assert.notEqual(changed, operation.toString("utf8"));
+    assert.throws(() => assertG3OperationSource(Buffer.from(changed), manifest), /exact contract/);
+  }
   assert.throws(() => assertApprovedManifest(null), /supplement/);
   const unknown = { ...manifest, protectedDeltas: [...manifest.protectedDeltas, { path: "unknown" }] }; assert.throws(() => assertApprovedManifest(unknown), /supplement/);
   for (const path of approvedProtectedPaths) {

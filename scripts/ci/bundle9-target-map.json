@@ -214,7 +214,7 @@
       },
       {
         "path": "web/tests/helpers/browser-harness.mts",
-        "sha256": "cad3e3dc3ce9df075a72a1929bd914aa913adcde80a63a404e197b115010d0ed",
+        "sha256": "3d3253483a608b25baac5642cb506647df1225c8c62642616b74cb792e630427",
         "symbols": [
           "BrowserHarness",
           "createCommandSender",
@@ -224,7 +224,7 @@
           "waitForChildExit",
           "waitForMapCount"
         ],
-        "physical_lines": 709
+        "physical_lines": 784
       },
       {
         "path": "web/tests/helpers/browser-lifecycle-source-paths.mts",
@@ -1336,7 +1336,7 @@
     "destinations": [
       {
         "path": "web/tests/helpers/browser-harness.mts",
-        "sha256": "cad3e3dc3ce9df075a72a1929bd914aa913adcde80a63a404e197b115010d0ed",
+        "sha256": "3d3253483a608b25baac5642cb506647df1225c8c62642616b74cb792e630427",
         "symbols": [
           "BrowserHarness",
           "createCommandSender",
@@ -1346,7 +1346,7 @@
           "waitForChildExit",
           "waitForMapCount"
         ],
-        "physical_lines": 709
+        "physical_lines": 784
       },
       {
         "path": "web/tests/helpers/browser-next-server.mts",
@@ -5097,12 +5097,13 @@
     "destinations": [
       {
         "path": "web/tests/helpers/browser-harness.mts",
-        "sha256": "cad3e3dc3ce9df075a72a1929bd914aa913adcde80a63a404e197b115010d0ed",
+        "sha256": "3d3253483a608b25baac5642cb506647df1225c8c62642616b74cb792e630427",
         "symbols": [
           "BrowserHarness",
           "assertNoFatalError",
           "browserVersion",
           "captureScreenshot",
+          "captureViewportEvidence",
           "clearConsoleErrors",
           "clearNavigationCount",
           "clearRequestCounts",
@@ -5118,8 +5119,10 @@
           "handleRequest",
           "handleSocketClose",
           "launch",
+          "movePointerToCaptureMargin",
           "navigate",
           "observeNativeFocus",
+          "ownedLaunchFacts",
           "pressKey",
           "pressNativeKey",
           "receive",
@@ -5128,6 +5131,7 @@
           "removeOwnedBrowserDirectory",
           "reportFetchGenerationFailure",
           "resolveBrowserPath",
+          "runG3Operation",
           "send",
           "sendBrowser",
           "sendCommand",
@@ -5144,7 +5148,7 @@
           "waitForRequestHandlersIdle",
           "waitForResponseCount"
         ],
-        "physical_lines": 709
+        "physical_lines": 784
       },
       {
         "path": "web/tests/helpers/browser-next-server.mts",
@@ -5279,7 +5283,7 @@
       },
       {
         "path": "web/tests/helpers/browser-harness.mts",
-        "sha256": "cad3e3dc3ce9df075a72a1929bd914aa913adcde80a63a404e197b115010d0ed",
+        "sha256": "3d3253483a608b25baac5642cb506647df1225c8c62642616b74cb792e630427",
         "symbols": [
           "BrowserHarness",
           "createCommandSender",
@@ -5289,7 +5293,7 @@
           "waitForChildExit",
           "waitForMapCount"
         ],
-        "physical_lines": 709
+        "physical_lines": 784
       },
       {
         "path": "web/tests/helpers/browser-next-server.mts",

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {uaSnapshot,summarizeUA,bindUADiagnostic,type UASnapshot,type UADiagnostic} from "./browser-ua-diagnostic.mts";
+import {MediaIdentityLedger,inspectUAAX,type UADOM,type UAAX,type UARead} from "./browser-ua-identity.mts";
 
 // Read-only, same-document UA identity observations; callers decide operability.
 // No names, values, URLs, raw AX objects or protocol identifiers leave this owner.
@@ -14,17 +15,18 @@ export type NativeFocusObservation = Readonly<{
 }>;
 type Method = "Accessibility.enable" | "Accessibility.getFullAXTree" | "DOM.enable" | "DOM.describeNode" | "DOM.resolveNode" | "Runtime.evaluate" | "Runtime.callFunctionOn" | "Runtime.releaseObjectGroup" | "Page.getFrameTree";
 type Send = (method: Method, params?: Record<string, unknown>) => Promise<Record<string, unknown>>;
-type DOMNode = {backendNodeId:number;nodeName:string;frameId?:string;children?:DOMNode[];shadowRoots?:DOMNode[];shadowRootType?:string};
-type AXNode = {nodeId:string;backendDOMNodeId?:number;frameId?:string;childIds?:string[];ignored?:boolean;role?:{value?:string};properties?:{name:string;value:{value?:unknown}}[]};
+type DOMNode = UADOM;
+type AXNode = UAAX;
 export class NativeFocusObserver {
   private enabled=false;
   private readonly identities=new Map<string,number>();
   private documentKey:string|undefined;
   private readonly hostNodes=new Map<number,Set<number>>();
   private readonly snapshots=new Map<number,UASnapshot>();
+  private readonly mediaIdentity=new Map<number,MediaIdentityLedger>();
   private readonly send:Send;
   constructor(send:Send){this.send=send;}
-  clear(){this.identities.clear();this.hostNodes.clear();this.snapshots.clear();this.documentKey=undefined;}
+  clear(){this.identities.clear();this.hostNodes.clear();this.snapshots.clear();this.mediaIdentity.clear();this.documentKey=undefined;}
   private id(key:string){
     const old=this.identities.get(key);if(old)return old;
     assert.ok(this.identities.size<128,"UA identity observation bound");
@@ -64,6 +66,8 @@ export class NativeFocusObserver {
     const group="ui-native-focus-observation";
     let primary: unknown;
     let diagnostic:UADiagnostic|undefined;
+    let identityFailure:unknown;
+    let commitRead:(()=>void)|undefined;
     try{
       const frame=await this.frame();
       const result=await this.send("Runtime.evaluate",{expression:"document.activeElement",objectGroup:group,returnByValue:false});
@@ -86,6 +90,7 @@ export class NativeFocusObserver {
       const previous=this.hostNodes.get(host.backendNodeId);
       let subtreeFailure:unknown;
       if(previous){try{assert.ok(descendants.size===previous.size&&[...descendants].every(id=>previous.has(id)),"UA subtree identity replaced during traversal");}catch(error){subtreeFailure=error;}}
+      identityFailure=subtreeFailure;
       let nodes:AXNode[],firstSnapshot:UASnapshot;
       try{
         const response=await this.send("Accessibility.getFullAXTree",{frameId:frame.id});
@@ -93,8 +98,9 @@ export class NativeFocusObserver {
         firstSnapshot=uaSnapshot(host,nodes,frame,key,media);
         diagnostic=summarizeUA(this.snapshots.get(host.backendNodeId),firstSnapshot,"between");
       }catch(error){throw subtreeFailure?new AggregateError([subtreeFailure,error],"UA identity and diagnostic observation failed",{cause:subtreeFailure}):error;}
-      if(subtreeFailure)throw subtreeFailure;
-      if(!previous)this.hostNodes.set(host.backendNodeId,descendants);
+      // Keep the physical mismatch as the original cause, but complete the same
+      // read before considering a narrowly proven non-operative media delta.
+      if(subtreeFailure&&kind!=="media")throw subtreeFailure;
       const roots=nodes.filter(n=>n.role?.value==="RootWebArea"&&n.backendDOMNodeId===documentNode.backendNodeId);
       assert.ok(roots.length===1&&roots[0].frameId===frame.id,"UA document/frame binding unavailable or mismatched");
       const byId=new Map(nodes.map(n=>[n.nodeId,n]));assert.equal(byId.size,nodes.length,"ambiguous AX node identity");
@@ -109,8 +115,28 @@ export class NativeFocusObserver {
       assert.ok(leaf.backendDOMNodeId&& (leaf.backendDOMNodeId===host.backendNodeId||descendants.has(leaf.backendDOMNodeId)),"focused AX leaf belongs to another host/document");
       if(leaf.frameId)assert.ok(leaf.frameId===frame.id,"UA leaf frame mismatch");
       assert.ok(focused.every(n=>n===leaf||below(n,leaf)),"unrelated focused AX ancestor");
+      // DOM.describeNode can omit separator text nodes from a datetime shadow
+      // tree while AX exposes them. Prove their actual DOM ownership read-only;
+      // never infer ownership or drop an unmapped operation from the AX set.
+      const domOwner=new Set([host.backendNodeId,...descendants]),textObjects:string[]=[];
+      if(kind==="datetime"){
+        const hostAX=nodes.filter(n=>n.backendDOMNodeId===host.backendNodeId);assert.equal(hostAX.length,1,"unique datetime AX host required");
+        const missing=nodes.filter(n=>n.backendDOMNodeId!==undefined&&!domOwner.has(n.backendDOMNodeId)&&below(hostAX[0],n));
+        assert.ok(missing.length<=32,"datetime supplemental text owner bound");
+        for(const node of missing){
+          assert.ok(node.role?.value==="StaticText"&&node.properties?.length===0,"unmapped AX operation or unknown node cannot be supplemented");
+          const resolved=await this.send("DOM.resolveNode",{backendNodeId:node.backendDOMNodeId,objectGroup:group});
+          const textObject=(resolved.object as {objectId?:string})?.objectId;assert.ok(textObject,"datetime text DOM mapping unavailable");textObjects.push(textObject);
+          domOwner.add(node.backendDOMNodeId!);
+        }
+      }
+      const verifyTextOwners=async()=>{for(const textObject of textObjects){
+        const value=await this.send("Runtime.callFunctionOn",{objectId:textObject,arguments:[{objectId}],returnByValue:true,functionDeclaration:"function(host){const root=this.getRootNode();return this.nodeType===3&&this.isConnected&&this.ownerDocument===document&&host===document.activeElement&&root instanceof ShadowRoot&&root.host===host}"});
+        assert.ok(!value.exceptionDetails&&(value.result as {value?:unknown})?.value===true,"datetime text has no exact live document and shadow host");
+      }};
+      await verifyTextOwners();
       const focusSet=(all:AXNode[])=>{
-        const owned=all.filter(n=>n.backendDOMNodeId&&(n.backendDOMNodeId===host.backendNodeId||descendants.has(n.backendDOMNodeId))&&focusable(n));
+        const owned=inspectUAAX(all,frame.id,host.backendNodeId,domOwner).related.filter(focusable);
         assert.ok(owned.length<=32,"UA focusable set bound");
         assert.equal(new Set(owned.map(n=>n.backendDOMNodeId)).size,owned.length,"UA focusable backend identity ambiguous");
         for(const node of owned){assert.equal(node.ignored,false,"focusable UA node ignored");if(node.frameId)assert.equal(node.frameId,frame.id,"focusable UA frame mismatch");}
@@ -128,6 +154,7 @@ export class NativeFocusObserver {
       const painted=(paint.result as {value?:{indicator:boolean;visible:boolean}})?.value;assert.ok(painted);
       const finalNodes=(await this.send("Accessibility.getFullAXTree",{frameId:frame.id})).nodes as AXNode[];
       assert.ok(Array.isArray(finalNodes)&&finalNodes.length<=8192,"UA final AX observation bound");
+      assert.ok(inspectUAAX(nodes,frame.id,host.backendNodeId,domOwner).topology===inspectUAAX(finalNodes,frame.id,host.backendNodeId,domOwner).topology,"UA AX topology changed inside observation");
       const finalFocused=finalNodes.filter(n=>n.properties?.some(p=>p.name==="focused"&&p.value?.value===true));
       assert.ok(finalFocused.length===focused.length&&finalFocused.every(n=>focused.some(old=>old.nodeId===n.nodeId&&old.backendDOMNodeId===n.backendDOMNodeId&&old.ignored===n.ignored)),"UA focused identities changed during observation");
       const finalById=new Map(finalNodes.map(node=>[node.nodeId,node]));
@@ -154,16 +181,29 @@ export class NativeFocusObserver {
       assert.equal((finalHost.result as {value?:unknown})?.value,true,"UA host changed after paint observation");
       const finalFrame=await this.frame();
       assert.ok(finalFrame.id===frame.id&&finalFrame.loaderId===frame.loaderId,"UA document changed after paint observation");
+      await verifyTextOwners();
       const finalMedia=media?await this.mediaFacts(objectId):null;
       if(media)assert.deepEqual(finalMedia,media,"media state changed during identity observation");
       const within=summarizeUA(firstSnapshot,uaSnapshot(finalOwner,finalNodes,finalFrame,key,finalMedia),"within");
       if(within.delta.some(n=>n>0))diagnostic=within;
+      const read:UARead={host,nodes,frame,document:key,media};
+      const ledger=this.mediaIdentity.get(host.backendNodeId);let proofCommit:(()=>void)|undefined;
+      if(kind==="media"&&(ledger||subtreeFailure||diagnostic?.delta.some(n=>n>0))){
+        assert.ok(ledger,"original complete unavailable media identity missing");
+        const pending=ledger.prepare(read,{host:finalOwner,nodes:finalNodes,frame:finalFrame,document:key,media:finalMedia},painted),accepted=pending.delta;proofCommit=pending.commit;
+        if(subtreeFailure||accepted.removed+accepted.added+accepted.changed>0)diagnostic={...diagnostic!,purpose:[true,accepted.removed,accepted.added,accepted.changed]};
+      }
       const role=(value:string|undefined):ClosedRole=>value==="spinbutton"||value==="button"||value==="slider"?value:kind==="media"?"media":"other";
       const observation:NativeFocusObservation={document:this.id("document:"+key),host:this.id("host:"+host.backendNodeId),node:this.id("node:"+leaf.backendDOMNodeId),kind,relation:leaf.backendDOMNodeId===host.backendNodeId?"host":"ua-descendant",role:role(leaf.role?.value),stable:true,focusedAncestors:focused.length-1,uaFocusable,mediaState,indicator:painted.indicator,visible:painted.visible,disabled:disabled(leaf),focusable:focusable(leaf),complete:true,media,focusables:firstSet.map(n=>({node:this.id("node:"+n.backend),relation:n.backend===host.backendNodeId?"host":"ua-descendant",role:role(n.role),disabled:n.disabled}))};
-      if(!this.snapshots.has(host.backendNodeId))this.snapshots.set(host.backendNodeId,firstSnapshot);
+      commitRead=()=>{
+        proofCommit?.();
+        if(!previous)this.hostNodes.set(host.backendNodeId,descendants);
+        if(!this.snapshots.has(host.backendNodeId))this.snapshots.set(host.backendNodeId,firstSnapshot);
+        if(kind==="media"&&!ledger&&["empty","error"].includes(mediaState)&&disabled(leaf)&&leaf.backendDOMNodeId===host.backendNodeId&&firstSet.length===1)this.mediaIdentity.set(host.backendNodeId,new MediaIdentityLedger(read));
+      };
       bindUADiagnostic(observation,diagnostic);return observation;
-    }catch(error){primary=error;bindUADiagnostic(error,diagnostic);throw error;}finally{
-      try{await this.send("Runtime.releaseObjectGroup",{objectGroup:group});}catch(error){const failure=primary?new AggregateError([primary,error],"UA observation and cleanup failed",{cause:primary}):error;bindUADiagnostic(failure,diagnostic);throw failure;}
+    }catch(error){const failure=identityFailure&&error!==identityFailure&&!(error instanceof AggregateError&&error.cause===identityFailure)?new AggregateError([identityFailure,error],"UA identity and complete observation rejected",{cause:identityFailure}):error;primary=failure;bindUADiagnostic(failure,diagnostic);throw failure;}finally{
+      try{await this.send("Runtime.releaseObjectGroup",{objectGroup:group});if(!primary)commitRead?.();}catch(error){const failure=primary?new AggregateError([primary,error],"UA observation and cleanup failed",{cause:primary}):error;bindUADiagnostic(failure,diagnostic);throw failure;}
     }
   }
 }

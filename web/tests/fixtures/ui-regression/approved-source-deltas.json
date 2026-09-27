@@ -13,6 +13,18 @@
       "original_sha256": "bd45673d96e20aaea5927fa6b57c1c4d1445c36bb515e8e14758554bfa5ab5de",
       "transform": "add-closed-press-tab-and-readonly-focus-only",
       "reason": "Retain the exact Tab transform; remove only the four reviewed readonly focus additions before restoring the fixed original."
+    },
+    {
+      "path": "web/tests/helpers/browser-launch-profile.mts",
+      "original_sha256": "1d2ac53d0f89cfd3416c4321642a61a20441a7ac7be24b8d8d28257cb02564c8",
+      "transform": "manual-zoom-headed-only",
+      "reason": "044 explicit G3-only headed option; exact inverse restores fixed original including ordinary headless args, security, retry, cleanup and deadlines."
+    },
+    {
+      "path": "web/tests/helpers/browser-process-attempt.mts",
+      "original_sha256": "3ee1ea83d4d83c0b9fbf0a0d611f7a2607fd8be108d0f8414509cba89fdd51f2",
+      "transform": "manual-zoom-headed-only",
+      "reason": "044 explicit G3-only headed option; exact inverse restores fixed original including ordinary headless args, security, retry, cleanup and deadlines."
     }
   ],
   "readonlyFocusDelta": {
@@ -23,5 +35,123 @@
     "path": "web/tests/helpers/run-ui-foundation-browser.mts",
     "original_sha256": "31eaadac62a427fedb59be8fca91b23b995c7cf5d93da014159b634ad221d3e3",
     "transform": "capture-narrowed-result-file-only"
+  },
+  "readonlyLaunchFactsDelta": {
+    "transform": "remove-two-exact-owned-launch-facts-additions",
+    "baseline_sha256": "cad3e3dc3ce9df075a72a1929bd914aa913adcde80a63a404e197b115010d0ed"
+  },
+  "closure044Deltas": {
+    "reason": "044 typed move-only preparation, read-only viewport capture and dedicated manual-zoom headed option; original four transforms retained",
+    "records": [
+      {
+        "path": "web/tests/helpers/browser-harness.mts",
+        "baseline_sha256": "ce4aa868a83cecb4651bcb580e0f4ee42021e1f13335f66f1912af493af7d6a7",
+        "replacements": [
+          {
+            "before": "\n  static async launch() {\n",
+            "after": "\n  static async launch(options: Readonly<{ manualZoom?: \"headed\" }> = {}) {\n    if (options.manualZoom !== undefined && options.manualZoom !== \"headed\") throw new Error(\"Unsupported manual zoom launch mode\");\n"
+          },
+          {
+            "before": "    }\n    const browserLaunchSession = await launchBrowserProcessWithRetry({ browserPath });\n",
+            "after": "    }\n    const browserLaunchSession = await launchBrowserProcessWithRetry({ browserPath, ...(options.manualZoom ? { manualZoom: options.manualZoom } : {}) });\n"
+          },
+          {
+            "before": "    return this.sendBrowser(\"Browser.getVersion\");\n",
+            "after": "    return this.sendBrowser(\"Browser.getVersion\");\n  }\n\n  async movePointerToCaptureMargin(point: Readonly<{ x: number; y: number }>): Promise<void> {\n    this.assertNoFatalError();\n    if (this.closed) throw new Error(\"Browser harness closed\");\n    if (![point.x, point.y].every(value => Number.isFinite(value) && value > 0 && value < 30_000)) throw new Error(\"Invalid bounded pointer margin\");\n    const safe = await this.evaluate<boolean>(`(() => {\n      const x=${point.x},y=${point.y},hit=document.elementFromPoint(x,y);\n      return x<Math.min(innerWidth,document.documentElement.clientWidth)-2 && y<Math.min(innerHeight,document.documentElement.clientHeight)-2\n        && !!hit && !hit.closest('button,a,input,select,textarea,[tabindex],[role=button],[role=link],[role=dialog],[role=alertdialog]');\n    })()`);\n    if (safe !== true) throw new Error(\"Pointer target is not a verified noninteractive viewport margin\");\n    await this.send(\"Input.dispatchMouseEvent\", { type: \"mouseMoved\", x: point.x, y: point.y, button: \"none\", buttons: 0, modifiers: 0 });\n  }\n\n  async captureViewportEvidence() {\n    this.assertNoFatalError();\n    if (this.closed) throw new Error(\"Browser harness closed\");\n    const layout = await this.send(\"Page.getLayoutMetrics\");\n    const view = layout.cssVisualViewport as { clientWidth?: number; clientHeight?: number; pageX?: number; pageY?: number; scale?: number } | undefined;\n    const width = Math.ceil(view?.clientWidth ?? 0), height = Math.ceil(view?.clientHeight ?? 0);\n    const pageX = view?.pageX, pageY = view?.pageY, scale = view?.scale;\n    if (![width, height, pageX, pageY, scale].every(value => typeof value === \"number\" && Number.isFinite(value)) || width <= 0 || height <= 0 || width > 30_000 || height > 30_000 || Math.abs(pageX!) > 30_000 || Math.abs(pageY!) > 30_000 || scale !== 1) throw new Error(\"Invalid bounded viewport evidence geometry\");\n    const screenshot = await this.send(\"Page.captureScreenshot\", { format: \"png\", fromSurface: true, captureBeyondViewport: false });\n    if (typeof screenshot.data !== \"string\" || !screenshot.data) throw new Error(\"Viewport evidence was empty\");\n    const png = Buffer.from(screenshot.data, \"base64\");\n    if (png.length < 24 || !png.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) || png.readUInt32BE(16) !== width || png.readUInt32BE(20) !== height) throw new Error(\"Viewport evidence dimensions mismatch\");\n    this.assertNoFatalError();\n    if (this.closed) throw new Error(\"Browser harness closed during viewport capture\");\n    return { png, viewport: { width, height, pageX, pageY, scale } };\n"
+          }
+        ]
+      },
+      {
+        "path": "web/tests/helpers/browser-launch-profile.mts",
+        "baseline_sha256": "1d2ac53d0f89cfd3416c4321642a61a20441a7ac7be24b8d8d28257cb02564c8",
+        "replacements": [
+          {
+            "before": "export type BrowserLaunchProfileOptions = {\n",
+            "after": "export type BrowserLaunchProfileOptions = {\n  manualZoom?: \"headed\";\n"
+          },
+          {
+            "before": "export function buildBrowserLaunchProfile(options: BrowserLaunchProfileOptions): BrowserLaunchProfile {\n",
+            "after": "export function buildBrowserLaunchProfile(options: BrowserLaunchProfileOptions): BrowserLaunchProfile {\n  if (options.manualZoom !== undefined && options.manualZoom !== \"headed\") throw new Error(\"Unsupported manual zoom launch mode\");\n"
+          },
+          {
+            "before": "  const args = [\n    ...commonBrowserArguments,\n",
+            "after": "  const args = [\n    ...commonBrowserArguments.filter(argument => options.manualZoom !== \"headed\" || argument !== \"--headless\"),\n"
+          }
+        ]
+      },
+      {
+        "path": "web/tests/helpers/browser-process-attempt.mts",
+        "baseline_sha256": "3ee1ea83d4d83c0b9fbf0a0d611f7a2607fd8be108d0f8414509cba89fdd51f2",
+        "replacements": [
+          {
+            "before": "export type BrowserProcessAttemptContext = Readonly<{\n",
+            "after": "export type BrowserProcessAttemptContext = Readonly<{\n  manualZoom?: \"headed\";\n"
+          },
+          {
+            "before": "export type BrowserLaunchRetryOptions = {\n",
+            "after": "export type BrowserLaunchRetryOptions = {\n  manualZoom?: \"headed\";\n"
+          },
+          {
+            "before": "export class BrowserProcessAttempt implements BrowserProcessAttemptOwner {\n",
+            "after": "export class BrowserProcessAttempt implements BrowserProcessAttemptOwner {\n  private readonly manualZoom: \"headed\" | undefined;\n"
+          },
+          {
+            "before": "  constructor(options: BrowserProcessAttemptOptions) {\n",
+            "after": "  constructor(options: BrowserProcessAttemptOptions) {\n    this.manualZoom = options.manualZoom;\n"
+          },
+          {
+            "before": "    const profile = buildBrowserLaunchProfile({\n",
+            "after": "    const profile = buildBrowserLaunchProfile({\n      ...(this.manualZoom ? { manualZoom: this.manualZoom } : {}),\n"
+          },
+          {
+            "before": "      stdio: \"pipe\",\n      windowsHide: true,\n",
+            "after": "      stdio: \"pipe\",\n      windowsHide: this.manualZoom !== \"headed\",\n"
+          },
+          {
+            "before": "    const owner = createAttempt({\n",
+            "after": "    const owner = createAttempt({\n      ...(options.manualZoom ? { manualZoom: options.manualZoom } : {}),\n"
+          }
+        ]
+      }
+    ]
+  },
+  "g3OperationDelta": {
+    "path": "web/tests/helpers/browser-harness.mts",
+    "baseline_sha256": "fafd9a69bda6695ee9257b2b1e5744d7dcab644b548609aa2fec41b64e07c494",
+    "transform": "g3-opt-in-bounded-operation-exact-inverse",
+    "newSource": {
+      "path": "web/tests/helpers/browser-g3-operation.mts",
+      "sha256": "b210a9d6871b4a394e888b2b85a9fa9e543d5e0f39247db1000a280d6e671b26"
+    },
+    "replacements": [
+      {
+        "before": "import { NativeFocusObserver } from \"./browser-ua-focus.mts\";\nimport { spawnSync, type ChildProcessWithoutNullStreams } from \"node:child_process\";\n",
+        "after": "import type { G3Operation, G3Options, G3Record } from \"./browser-g3-operation.mts\";\nimport { NativeFocusObserver } from \"./browser-ua-focus.mts\";\nimport { spawnSync, type ChildProcessWithoutNullStreams } from \"node:child_process\";\n"
+      },
+      {
+        "before": "  private readonly sessionId: string;\n  private readonly browserLaunchSession: BrowserLaunchSession | undefined;\n  private nextCommandId = 0;\n  private diagnosticNavigateId: number | undefined;\n",
+        "after": "  private readonly sessionId: string;\n  private readonly browserLaunchSession: BrowserLaunchSession | undefined;\n  private g3Operation: G3Operation | undefined;\n  private g3Headed = false;\n  private nextCommandId = 0;\n  private diagnosticNavigateId: number | undefined;\n"
+      },
+      {
+        "before": "        browserLaunchSession,\n      );\n      await harness.send(\"Page.enable\");\n      await harness.send(\"Runtime.enable\");\n",
+        "after": "        browserLaunchSession,\n      );\n      harness.g3Headed = options.manualZoom === \"headed\";\n      await harness.send(\"Page.enable\");\n      await harness.send(\"Runtime.enable\");\n"
+      },
+      {
+        "before": "      throw error;\n    }\n  }\n\n",
+        "after": "      throw error;\n    }\n  }\n\n  // Explicit G3 opt-in. Default suite transport and dialog policy stay unchanged.\n  async runG3Operation<T>(options: G3Options, write: (record: G3Record) => void, action: () => Promise<T>): Promise<T> {\n    const { G3Operation } = await import(\"./browser-g3-operation.mts\");\n    if (!this.g3Headed || this.g3Operation || this.closed || this.fatalError) throw new Error(\"G3 operation requires an idle owned headed target\");\n    const scope = new G3Operation(options, {\n      write,\n      abort: (error) => this.recordFatalError(error),\n      acceptDiscard: () => this.send(\"Page.handleJavaScriptDialog\", { accept: true }),\n    });\n    this.g3Operation = scope;\n    try { return await scope.run(action); }\n    finally { this.g3Operation = undefined; }\n  }\n\n"
+      },
+      {
+        "before": "  private sendCommand(method: string, params: Record<string, unknown>, sessionId?: string) {\n    if (this.fatalError) return Promise.reject(this.fatalError);\n    const id = ++this.nextCommandId;\n    const payload = sessionId ? { id, method, params, sessionId } : { id, method, params };\n    return new Promise<Record<string, unknown>>((resolveCommand, rejectCommand) => {\n      this.pendingCommands.set(id, { resolve: resolveCommand, reject: rejectCommand });\n      if (method === \"Page.navigate\") {\n",
+        "after": "  private sendCommand(method: string, params: Record<string, unknown>, sessionId?: string) {\n    if (this.fatalError) return Promise.reject(this.fatalError);\n    const scope = this.g3Operation;\n    const observed = scope?.beforeCommand(method, params);\n    const id = ++this.nextCommandId;\n    const payload = sessionId ? { id, method, params, sessionId } : { id, method, params };\n    const result = new Promise<Record<string, unknown>>((resolveCommand, rejectCommand) => {\n      this.pendingCommands.set(id, { resolve: resolveCommand, reject: rejectCommand });\n      if (method === \"Page.navigate\") {\n"
+      },
+      {
+        "before": "      this.socket.send(JSON.stringify(payload));\n    });\n  }\n\n",
+        "after": "      this.socket.send(JSON.stringify(payload));\n    });\n    if (!scope || observed === undefined) return result;\n    return result.then((value) => { scope.afterCommand(observed, true); return value; },\n      (error) => { scope.afterCommand(observed, false, asError(error)); throw error; });\n  }\n\n"
+      },
+      {
+        "before": "    }\n    if (!message.method || (message.sessionId && message.sessionId !== this.sessionId)) return;\n    if (message.method === \"Runtime.consoleAPICalled\") {\n      const type = String(message.params?.type || \"\");\n",
+        "after": "    }\n    if (!message.method || (message.sessionId && message.sessionId !== this.sessionId)) return;\n    if (this.g3Operation && message.method === \"Page.javascriptDialogOpening\") {\n      this.g3Operation.dialogOpening(message.params || {}, message.sessionId === this.sessionId && (message.params?.frameId === undefined || message.params.frameId === this.mainFrameId));\n    }\n    if (this.g3Operation && message.method === \"Page.javascriptDialogClosed\") {\n      this.g3Operation.dialogClosed(message.params || {}, message.sessionId === this.sessionId && (message.params?.frameId === undefined || message.params.frameId === this.mainFrameId));\n    }\n    if (message.method === \"Runtime.consoleAPICalled\") {\n      const type = String(message.params?.type || \"\");\n"
+      }
+    ]
   }
 }
