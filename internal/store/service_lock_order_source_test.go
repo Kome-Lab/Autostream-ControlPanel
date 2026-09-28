@@ -40,15 +40,15 @@ func readUpdaterPolicyLockOrderSource() ([]byte, error) {
 	)
 }
 
-func readFIX005LockOrderSource() ([]byte, error) {
+func readServiceTokenLockOrderSource() ([]byte, error) {
 	return readStoreLockOrderSources(
-		"service_token_lock_order_fix005_mariadb_test.go",
-		"service_token_lock_order_fix005_pull_fixture_test.go",
-		"service_token_lock_order_fix005_precreate_activation_test.go",
-		"service_token_lock_order_fix005_policy_cycles_test.go",
-		"service_token_lock_order_fix005_runtime_matrix_test.go",
-		"service_token_lock_order_fix005_ownership_runtime_test.go",
-		"service_token_lock_order_fix005_cleanup_test.go",
+		"service_token_lifecycle_fixture_test.go",
+		"service_token_pull_fixture_test.go",
+		"service_token_precreate_activation_test.go",
+		"service_token_policy_cycles_test.go",
+		"service_token_runtime_rotation_matrix_test.go",
+		"service_token_ownership_runtime_pairs_test.go",
+		"service_token_fixture_cleanup_test.go",
 	)
 }
 

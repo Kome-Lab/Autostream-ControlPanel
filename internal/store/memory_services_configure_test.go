@@ -208,7 +208,7 @@ func TestUpdateAgentConfigurationStagesBeforeActivation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := auth.PrecreateService(ctx, oldToken, bundle8bPullAgentRegistration("updater-staged")); err != nil {
+	if _, err := auth.PrecreateService(ctx, oldToken, physicalEOLPullAgentRegistration("updater-staged")); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := auth.Heartbeat(ctx, oldToken, ServiceHeartbeat{

@@ -66,7 +66,7 @@ func TestMariaDBServiceTokenMutationsLockServiceBeforeToken(t *testing.T) {
 	}
 }
 
-func TestFIX009GenericTokenMutationsUseOnlyDiscoveredServiceRows(t *testing.T) {
+func TestServiceTokenGenericTokenMutationsUseOnlyDiscoveredServiceRows(t *testing.T) {
 	sourceBytes, err := readServiceRegistryLockOrderSource()
 	if err != nil {
 		t.Fatal(err)
@@ -272,7 +272,7 @@ func TestMariaDBUpdaterPolicyLockObserverNilIsNoOp(t *testing.T) {
 	)
 }
 
-func TestMariaDBFIX006CanonicalPairUsesLeadingFixtureNamespace(t *testing.T) {
+func TestMariaDBServiceTokenCanonicalPairUsesLeadingFixtureNamespace(t *testing.T) {
 	sourceBytes, err := os.ReadFile("service_token_lock_order_pair_fixture_test.go")
 	if err != nil {
 		t.Fatal(err)

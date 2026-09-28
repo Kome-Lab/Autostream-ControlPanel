@@ -9,12 +9,12 @@ import (
 	"time"
 )
 
-func TestFIX011MemoryAuthAndReplayPrecedeStableSharedReferences(t *testing.T) {
+func TestServiceTokenMemoryAuthAndReplayPrecedeStableSharedReferences(t *testing.T) {
 	t.Run("invalid configure credential", func(t *testing.T) {
 		ctx := t.Context()
 		auth := NewMemoryAuthStore()
-		oldToken := createMemoryFIX010UpdateAgentService(t, auth, "fix011-memory-stage-target")
-		createMemoryFIX010UpdateAgentService(t, auth, "fix011-memory-stage-other")
+		oldToken := createMemoryServiceTokenUpdateAgentService(t, auth, "fix011-memory-stage-target")
+		createMemoryServiceTokenUpdateAgentService(t, auth, "fix011-memory-stage-other")
 		now := time.Date(2026, time.August, 25, 3, 0, 0, 0, time.UTC)
 		configureToken := "fix011-memory-stage-configure"
 		if _, err := auth.SetServiceConfigureToken(
@@ -65,7 +65,7 @@ func TestFIX011MemoryAuthAndReplayPrecedeStableSharedReferences(t *testing.T) {
 	t.Run("invalid activation credential", func(t *testing.T) {
 		ctx := t.Context()
 		auth := NewMemoryAuthStore()
-		oldToken := createMemoryFIX010UpdateAgentService(t, auth, "fix011-memory-activation-target")
+		oldToken := createMemoryServiceTokenUpdateAgentService(t, auth, "fix011-memory-activation-target")
 		now := time.Date(2026, time.August, 25, 3, 30, 0, 0, time.UTC)
 		configureToken := "fix011-memory-activation-configure"
 		if _, err := auth.SetServiceConfigureToken(
@@ -88,7 +88,7 @@ func TestFIX011MemoryAuthAndReplayPrecedeStableSharedReferences(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		createMemoryFIX010UpdateAgentService(t, auth, "fix011-memory-activation-other")
+		createMemoryServiceTokenUpdateAgentService(t, auth, "fix011-memory-activation-other")
 		auth.mu.Lock()
 		other := auth.services["fix011-memory-activation-other"]
 		other.StagedNodeTokenID = staged.Token.ID
@@ -124,7 +124,7 @@ func TestFIX011MemoryAuthAndReplayPrecedeStableSharedReferences(t *testing.T) {
 	t.Run("duplicate activation replay", func(t *testing.T) {
 		ctx := t.Context()
 		auth := NewMemoryAuthStore()
-		oldToken := createMemoryFIX010UpdateAgentService(t, auth, "fix011-memory-replay-target")
+		oldToken := createMemoryServiceTokenUpdateAgentService(t, auth, "fix011-memory-replay-target")
 		now := time.Date(2026, time.August, 25, 4, 0, 0, 0, time.UTC)
 		configureToken := "fix011-memory-replay-configure"
 		if _, err := auth.SetServiceConfigureToken(
@@ -157,7 +157,7 @@ func TestFIX011MemoryAuthAndReplayPrecedeStableSharedReferences(t *testing.T) {
 		); err != nil || alreadyActivated {
 			t.Fatalf("initial activation already=%t err=%v", alreadyActivated, err)
 		}
-		createMemoryFIX010UpdateAgentService(t, auth, "fix011-memory-replay-other")
+		createMemoryServiceTokenUpdateAgentService(t, auth, "fix011-memory-replay-other")
 		auth.mu.Lock()
 		other := auth.services["fix011-memory-replay-other"]
 		other.StagedNodeTokenID = staged.Token.ID
@@ -224,7 +224,7 @@ func TestConsumedUpdateAgentConfigureTokenIsNotActivationReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	const serviceID = "updater-consumed-configure-token"
-	if _, err := auth.PrecreateService(ctx, token, bundle8bPullAgentRegistration(serviceID)); err != nil {
+	if _, err := auth.PrecreateService(ctx, token, physicalEOLPullAgentRegistration(serviceID)); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, time.July, 21, 3, 10, 0, 0, time.UTC)
@@ -260,7 +260,7 @@ func TestUpdateAgentConfigurationRejectsLegacyScopesBeforeStageOrActivation(t *t
 		t.Fatal(err)
 	}
 	const serviceID = "updater-legacy-scope"
-	if _, err := auth.PrecreateService(ctx, legacyToken, bundle8bPullAgentRegistration(serviceID)); err != nil {
+	if _, err := auth.PrecreateService(ctx, legacyToken, physicalEOLPullAgentRegistration(serviceID)); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, time.July, 21, 3, 20, 0, 0, time.UTC)
@@ -353,7 +353,7 @@ func TestUpdateAgentConfigurationRejectsExpiredActivationWithoutChangingActiveTo
 		t.Fatal(err)
 	}
 	const serviceID = "updater-expired-stage"
-	if _, err := auth.PrecreateService(ctx, oldToken, bundle8bPullAgentRegistration(serviceID)); err != nil {
+	if _, err := auth.PrecreateService(ctx, oldToken, physicalEOLPullAgentRegistration(serviceID)); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, time.July, 21, 3, 30, 0, 0, time.UTC)

@@ -39,7 +39,7 @@ type Snapshot = Readonly<{
 
 const consumers = Object.keys(remainingConsumerManifest) as Consumer[];
 
-test("Wave 3C remote-state manifest is finite and covers the five authorized consumers", () => {
+test("Remaining-consumer remote-state manifest is finite and covers the five authorized consumers", () => {
   assert.deepEqual(remainingConsumerManifest, {
     audit: ["audit-logs"],
     workers: ["workers", "registered-nodes", "service-health"],

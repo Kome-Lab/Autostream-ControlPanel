@@ -10,34 +10,34 @@ import (
 	"testing"
 )
 
-func TestMariaDBBundle8BArchiveExistingRuns(t *testing.T) {
-	testBundle8BArchiveMapping(t, "existing", false)
+func TestMariaDBPhysicalEOLArchiveExistingRuns(t *testing.T) {
+	testPhysicalEOLArchiveMapping(t, "existing", false)
 }
-func TestMariaDBBundle8BArchiveFlat(t *testing.T) { testBundle8BArchiveMapping(t, "flat", false) }
-func TestMariaDBBundle8BArchiveMixedSameName(t *testing.T) {
-	testBundle8BArchiveMapping(t, "mixed", false)
+func TestMariaDBPhysicalEOLArchiveFlat(t *testing.T) { testPhysicalEOLArchiveMapping(t, "flat", false) }
+func TestMariaDBPhysicalEOLArchiveMixedSameName(t *testing.T) {
+	testPhysicalEOLArchiveMapping(t, "mixed", false)
 }
-func TestMariaDBBundle8BArchiveForwardCorrection(t *testing.T) {
-	testBundle8BArchiveMapping(t, "forward", true)
+func TestMariaDBPhysicalEOLArchiveForwardCorrection(t *testing.T) {
+	testPhysicalEOLArchiveMapping(t, "forward", true)
 }
 
 type archiveFixtureRow struct{ id, run, name, path, body string }
 
-func testBundle8BArchiveMapping(t *testing.T, scenario string, recorded081 bool) {
+func testPhysicalEOLArchiveMapping(t *testing.T, scenario string, recorded081 bool) {
 	t.Helper()
 	db, ctx := openMariaDBMigrationTest(t, false)
-	assertBundle8BFreshDatabase(t, db)
+	assertPhysicalEOLFreshDatabase(t, db)
 	binary := os.Getenv("AUTOSTREAM_ARCHIVE_MIGRATOR_BINARY")
 	if binary == "" {
 		t.Fatal("filesystem witness requires AUTOSTREAM_ARCHIVE_MIGRATOR_BINARY")
 	}
-	through079 := bundle8BMigrationFS(t, func(name string) bool { return name <= "079_control_platform_features.sql" })
+	through079 := physicalEOLMigrationFS(t, func(name string) bool { return name <= "079_control_platform_features.sql" })
 	if err := runMigrationsFS(ctx, db, through079, "migrations"); err != nil {
 		t.Fatal(err)
 	}
-	seedBundle8BMigrationFixtures(t, db)
-	mustBundle8BExec(t, db, `UPDATE stream_visual_settings SET discord_guild_id='3001' WHERE stream_id=?`, bundle8BMismatchID)
-	mustBundle8BExec(t, db, `DELETE FROM stream_artifacts`)
+	seedPhysicalEOLMigrationFixtures(t, db)
+	mustPhysicalEOLExec(t, db, `UPDATE stream_visual_settings SET discord_guild_id='3001' WHERE stream_id=?`, physicalEOLMismatchID)
+	mustPhysicalEOLExec(t, db, `DELETE FROM stream_artifacts`)
 	var fixtures []archiveFixtureRow
 	if scenario != "flat" {
 		fixtures = append(fixtures, archiveFixtureRow{id: "existing-a", run: "run-a", name: "capture.ts", body: "existing-run-a"})
@@ -57,7 +57,7 @@ func testBundle8BArchiveMapping(t *testing.T, scenario string, recorded081 bool)
 	flatCount := 0
 	for i := range fixtures {
 		row := &fixtures[i]
-		row.path = "final/" + bundle8BManualStreamID + "/"
+		row.path = "final/" + physicalEOLManualStreamID + "/"
 		if row.run != "" {
 			row.path += row.run + "/"
 		} else {
@@ -71,8 +71,8 @@ func testBundle8BArchiveMapping(t *testing.T, scenario string, recorded081 bool)
 		if err := os.WriteFile(file, []byte(row.body), 0o640); err != nil {
 			t.Fatal(err)
 		}
-		mustBundle8BExec(t, db, `INSERT INTO stream_artifacts(id,stream_id,archive_run_id,archive_started_at,kind,name,relative_path,size_bytes,created_at)
- VALUES (?,?,?,NULL,'video',?,?,?,'2026-02-03 04:05:06')`, row.id, bundle8BManualStreamID, row.run, row.name, row.path, len(row.body))
+		mustPhysicalEOLExec(t, db, `INSERT INTO stream_artifacts(id,stream_id,archive_run_id,archive_started_at,kind,name,relative_path,size_bytes,created_at)
+ VALUES (?,?,?,NULL,'video',?,?,?,'2026-02-03 04:05:06')`, row.id, physicalEOLManualStreamID, row.run, row.name, row.path, len(row.body))
 	}
 	manifestPaths := map[string]string{}
 	if flatCount > 0 {
@@ -97,15 +97,15 @@ func testBundle8BArchiveMapping(t *testing.T, scenario string, recorded081 bool)
 			manifestPaths[filepath.ToSlash(entry.Source)] = filepath.ToSlash(entry.Destination)
 		}
 	}
-	migration080 := bundle8BMigrationFS(t, func(name string) bool { return name == "080_bundle8a_v2_migration.sql" })
+	migration080 := physicalEOLMigrationFS(t, func(name string) bool { return name == "080_bundle8a_v2_migration.sql" })
 	if err := runMigrationsFS(ctx, db, migration080, "migrations"); err != nil {
 		t.Fatal(err)
 	}
 	if recorded081 {
-		bundle8BInterruptDeliveredSQL(t, ctx, db, "DROP COLUMN IF EXISTS legacy_agent_service_id")
+		physicalEOLInterruptDeliveredSQL(t, ctx, db, "DROP COLUMN IF EXISTS legacy_agent_service_id")
 		// Complete the old-runner fixture, then exercise only the normal forward
 		// migration path. This record belongs to this disposable test DB alone.
-		mustBundle8BExec(t, db, `INSERT INTO schema_migrations(id) VALUES ('081_bundle8b_physical_eol.sql')`)
+		mustPhysicalEOLExec(t, db, `INSERT INTO schema_migrations(id) VALUES ('081_bundle8b_physical_eol.sql')`)
 	}
 	if err := RunEmbeddedMigrations(ctx, db); err != nil {
 		t.Fatalf("archive migration: %v", err)
@@ -123,7 +123,7 @@ func testBundle8BArchiveMapping(t *testing.T, scenario string, recorded081 bool)
 		}
 		wantRun, wantPath := row.run, row.path
 		if row.run == "" {
-			wantRun = "legacy-" + strings.ReplaceAll(bundle8BManualStreamID, "-", "")
+			wantRun = "legacy-" + strings.ReplaceAll(physicalEOLManualStreamID, "-", "")
 			var ok bool
 			wantPath, ok = manifestPaths[row.path]
 			if !ok {

@@ -9,7 +9,7 @@ import (
 )
 
 func TestMemorySystemUpdateStoreLifecycleAndIdempotency(t *testing.T) {
-	updates := newBundle8bOwnedUpdateStore(t, map[string]string{"host-01": "updater-01"})
+	updates := newPhysicalEOLOwnedUpdateStore(t, map[string]string{"host-01": "updater-01"})
 	params := CreateSystemUpdateJobParams{
 		TargetID: "worker-01", TargetServiceType: "worker", DeploymentMode: "systemd",
 		AgentServiceID: "updater-01", ExecutionHostID: "host-01",
@@ -82,7 +82,7 @@ func TestMemorySystemUpdateStoreRejectsUnknownCurrentVersion(t *testing.T) {
 }
 
 func TestMemorySystemUpdateStoreClaimReportLeaseTransitionAndRedaction(t *testing.T) {
-	updates := newBundle8bOwnedUpdateStore(t, map[string]string{"host-01": "updater-01"})
+	updates := newPhysicalEOLOwnedUpdateStore(t, map[string]string{"host-01": "updater-01"})
 	job, _, err := updates.CreateSystemUpdateJob(t.Context(), CreateSystemUpdateJobParams{
 		TargetID: "worker-01", TargetServiceType: "worker", DeploymentMode: "systemd",
 		AgentServiceID: "updater-01", ExecutionHostID: "host-01",
@@ -148,7 +148,7 @@ func TestMemorySystemUpdateStoreClaimReportLeaseTransitionAndRedaction(t *testin
 }
 
 func TestMemorySystemUpdateStoreReconcileProgressMovesOnlyToTerminal(t *testing.T) {
-	updates := newBundle8bOwnedUpdateStore(t, map[string]string{"host-01": "updater-01"})
+	updates := newPhysicalEOLOwnedUpdateStore(t, map[string]string{"host-01": "updater-01"})
 	job, _, err := updates.CreateSystemUpdateJob(t.Context(), CreateSystemUpdateJobParams{
 		TargetID: "worker-reconcile", TargetServiceType: "worker", DeploymentMode: "systemd",
 		AgentServiceID: "updater-01", ExecutionHostID: "host-01",
@@ -211,7 +211,7 @@ func TestMemorySystemUpdateStoreReconcileProgressMovesOnlyToTerminal(t *testing.
 
 func TestMemorySystemUpdateMutationAuthorizationIsExactAndNonReplayable(t *testing.T) {
 	newClaim := func(key string, now time.Time) (*MemorySystemUpdateStore, SystemUpdateJob, SystemUpdateClaim) {
-		updates := newBundle8bOwnedUpdateStore(t, map[string]string{"host-01": "updater-01"})
+		updates := newPhysicalEOLOwnedUpdateStore(t, map[string]string{"host-01": "updater-01"})
 		job, _, err := updates.CreateSystemUpdateJob(t.Context(), CreateSystemUpdateJobParams{
 			TargetID: "worker-01", TargetServiceType: "worker", AgentServiceID: "updater-01", ExecutionHostID: "host-01", DeploymentMode: "systemd",
 			CurrentVersion: "v1.0.0", TargetVersion: "v1.1.0", Strategy: SystemUpdateStrategyWhenIdle, IdempotencyKey: key, RequestedByUserID: "user-01",
@@ -477,7 +477,7 @@ func TestServiceRegistrationRejectsShellUnsafeServiceID(t *testing.T) {
 }
 
 func TestMemorySystemUpdateStoreDoesNotClaimIneligibleOrUnexpiredWork(t *testing.T) {
-	updates := newBundle8bOwnedUpdateStore(t, map[string]string{"host-01": "updater-01", "host-02": "updater-02"})
+	updates := newPhysicalEOLOwnedUpdateStore(t, map[string]string{"host-01": "updater-01", "host-02": "updater-02"})
 	_, _, err := updates.CreateSystemUpdateJob(t.Context(), CreateSystemUpdateJobParams{
 		TargetID: "worker-01", TargetServiceType: "worker", DeploymentMode: "systemd", CurrentVersion: "v1.0.0", TargetVersion: "v1.1.0",
 		AgentServiceID: "updater-01", ExecutionHostID: "host-01",
@@ -507,7 +507,7 @@ func TestMemorySystemUpdateStoreDoesNotClaimIneligibleOrUnexpiredWork(t *testing
 }
 
 func TestMemorySystemUpdateStoreSerializesAgentExecutionAndReclaimsBeforeQueued(t *testing.T) {
-	updates := newBundle8bOwnedUpdateStore(t, map[string]string{"host-01": "updater-01"})
+	updates := newPhysicalEOLOwnedUpdateStore(t, map[string]string{"host-01": "updater-01"})
 	create := func(targetID, serviceType, key string) SystemUpdateJob {
 		job, _, err := updates.CreateSystemUpdateJob(t.Context(), CreateSystemUpdateJobParams{
 			TargetID: targetID, TargetServiceType: serviceType, DeploymentMode: "systemd", CurrentVersion: "v1.0.0", TargetVersion: "v1.1.0", AgentServiceID: "updater-01", ExecutionHostID: "host-01",
@@ -552,7 +552,7 @@ func TestMemorySystemUpdateStoreSerializesAgentExecutionAndReclaimsBeforeQueued(
 }
 
 func TestMemorySystemUpdateStoreParallelClaimsYieldOneExecutingJob(t *testing.T) {
-	updates := newBundle8bOwnedUpdateStore(t, map[string]string{"host-01": "updater-01"})
+	updates := newPhysicalEOLOwnedUpdateStore(t, map[string]string{"host-01": "updater-01"})
 	for index, target := range []string{"worker-01", "encoder-01"} {
 		if _, _, err := updates.CreateSystemUpdateJob(t.Context(), CreateSystemUpdateJobParams{
 			TargetID: target, TargetServiceType: target, DeploymentMode: "systemd", CurrentVersion: "v1.0.0", TargetVersion: "v1.1.0", AgentServiceID: "updater-01", ExecutionHostID: "host-01",
@@ -648,7 +648,7 @@ func TestMemorySystemUpdateStoreAllowsParallelClaimsAcrossExecutionHosts(t *test
 }
 
 func TestMemorySystemUpdateStoreRecoversPerHostWithoutBlockingOtherHosts(t *testing.T) {
-	updates := newBundle8bOwnedUpdateStore(t, map[string]string{"host-a": "updater-01", "host-b": "updater-01"})
+	updates := newPhysicalEOLOwnedUpdateStore(t, map[string]string{"host-a": "updater-01", "host-b": "updater-01"})
 	create := func(targetID, hostID string) SystemUpdateJob {
 		job, _, err := updates.CreateSystemUpdateJob(t.Context(), CreateSystemUpdateJobParams{
 			TargetID: targetID, TargetServiceType: "worker", AgentServiceID: "updater-01", ExecutionHostID: hostID,
@@ -683,7 +683,7 @@ func TestMemorySystemUpdateStoreRecoversPerHostWithoutBlockingOtherHosts(t *test
 }
 
 func TestMemorySystemUpdateStoreActiveJobClaimNeverPoisonsAnotherQueuedJob(t *testing.T) {
-	updates := newBundle8bOwnedUpdateStore(t, map[string]string{"host-01": "updater-01", "host-02": "updater-02"})
+	updates := newPhysicalEOLOwnedUpdateStore(t, map[string]string{"host-01": "updater-01", "host-02": "updater-02"})
 	create := func(targetID, key string) SystemUpdateJob {
 		job, _, err := updates.CreateSystemUpdateJob(t.Context(), CreateSystemUpdateJobParams{TargetID: targetID, TargetServiceType: "worker", AgentServiceID: "updater-01", ExecutionHostID: "host-01", DeploymentMode: "systemd", CurrentVersion: "v1.0.0", TargetVersion: "v1.1.0", Strategy: SystemUpdateStrategyWhenIdle, IdempotencyKey: key, RequestedByUserID: "user-01"})
 		if err != nil {

@@ -70,8 +70,8 @@ func TestMariaDBServiceTokenCanonicalLockOrderPairs(t *testing.T) {
 	}
 }
 
-func TestMariaDBFIX010UpdateAgentStageRejectsSharedReferences(t *testing.T) {
-	db, parent := openMariaDBFIX005Test(t)
+func TestMariaDBServiceTokenUpdateAgentStageRejectsSharedReferences(t *testing.T) {
+	db, parent := openMariaDBServiceTokenTest(t)
 	auth := NewMariaDBAuthStore(db)
 	for _, referenceColumn := range []string{
 		"token_id",
@@ -83,7 +83,7 @@ func TestMariaDBFIX010UpdateAgentStageRejectsSharedReferences(t *testing.T) {
 			t.Run(fmt.Sprintf("%s/%d", referenceColumn, iteration), func(t *testing.T) {
 				ctx, cancel := context.WithTimeout(parent, 20*time.Second)
 				defer cancel()
-				cleanup := newMariaDBFIX005Cleanup(t, ctx, db)
+				cleanup := newMariaDBServiceTokenCleanup(t, ctx, db)
 				targetID := cleanup.prefix + "stage-target"
 				otherID := cleanup.prefix + "stage-other"
 				oldToken := createMariaDBServiceTokenPairService(
@@ -92,7 +92,7 @@ func TestMariaDBFIX010UpdateAgentStageRejectsSharedReferences(t *testing.T) {
 				createMariaDBServiceTokenPairService(
 					t, ctx, auth, otherID, "update_agent", nil, cleanup,
 				)
-				setMariaDBFIX010ServiceTokenReference(
+				setMariaDBServiceTokenServiceTokenReference(
 					t, ctx, db, otherID, referenceColumn, oldToken.ID,
 				)
 				now := time.Now().UTC()
@@ -155,7 +155,7 @@ func TestMariaDBFIX010UpdateAgentStageRejectsSharedReferences(t *testing.T) {
 	}
 }
 
-func TestMariaDBFIX010UpdateAgentActivationRejectsSharedReferences(t *testing.T) {
+func TestMariaDBServiceTokenUpdateAgentActivationRejectsSharedReferences(t *testing.T) {
 	tests := []struct {
 		name            string
 		referenceColumn string
@@ -168,7 +168,7 @@ func TestMariaDBFIX010UpdateAgentActivationRejectsSharedReferences(t *testing.T)
 		{name: "new_staged_previous", referenceColumn: "staged_node_previous_token_id", useStagedToken: true},
 		{name: "new_staged_token", referenceColumn: "staged_node_token_id", useStagedToken: true},
 	}
-	db, parent := openMariaDBFIX005Test(t)
+	db, parent := openMariaDBServiceTokenTest(t)
 	auth := NewMariaDBAuthStore(db)
 	for _, test := range tests {
 		test := test
@@ -176,7 +176,7 @@ func TestMariaDBFIX010UpdateAgentActivationRejectsSharedReferences(t *testing.T)
 			t.Run(fmt.Sprintf("%s/%d", test.name, iteration), func(t *testing.T) {
 				ctx, cancel := context.WithTimeout(parent, 20*time.Second)
 				defer cancel()
-				cleanup := newMariaDBFIX005Cleanup(t, ctx, db)
+				cleanup := newMariaDBServiceTokenCleanup(t, ctx, db)
 				targetID := cleanup.prefix + "activation-target"
 				otherID := cleanup.prefix + "activation-other"
 				oldToken := createMariaDBServiceTokenPairService(
@@ -209,7 +209,7 @@ func TestMariaDBFIX010UpdateAgentActivationRejectsSharedReferences(t *testing.T)
 				if test.useStagedToken {
 					referenceTokenID = staged.Token.ID
 				}
-				setMariaDBFIX010ServiceTokenReference(
+				setMariaDBServiceTokenServiceTokenReference(
 					t, ctx, db, otherID, test.referenceColumn, referenceTokenID,
 				)
 				beforeTarget, err := auth.GetService(ctx, targetID)
@@ -276,8 +276,8 @@ func TestMariaDBFIX010UpdateAgentActivationRejectsSharedReferences(t *testing.T)
 	}
 }
 
-func TestMariaDBFIX010ExternalBindingWinsAgainstStageAndActivation(t *testing.T) {
-	db, parent := openMariaDBFIX005Test(t)
+func TestMariaDBServiceTokenExternalBindingWinsAgainstStageAndActivation(t *testing.T) {
+	db, parent := openMariaDBServiceTokenTest(t)
 	auth := NewMariaDBAuthStore(db)
 
 	type concurrentResult struct {
@@ -293,7 +293,7 @@ func TestMariaDBFIX010ExternalBindingWinsAgainstStageAndActivation(t *testing.T)
 				t.Run(strconv.Itoa(iteration), func(t *testing.T) {
 					ctx, cancel := context.WithTimeout(parent, 20*time.Second)
 					defer cancel()
-					cleanup := newMariaDBFIX005Cleanup(t, ctx, db)
+					cleanup := newMariaDBServiceTokenCleanup(t, ctx, db)
 					targetServiceID := cleanup.prefix + operation + "-target"
 					externalServiceID := cleanup.prefix + operation + "-external"
 					oldToken := createMariaDBServiceTokenPairService(

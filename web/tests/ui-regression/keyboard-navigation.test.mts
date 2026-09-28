@@ -362,10 +362,11 @@ test('UI-MEDIA-025: actual readonly observer separates complete stable media ide
 
 test('UI-READONLY-025: four exact additions compose with original Tab protection and reject API, owner, fatal, closed, cleanup and old-body changes',async()=>{
  const {execFileSync}=await import('node:child_process');const {assertApprovedSourceDelta}=await import('./approved-source-delta.mts');
+ const {createNormalizedReader}=await import('./source-normalization.mts');const {fileURLToPath}=await import('node:url');
  const root=new URL('../../..',import.meta.url),path='web/tests/helpers/browser-harness.mts';
  const protectedFixture=JSON.parse(readFileSync(new URL('../fixtures/ui-regression/protected.json',import.meta.url),'utf8'));
  const manifest=JSON.parse(readFileSync(new URL('../fixtures/ui-regression/approved-source-deltas.json',import.meta.url),'utf8'));
- const before=execFileSync('git',['show',protectedFixture.base_commit+':'+path],{cwd:root}),after=readFileSync(new URL('../helpers/browser-harness.mts',import.meta.url),'utf8');
+ const before=execFileSync('git',['show',protectedFixture.base_commit+':'+path],{cwd:root}),after=createNormalizedReader(fileURLToPath(root)).read(path).toString('utf8');
  assertApprovedSourceDelta(path,before,Buffer.from(after),manifest);
  for(const [from,to]of[
   ['return this.nativeFocusObserver.observe();','await this.send("Fetch.enable"); return this.nativeFocusObserver.observe();'],

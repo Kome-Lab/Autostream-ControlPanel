@@ -3,7 +3,7 @@ import { UAConditionDiagnostic, UAOutputFailure } from "../helpers/browser-ua-di
 import { longIdentifier, longText } from "./fixture-inputs.mts";
 import { exerciseActivation, exerciseSurfaceActivation, surfaceActivation, type ActivationTarget } from "./keyboard-activation.mts";
 import type { BrowserHarness } from "../helpers/browser-harness.mts";
-import { bundle9SyntheticMFASecret } from "../helpers/bundle9-browser-fixtures.mts";
+import { uiComparisonSyntheticMFASecret } from "../helpers/browser-comparison-fixtures.mts";
 import type { Condition } from "./matrix.mts";
 import { readFileSync } from "node:fs";
 import { renderedDOM } from "./render-state.mts";
@@ -54,7 +54,7 @@ export const observationExpression = `(() => {
     tables:[...document.querySelectorAll('[data-slot=data-table]')].map(e=>({rows:e.querySelectorAll('tbody tr').length,owners:e.querySelectorAll('tbody button[aria-label]').length})),
     focus:{identity:uiIdentity(document.activeElement),tag:document.activeElement?.tagName||'NONE'}, focusInsideDialog:!!document.activeElement?.closest('[role=dialog],[role=alertdialog]'),
     hiddenDiagnostic:markup.includes('UI-HIDDEN-DIAGNOSTIC'),
-    secretLeak:[${JSON.stringify(bundle9SyntheticMFASecret)},'B9-SYNTHETIC-RECOVERY'].some(secret => (markup + stored).includes(secret))
+    secretLeak:[${JSON.stringify(uiComparisonSyntheticMFASecret)},'B9-SYNTHETIC-RECOVERY'].some(secret => (markup + stored).includes(secret))
   };
 })()`;
 

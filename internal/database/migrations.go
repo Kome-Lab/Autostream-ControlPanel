@@ -107,7 +107,7 @@ func applyMigrationBody(ctx context.Context, db *sql.DB, id, body string) error 
 		}
 		defer conn.Close()
 		if id == "081_bundle8b_physical_eol.sql" {
-			err = applyBundle8BPhysicalEOL(ctx, conn, body)
+			err = applyPhysicalEOLMigration(ctx, conn, body)
 		} else {
 			err = correctArchiveMapping(ctx, conn)
 		}

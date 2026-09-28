@@ -1,4 +1,4 @@
-import type { G3Operation, G3Options, G3Record } from "./browser-g3-operation.mts";
+import type { BrowserOperationBoundary, BrowserOperationOptions, BrowserOperationRecord } from "./browser-operation-boundary.mts";
 import { NativeFocusObserver } from "./browser-ua-focus.mts";
 import { spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync, rmSync } from "node:fs";
@@ -104,8 +104,8 @@ export class BrowserHarness {
   private readonly socket: WebSocket;
   private readonly sessionId: string;
   private readonly browserLaunchSession: BrowserLaunchSession | undefined;
-  private g3Operation: G3Operation | undefined;
-  private g3Headed = false;
+  private operationBoundary: BrowserOperationBoundary | undefined;
+  private manualHeaded = false;
   private nextCommandId = 0;
   private diagnosticNavigateId: number | undefined;
   private diagnosticNavigateResponded = false;
@@ -167,7 +167,7 @@ export class BrowserHarness {
         String(attached.sessionId),
         browserLaunchSession,
       );
-      harness.g3Headed = options.manualZoom === "headed";
+      harness.manualHeaded = options.manualZoom === "headed";
       await harness.send("Page.enable");
       await harness.send("Runtime.enable");
       await harness.send("Fetch.enable", { patterns: [{ urlPattern: "*" }] });
@@ -187,17 +187,17 @@ export class BrowserHarness {
   }
 
   // Explicit G3 opt-in. Default suite transport and dialog policy stay unchanged.
-  async runG3Operation<T>(options: G3Options, write: (record: G3Record) => void, action: () => Promise<T>): Promise<T> {
-    const { G3Operation } = await import("./browser-g3-operation.mts");
-    if (!this.g3Headed || this.g3Operation || this.closed || this.fatalError) throw new Error("G3 operation requires an idle owned headed target");
-    const scope = new G3Operation(options, {
+  async runBoundedOperation<T>(options: BrowserOperationOptions, write: (record: BrowserOperationRecord) => void, action: () => Promise<T>): Promise<T> {
+    const { BrowserOperationBoundary } = await import("./browser-operation-boundary.mts");
+    if (!this.manualHeaded || this.operationBoundary || this.closed || this.fatalError) throw new Error("G3 operation requires an idle owned headed target");
+    const scope = new BrowserOperationBoundary(options, {
       write,
       abort: (error) => this.recordFatalError(error),
       acceptDiscard: () => this.send("Page.handleJavaScriptDialog", { accept: true }),
     });
-    this.g3Operation = scope;
+    this.operationBoundary = scope;
     try { return await scope.run(action); }
-    finally { this.g3Operation = undefined; }
+    finally { this.operationBoundary = undefined; }
   }
 
   async configureDeterministicDocument(options: Readonly<{ source: string; timezone: string; locale: string }>) {
@@ -538,7 +538,7 @@ export class BrowserHarness {
 
   private sendCommand(method: string, params: Record<string, unknown>, sessionId?: string) {
     if (this.fatalError) return Promise.reject(this.fatalError);
-    const scope = this.g3Operation;
+    const scope = this.operationBoundary;
     const observed = scope?.beforeCommand(method, params);
     const id = ++this.nextCommandId;
     const payload = sessionId ? { id, method, params, sessionId } : { id, method, params };
@@ -567,11 +567,11 @@ export class BrowserHarness {
       return;
     }
     if (!message.method || (message.sessionId && message.sessionId !== this.sessionId)) return;
-    if (this.g3Operation && message.method === "Page.javascriptDialogOpening") {
-      this.g3Operation.dialogOpening(message.params || {}, message.sessionId === this.sessionId && (message.params?.frameId === undefined || message.params.frameId === this.mainFrameId));
+    if (this.operationBoundary && message.method === "Page.javascriptDialogOpening") {
+      this.operationBoundary.dialogOpening(message.params || {}, message.sessionId === this.sessionId && (message.params?.frameId === undefined || message.params.frameId === this.mainFrameId));
     }
-    if (this.g3Operation && message.method === "Page.javascriptDialogClosed") {
-      this.g3Operation.dialogClosed(message.params || {}, message.sessionId === this.sessionId && (message.params?.frameId === undefined || message.params.frameId === this.mainFrameId));
+    if (this.operationBoundary && message.method === "Page.javascriptDialogClosed") {
+      this.operationBoundary.dialogClosed(message.params || {}, message.sessionId === this.sessionId && (message.params?.frameId === undefined || message.params.frameId === this.mainFrameId));
     }
     if (message.method === "Runtime.consoleAPICalled") {
       const type = String(message.params?.type || "");

@@ -69,7 +69,7 @@ func formatSafeSensitiveCompositeDiagnostic(value any) string {
 	return fmt.Sprintf("type=%T details=redacted", value)
 }
 
-func TestFIX010SafeServiceTokenDiagnosticOmitsSecrets(t *testing.T) {
+func TestServiceTokenSafeServiceTokenDiagnosticOmitsSecrets(t *testing.T) {
 	now := time.Now().UTC()
 	const rawMarker = "FIX010_RAW_TOKEN_MARKER"
 	const hashMarker = "FIX010_TOKEN_HASH_MARKER"
@@ -140,7 +140,7 @@ func TestFIX010SafeServiceTokenDiagnosticOmitsSecrets(t *testing.T) {
 	}
 }
 
-func TestFIX010SafeServiceTokenDiagnosticFailurePathProbe(t *testing.T) {
+func TestServiceTokenSafeServiceTokenDiagnosticFailurePathProbe(t *testing.T) {
 	now := time.Now().UTC()
 	const rawMarker = "FIX010_FAILURE_RAW_TOKEN_MARKER"
 	const hashMarker = "FIX010_FAILURE_TOKEN_HASH_MARKER"
@@ -181,7 +181,7 @@ func TestFIX010SafeServiceTokenDiagnosticFailurePathProbe(t *testing.T) {
 	}
 }
 
-func TestFIX010IncidentOwnedDiagnosticsRejectSensitiveWholeValues(t *testing.T) {
+func TestServiceTokenIncidentOwnedDiagnosticsRejectSensitiveWholeValues(t *testing.T) {
 	_, currentFile, _, ok := runtime.Caller(0)
 	if !ok {
 		t.Fatal("resolve current test file")
@@ -260,7 +260,7 @@ func TestFIX010IncidentOwnedDiagnosticsRejectSensitiveWholeValues(t *testing.T) 
 					if _, exists := sensitiveTypeNames[typeSpec.Name.Name]; exists {
 						continue
 					}
-					if fix010SensitiveTypeExpression(typeSpec.Type, sensitiveTypeNames) {
+					if tokenDiagnosticSensitiveTypeExpression(typeSpec.Type, sensitiveTypeNames) {
 						sensitiveTypeNames[typeSpec.Name.Name] = struct{}{}
 						changed = true
 					}
@@ -271,32 +271,32 @@ func TestFIX010IncidentOwnedDiagnosticsRejectSensitiveWholeValues(t *testing.T) 
 
 	for _, relativePath := range relativePaths {
 		parsed := parsedFiles[relativePath]
-		sensitiveIdentifiers := fix010SensitiveIdentifiers(parsed, sensitiveTypeNames)
+		sensitiveIdentifiers := tokenDiagnosticSensitiveIdentifiers(parsed, sensitiveTypeNames)
 		ast.Inspect(parsed, func(node ast.Node) bool {
 			call, ok := node.(*ast.CallExpr)
 			if !ok {
 				return true
 			}
 			position := fileSet.Position(call.Pos())
-			if formatIndex, formatValue, recognized := fix010FormattingCall(call); recognized {
+			if formatIndex, formatValue, recognized := tokenDiagnosticFormattingCall(call); recognized {
 				arguments := call.Args[formatIndex+1:]
 				if formatValue == "" {
 					for _, argument := range arguments {
-						if fix010SensitiveDiagnosticExpression(argument, sensitiveIdentifiers, sensitiveTypeNames) {
+						if tokenDiagnosticSensitiveDiagnosticExpression(argument, sensitiveIdentifiers, sensitiveTypeNames) {
 							t.Errorf("%s:%d: non-literal formatting of a sensitive diagnostic value", relativePath, position.Line)
 						}
 					}
 				} else {
-					for argumentIndex := range fix010FormattedValueArguments(formatValue) {
-						if argumentIndex < len(arguments) && fix010SensitiveDiagnosticExpression(arguments[argumentIndex], sensitiveIdentifiers, sensitiveTypeNames) {
+					for argumentIndex := range tokenDiagnosticFormattedValueArguments(formatValue) {
+						if argumentIndex < len(arguments) && tokenDiagnosticSensitiveDiagnosticExpression(arguments[argumentIndex], sensitiveIdentifiers, sensitiveTypeNames) {
 							t.Errorf("%s:%d: sensitive diagnostic value reaches direct formatting", relativePath, position.Line)
 						}
 					}
 				}
 			}
-			if fix010SensitiveSerializationCall(call) {
+			if tokenDiagnosticSensitiveSerializationCall(call) {
 				for _, argument := range call.Args {
-					if fix010SensitiveDiagnosticExpression(argument, sensitiveIdentifiers, sensitiveTypeNames) {
+					if tokenDiagnosticSensitiveDiagnosticExpression(argument, sensitiveIdentifiers, sensitiveTypeNames) {
 						t.Errorf("%s:%d: sensitive diagnostic value reaches JSON/diff/spew output", relativePath, position.Line)
 					}
 				}

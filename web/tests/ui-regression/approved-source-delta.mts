@@ -177,7 +177,7 @@ export function assertProtectedFixture(raw: Buffer, manifest: unknown) {
   assertApprovedManifest(manifest);
   assert.equal(hash(raw), manifest.protected_fixture_sha256, "all 733 original protected records/hashes must remain byte-identical");
 }
-export function assertG3OperationSource(raw: Buffer, manifest: unknown) {
+export function assertBrowserOperationSource(raw: Buffer, manifest: unknown) {
   assertApprovedManifest(manifest);
   assert.equal(hash(raw), manifest.g3OperationDelta.newSource.sha256, "G3 operation source must match its separately reviewed exact contract");
 }

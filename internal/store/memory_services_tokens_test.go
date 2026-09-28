@@ -198,7 +198,7 @@ func TestRevokeServiceTokenClearsRuntimeReadinessAndRejectsPreviouslyAuthenticat
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := auth.PrecreateService(ctx, token, bundle8bPullAgentRegistration("updater-revoke")); err != nil {
+	if _, err := auth.PrecreateService(ctx, token, physicalEOLPullAgentRegistration("updater-revoke")); err != nil {
 		t.Fatal(err)
 	}
 	authenticated, err := auth.AuthenticateServiceToken(

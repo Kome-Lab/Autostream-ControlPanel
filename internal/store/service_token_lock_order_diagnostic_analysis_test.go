@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-func fix010SensitiveTypeExpression(expression ast.Expr, sensitiveTypeNames map[string]struct{}) bool {
+func tokenDiagnosticSensitiveTypeExpression(expression ast.Expr, sensitiveTypeNames map[string]struct{}) bool {
 	switch value := expression.(type) {
 	case *ast.Ident:
 		_, sensitive := sensitiveTypeNames[value.Name]
@@ -16,15 +16,15 @@ func fix010SensitiveTypeExpression(expression ast.Expr, sensitiveTypeNames map[s
 		_, sensitive := sensitiveTypeNames[value.Sel.Name]
 		return sensitive
 	case *ast.ArrayType:
-		return fix010SensitiveTypeExpression(value.Elt, sensitiveTypeNames)
+		return tokenDiagnosticSensitiveTypeExpression(value.Elt, sensitiveTypeNames)
 	case *ast.MapType:
-		return fix010SensitiveTypeExpression(value.Key, sensitiveTypeNames) ||
-			fix010SensitiveTypeExpression(value.Value, sensitiveTypeNames)
+		return tokenDiagnosticSensitiveTypeExpression(value.Key, sensitiveTypeNames) ||
+			tokenDiagnosticSensitiveTypeExpression(value.Value, sensitiveTypeNames)
 	case *ast.StarExpr:
-		return fix010SensitiveTypeExpression(value.X, sensitiveTypeNames)
+		return tokenDiagnosticSensitiveTypeExpression(value.X, sensitiveTypeNames)
 	case *ast.StructType:
 		for _, field := range value.Fields.List {
-			if fix010SensitiveTypeExpression(field.Type, sensitiveTypeNames) {
+			if tokenDiagnosticSensitiveTypeExpression(field.Type, sensitiveTypeNames) {
 				return true
 			}
 		}
@@ -32,12 +32,12 @@ func fix010SensitiveTypeExpression(expression ast.Expr, sensitiveTypeNames map[s
 	return false
 }
 
-func fix010SensitiveIdentifiers(parsed *ast.File, sensitiveTypeNames map[string]struct{}) map[*ast.Object]struct{} {
+func tokenDiagnosticSensitiveIdentifiers(parsed *ast.File, sensitiveTypeNames map[string]struct{}) map[*ast.Object]struct{} {
 	identifiers := make(map[*ast.Object]struct{})
 	ast.Inspect(parsed, func(node ast.Node) bool {
 		switch value := node.(type) {
 		case *ast.ValueSpec:
-			if value.Type != nil && fix010SensitiveTypeExpression(value.Type, sensitiveTypeNames) {
+			if value.Type != nil && tokenDiagnosticSensitiveTypeExpression(value.Type, sensitiveTypeNames) {
 				for _, name := range value.Names {
 					if name.Obj != nil {
 						identifiers[name.Obj] = struct{}{}
@@ -45,7 +45,7 @@ func fix010SensitiveIdentifiers(parsed *ast.File, sensitiveTypeNames map[string]
 				}
 			}
 		case *ast.Field:
-			if fix010SensitiveTypeExpression(value.Type, sensitiveTypeNames) {
+			if tokenDiagnosticSensitiveTypeExpression(value.Type, sensitiveTypeNames) {
 				for _, name := range value.Names {
 					if name.Obj != nil {
 						identifiers[name.Obj] = struct{}{}
@@ -64,8 +64,8 @@ func fix010SensitiveIdentifiers(parsed *ast.File, sensitiveTypeNames map[string]
 			}
 			if len(assignment.Rhs) == 1 {
 				if call, ok := assignment.Rhs[0].(*ast.CallExpr); ok {
-					for resultIndex := range fix010SensitiveCallResultPositions(call) {
-						if resultIndex < len(assignment.Lhs) && fix010MarkSensitiveIdentifier(assignment.Lhs[resultIndex], identifiers) {
+					for resultIndex := range tokenDiagnosticSensitiveCallResultPositions(call) {
+						if resultIndex < len(assignment.Lhs) && tokenDiagnosticMarkSensitiveIdentifier(assignment.Lhs[resultIndex], identifiers) {
 							changed = true
 						}
 					}
@@ -73,8 +73,8 @@ func fix010SensitiveIdentifiers(parsed *ast.File, sensitiveTypeNames map[string]
 			}
 			for index, right := range assignment.Rhs {
 				if index < len(assignment.Lhs) &&
-					fix010SensitiveDiagnosticExpression(right, identifiers, sensitiveTypeNames) &&
-					fix010MarkSensitiveIdentifier(assignment.Lhs[index], identifiers) {
+					tokenDiagnosticSensitiveDiagnosticExpression(right, identifiers, sensitiveTypeNames) &&
+					tokenDiagnosticMarkSensitiveIdentifier(assignment.Lhs[index], identifiers) {
 					changed = true
 				}
 			}
@@ -84,7 +84,7 @@ func fix010SensitiveIdentifiers(parsed *ast.File, sensitiveTypeNames map[string]
 	return identifiers
 }
 
-func fix010MarkSensitiveIdentifier(expression ast.Expr, identifiers map[*ast.Object]struct{}) bool {
+func tokenDiagnosticMarkSensitiveIdentifier(expression ast.Expr, identifiers map[*ast.Object]struct{}) bool {
 	name, ok := expression.(*ast.Ident)
 	if !ok || name.Name == "_" || name.Obj == nil {
 		return false
@@ -96,7 +96,7 @@ func fix010MarkSensitiveIdentifier(expression ast.Expr, identifiers map[*ast.Obj
 	return true
 }
 
-func fix010SensitiveCallResultPositions(call *ast.CallExpr) map[int]struct{} {
+func tokenDiagnosticSensitiveCallResultPositions(call *ast.CallExpr) map[int]struct{} {
 	name := ""
 	switch function := call.Fun.(type) {
 	case *ast.Ident:
@@ -125,7 +125,7 @@ func fix010SensitiveCallResultPositions(call *ast.CallExpr) map[int]struct{} {
 	return positions
 }
 
-func fix010SensitiveDiagnosticExpression(expression ast.Expr, sensitiveIdentifiers map[*ast.Object]struct{}, sensitiveTypeNames map[string]struct{}) bool {
+func tokenDiagnosticSensitiveDiagnosticExpression(expression ast.Expr, sensitiveIdentifiers map[*ast.Object]struct{}, sensitiveTypeNames map[string]struct{}) bool {
 	switch value := expression.(type) {
 	case *ast.Ident:
 		if value.Obj != nil {
@@ -133,37 +133,37 @@ func fix010SensitiveDiagnosticExpression(expression ast.Expr, sensitiveIdentifie
 				return true
 			}
 		}
-		return fix010SensitiveDiagnosticName(value.Name)
+		return tokenDiagnosticSensitiveDiagnosticName(value.Name)
 	case *ast.SelectorExpr:
-		if fix010SafeDiagnosticScalarName(value.Sel.Name) {
+		if tokenDiagnosticSafeDiagnosticScalarName(value.Sel.Name) {
 			return false
 		}
-		if value.Sel.Name == "MutationOutcome" || fix010SensitiveDiagnosticName(value.Sel.Name) {
+		if value.Sel.Name == "MutationOutcome" || tokenDiagnosticSensitiveDiagnosticName(value.Sel.Name) {
 			return true
 		}
 		if value.Sel.Name == "Config" {
 			if base, ok := value.X.(*ast.Ident); ok {
-				return fix010SensitiveDiagnosticExpression(base, sensitiveIdentifiers, sensitiveTypeNames)
+				return tokenDiagnosticSensitiveDiagnosticExpression(base, sensitiveIdentifiers, sensitiveTypeNames)
 			}
 		}
 		return false
 	case *ast.IndexExpr:
-		return fix010SensitiveDiagnosticExpression(value.X, sensitiveIdentifiers, sensitiveTypeNames)
+		return tokenDiagnosticSensitiveDiagnosticExpression(value.X, sensitiveIdentifiers, sensitiveTypeNames)
 	case *ast.IndexListExpr:
-		return fix010SensitiveDiagnosticExpression(value.X, sensitiveIdentifiers, sensitiveTypeNames)
+		return tokenDiagnosticSensitiveDiagnosticExpression(value.X, sensitiveIdentifiers, sensitiveTypeNames)
 	case *ast.ParenExpr:
-		return fix010SensitiveDiagnosticExpression(value.X, sensitiveIdentifiers, sensitiveTypeNames)
+		return tokenDiagnosticSensitiveDiagnosticExpression(value.X, sensitiveIdentifiers, sensitiveTypeNames)
 	case *ast.StarExpr:
-		return fix010SensitiveDiagnosticExpression(value.X, sensitiveIdentifiers, sensitiveTypeNames)
+		return tokenDiagnosticSensitiveDiagnosticExpression(value.X, sensitiveIdentifiers, sensitiveTypeNames)
 	case *ast.UnaryExpr:
-		return fix010SensitiveDiagnosticExpression(value.X, sensitiveIdentifiers, sensitiveTypeNames)
+		return tokenDiagnosticSensitiveDiagnosticExpression(value.X, sensitiveIdentifiers, sensitiveTypeNames)
 	case *ast.CompositeLit:
-		return fix010SensitiveTypeExpression(value.Type, sensitiveTypeNames)
+		return tokenDiagnosticSensitiveTypeExpression(value.Type, sensitiveTypeNames)
 	}
 	return false
 }
 
-func fix010SensitiveDiagnosticName(name string) bool {
+func tokenDiagnosticSensitiveDiagnosticName(name string) bool {
 	lower := strings.ToLower(name)
 	if strings.HasPrefix(lower, "valid") && strings.HasSuffix(lower, "token") {
 		return false
@@ -188,7 +188,7 @@ func fix010SensitiveDiagnosticName(name string) bool {
 		strings.Contains(lower, "configuretoken")
 }
 
-func fix010SafeDiagnosticScalarName(name string) bool {
+func tokenDiagnosticSafeDiagnosticScalarName(name string) bool {
 	switch name {
 	case "ID", "ServiceID", "TokenID", "StagedNodePreviousTokenID", "StagedNodeTokenID",
 		"ServiceType", "Status", "CurrentStreamID", "RevokedAt", "CreatedAt", "UpdatedAt":
@@ -197,7 +197,7 @@ func fix010SafeDiagnosticScalarName(name string) bool {
 	return false
 }
 
-func fix010FormattingCall(call *ast.CallExpr) (int, string, bool) {
+func tokenDiagnosticFormattingCall(call *ast.CallExpr) (int, string, bool) {
 	selector, ok := call.Fun.(*ast.SelectorExpr)
 	if !ok || strings.HasPrefix(selector.Sel.Name, "formatSafe") {
 		return 0, "", false
@@ -224,7 +224,7 @@ func fix010FormattingCall(call *ast.CallExpr) (int, string, bool) {
 	return formatIndex, formatValue, true
 }
 
-func fix010FormattedValueArguments(format string) map[int]struct{} {
+func tokenDiagnosticFormattedValueArguments(format string) map[int]struct{} {
 	arguments := make(map[int]struct{})
 	nextArgument := 0
 	for index := 0; index < len(format); index++ {
@@ -236,7 +236,7 @@ func fix010FormattedValueArguments(format string) map[int]struct{} {
 			continue
 		}
 		if format[index] == '[' {
-			if explicit, end, ok := fix010PrintfIndex(format, index); ok {
+			if explicit, end, ok := tokenDiagnosticPrintfIndex(format, index); ok {
 				nextArgument = explicit
 				index = end
 			}
@@ -262,7 +262,7 @@ func fix010FormattedValueArguments(format string) map[int]struct{} {
 			}
 		}
 		if index < len(format) && format[index] == '[' {
-			if explicit, end, ok := fix010PrintfIndex(format, index); ok {
+			if explicit, end, ok := tokenDiagnosticPrintfIndex(format, index); ok {
 				nextArgument = explicit
 				index = end
 			}
@@ -273,7 +273,7 @@ func fix010FormattedValueArguments(format string) map[int]struct{} {
 	return arguments
 }
 
-func fix010PrintfIndex(format string, start int) (int, int, bool) {
+func tokenDiagnosticPrintfIndex(format string, start int) (int, int, bool) {
 	end := start + 1
 	for end < len(format) && format[end] >= '0' && format[end] <= '9' {
 		end++
@@ -288,7 +288,7 @@ func fix010PrintfIndex(format string, start int) (int, int, bool) {
 	return value - 1, end + 1, true
 }
 
-func fix010SensitiveSerializationCall(call *ast.CallExpr) bool {
+func tokenDiagnosticSensitiveSerializationCall(call *ast.CallExpr) bool {
 	selector, ok := call.Fun.(*ast.SelectorExpr)
 	if !ok {
 		return false

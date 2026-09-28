@@ -80,7 +80,7 @@ func TestStreamArchiveRunsMigrationScopesArtifactUniquenessByRun(t *testing.T) {
 	}
 }
 
-func TestBundle8BPhysicalEOLMigrationGatesBeforeDiscordAndUpdaterDrop(t *testing.T) {
+func TestPhysicalEOLMigrationGatesBeforeDiscordAndUpdaterDrop(t *testing.T) {
 	body, err := embeddedMigrations.ReadFile("migrations/081_bundle8b_physical_eol.sql")
 	if err != nil {
 		t.Fatal(err)
@@ -389,7 +389,7 @@ func TestServiceEndpointStateMigrationSeparatesDesiredAppliedAndReported(t *test
 	}
 }
 
-func TestBundle8AV2MigrationIsAdditiveAndBackupFirst(t *testing.T) {
+func TestV2MigrationIsAdditiveAndBackupFirst(t *testing.T) {
 	body, err := embeddedMigrations.ReadFile("migrations/080_bundle8a_v2_migration.sql")
 	if err != nil {
 		t.Fatal(err)

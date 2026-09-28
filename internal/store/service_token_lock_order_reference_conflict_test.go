@@ -9,12 +9,12 @@ import (
 	"time"
 )
 
-func TestMariaDBFIX011ReferenceSetRetryExhaustionUsesConflict(t *testing.T) {
-	db, parent := openMariaDBFIX005Test(t)
+func TestMariaDBServiceTokenReferenceSetRetryExhaustionUsesConflict(t *testing.T) {
+	db, parent := openMariaDBServiceTokenTest(t)
 	auth := NewMariaDBAuthStore(db)
 	ctx, cancel := context.WithTimeout(parent, 20*time.Second)
 	defer cancel()
-	cleanup := newMariaDBFIX005Cleanup(t, ctx, db)
+	cleanup := newMariaDBServiceTokenCleanup(t, ctx, db)
 	targetID := cleanup.prefix + "fix011-exhaustion-target"
 	oldToken := createMariaDBServiceTokenPairService(
 		t, ctx, auth, targetID, "update_agent", nil, cleanup,
@@ -30,7 +30,7 @@ func TestMariaDBFIX011ReferenceSetRetryExhaustionUsesConflict(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mutations := make([]mariaDBFIX011ReferenceMutation, 0, mariaDBServiceTokenReferenceRetryLimit)
+	mutations := make([]mariaDBServiceTokenReferenceMutation, 0, mariaDBServiceTokenReferenceRetryLimit)
 	beforeExternal := make([]RegisteredService, 0, mariaDBServiceTokenReferenceRetryLimit)
 	for attempt := 1; attempt <= mariaDBServiceTokenReferenceRetryLimit; attempt++ {
 		externalID := fmt.Sprintf("%sfix011-exhaustion-external-%d", cleanup.prefix, attempt)
@@ -42,13 +42,13 @@ func TestMariaDBFIX011ReferenceSetRetryExhaustionUsesConflict(t *testing.T) {
 			t.Fatal(err)
 		}
 		beforeExternal = append(beforeExternal, external)
-		mutations = append(mutations, mariaDBFIX011ReferenceMutation{
+		mutations = append(mutations, mariaDBServiceTokenReferenceMutation{
 			serviceID: externalID,
 			column:    "staged_node_previous_token_id",
 			tokenID:   oldToken.ID,
 		})
 	}
-	recorder := newMariaDBFIX011ReferenceRaceRecorder(
+	recorder := newMariaDBServiceTokenReferenceRaceRecorder(
 		t,
 		ctx,
 		db,
@@ -84,27 +84,27 @@ func TestMariaDBFIX011ReferenceSetRetryExhaustionUsesConflict(t *testing.T) {
 			mariaDBServiceTokenReferenceRetryLimit,
 		)
 	}
-	assertMariaDBFIX011ExhaustionPhases(t, recorder.events)
+	assertMariaDBServiceTokenExhaustionPhases(t, recorder.events)
 	for _, mutation := range mutations {
-		clearMariaDBFIX011ServiceTokenReference(
+		clearMariaDBServiceTokenServiceTokenReference(
 			t, ctx, db, mutation.serviceID, mutation.column,
 		)
 	}
 	services := append([]RegisteredService{beforeTarget}, beforeExternal...)
-	assertMariaDBFIX011ServicesUnchanged(t, ctx, auth, services...)
+	assertMariaDBServiceTokenServicesUnchanged(t, ctx, auth, services...)
 	if mariaDBServiceTokenRevoked(t, ctx, db, oldToken.ID) {
 		t.Fatal("retry exhaustion revoked the active token")
 	}
 }
 
-func TestMariaDBFIX011StableExternalOldAndNewReferencesRemainConflicts(t *testing.T) {
-	db, parent := openMariaDBFIX005Test(t)
+func TestMariaDBServiceTokenStableExternalOldAndNewReferencesRemainConflicts(t *testing.T) {
+	db, parent := openMariaDBServiceTokenTest(t)
 	auth := NewMariaDBAuthStore(db)
 
 	t.Run("old token", func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(parent, 20*time.Second)
 		defer cancel()
-		cleanup := newMariaDBFIX005Cleanup(t, ctx, db)
+		cleanup := newMariaDBServiceTokenCleanup(t, ctx, db)
 		targetID := cleanup.prefix + "fix011-stable-old-target"
 		externalID := cleanup.prefix + "fix011-stable-old-external"
 		oldToken := createMariaDBServiceTokenPairService(
@@ -113,7 +113,7 @@ func TestMariaDBFIX011StableExternalOldAndNewReferencesRemainConflicts(t *testin
 		createMariaDBServiceTokenPairService(
 			t, ctx, auth, externalID, "update_agent", nil, cleanup,
 		)
-		setMariaDBFIX010ServiceTokenReference(
+		setMariaDBServiceTokenServiceTokenReference(
 			t, ctx, db, externalID, "staged_node_previous_token_id", oldToken.ID,
 		)
 		now := time.Now().UTC()
@@ -131,7 +131,7 @@ func TestMariaDBFIX011StableExternalOldAndNewReferencesRemainConflicts(t *testin
 		if err != nil {
 			t.Fatal(err)
 		}
-		recorder := newMariaDBFIX011ReferenceRaceRecorder(
+		recorder := newMariaDBServiceTokenReferenceRaceRecorder(
 			t, ctx, db, "stage_service_node_configuration", nil,
 		)
 		operationCtx := context.WithValue(
@@ -156,8 +156,8 @@ func TestMariaDBFIX011StableExternalOldAndNewReferencesRemainConflicts(t *testin
 		if sealerCalled {
 			t.Fatal("stable old-token reference reached the sealer")
 		}
-		assertMariaDBFIX011StableConflictPhases(t, recorder.events)
-		assertMariaDBFIX011ServicesUnchanged(t, ctx, auth, beforeTarget, beforeExternal)
+		assertMariaDBServiceTokenStableConflictPhases(t, recorder.events)
+		assertMariaDBServiceTokenServicesUnchanged(t, ctx, auth, beforeTarget, beforeExternal)
 		if mariaDBServiceTokenRevoked(t, ctx, db, oldToken.ID) {
 			t.Fatal("stable old-token conflict revoked the active token")
 		}
@@ -166,7 +166,7 @@ func TestMariaDBFIX011StableExternalOldAndNewReferencesRemainConflicts(t *testin
 	t.Run("new token", func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(parent, 20*time.Second)
 		defer cancel()
-		cleanup := newMariaDBFIX005Cleanup(t, ctx, db)
+		cleanup := newMariaDBServiceTokenCleanup(t, ctx, db)
 		targetID := cleanup.prefix + "fix011-stable-new-target"
 		externalID := cleanup.prefix + "fix011-stable-new-external"
 		oldToken := createMariaDBServiceTokenPairService(
@@ -195,7 +195,7 @@ func TestMariaDBFIX011StableExternalOldAndNewReferencesRemainConflicts(t *testin
 		createMariaDBServiceTokenPairService(
 			t, ctx, auth, externalID, "update_agent", nil, cleanup,
 		)
-		setMariaDBFIX010ServiceTokenReference(
+		setMariaDBServiceTokenServiceTokenReference(
 			t, ctx, db, externalID, "staged_node_token_id", staged.Token.ID,
 		)
 		beforeTarget, err := auth.GetService(ctx, targetID)
@@ -206,7 +206,7 @@ func TestMariaDBFIX011StableExternalOldAndNewReferencesRemainConflicts(t *testin
 		if err != nil {
 			t.Fatal(err)
 		}
-		recorder := newMariaDBFIX011ReferenceRaceRecorder(
+		recorder := newMariaDBServiceTokenReferenceRaceRecorder(
 			t, ctx, db, "activate_service_node_configuration", nil,
 		)
 		operationCtx := context.WithValue(
@@ -234,8 +234,8 @@ func TestMariaDBFIX011StableExternalOldAndNewReferencesRemainConflicts(t *testin
 				alreadyActivated,
 			)
 		}
-		assertMariaDBFIX011StableConflictPhases(t, recorder.events)
-		assertMariaDBFIX011ServicesUnchanged(t, ctx, auth, beforeTarget, beforeExternal)
+		assertMariaDBServiceTokenStableConflictPhases(t, recorder.events)
+		assertMariaDBServiceTokenServicesUnchanged(t, ctx, auth, beforeTarget, beforeExternal)
 		var stagedTokenRows int
 		if err := db.QueryRowContext(
 			ctx, `SELECT COUNT(*) FROM service_tokens WHERE id = ?`, staged.Token.ID,

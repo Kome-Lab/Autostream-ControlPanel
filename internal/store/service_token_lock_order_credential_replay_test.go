@@ -9,12 +9,12 @@ import (
 	"time"
 )
 
-func TestMariaDBFIX011InvalidConfigureCredentialWinsAfterReferenceSetMismatch(t *testing.T) {
-	db, parent := openMariaDBFIX005Test(t)
+func TestMariaDBServiceTokenInvalidConfigureCredentialWinsAfterReferenceSetMismatch(t *testing.T) {
+	db, parent := openMariaDBServiceTokenTest(t)
 	auth := NewMariaDBAuthStore(db)
 	ctx, cancel := context.WithTimeout(parent, 20*time.Second)
 	defer cancel()
-	cleanup := newMariaDBFIX005Cleanup(t, ctx, db)
+	cleanup := newMariaDBServiceTokenCleanup(t, ctx, db)
 	targetID := cleanup.prefix + "fix011-stage-target"
 	externalID := cleanup.prefix + "fix011-stage-external"
 	oldToken := createMariaDBServiceTokenPairService(
@@ -38,12 +38,12 @@ func TestMariaDBFIX011InvalidConfigureCredentialWinsAfterReferenceSetMismatch(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	recorder := newMariaDBFIX011ReferenceRaceRecorder(
+	recorder := newMariaDBServiceTokenReferenceRaceRecorder(
 		t,
 		ctx,
 		db,
 		"stage_service_node_configuration",
-		[]mariaDBFIX011ReferenceMutation{{
+		[]mariaDBServiceTokenReferenceMutation{{
 			serviceID: externalID,
 			column:    "staged_node_previous_token_id",
 			tokenID:   oldToken.ID,
@@ -74,11 +74,11 @@ func TestMariaDBFIX011InvalidConfigureCredentialWinsAfterReferenceSetMismatch(t 
 	if recorder.commitCount != 1 {
 		t.Fatalf("external reference commits = %d, want 1", recorder.commitCount)
 	}
-	assertMariaDBFIX011RetryPhaseOrder(t, recorder.events)
-	clearMariaDBFIX011ServiceTokenReference(
+	assertMariaDBServiceTokenRetryPhaseOrder(t, recorder.events)
+	clearMariaDBServiceTokenServiceTokenReference(
 		t, ctx, db, externalID, "staged_node_previous_token_id",
 	)
-	assertMariaDBFIX011ServicesUnchanged(
+	assertMariaDBServiceTokenServicesUnchanged(
 		t, ctx, auth, beforeTarget, beforeExternal,
 	)
 	if mariaDBServiceTokenRevoked(t, ctx, db, oldToken.ID) {
@@ -86,12 +86,12 @@ func TestMariaDBFIX011InvalidConfigureCredentialWinsAfterReferenceSetMismatch(t 
 	}
 }
 
-func TestMariaDBFIX011InvalidActivationCredentialWinsAfterReferenceSetMismatch(t *testing.T) {
-	db, parent := openMariaDBFIX005Test(t)
+func TestMariaDBServiceTokenInvalidActivationCredentialWinsAfterReferenceSetMismatch(t *testing.T) {
+	db, parent := openMariaDBServiceTokenTest(t)
 	auth := NewMariaDBAuthStore(db)
 	ctx, cancel := context.WithTimeout(parent, 20*time.Second)
 	defer cancel()
-	cleanup := newMariaDBFIX005Cleanup(t, ctx, db)
+	cleanup := newMariaDBServiceTokenCleanup(t, ctx, db)
 	targetID := cleanup.prefix + "fix011-activation-target"
 	externalID := cleanup.prefix + "fix011-activation-external"
 	oldToken := createMariaDBServiceTokenPairService(
@@ -128,12 +128,12 @@ func TestMariaDBFIX011InvalidActivationCredentialWinsAfterReferenceSetMismatch(t
 	if err != nil {
 		t.Fatal(err)
 	}
-	recorder := newMariaDBFIX011ReferenceRaceRecorder(
+	recorder := newMariaDBServiceTokenReferenceRaceRecorder(
 		t,
 		ctx,
 		db,
 		"activate_service_node_configuration",
-		[]mariaDBFIX011ReferenceMutation{{
+		[]mariaDBServiceTokenReferenceMutation{{
 			serviceID: externalID,
 			column:    "staged_node_token_id",
 			tokenID:   staged.Token.ID,
@@ -167,11 +167,11 @@ func TestMariaDBFIX011InvalidActivationCredentialWinsAfterReferenceSetMismatch(t
 	if recorder.commitCount != 1 {
 		t.Fatalf("external reference commits = %d, want 1", recorder.commitCount)
 	}
-	assertMariaDBFIX011RetryPhaseOrder(t, recorder.events)
-	clearMariaDBFIX011ServiceTokenReference(
+	assertMariaDBServiceTokenRetryPhaseOrder(t, recorder.events)
+	clearMariaDBServiceTokenServiceTokenReference(
 		t, ctx, db, externalID, "staged_node_token_id",
 	)
-	assertMariaDBFIX011ServicesUnchanged(
+	assertMariaDBServiceTokenServicesUnchanged(
 		t, ctx, auth, beforeTarget, beforeExternal,
 	)
 	var stagedTokenRows int
@@ -189,12 +189,12 @@ func TestMariaDBFIX011InvalidActivationCredentialWinsAfterReferenceSetMismatch(t
 	}
 }
 
-func TestMariaDBFIX011DuplicateActivationReplayWinsAfterReferenceSetMismatch(t *testing.T) {
-	db, parent := openMariaDBFIX005Test(t)
+func TestMariaDBServiceTokenDuplicateActivationReplayWinsAfterReferenceSetMismatch(t *testing.T) {
+	db, parent := openMariaDBServiceTokenTest(t)
 	auth := NewMariaDBAuthStore(db)
 	ctx, cancel := context.WithTimeout(parent, 20*time.Second)
 	defer cancel()
-	cleanup := newMariaDBFIX005Cleanup(t, ctx, db)
+	cleanup := newMariaDBServiceTokenCleanup(t, ctx, db)
 	targetID := cleanup.prefix + "fix011-replay-target"
 	externalID := cleanup.prefix + "fix011-replay-external"
 	oldToken := createMariaDBServiceTokenPairService(
@@ -241,12 +241,12 @@ func TestMariaDBFIX011DuplicateActivationReplayWinsAfterReferenceSetMismatch(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	recorder := newMariaDBFIX011ReferenceRaceRecorder(
+	recorder := newMariaDBServiceTokenReferenceRaceRecorder(
 		t,
 		ctx,
 		db,
 		"activate_service_node_configuration",
-		[]mariaDBFIX011ReferenceMutation{{
+		[]mariaDBServiceTokenReferenceMutation{{
 			serviceID: externalID,
 			column:    "staged_node_token_id",
 			tokenID:   staged.Token.ID,
@@ -279,11 +279,11 @@ func TestMariaDBFIX011DuplicateActivationReplayWinsAfterReferenceSetMismatch(t *
 	if recorder.commitCount != 1 {
 		t.Fatalf("external reference commits = %d, want 1", recorder.commitCount)
 	}
-	assertMariaDBFIX011RetryPhaseOrder(t, recorder.events)
-	clearMariaDBFIX011ServiceTokenReference(
+	assertMariaDBServiceTokenRetryPhaseOrder(t, recorder.events)
+	clearMariaDBServiceTokenServiceTokenReference(
 		t, ctx, db, externalID, "staged_node_token_id",
 	)
-	assertMariaDBFIX011ServicesUnchanged(
+	assertMariaDBServiceTokenServicesUnchanged(
 		t, ctx, auth, beforeTarget, beforeExternal,
 	)
 	if !mariaDBServiceTokenRevoked(t, ctx, db, oldToken.ID) ||
@@ -296,12 +296,12 @@ func TestMariaDBFIX011DuplicateActivationReplayWinsAfterReferenceSetMismatch(t *
 	}
 }
 
-func TestMariaDBFIX011ReplayRevalidatesTargetAfterReferenceSetRetry(t *testing.T) {
-	db, parent := openMariaDBFIX005Test(t)
+func TestMariaDBServiceTokenReplayRevalidatesTargetAfterReferenceSetRetry(t *testing.T) {
+	db, parent := openMariaDBServiceTokenTest(t)
 	auth := NewMariaDBAuthStore(db)
 	ctx, cancel := context.WithTimeout(parent, 20*time.Second)
 	defer cancel()
-	cleanup := newMariaDBFIX005Cleanup(t, ctx, db)
+	cleanup := newMariaDBServiceTokenCleanup(t, ctx, db)
 	targetID := cleanup.prefix + "fix011-stale-replay-target"
 	oldToken := createMariaDBServiceTokenPairService(
 		t, ctx, auth, targetID, "update_agent", nil, cleanup,
@@ -391,7 +391,7 @@ func TestMariaDBFIX011ReplayRevalidatesTargetAfterReferenceSetRetry(t *testing.T
 	if !rotationCommitted || rotatedToken.ID == "" {
 		t.Fatal("concurrent target rotation was not committed")
 	}
-	assertMariaDBFIX011PhaseSubsequence(t, events, []string{
+	assertMariaDBServiceTokenPhaseSubsequence(t, events, []string{
 		"reference_discovery_complete",
 		"concurrent_target_rotation_committed",
 		string(mariaDBServiceTokenServiceLocksHeld),
@@ -410,7 +410,7 @@ func TestMariaDBFIX011ReplayRevalidatesTargetAfterReferenceSetRetry(t *testing.T
 		"reference_retry_start":        1,
 		"stable_auth_replay_conflict":  1,
 	} {
-		if got := countMariaDBFIX011Event(events, event); got != want {
+		if got := countMariaDBServiceTokenEvent(events, event); got != want {
 			t.Fatalf("%s phases = %d, want %d; events=%v", event, got, want, events)
 		}
 	}

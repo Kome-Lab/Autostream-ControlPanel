@@ -3,10 +3,11 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { createNormalizedReader } from "./source-normalization.mts";
 import { assertCIManifest, assertCISourceDelta, assertLockDelta, assertPackageRegistration } from "./ci-source-deltas.mts";
 
 const root = fileURLToPath(new URL("../../..", import.meta.url));
-const read = (path: string) => readFileSync(new URL("../../../" + path, import.meta.url));
+const read = createNormalizedReader(root).read;
 const base = "28a9ff71ea9925722000a2933c59c79b8cc8b9b2";
 const before = (path: string) => execFileSync("git", ["show", base + ":" + path], { cwd: root });
 const supplement = JSON.parse(read("web/tests/fixtures/ui-regression/ci-source-deltas.json").toString("utf8"));

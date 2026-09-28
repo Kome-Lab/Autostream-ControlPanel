@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-func setMariaDBFIX010ServiceTokenReference(
+func setMariaDBServiceTokenServiceTokenReference(
 	t *testing.T,
 	ctx context.Context,
 	db *sql.DB,
@@ -40,7 +40,7 @@ func setMariaDBFIX010ServiceTokenReference(
 type mariaDBServiceTokenPairFixture struct {
 	auth      MariaDBAuthStore
 	streams   MariaDBStreamStore
-	cleanup   *mariaDBFIX005Cleanup
+	cleanup   *mariaDBServiceTokenCleanup
 	serviceID string
 	streamID  string
 	token     ServiceToken
@@ -54,7 +54,7 @@ func newMariaDBServiceTokenPairFixture(
 	serviceOperation string,
 ) mariaDBServiceTokenPairFixture {
 	t.Helper()
-	cleanup := newMariaDBFIX005Cleanup(t, ctx, auth.db)
+	cleanup := newMariaDBServiceTokenCleanup(t, ctx, auth.db)
 	suffix := cleanup.prefix + "pair"
 	serviceType := "worker"
 	if serviceOperation == "artifact_report" {
@@ -379,7 +379,7 @@ func createMariaDBServiceTokenPairService(
 	serviceID,
 	serviceType string,
 	existing *ServiceToken,
-	cleanup *mariaDBFIX005Cleanup,
+	cleanup *mariaDBServiceTokenCleanup,
 ) ServiceToken {
 	t.Helper()
 	cleanup.trackServiceID(serviceID)

@@ -7,40 +7,40 @@ import (
 	"testing"
 )
 
-type mariaDBFIX011ReferenceMutation struct {
+type mariaDBServiceTokenReferenceMutation struct {
 	serviceID string
 	column    string
 	tokenID   string
 }
 
-type mariaDBFIX011ReferenceRaceRecorder struct {
+type mariaDBServiceTokenReferenceRaceRecorder struct {
 	t           *testing.T
 	ctx         context.Context
 	db          *sql.DB
 	operation   string
-	mutations   []mariaDBFIX011ReferenceMutation
+	mutations   []mariaDBServiceTokenReferenceMutation
 	commitCount int
 	events      []string
 }
 
-func newMariaDBFIX011ReferenceRaceRecorder(
+func newMariaDBServiceTokenReferenceRaceRecorder(
 	t *testing.T,
 	ctx context.Context,
 	db *sql.DB,
 	operation string,
-	mutations []mariaDBFIX011ReferenceMutation,
-) *mariaDBFIX011ReferenceRaceRecorder {
+	mutations []mariaDBServiceTokenReferenceMutation,
+) *mariaDBServiceTokenReferenceRaceRecorder {
 	t.Helper()
-	return &mariaDBFIX011ReferenceRaceRecorder{
+	return &mariaDBServiceTokenReferenceRaceRecorder{
 		t:         t,
 		ctx:       ctx,
 		db:        db,
 		operation: operation,
-		mutations: append([]mariaDBFIX011ReferenceMutation(nil), mutations...),
+		mutations: append([]mariaDBServiceTokenReferenceMutation(nil), mutations...),
 	}
 }
 
-func (recorder *mariaDBFIX011ReferenceRaceRecorder) observe(
+func (recorder *mariaDBServiceTokenReferenceRaceRecorder) observe(
 	operation string,
 	phase mariaDBServiceTokenLockPhase,
 ) {
@@ -53,7 +53,7 @@ func (recorder *mariaDBFIX011ReferenceRaceRecorder) observe(
 		return
 	}
 	mutation := recorder.mutations[recorder.commitCount]
-	setMariaDBFIX010ServiceTokenReference(
+	setMariaDBServiceTokenServiceTokenReference(
 		recorder.t,
 		recorder.ctx,
 		recorder.db,
@@ -65,7 +65,7 @@ func (recorder *mariaDBFIX011ReferenceRaceRecorder) observe(
 	recorder.events = append(recorder.events, "external_reference_committed")
 }
 
-func clearMariaDBFIX011ServiceTokenReference(
+func clearMariaDBServiceTokenServiceTokenReference(
 	t *testing.T,
 	ctx context.Context,
 	db *sql.DB,
@@ -90,7 +90,7 @@ func clearMariaDBFIX011ServiceTokenReference(
 	}
 }
 
-func assertMariaDBFIX011ServicesUnchanged(
+func assertMariaDBServiceTokenServicesUnchanged(
 	t *testing.T,
 	ctx context.Context,
 	auth MariaDBAuthStore,
@@ -112,9 +112,9 @@ func assertMariaDBFIX011ServicesUnchanged(
 	}
 }
 
-func assertMariaDBFIX011RetryPhaseOrder(t *testing.T, events []string) {
+func assertMariaDBServiceTokenRetryPhaseOrder(t *testing.T, events []string) {
 	t.Helper()
-	assertMariaDBFIX011PhaseSubsequence(t, events, []string{
+	assertMariaDBServiceTokenPhaseSubsequence(t, events, []string{
 		"reference_discovery_complete",
 		string(mariaDBServiceTokenServiceLocksHeld),
 		string(mariaDBServiceTokenTokenLocksHeld),
@@ -133,13 +133,13 @@ func assertMariaDBFIX011RetryPhaseOrder(t *testing.T, events []string) {
 		"reference_retry_start":        1,
 		"stable_auth_replay_conflict":  1,
 	} {
-		if got := countMariaDBFIX011Event(events, event); got != want {
+		if got := countMariaDBServiceTokenEvent(events, event); got != want {
 			t.Fatalf("%s phases = %d, want %d; events=%v", event, got, want, events)
 		}
 	}
 }
 
-func assertMariaDBFIX011StableConflictPhases(t *testing.T, events []string) {
+func assertMariaDBServiceTokenStableConflictPhases(t *testing.T, events []string) {
 	t.Helper()
 	for event, want := range map[string]int{
 		"reference_discovery_complete": 1,
@@ -147,29 +147,29 @@ func assertMariaDBFIX011StableConflictPhases(t *testing.T, events []string) {
 		"reference_retry_start":        0,
 		"stable_auth_replay_conflict":  1,
 	} {
-		if got := countMariaDBFIX011Event(events, event); got != want {
+		if got := countMariaDBServiceTokenEvent(events, event); got != want {
 			t.Fatalf("%s phases = %d, want %d; events=%v", event, got, want, events)
 		}
 	}
 }
 
-func assertMariaDBFIX011ExhaustionPhases(t *testing.T, events []string) {
+func assertMariaDBServiceTokenExhaustionPhases(t *testing.T, events []string) {
 	t.Helper()
-	if got := countMariaDBFIX011Event(events, "reference_discovery_complete"); got != mariaDBServiceTokenReferenceRetryLimit {
+	if got := countMariaDBServiceTokenEvent(events, "reference_discovery_complete"); got != mariaDBServiceTokenReferenceRetryLimit {
 		t.Fatalf("reference discovery phases = %d, want %d; events=%v", got, mariaDBServiceTokenReferenceRetryLimit, events)
 	}
-	if got := countMariaDBFIX011Event(events, "reference_set_mismatch"); got != mariaDBServiceTokenReferenceRetryLimit {
+	if got := countMariaDBServiceTokenEvent(events, "reference_set_mismatch"); got != mariaDBServiceTokenReferenceRetryLimit {
 		t.Fatalf("reference mismatch phases = %d, want %d; events=%v", got, mariaDBServiceTokenReferenceRetryLimit, events)
 	}
-	if got := countMariaDBFIX011Event(events, "reference_retry_start"); got != mariaDBServiceTokenReferenceRetryLimit-1 {
+	if got := countMariaDBServiceTokenEvent(events, "reference_retry_start"); got != mariaDBServiceTokenReferenceRetryLimit-1 {
 		t.Fatalf("reference retry phases = %d, want %d; events=%v", got, mariaDBServiceTokenReferenceRetryLimit-1, events)
 	}
-	if got := countMariaDBFIX011Event(events, "stable_auth_replay_conflict"); got != 0 {
+	if got := countMariaDBServiceTokenEvent(events, "stable_auth_replay_conflict"); got != 0 {
 		t.Fatalf("retry exhaustion reached stable classification %d times; events=%v", got, events)
 	}
 }
 
-func countMariaDBFIX011Event(events []string, expected string) int {
+func countMariaDBServiceTokenEvent(events []string, expected string) int {
 	count := 0
 	for _, event := range events {
 		if event == expected {
@@ -179,7 +179,7 @@ func countMariaDBFIX011Event(events []string, expected string) int {
 	return count
 }
 
-func assertMariaDBFIX011PhaseSubsequence(t *testing.T, events, expected []string) {
+func assertMariaDBServiceTokenPhaseSubsequence(t *testing.T, events, expected []string) {
 	t.Helper()
 	next := 0
 	for _, event := range events {

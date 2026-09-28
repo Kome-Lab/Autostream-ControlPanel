@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { createHarnessFixture } from "./browser-cdp-socket-fixture.mts";
 import { BrowserHarness } from "./browser-harness.mts";
-import { captureBundle9Source, navigateBundle9Document } from "./bundle9-browser-scenarios.mts";
+import { captureUIComparisonSource, navigateUIComparisonDocument } from "./browser-comparison-scenarios.mts";
 
 const invalid = "Invalid InterceptionId.";
 const sentinel = "PRIVATE_SENTINEL_015_" + "s".repeat(20_000);
@@ -235,7 +235,7 @@ test("015 diagnostic: actual document transition labels every ordered phase", as
   t.mock.method(harness, "setFetchDiagnosticContext", (value: Record<string, unknown>) => { seen.push(value.phase); setContext.call(harness, value); });
   let resets = 0;
   try {
-    await navigateBundle9Document(harness, { resetTrace: () => { resets += 1; } }, "http://fixture.local/product");
+    await navigateUIComparisonDocument(harness, { resetTrace: () => { resets += 1; } }, "http://fixture.local/product");
     assert.deepEqual(seen, ["paint-before-leave", "to-blank", "old-handlers-drain", "phase-reset", "to-product"]);
     assert.equal(resets, 1);
   } finally { await harness.close(); }
@@ -253,7 +253,7 @@ for (const side of ["before", "after", "private-other"] as const) {
       const logger = t.mock.method(console, "error", (line: string) => { logs.push(line); });
       socket.hold("Page.navigate");
       socket.hold("Fetch.continueRequest");
-      const capture = captureBundle9Source("http://fixture.local", output).catch((error) => error);
+      const capture = captureUIComparisonSource("http://fixture.local", output).catch((error) => error);
       try {
         await socket.waitForCommand("Page.navigate");
         if (writeFailure) writeFileSync(diagnosticPath, "existing artifact must stay untouched", { flag: "wx" });
@@ -357,7 +357,7 @@ test("015 diagnostic: artifact retrieval failure preserves capture fatal and old
   Object.defineProperty(harness, "fetchFailureDiagnosticJSON", { get() { throw new Error("diagnostic getter only"); } });
   socket.hold("Page.navigate");
   socket.hold("Fetch.continueRequest");
-  const capture = captureBundle9Source("http://fixture.local", output).catch((error) => error);
+  const capture = captureUIComparisonSource("http://fixture.local", output).catch((error) => error);
   try {
     await socket.waitForCommand("Page.navigate");
     paused(socket, { request: { method: "GET", url: "http://fixture.local/admin/" } });

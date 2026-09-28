@@ -19,7 +19,7 @@ func runMariaDBSharedServiceTokenNodeRotationPair(
 	t.Helper()
 	ctx, cancel := context.WithTimeout(parent, 20*time.Second)
 	defer cancel()
-	cleanup := newMariaDBFIX005Cleanup(t, ctx, db)
+	cleanup := newMariaDBServiceTokenCleanup(t, ctx, db)
 	targetID := cleanup.prefix + "worker-a"
 	heartbeatID := cleanup.prefix + "worker-b"
 	oldToken := createMariaDBServiceTokenPairService(t, ctx, auth, targetID, "worker", nil, cleanup)
@@ -87,7 +87,7 @@ func runMariaDBSharedServiceTokenNodeConfigurePair(
 	t.Helper()
 	ctx, cancel := context.WithTimeout(parent, 20*time.Second)
 	defer cancel()
-	cleanup := newMariaDBFIX005Cleanup(t, ctx, db)
+	cleanup := newMariaDBServiceTokenCleanup(t, ctx, db)
 	suffix := cleanup.prefix + "configure"
 	targetID := cleanup.prefix + "worker-a"
 	heartbeatID := cleanup.prefix + "worker-b"
@@ -149,7 +149,7 @@ func runMariaDBSharedServiceTokenNodeActivationPair(
 	t.Helper()
 	ctx, cancel := context.WithTimeout(parent, 20*time.Second)
 	defer cancel()
-	cleanup := newMariaDBFIX005Cleanup(t, ctx, db)
+	cleanup := newMariaDBServiceTokenCleanup(t, ctx, db)
 	suffix := cleanup.prefix + "activate"
 	targetID := cleanup.prefix + "updater-a"
 	heartbeatID := cleanup.prefix + "updater-b"
@@ -317,7 +317,7 @@ func assertMariaDBSharedTokenDeleteFailsClosed(
 	auth MariaDBAuthStore,
 ) {
 	t.Helper()
-	cleanup := newMariaDBFIX005Cleanup(t, ctx, db)
+	cleanup := newMariaDBServiceTokenCleanup(t, ctx, db)
 	targetID := cleanup.prefix + "worker-a"
 	otherID := cleanup.prefix + "worker-b"
 	token := createMariaDBServiceTokenPairService(t, ctx, auth, targetID, "worker", nil, cleanup)

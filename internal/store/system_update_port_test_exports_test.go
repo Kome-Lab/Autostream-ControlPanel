@@ -261,7 +261,7 @@ func WithSystemUpdateLifecycleHostLockForTest(ctx context.Context, held func()) 
 
 func AssertSystemUpdateHostRowLockForTest(t *testing.T, ctx context.Context, db *sql.DB, hostID string) {
 	t.Helper()
-	assertMariaDBFIX006ExecutionHostRowLockHeld(t, ctx, db, hostID)
+	assertMariaDBServiceTokenExecutionHostRowLockHeld(t, ctx, db, hostID)
 }
 
 func NewMemorySystemUpdatePortFixtureForTest(t *testing.T) (*MemoryAuthStore, *MemoryUpdaterPolicyStore, *MemorySystemUpdateStore) {
@@ -306,12 +306,12 @@ func MemorySystemUpdatePortStateForTest(auth *MemoryAuthStore, policies *MemoryU
 
 func AssertSystemUpdatePortSourceLocksHeldForTest(t *testing.T, ctx context.Context, db *sql.DB, hostID, updaterID string, services []RegisteredService) {
 	t.Helper()
-	assertMariaDBFIX006ExecutionHostRowLockHeld(t, ctx, db, hostID)
-	assertMariaDBFIX006UpdaterPolicyRowLockHeld(t, ctx, db, updaterID)
+	assertMariaDBServiceTokenExecutionHostRowLockHeld(t, ctx, db, hostID)
+	assertMariaDBServiceTokenUpdaterPolicyRowLockHeld(t, ctx, db, updaterID)
 	for _, service := range services {
-		assertMariaDBFIX006ServiceRowLockHeld(t, ctx, db, service.ServiceID)
+		assertMariaDBServiceTokenServiceRowLockHeld(t, ctx, db, service.ServiceID)
 		if service.TokenID != "" {
-			assertMariaDBFIX007ServiceTokenRowLockHeld(t, ctx, db, service.TokenID)
+			assertMariaDBServiceTokenServiceTokenRowLockHeld(t, ctx, db, service.TokenID)
 		}
 	}
 }

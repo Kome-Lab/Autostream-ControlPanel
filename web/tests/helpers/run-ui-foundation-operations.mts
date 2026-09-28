@@ -69,14 +69,14 @@ export function assertOperationsWiring(
   const webJob = workflowSource.slice(workflowSource.indexOf("\n  web:"), workflowSource.indexOf("\n  overall:"));
   const operationsIndex = webJob.indexOf("npm run test:ui-foundation-operations");
   const browserIndex = webJob.indexOf("npm run test:ui-foundation-browser");
-  const bundle4Index = webJob.indexOf("npm run test:control-platform");
-  const bundle6WitnessIndex = webJob.indexOf("npm run test:bundle6-witnesses");
-  const bundle6FeatureIndex = webJob.indexOf("npm run test:bundle6-features");
+  const platformWitnessIndex = webJob.indexOf("npm run test:control-platform");
+  const operationWitnessIndex = webJob.indexOf("npm run test:operation-witnesses");
+  const foundationMigrationIndex = webJob.indexOf("npm run test:foundation-migrations");
   const lintIndex = webJob.indexOf("npm run lint");
   const buildIndex = webJob.indexOf("npm run build");
   assert.ok(operationsIndex >= 0, "Official web job must execute operations tests");
   assert.ok(browserIndex >= 0, "Official web job must execute browser tests");
-  assert.ok(bundle4Index >= 0 && bundle6WitnessIndex >= 0 && bundle6FeatureIndex >= 0, "existing Bundle 4/6 blocking proofs must remain wired");
+  assert.ok(platformWitnessIndex >= 0 && operationWitnessIndex >= 0 && foundationMigrationIndex >= 0, "existing platform and operation blocking proofs must remain wired");
   assert.ok(operationsIndex < lintIndex && operationsIndex < buildIndex, "operations tests must run before lint/build");
   assert.ok(browserIndex < lintIndex && browserIndex < buildIndex, "browser tests must run before lint/build");
   assert.doesNotMatch(webJob, /continue-on-error|\|\|\s*true/u);

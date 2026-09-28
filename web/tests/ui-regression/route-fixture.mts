@@ -2,12 +2,12 @@ import assert from "node:assert/strict";
 import { statePaths, sectionPaths, loadingPaths } from "./state-drivers.mts";
 import { canonicalFixturePath, contentInput, emptyInput, unknownInput } from "./fixture-inputs.mts";
 import type { RouteResolver, StubResponse } from "../helpers/browser-harness.mts";
-import { createBundle9Fixture } from "../helpers/bundle9-browser-fixtures.mts";
+import { createUIComparisonFixture } from "../helpers/browser-comparison-fixtures.mts";
 import type { Condition } from "./matrix.mts";
 
 // Reuse immutable public synthetic API shapes, without changing the historical resolver.
 export function createUIFixture(baseURL: string) {
-  const inherited = createBundle9Fixture(baseURL);
+  const inherited = createUIComparisonFixture(baseURL);
   const origin = new URL(baseURL).origin;
   const trace: { method: string; path: string; status: number; body: unknown }[] = [];
   const unexpected: string[] = [];

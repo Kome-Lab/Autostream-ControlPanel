@@ -28,7 +28,7 @@ const loading = () => ({ status: "pending" as const, isFetching: true, dataUpdat
 const failed = () => ({ status: "error" as const, isFetching: false, error: new TypeError("raw transport"), dataUpdatedAt: 0 });
 const stale = (data: readonly unknown[], at = 9) => ({ status: "error" as const, isFetching: false, error: new TypeError("raw refresh"), data, dataUpdatedAt: at });
 
-test("B10B finite consumer manifest is exact and does not inflate the action denominator", () => {
+test("Operational remote-state consumer manifest is exact and does not inflate the action denominator", () => {
   assert.deepEqual(stateModule.operationalConsumerManifest, {
     dashboard: ["streams", "services"],
     monitoring: ["services", "streams", "incidents", "diagnostics"],

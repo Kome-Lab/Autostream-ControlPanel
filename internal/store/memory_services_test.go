@@ -53,7 +53,7 @@ func TestUpdateAgentCannotBeAssignedToStream(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := auth.PrecreateService(ctx, token, bundle8bPullAgentRegistration("updater-01")); err != nil {
+	if _, err := auth.PrecreateService(ctx, token, physicalEOLPullAgentRegistration("updater-01")); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := auth.AssignServiceToStream(ctx, "updater-01", "stream-01", "admin"); !errors.Is(err, ErrInvalidServiceAssignment) {

@@ -15,7 +15,7 @@ func TestRegeneratingConfigureTokenRetainsPendingTombstoneAndInvalidatesOldStage
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := auth.PrecreateService(ctx, oldToken, bundle8bPullAgentRegistration("updater-restage")); err != nil {
+	if _, err := auth.PrecreateService(ctx, oldToken, physicalEOLPullAgentRegistration("updater-restage")); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, time.July, 21, 4, 0, 0, 0, time.UTC)

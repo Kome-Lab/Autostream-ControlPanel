@@ -10,13 +10,13 @@ import {
   validateNodeResidualRecords,
   verifyNodeResidualSources,
   type NodeResidualSourceAuthority,
-} from "../helpers/wave3c-residual-source.mts";
+} from "../helpers/node-residual-source.mts";
 
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 test("Wave 3C residual ADR has zero unowned items and exact non-zero later-owner evidence", () => {
-  const inventory = JSON.parse(readFileSync(new URL("../fixtures/ui-foundation-wave3c-residual-inventory.json", import.meta.url), "utf8")) as ResidualInventory;
+  const inventory = JSON.parse(readFileSync(new URL("../fixtures/ui-foundation-residual-inventory.json", import.meta.url), "utf8")) as ResidualInventory;
   assert.doesNotThrow(() => validateResidualInventory(inventory));
   assert.equal(inventory.unownedResidualCount, 0);
   assert.equal(inventory.reviewedLaterOwnerRecordCount, 10);
@@ -28,7 +28,7 @@ test("Wave 3C residual ADR has zero unowned items and exact non-zero later-owner
 });
 
 test("the residual validator rejects the required expected-count-zero mutant", () => {
-  const inventory = JSON.parse(readFileSync(new URL("../fixtures/ui-foundation-wave3c-residual-inventory.json", import.meta.url), "utf8")) as ResidualInventory;
+  const inventory = JSON.parse(readFileSync(new URL("../fixtures/ui-foundation-residual-inventory.json", import.meta.url), "utf8")) as ResidualInventory;
   assert.throws(
     () => validateResidualInventory({ ...inventory, expectedEvidenceRecordCount: 0 }),
     /expected evidence count must be positive/,
@@ -36,7 +36,7 @@ test("the residual validator rejects the required expected-count-zero mutant", (
 });
 
 test("Node residual source migration rejects omitted evidence, stale hashes, and disconnected imports", () => {
-  const inventory = JSON.parse(readFileSync(new URL("../fixtures/ui-foundation-wave3c-residual-inventory.json", import.meta.url), "utf8")) as ResidualInventory;
+  const inventory = JSON.parse(readFileSync(new URL("../fixtures/ui-foundation-residual-inventory.json", import.meta.url), "utf8")) as ResidualInventory;
   const authority = inventory.nodeSourceAuthority;
   assert.ok(authority, "Node residual source migration requires fixed code authority");
   assert.throws(() => validateResidualInventory({ ...inventory, nodeSourceAuthority: undefined }), /fixed Node code authority is required/);

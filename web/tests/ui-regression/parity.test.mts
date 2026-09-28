@@ -1,15 +1,17 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync, readdirSync, existsSync } from "node:fs";
+import { readdirSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import ts from "typescript";
-import { approvedProtectedPaths, assertApprovedManifest, assertProtectedFixture, assertApprovedSourceDelta, assertRunnerTypeDelta, assertG3OperationSource } from "./approved-source-delta.mts";
+import { createNormalizedReader, assertNormalizationManifest, inverseNormalization } from "./source-normalization.mts";
+import { approvedProtectedPaths, assertApprovedManifest, assertProtectedFixture, assertApprovedSourceDelta, assertRunnerTypeDelta, assertBrowserOperationSource } from "./approved-source-delta.mts";
 import { ciProtectedPaths, assertCISourceDelta, assertTypeDependencies } from "./ci-source-deltas.mts";
 const root = fileURLToPath(new URL("../../..", import.meta.url));
-const read = (path: string) => readFileSync(resolve(root, path));
+const normalizedSource = createNormalizedReader(root);
+const read = normalizedSource.read;
 const fixture = (name: string) => JSON.parse(read("web/tests/fixtures/ui-regression/" + name + ".json").toString("utf8"));
 const sha = (value: Buffer) => createHash("sha256").update(value).digest("hex");
 const base = fixture("protected").base_commit;
@@ -38,14 +40,14 @@ test("UI-PARITY-002: 100 actions keep original permission, payload, duplicate an
     for (const path of row.current_owner_paths) assert.ok(existsSync(resolve(root, path)), row.id + ": missing owner");
   }
 });
-test("UI-PARITY-003: original 733 records, 727 raw sources and six separately bounded approved deltas retain the original four plus two044 launch paths", () => {
+test("UI-PARITY-003: original 733 records retain 728 current owners and five fixed-history-only sources with prior bounded deltas", () => {
   const records = fixture("protected").protected;
   assert.ok(records.length > 100);
   const manifest = fixture("approved-source-deltas");
   assertProtectedFixture(read("web/tests/fixtures/ui-regression/protected.json"), manifest);
-  assertG3OperationSource(read(manifest.g3OperationDelta.newSource.path), manifest);
+  assertBrowserOperationSource(read(manifest.g3OperationDelta.newSource.path), manifest);
   assert.equal(records.length, 733);
-  let rawMatches = 0, deltas = 0, ciDeltas = 0;
+  let rawMatches = 0, normalizedMatches = 0, historicalMatches = 0, deltas = 0, ciDeltas = 0;
   for (const row of records) {
     if (approvedProtectedPaths.some(path => path === row.path)) {
       assert.equal(sha(rawBase(row.path)), row.sha256, row.path);
@@ -53,9 +55,15 @@ test("UI-PARITY-003: original 733 records, 727 raw sources and six separately bo
     } else if (ciProtectedPaths.some(path => path === row.path)) {
       assert.equal(sha(rawBase(row.path)), row.sha256, row.path);
       assertCISourceDelta(row.path, rawBase(row.path), read(row.path), fixture("ci-source-deltas")); ciDeltas++;
-    } else { assert.equal(sha(read(row.path)), row.sha256, row.path); rawMatches++; }
+    } else {
+      assert.equal(sha(read(row.path)), row.sha256, row.path);
+      if (normalizedSource.manifest.historyOnly.some(item => item.path === row.path)) historicalMatches++;
+      else if (normalizedSource.manifest.currentMappings.some(item => item.oldPath === row.path)) normalizedMatches++;
+      else rawMatches++;
+    }
   }
-  assert.equal(rawMatches, 727); assert.equal(deltas, 4); assert.equal(ciDeltas, 2);
+  assert.equal(historicalMatches, 5); assert.equal(rawMatches + normalizedMatches + deltas + ciDeltas, 728);
+  assert.equal(rawMatches + normalizedMatches, 722); assert.equal(deltas, 4); assert.equal(ciDeltas, 2);
 });
 function navigationBindings(source: string) {
   const bindings: { href: string; permissions: string[]; key: string }[] = [];
@@ -102,10 +110,10 @@ test("UI-PARITY-006: only role names register the new suites and the CI job bloc
 test("UI-PARITY-007: exact supplement rejects missing, unknown, wrong original, added API and changed old behavior", () => {
   const manifest = fixture("approved-source-deltas"); assertApprovedManifest(manifest);
   const operation = read(manifest.g3OperationDelta.newSource.path);
-  assertG3OperationSource(operation, manifest);
+  assertBrowserOperationSource(operation, manifest);
   for (const [from, to] of [["10_000", "20_000"], ["this.dialogs === 0", "true"], ["this.port.abort(error)", "void error"]]) {
     const changed = operation.toString("utf8").replace(from, to); assert.notEqual(changed, operation.toString("utf8"));
-    assert.throws(() => assertG3OperationSource(Buffer.from(changed), manifest), /exact contract/);
+    assert.throws(() => assertBrowserOperationSource(Buffer.from(changed), manifest), /exact contract/);
   }
   assert.throws(() => assertApprovedManifest(null), /supplement/);
   const unknown = { ...manifest, protectedDeltas: [...manifest.protectedDeltas, { path: "unknown" }] }; assert.throws(() => assertApprovedManifest(unknown), /supplement/);
@@ -127,4 +135,60 @@ test("UI-PARITY-007: exact supplement rejects missing, unknown, wrong original, 
   }
   const runner = "web/tests/helpers/run-ui-foundation-browser.mts";
   assert.throws(() => assertRunnerTypeDelta(rawBase(runner), Buffer.from(read(runner).toString("utf8").replace('result.nesting !== 0', 'result.nesting !== 1')), manifest), /runtime and registration AST/);
+});
+
+test("UI-PARITY-008: finite name inverse binds accepted Git bytes and rejects source, registration and historical authority drift", () => {
+  const { manifest, raw } = normalizedSource;
+  const original = (path: string) => execFileSync("git", ["show", manifest.acceptedCommit + ":" + path], { cwd: root, maxBuffer: 32 * 1024 * 1024 });
+  for (const row of manifest.currentMappings) {
+    const before = original(row.oldPath), current = raw(row.newPath);
+    assert.deepEqual(inverseNormalization(row, before, current), before);
+    assert.throws(() => inverseNormalization(row, Buffer.concat([before, Buffer.from("drift")]), current), /accepted Git raw/);
+    assert.throws(() => inverseNormalization(row, before, Buffer.concat([current, Buffer.from("\n")])) , /exact specified name edits/);
+  }
+  const input = raw("web/tests/fixtures/ui-regression/source-normalization.json");
+  const encode = (value: typeof manifest) => Buffer.from(JSON.stringify(value, null, 2) + "\n");
+  assert.deepEqual(encode(JSON.parse(input.toString("utf8"))), input);
+  const mutations = [
+    (copy: typeof manifest) => { copy.currentMappings.pop(); },
+    (copy: typeof manifest) => { copy.currentMappings[1].newPath = copy.currentMappings[0].newPath; },
+    (copy: typeof manifest) => { copy.currentMappings[1].newPath = copy.currentMappings[0].newPath.toUpperCase(); },
+    (copy: typeof manifest) => { copy.currentMappings[0].newPath = "unknown.ts"; },
+    (copy: typeof manifest) => { copy.currentMappings[0].acceptedSha256 = "0".repeat(64); },
+    (copy: typeof manifest) => { copy.historyOnly[0].fixedCommit = manifest.acceptedCommit; },
+    (copy: typeof manifest) => { copy.historyOnly[0].fixedCommit = "8fb0fb0b2e9f0e3ce5edc36358479c329d96515a"; },
+    (copy: typeof manifest) => { copy.historyOnly.pop(); },
+    (copy: typeof manifest) => { copy.packageScripts.pop(); },
+  ];
+  for (const mutate of mutations) {
+    const copy = JSON.parse(input.toString("utf8")) as typeof manifest; mutate(copy);
+    assert.throws(() => assertNormalizationManifest(encode(copy)), /fixed table-derived contract/);
+  }
+  const row = manifest.currentMappings.find(item => item.oldPath === "web/package.json")!;
+  const current = JSON.parse(raw(row.newPath).toString("utf8"));
+  for (const mutate of [
+    (pkg: typeof current) => { delete pkg.scripts["test:ui-regression:browser-contracts"]; },
+    (pkg: typeof current) => { pkg.scripts["test:ui-regression:browser-contracts"] += " tests/ui-regression/render-state.test.mts"; },
+    (pkg: typeof current) => { pkg.dependencies.unapproved = "1"; },
+    (pkg: typeof current) => { pkg.scripts["test:operation-witnesses"] = "node --test unrelated.mts"; },
+  ]) {
+    const pkg = structuredClone(current); mutate(pkg);
+    assert.throws(() => inverseNormalization(row, original(row.oldPath), Buffer.from(JSON.stringify(pkg))), /exact specified name edits/);
+  }
+  for (const path of ["web/tests/fixtures/ui-regression/protected.json", "web/tests/fixtures/ui-regression/approved-source-deltas.json", "web/tests/fixtures/ui-regression/ci-source-deltas.json", "web/package-lock.json", "web/tsconfig.ui-regression.json"]) assert.deepEqual(raw(path), original(path));
+  for (const row of manifest.historyOnly) assert.equal(sha(read(row.path)), row.originalSha256);
+  const missing = new Error("controlled immutable object unavailable");
+  const old = manifest.historyOnly[0].path;
+  const io = { raw, exists: (path: string) => existsSync(resolve(root, path)), object: () => { throw missing; } };
+  assert.throws(() => createNormalizedReader(root, io).read(old), error => error === missing, "no current/private fallback for missing Git history");
+  assert.throws(() => createNormalizedReader(root, { ...io, exists: path => path === old || io.exists(path) }).read(old), /must be absent/);
+  const renamed = manifest.currentMappings.find(item => item.oldPath !== item.newPath)!;
+  assert.throws(() => createNormalizedReader(root, { ...io, exists: path => path === renamed.oldPath || io.exists(path) }).read(renamed.oldPath), /alias must not remain/);
+  const absent = new Error("controlled current source absent");
+  assert.throws(() => createNormalizedReader(root, { ...io, raw: path => { if (path === renamed.newPath) throw absent; return raw(path); }, object: (_commit, path) => original(path) }).read(renamed.oldPath), error => error === absent);
+  const originalSuite = "web/tests/ui-foundation-browser.test.mts";
+  const suiteBytes = raw(originalSuite), renamedSuite = Buffer.from(suiteBytes.toString("utf8").replace(/(test\(\s*["'])/, "$1renamed-"));
+  assert.notDeepEqual(renamedSuite, suiteBytes);
+  const changedSuite = createNormalizedReader(root, { ...io, raw: path => path === originalSuite ? renamedSuite : raw(path) }).read(originalSuite);
+  assert.throws(() => assert.deepEqual(changedSuite, original(originalSuite)), "the unchanged original suite identity remains protected after name resolution");
 });

@@ -173,7 +173,7 @@ test("Updater authority fingerprint is stable, bounded, and changes with revisio
   assert.ok(left.length < 64);
 });
 
-test("Updater UI wraps Bundle 5 controllers without embedded fallback or raw response rendering", () => {
+test("Updater UI wraps independent runtime controllers without embedded fallback or raw response rendering", () => {
   const application = readMovedSource(new URL("../src/features/application/application-info-view.tsx", import.meta.url));
   const settings = readMovedSource(new URL("../src/features/application/updater-settings-panel.tsx", import.meta.url));
   const bootstrap = readMovedSource(new URL("../src/features/application/updater-host-bootstrap-panel.tsx", import.meta.url));

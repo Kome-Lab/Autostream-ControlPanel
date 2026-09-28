@@ -35,13 +35,13 @@ jobs:
           --health-retries 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Verify Bundle 9 authored sources and raw distributions
+      - name: Verify authored sources and raw distributions
         shell: bash
         run: |
           set -euo pipefail
           python3 -m unittest discover -s scripts/ci -p 'test_artifact_assembly.py' -v
-          python3 -m unittest discover -s scripts/ci -p 'test_verify_bundle9_sources.py' -v
-          python3 scripts/ci/verify_bundle9_sources.py \
+          python3 -m unittest discover -s scripts/ci -p 'test_verify_source_integrity.py' -v
+          python3 scripts/ci/verify_source_integrity.py \
             --repository Autostream-ControlPanel --tree "$(git rev-parse HEAD)"
           for script in release/installer-tests/*/*.sh; do bash -n "${script}"; done
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -50,11 +50,11 @@ jobs:
           cache-dependency-path: go.mod
       - name: Check service installer integration test syntax
         run: bash -n release/test-install-autostream-control-panel-integration.sh
-      - name: Check Bundle 4 migration contract syntax
+      - name: Check control-platform migration contract syntax
         run: bash -n release/test-control-platform-migration-contract.sh
-      - name: Test Bundle 4 service-installer migration contract
+      - name: Test control-platform service-installer migration contract
         run: bash release/test-control-platform-migration-contract.sh
-      - name: Test Bundle 4 migration against MariaDB
+      - name: Test control-platform migration against MariaDB
         shell: bash
         env:
           AUTOSTREAM_MARIADB_TEST_DSN: autostream_ci:autostream-ci-password@tcp(127.0.0.1:3306)/autostream_ci?parseTime=true
@@ -68,7 +68,7 @@ jobs:
             echo "Bundle 4 MariaDB witness denominator mismatch: ${#discovered[@]}/1" >&2
             exit 1
           fi
-          result="${RUNNER_TEMP}/bundle4-service-installer-mariadb.json"
+          result="${RUNNER_TEMP}/control-platform-installer-mariadb.json"
           go test ./internal/database \
             -run '^TestMariaDBControlPlatformFeatureMigrationAndPersistence$' \
             -count=1 \
@@ -116,7 +116,7 @@ jobs:
           cache-dependency-path: go.mod
       - name: Check service installer syntax
         run: bash -n release/install-autostream-control-panel
-      - name: Test Bundle 4 five-task witnesses
+      - name: Test control-platform five-task witnesses
         shell: bash
         run: |
           set -euo pipefail
@@ -169,10 +169,10 @@ jobs:
         with:
           repository: Kome-Lab/Autostream-Encoder-Recorder
           ref: 7b29346f0dd118323ce89ef4be7d82a1648ac87a
-          path: .bundle8b-archive-encoder
+          path: .archive-migration-encoder
           persist-credentials: false
       - name: Build the filesystem migration witness
-        working-directory: .bundle8b-archive-encoder
+        working-directory: .archive-migration-encoder
         run: go build -p 1 -o "${RUNNER_TEMP}/archive-migrator" ./cmd/encoder-recorder
       - name: Test archive mapping and EOL recovery in a fresh database per parent
         timeout-minutes: 15
@@ -181,8 +181,8 @@ jobs:
           AUTOSTREAM_MARIADB_CI_CONTAINER: ${{ job.services.mariadb.id }}
           AUTOSTREAM_MARIADB_CI_ROOT_PASSWORD: autostream-ci-root-password
           AUTOSTREAM_ARCHIVE_MIGRATOR_BINARY: ${{ runner.temp }}/archive-migrator
-        run: bash scripts/ci/test-bundle8b-review-mariadb.sh
-      - name: Upload Bundle 8B repair regression evidence
+        run: bash scripts/ci/test-physical-eol-resume-mariadb.sh
+      - name: Upload physical-EOL recovery regression evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -190,30 +190,30 @@ jobs:
           path: ${{ runner.temp }}/bundle8b-review/
           if-no-files-found: error
           retention-days: 14
-      - name: Test Bundle 8B physical EOL migration against MariaDB
+      - name: Test physical-EOL migration against MariaDB
         shell: bash
         env:
           AUTOSTREAM_MARIADB_TEST_DSN: autostream_ci:autostream-ci-password@tcp(127.0.0.1:3306)/autostream_ci?parseTime=true
         run: |
           set -euo pipefail
           mapfile -t discovered < <(
-            go test ./internal/database -list '^TestBundle8BPhysicalEOLMigrationMariaDB$' |
+            go test ./internal/database -list '^TestPhysicalEOLMigrationMariaDB$' |
               LC_ALL=C grep '^Test'
           )
-          if [[ "${#discovered[@]}" -ne 1 || "${discovered[0]}" != "TestBundle8BPhysicalEOLMigrationMariaDB" ]]; then
+          if [[ "${#discovered[@]}" -ne 1 || "${discovered[0]}" != "TestPhysicalEOLMigrationMariaDB" ]]; then
             echo "Bundle 8B MariaDB witness denominator mismatch: ${#discovered[@]}/1" >&2
             exit 1
           fi
-          result="${RUNNER_TEMP}/bundle8b-physical-eol-mariadb.json"
+          result="${RUNNER_TEMP}/physical-eol-migration-mariadb.json"
           go test ./internal/database \
-            -run '^TestBundle8BPhysicalEOLMigrationMariaDB$' \
+            -run '^TestPhysicalEOLMigrationMariaDB$' \
             -count=1 \
             -json | tee "${result}"
-          if jq -e 'select(.Action == "skip" and .Test == "TestBundle8BPhysicalEOLMigrationMariaDB")' "${result}" >/dev/null; then
+          if jq -e 'select(.Action == "skip" and .Test == "TestPhysicalEOLMigrationMariaDB")' "${result}" >/dev/null; then
             echo "Bundle 8B MariaDB witness was skipped" >&2
             exit 1
           fi
-          jq -e 'select(.Action == "pass" and .Package == "github.com/example/autostream-control-panel/internal/database" and .Test == "TestBundle8BPhysicalEOLMigrationMariaDB")' "${result}" >/dev/null
+          jq -e 'select(.Action == "pass" and .Package == "github.com/example/autostream-control-panel/internal/database" and .Test == "TestPhysicalEOLMigrationMariaDB")' "${result}" >/dev/null
           jq -e 'select(.Action == "pass" and .Package == "github.com/example/autostream-control-panel/internal/database" and ((.Test // "") == ""))' "${result}" >/dev/null
       - run: go test ./...
       - name: Test MariaDB persistence
@@ -269,7 +269,7 @@ jobs:
           set -euo pipefail
           mapfile -t migration_tests < <(
             go test ./internal/database -list '^TestMariaDB' |
-              LC_ALL=C grep '^TestMariaDB' | grep -v '^TestMariaDBBundle8B'
+              LC_ALL=C grep '^TestMariaDB' | grep -v '^TestMariaDBPhysicalEOL'
           )
           if [[ "${#migration_tests[@]}" -eq 0 ]]; then
             echo "No MariaDB migration integration tests were discovered" >&2
@@ -728,7 +728,7 @@ jobs:
         run: npm run typecheck:ui-regression
       - name: Verify unchanged status vocabularies against current raw source locators
         run: node --no-warnings --test tests/ui-foundation-status.test.mts
-      - name: Test Bundle 4 Web semantic witnesses
+      - name: Test control-platform web semantic witnesses
         run: npm run test:control-platform
       - name: Prepare and verify Japanese browser fonts
         run: |
@@ -736,16 +736,16 @@ jobs:
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y fontconfig fonts-noto-cjk=1:20230817+repack1-3
           fc-list -q ':lang=ja'
-      - name: Test Bundle 4 browser witnesses and UI Foundation behavior
+      - name: Test control-platform browser witnesses and UI Foundation behavior
         timeout-minutes: 8
         env:
           AUTOSTREAM_BROWSER_PATH: /usr/bin/google-chrome
         run: npm run test:ui-foundation-browser
-      - name: Test Bundle 6 Observability and Updater UI witnesses
-        run: npm run test:bundle6-witnesses
-      - name: Test Bundle 6 migrated action denominator
-        run: npm run test:bundle6-features
-      - name: Test UI Foundation operations and Bundle 7 denominator
+      - name: Test Observability and Updater UI operation witnesses
+        run: npm run test:operation-witnesses
+      - name: Test foundation migration action denominator
+        run: npm run test:foundation-migrations
+      - name: Test UI Foundation operations and complete action denominator
         run: npm run test:ui-foundation-operations
       - run: npm run test:system-updates
       - run: npm run test:stream-regressions

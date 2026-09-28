@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-func TestFIX010UpdateAgentStageRejectsSharedTokenReferences(t *testing.T) {
+func TestServiceTokenUpdateAgentStageRejectsSharedTokenReferences(t *testing.T) {
 	tests := []struct {
 		name string
 		edit func(*RegisteredService, string)
@@ -36,8 +36,8 @@ func TestFIX010UpdateAgentStageRejectsSharedTokenReferences(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			ctx := t.Context()
 			auth := NewMemoryAuthStore()
-			oldToken := createMemoryFIX010UpdateAgentService(t, auth, "fix010-stage-target")
-			createMemoryFIX010UpdateAgentService(t, auth, "fix010-stage-other")
+			oldToken := createMemoryServiceTokenUpdateAgentService(t, auth, "fix010-stage-target")
+			createMemoryServiceTokenUpdateAgentService(t, auth, "fix010-stage-other")
 			now := time.Date(2026, time.August, 25, 1, 0, 0, 0, time.UTC)
 			configureToken := "fix010-stage-configure-" + test.name
 			if _, err := auth.SetServiceConfigureToken(
@@ -106,7 +106,7 @@ func TestFIX010UpdateAgentStageRejectsSharedTokenReferences(t *testing.T) {
 	}
 }
 
-func TestFIX010UpdateAgentActivationRejectsSharedTokenReferences(t *testing.T) {
+func TestServiceTokenUpdateAgentActivationRejectsSharedTokenReferences(t *testing.T) {
 	tests := []struct {
 		name string
 		edit func(*RegisteredService, string, string)
@@ -152,7 +152,7 @@ func TestFIX010UpdateAgentActivationRejectsSharedTokenReferences(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			ctx := t.Context()
 			auth := NewMemoryAuthStore()
-			oldToken := createMemoryFIX010UpdateAgentService(t, auth, "fix010-activate-target")
+			oldToken := createMemoryServiceTokenUpdateAgentService(t, auth, "fix010-activate-target")
 			now := time.Date(2026, time.August, 25, 2, 0, 0, 0, time.UTC)
 			configureToken := "fix010-activate-configure-" + test.name
 			if _, err := auth.SetServiceConfigureToken(
@@ -175,7 +175,7 @@ func TestFIX010UpdateAgentActivationRejectsSharedTokenReferences(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			createMemoryFIX010UpdateAgentService(t, auth, "fix010-activate-other")
+			createMemoryServiceTokenUpdateAgentService(t, auth, "fix010-activate-other")
 
 			auth.mu.Lock()
 			other := auth.services["fix010-activate-other"]
@@ -238,7 +238,7 @@ func TestFIX010UpdateAgentActivationRejectsSharedTokenReferences(t *testing.T) {
 	}
 }
 
-func createMemoryFIX010UpdateAgentService(
+func createMemoryServiceTokenUpdateAgentService(
 	t *testing.T,
 	auth *MemoryAuthStore,
 	serviceID string,
@@ -254,7 +254,7 @@ func createMemoryFIX010UpdateAgentService(
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := auth.PrecreateService(t.Context(), token, bundle8bPullAgentRegistration(serviceID)); err != nil {
+	if _, err := auth.PrecreateService(t.Context(), token, physicalEOLPullAgentRegistration(serviceID)); err != nil {
 		t.Fatal(err)
 	}
 	return token
