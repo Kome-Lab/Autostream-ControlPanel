@@ -219,6 +219,15 @@ func normalizeDiscordYouTubeLiveNotificationLimit(value int) int {
 }
 
 func (s MariaDBStreamStore) TransitionStreamStatusAndEnqueueDiscordYouTubeLiveNotification(ctx context.Context, streamID, expectedStatus, status string, notification DiscordYouTubeLiveNotification) (Stream, DiscordYouTubeLiveNotification, bool, error) {
+	return s.transitionPreparedStartNotification(ctx, streamID, expectedStatus, status, notification, nil)
+}
+func (s MariaDBStreamStore) TransitionClaimedStartAndEnqueueDiscordYouTubeLiveNotification(ctx context.Context, claim StreamStartOwnershipClaim, notification DiscordYouTubeLiveNotification) (Stream, DiscordYouTubeLiveNotification, bool, error) {
+	if claim.Archive.RunID == "" || claim.Archive.StartedAt == nil {
+		return Stream{}, DiscordYouTubeLiveNotification{}, false, ErrServiceAssignmentConflict
+	}
+	return s.transitionPreparedStartNotification(ctx, claim.StreamID, "starting", "live", notification, &claim)
+}
+func (s MariaDBStreamStore) transitionPreparedStartNotification(ctx context.Context, streamID, expectedStatus, status string, notification DiscordYouTubeLiveNotification, claim *StreamStartOwnershipClaim) (Stream, DiscordYouTubeLiveNotification, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return Stream{}, DiscordYouTubeLiveNotification{}, false, err
 	}
@@ -233,6 +242,45 @@ func (s MariaDBStreamStore) TransitionStreamStatusAndEnqueueDiscordYouTubeLiveNo
 		return Stream{}, DiscordYouTubeLiveNotification{}, false, err
 	}
 	defer tx.Rollback()
+	if claim != nil {
+		if _, err := lockMariaDBStreamsSorted(ctx, tx, []string{claim.StreamID}); err != nil {
+			return Stream{}, DiscordYouTubeLiveNotification{}, false, err
+		}
+		ids := make([]string, 0, len(claim.Assignments))
+		for _, a := range claim.Assignments {
+			ids = append(ids, a.ServiceID)
+		}
+		services, err := lockMariaDBServicesSorted(ctx, tx, ids)
+		if err != nil {
+			return Stream{}, DiscordYouTubeLiveNotification{}, false, err
+		}
+		claims := append([]StreamStartAssignmentClaim(nil), claim.Assignments...)
+		sort.Slice(claims, func(i, j int) bool { return claims[i].AssignmentID < claims[j].AssignmentID })
+		for _, a := range claims {
+			var row mariaDBAssignmentRow
+			err = tx.QueryRowContext(ctx, `SELECT id, stream_id, service_id, service_type, assignment_role, assigned_at FROM stream_service_assignments WHERE id = ? FOR UPDATE`, a.AssignmentID).Scan(&row.ID, &row.StreamID, &row.ServiceID, &row.ServiceType, &row.AssignmentRole, &row.AssignedAt)
+			if err != nil || row.StreamID != claim.StreamID || row.ServiceID != a.ServiceID || row.ServiceType != a.ServiceType || normalizeAssignmentRole(row.AssignmentRole) != normalizeAssignmentRole(a.Role) {
+				return Stream{}, DiscordYouTubeLiveNotification{}, false, ErrServiceAssignmentConflict
+			}
+			service, ok := services[a.ServiceID]
+			if !ok || service.CurrentStreamID != claim.StreamID {
+				return Stream{}, DiscordYouTubeLiveNotification{}, false, ErrServiceAssignmentConflict
+			}
+			owner, role, e := consistentMariaDBServiceAssignment(ctx, tx, service)
+			if e != nil || owner != claim.StreamID || role != normalizeAssignmentRole(a.Role) {
+				return Stream{}, DiscordYouTubeLiveNotification{}, false, ErrServiceAssignmentConflict
+			}
+		}
+		state, err := mariaDBStreamAssignmentProtectionAfterLocks(ctx, tx, claim.StreamID)
+		if err != nil {
+			return Stream{}, DiscordYouTubeLiveNotification{}, false, err
+		}
+		stream := state.Stream
+		if stream.Status != "starting" || streamStartOwnershipIdentity(stream) != claim.StreamIdentity || !stream.UpdatedAt.Equal(claim.StreamUpdatedAt) || !archiveAuthorityMatchesClaim(stream, claim.Archive) {
+			return Stream{}, DiscordYouTubeLiveNotification{}, false, ErrServiceAssignmentConflict
+		}
+	}
+
 	result, err := tx.ExecContext(ctx, `UPDATE streams SET status = ?, updated_at = ? WHERE id = ? AND LOWER(TRIM(status)) = LOWER(TRIM(?))`, status, now, notification.StreamID, expectedStatus)
 	if err != nil {
 		return Stream{}, DiscordYouTubeLiveNotification{}, false, err
@@ -605,6 +653,15 @@ func scanDiscordYouTubeLiveNotification(scanner discordYouTubeLiveNotificationSc
 }
 
 func (s *MemoryStreamStore) TransitionStreamStatusAndEnqueueDiscordYouTubeLiveNotification(ctx context.Context, streamID, expectedStatus, status string, notification DiscordYouTubeLiveNotification) (Stream, DiscordYouTubeLiveNotification, bool, error) {
+	return s.transitionPreparedStartNotification(ctx, streamID, expectedStatus, status, notification, nil)
+}
+func (s *MemoryStreamStore) TransitionClaimedStartAndEnqueueDiscordYouTubeLiveNotification(ctx context.Context, claim StreamStartOwnershipClaim, notification DiscordYouTubeLiveNotification) (Stream, DiscordYouTubeLiveNotification, bool, error) {
+	if claim.Archive.RunID == "" || claim.Archive.StartedAt == nil {
+		return Stream{}, DiscordYouTubeLiveNotification{}, false, ErrServiceAssignmentConflict
+	}
+	return s.transitionPreparedStartNotification(ctx, claim.StreamID, "starting", "live", notification, &claim)
+}
+func (s *MemoryStreamStore) transitionPreparedStartNotification(ctx context.Context, streamID, expectedStatus, status string, notification DiscordYouTubeLiveNotification, claim *StreamStartOwnershipClaim) (Stream, DiscordYouTubeLiveNotification, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return Stream{}, DiscordYouTubeLiveNotification{}, false, err
 	}
@@ -614,6 +671,13 @@ func (s *MemoryStreamStore) TransitionStreamStatusAndEnqueueDiscordYouTubeLiveNo
 	if err != nil {
 		return Stream{}, DiscordYouTubeLiveNotification{}, false, err
 	}
+	if claim != nil {
+		if s.serviceAssignmentGuard == nil {
+			return Stream{}, DiscordYouTubeLiveNotification{}, false, ErrServiceAssignmentGuardUnavailable
+		}
+		s.serviceAssignmentGuard.mu.Lock()
+		defer s.serviceAssignmentGuard.mu.Unlock()
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	stream, ok := s.streams[notification.StreamID]
@@ -622,6 +686,12 @@ func (s *MemoryStreamStore) TransitionStreamStatusAndEnqueueDiscordYouTubeLiveNo
 	}
 	if !strings.EqualFold(strings.TrimSpace(stream.Status), strings.TrimSpace(expectedStatus)) {
 		return stream, DiscordYouTubeLiveNotification{}, false, nil
+	}
+	if claim != nil {
+		_, current, err := memoryClaimedPrimaryAssignments(s.serviceAssignmentGuard, claim.StreamID)
+		if err != nil || !startAssignmentClaimsEqual(current, claim.Assignments) || stream.Status != "starting" || streamStartOwnershipIdentity(stream) != claim.StreamIdentity || !stream.UpdatedAt.Equal(claim.StreamUpdatedAt) || !archiveAuthorityMatchesClaim(stream, claim.Archive) {
+			return Stream{}, DiscordYouTubeLiveNotification{}, false, ErrServiceAssignmentConflict
+		}
 	}
 	if s.discordYouTubeLiveNotifications == nil {
 		s.discordYouTubeLiveNotifications = map[string]DiscordYouTubeLiveNotification{}

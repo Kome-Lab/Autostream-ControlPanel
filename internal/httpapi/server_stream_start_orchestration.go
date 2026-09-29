@@ -17,6 +17,9 @@ func (s *Server) startStream(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) startStreamWithMaterialization(w http.ResponseWriter, r *http.Request, materialization *streamStartMaterialization) {
+	transactionContext, cancelTransaction := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancelTransaction()
+	r = r.WithContext(transactionContext)
 	unlockLifecycle := s.lockStreamLifecycle(r.PathValue("id"))
 	defer unlockLifecycle()
 
@@ -241,7 +244,10 @@ func (s *Server) startStreamWithMaterialization(w http.ResponseWriter, r *http.R
 		StreamID: stream.ID, ExpectedStatus: stream.Status, ExpectedStreamUpdatedAt: stream.UpdatedAt,
 		ExpectedPrimaryAssignments: primaryAssignments,
 		MaterializeServiceID:       claimMaterializeServiceID, MaterializeActorUserID: claimMaterializeActorUserID,
-		ArchiveEnabled: strings.TrimSpace(body.ArchiveProfileID) != "", ArchiveStartedAt: time.Now().UTC(),
+		// The prepared start also needs the existing unique run fence when no
+		// archive profile is selected. Profile selection still controls archive
+		// obligations; this flag allocates identity only in ClaimStreamStart.
+		ArchiveEnabled: strings.TrimSpace(body.ArchiveProfileID) != "" || servicecall.WorkerVideoCapabilitiesEnabled(primaryAssignments), ArchiveStartedAt: time.Now().UTC(),
 	})
 	if err != nil {
 		current := currentFromContext(r.Context())
@@ -362,7 +368,16 @@ func (s *Server) startStreamWithMaterialization(w http.ResponseWriter, r *http.R
 			return
 		}
 	}
+	if servicecall.WorkerVideoCapabilitiesEnabled(primaryAssignments) {
+		body.StartPreparation = &servicecall.StartPreparationControl{OwnershipClaim: &claimedStart.OwnershipClaim}
+		body.StartPreparation.CheckClaim = func(ctx context.Context) bool { return s.startPreparationClaimCurrent(ctx, claimedStart) }
+	}
 	results := s.dispatcher.Start(r.Context(), stream, primaryAssignments, body)
+	if body.StartPreparation != nil {
+		s.finishPreparedStreamStart(w, r, claimedStart, body, results, relayStaticStartClaimed)
+		return
+	}
+
 	results = sanitizeDispatchResults(results)
 	if hasDispatchFailure(results) {
 		failed, transitioned, transitionErr := claimStore.TransitionClaimedStreamStart(r.Context(), claimedStart.OwnershipClaim, "failed")

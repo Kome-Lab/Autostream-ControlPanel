@@ -162,6 +162,9 @@ func (c Client) StartReadinessIssues(services []store.RegisteredService, req Sta
 			Message:     serviceURLMessage(err),
 		})
 	}
+	if issue, missing := startPreparationCapabilityIssue(services); missing {
+		issues = append(issues, issue)
+	}
 	return issues
 }
 
@@ -196,6 +199,12 @@ func (c Client) Start(ctx context.Context, stream store.Stream, services []store
 	if strings.TrimSpace(req.ArchiveProfileID) != "" && (strings.TrimSpace(req.ArchiveRunID) == "" || req.ArchiveStartedAt.IsZero()) {
 		encoder := firstService(ordered, "encoder_recorder")
 		return []DispatchResult{{ServiceID: encoder.ServiceID, ServiceType: "encoder_recorder", Code: "archive_run_authority_unavailable", FailurePhase: "pre_dispatch", Error: "archive run id and start time are required"}}
+	}
+	if issue, missing := startPreparationCapabilityIssue(ordered); missing {
+		return []DispatchResult{{ServiceID: issue.ServiceID, ServiceType: issue.ServiceType, Code: issue.Code, FailurePhase: "pre_dispatch", Error: issue.Message}}
+	}
+	if workerVideoCapabilitiesEnabled(ordered) {
+		return c.startPrepared(ctx, stream, ordered, req)
 	}
 	results := make([]DispatchResult, 0, len(ordered))
 	encoderURL := firstServiceURL(ordered, "encoder_recorder")

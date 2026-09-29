@@ -18,7 +18,7 @@ require (
 	google.golang.org/protobuf v1.36.12
 )
 
-replace github.com/example/autostream-contracts => github.com/Kome-Lab/Autostream-Contracts v1.2.12-0.20260912235758-1550fab9220f
+replace github.com/example/autostream-contracts => github.com/Kome-Lab/Autostream-Contracts v1.2.12-0.20260929140016-7edb888d585e
 
 require (
 	cloud.google.com/go/auth v0.23.0 // indirect

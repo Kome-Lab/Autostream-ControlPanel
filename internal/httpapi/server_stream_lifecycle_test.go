@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/example/autostream-control-panel/internal/servicecall"
 	"github.com/example/autostream-control-panel/internal/store"
+	"github.com/example/autostream-control-panel/internal/videocover"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -131,6 +132,12 @@ func TestStreamLifecycleEndpoints(t *testing.T) {
 }
 
 func TestStreamStartPersistsNegotiatedWorkerVideoOverlayBurnIn(t *testing.T) {
+	for _, archiveEnabled := range []bool{false, true} {
+		t.Run(fmt.Sprint("archive=", archiveEnabled), func(t *testing.T) { testPreparedStartPersistsBurnIn(t, archiveEnabled) })
+	}
+}
+
+func testPreparedStartPersistsBurnIn(t *testing.T, archiveEnabled bool) {
 	auth := store.NewMemoryAuthStore()
 	if err := auth.AddUser(store.User{Username: "operator", Roles: []string{"stream_operator"}}, "correct horse battery", []string{"streams.start"}); err != nil {
 		t.Fatal(err)
@@ -142,18 +149,26 @@ func TestStreamStartPersistsNegotiatedWorkerVideoOverlayBurnIn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	archiveProfile, err := profiles.CreateProfile(t.Context(), store.ProfileArchive, "local archive", map[string]any{"enabled": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	archiveID := ""
+	if archiveEnabled {
+		archiveID = archiveProfile.ID
+	}
 	stream, err := streams.CreateStream(t.Context(), "Worker scene")
 	if err != nil {
 		t.Fatal(err)
 	}
 	stream, err = streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{
-		DiscordConfigID: discord.ID, EncoderProfileID: encoderProfile.ID,
+		DiscordConfigID: discord.ID, EncoderProfileID: encoderProfile.ID, ArchiveProfileID: archiveID,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, registration := range []store.ServiceRegistration{
-		{ServiceID: "encoder_recorder-01", ServiceType: "encoder_recorder", ServiceName: "encoder", PublicURL: "https://encoder.example.com", Capabilities: map[string]any{"output_relay_mode": "direct", "worker_frame_ingest_mjpeg_srt": true}},
+		{ServiceID: "encoder_recorder-01", ServiceType: "encoder_recorder", ServiceName: "encoder", PublicURL: "https://encoder.example.com", Capabilities: map[string]any{"output_relay_mode": "direct", "worker_frame_ingest_mjpeg_srt": true, "stream_start_prepare_commit_v2": true, "live_video_cover_v1": true}},
 		{ServiceID: "worker-01", ServiceType: "worker", ServiceName: "worker", PublicURL: "https://worker.example.com", Capabilities: map[string]any{"scene_frames_mjpeg_srt": true}},
 		{ServiceID: "discord_bot-01", ServiceType: "discord_bot", ServiceName: "bot", PublicURL: "https://bot.example.com"},
 	} {
@@ -166,8 +181,8 @@ func TestStreamStartPersistsNegotiatedWorkerVideoOverlayBurnIn(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	dispatcher := &fakeServiceDispatcher{}
-	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), withManualDiscordTargetForTest(t, streams, stream.ID, "1001", "1002", "1003"), WithServiceDispatcher(dispatcher))
+	dispatcher := &preparedStartPersistenceDispatcher{}
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), withManualDiscordTargetForTest(t, streams, stream.ID, "1001", "1002", "1003"), WithServiceDispatcher(dispatcher), WithVideoCoverRepository(videocover.NewMemoryRepository()))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 	req := httptest.NewRequest(http.MethodPost, "/streams/"+stream.ID+"/start", nil)
 	req.AddCookie(cookie)
@@ -176,6 +191,9 @@ func TestStreamStartPersistsNegotiatedWorkerVideoOverlayBurnIn(t *testing.T) {
 	handler.ServeHTTP(res, req)
 	if res.Code != http.StatusOK {
 		t.Fatalf("start status=%d body=%s", res.Code, res.Body.String())
+	}
+	if dispatcher.startRequest.ArchiveRunID == "" || dispatcher.startRequest.ArchiveStartedAt.IsZero() || dispatcher.startRequest.ArchiveProfileID != archiveID {
+		t.Fatal("managed run identity or archive selection changed")
 	}
 	runtime, err := streams.GetStreamMediaRuntime(t.Context(), stream.ID)
 	if err != nil || !runtime.VideoOverlayBurnIn {

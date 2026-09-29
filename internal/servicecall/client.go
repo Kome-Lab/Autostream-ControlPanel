@@ -34,14 +34,15 @@ type Client struct {
 }
 
 type StartRequest struct {
-	DiscordConfigID            string `json:"discord_config_id,omitempty"`
-	DiscordGuildID             string `json:"-"`
-	DiscordVoiceChannelID      string `json:"-"`
-	DiscordTextChannelID       string `json:"-"`
-	EncoderInputURL            string `json:"encoder_input_url,omitempty"`
-	EncoderRTMPURL             string `json:"encoder_rtmp_url,omitempty"`
-	EncoderStreamKeySecretName string `json:"-"`
-	EncoderProfileID           string `json:"encoder_profile_id,omitempty"`
+	StartPreparation           *StartPreparationControl `json:"-"`
+	DiscordConfigID            string                   `json:"discord_config_id,omitempty"`
+	DiscordGuildID             string                   `json:"-"`
+	DiscordVoiceChannelID      string                   `json:"-"`
+	DiscordTextChannelID       string                   `json:"-"`
+	EncoderInputURL            string                   `json:"encoder_input_url,omitempty"`
+	EncoderRTMPURL             string                   `json:"encoder_rtmp_url,omitempty"`
+	EncoderStreamKeySecretName string                   `json:"-"`
+	EncoderProfileID           string                   `json:"encoder_profile_id,omitempty"`
 	// EncoderVideoWidth/Height/FPS are resolved from EncoderProfileID by the
 	// Control Panel. They are internal dispatch inputs, never operator-supplied
 	// fields, and let a negotiated Worker scene match the selected Encoder

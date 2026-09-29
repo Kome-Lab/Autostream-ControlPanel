@@ -15,6 +15,9 @@ func (s *Server) runtimeSecretAllowedForService(ctx context.Context, service sto
 	if allowed, err := s.runtimeYouTubeStreamSecretAllowed(ctx, service, secretName, streamID); err != nil || allowed {
 		return allowed, err
 	}
+	if allowed, err := s.runtimeSelectedYouTubeOutputSecretAllowed(ctx, service, secretName, streamID); err != nil || allowed {
+		return allowed, err
+	}
 	kinds := runtimeProfileKindsForService(service.ServiceType)
 	for _, kind := range kinds {
 		items, err := s.profiles.ListProfiles(ctx, kind)

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"github.com/example/autostream-control-panel/internal/servicecall"
 	"github.com/example/autostream-control-panel/internal/store"
+	"log"
 	"net/http"
 	"strings"
 )
@@ -19,7 +20,30 @@ func (s *Server) completeStreamStart(w http.ResponseWriter, r *http.Request, str
 		notificationQueued *store.DiscordYouTubeLiveNotification
 		outboxUnavailable  bool
 	)
-	if notificationRequested {
+	if req.StartPreparation != nil && req.StartPreparation.OwnershipClaim != nil {
+		claim := *req.StartPreparation.OwnershipClaim
+		if notificationRequested {
+			outbox, ok := s.streams.(interface {
+				TransitionClaimedStartAndEnqueueDiscordYouTubeLiveNotification(context.Context, store.StreamStartOwnershipClaim, store.DiscordYouTubeLiveNotification) (store.Stream, store.DiscordYouTubeLiveNotification, bool, error)
+			})
+			if !ok {
+				err = store.ErrServiceAssignmentGuardUnavailable
+			} else {
+				var queued store.DiscordYouTubeLiveNotification
+				liveStream, queued, transitioned, err = outbox.TransitionClaimedStartAndEnqueueDiscordYouTubeLiveNotification(r.Context(), claim, queuedNotification)
+				if transitioned {
+					notificationQueued = &queued
+				}
+			}
+		} else {
+			liveStream, transitioned, err = s.streams.(store.StreamStartClaimStore).TransitionClaimedStreamStart(r.Context(), claim, "live")
+		}
+		if err != nil || !transitioned {
+			claimed := store.ClaimedStreamStart{Stream: stream, PrimaryAssignments: assignments, OwnershipClaim: claim}
+			s.failPreparedStreamStart(w, r, claimed, req, dispatch, configString(req.YouTubeRuntime, "output_mode") == "live_api_relay_static", "start_preparation_final_claim_failed")
+			return
+		}
+	} else if notificationRequested {
 		if outbox, ok := s.streams.(store.StreamDiscordYouTubeLiveNotificationStore); ok {
 			var queued store.DiscordYouTubeLiveNotification
 			liveStream, queued, transitioned, err = outbox.TransitionStreamStatusAndEnqueueDiscordYouTubeLiveNotification(r.Context(), stream.ID, "starting", "live", queuedNotification)
@@ -53,6 +77,9 @@ func (s *Server) completeStreamStart(w http.ResponseWriter, r *http.Request, str
 		return
 	}
 
+	if req.StartPreparation != nil {
+		log.Printf("cp start: event=final_live stream_id=%s start_id=%s job_generation=%d", stream.ID, req.StartPreparation.StartID, req.StartPreparation.Identity.JobGeneration)
+	}
 	current := currentFromContext(r.Context())
 	metadata := map[string]any{"status": "live", "dispatch": dispatch}
 	response := map[string]any{"stream": liveStream, "dispatch": dispatch}

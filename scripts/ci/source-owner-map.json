@@ -1700,7 +1700,7 @@
       },
       {
         "path": "internal/httpapi/server_stream_lifecycle_test.go",
-        "sha256": "5d0df43ff6e6900583f5ca6370fba8a1df8bb6acf0e1a1e46565139a0be12f6f",
+        "sha256": "96e1956b79214b384adbada9c9f855de56ece519c4fe58095c882b6e53862ee3",
         "symbols": [
           "TestApplyEncoderVideoProfileRejectsUnsupportedWorkerSceneGeometry",
           "TestStartStreamCompensatesPartialDispatchFailure",
@@ -2806,7 +2806,7 @@
     "destinations": [
       {
         "path": "internal/servicecall/client.go",
-        "sha256": "ecf5ee865ea4e59c576ea4279c48f22ac3626c25e76d618e513904653e86dc70",
+        "sha256": "6479a60c491e491d95efad2bb82b9a71f3c40a40d1b5f5ac2876afb1fc6b8283",
         "symbols": [
           "ArchiveArtifactDownloadResult",
           "AudioStatusResult",
@@ -2923,7 +2923,7 @@
       },
       {
         "path": "internal/servicecall/client_start_orchestration.go",
-        "sha256": "ad6b305f022a98f60b6233e6cc627f792574b2d0f81732a4102513c88dd13b21",
+        "sha256": "a994999c8c4ae5db13b99f2bfb575f722beaa9680eedf1e7bcecdd7709cdef6d",
         "symbols": [
           "AudioBridgeStatus",
           "Client.Enabled",
@@ -3324,7 +3324,7 @@
       },
       {
         "path": "internal/servicecall/client_worker_video_test.go",
-        "sha256": "1032eb5d4cede6555ff4e461841e7433c610da3cad12db8c922f1d76a505eb5a",
+        "sha256": "b534825b402ea42fd476c9ea4ea079f3403611733e8cceb72f111e2651c3868f",
         "symbols": [
           "TestStartNegotiatedWorkerVideoStopsBeforeBotWhenWorkerRejectsRoute",
           "TestStartNegotiatesWorkerVideoIngestWithoutLeakingCredential",
@@ -4512,7 +4512,7 @@
       },
       {
         "path": "internal/httpapi/server_stream_start_completion.go",
-        "sha256": "74971278896e809d13ccaa796cde07b27a5c1d551ded39db561c95d8d2a3533a",
+        "sha256": "9eb0027f3c2e450e17ac317217d79057507fc373b0d30fe424b9035519d92103",
         "symbols": [
           "*Server.applyDiscordConfig",
           "*Server.compensateSupersededStreamStart",
@@ -4526,7 +4526,7 @@
       },
       {
         "path": "internal/httpapi/server_stream_start_orchestration.go",
-        "sha256": "0352e1aec506d5131568771b1238ec976929cbf4424cb3e35b5b6b24ec229ce1",
+        "sha256": "b194022fdfa43c3129243b932d912f5b1b1bf3507c1b5f848361f1531b636ea1",
         "symbols": [
           "*Server.startStream",
           "*Server.startStreamWithMaterialization"
