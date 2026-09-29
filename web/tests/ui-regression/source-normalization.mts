@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { inverseReleaseAssembly, releaseAssemblyBase, releaseAssemblyPaths } from "./release-assembly-deltas.mts";
 
 type Replacement = { position: number; count: number; before: string; after: string };
 type Mapping = { oldPath: string; newPath: string; acceptedSha256: string; currentSha256: string; replacements: Replacement[] };
@@ -44,6 +45,7 @@ export function inverseNormalization(row: Mapping, original: Buffer, current: Bu
     forward = forward.slice(0, at) + change.after + forward.slice(at + change.before.length);
     end = change.position + change.before.length; offset += change.after.length - change.before.length;
   }
+  if (releaseAssemblyPaths.includes(row.newPath)) current = inverseReleaseAssembly(row.newPath, Buffer.from(forward), current);
   assert.deepEqual(current, Buffer.from(forward), "normalization permits only exact specified name edits");
   assert.equal(hash(current), row.currentSha256, "normalization current raw hash mismatch");
   let inverse = current.toString("utf8");
@@ -77,7 +79,12 @@ export function createNormalizedReader(root: string, io: SourceIO = {
       return bytes;
     }
     const row = manifest.currentMappings.find(item => item.oldPath === path);
-    if (!row) return raw(path);
+    if (!row) {
+      const current = raw(path);
+      return releaseAssemblyPaths.includes(path)
+        ? inverseReleaseAssembly(path, object(releaseAssemblyBase, path), current)
+        : current;
+    }
     if (row.oldPath !== row.newPath) assert.equal(io.exists(row.oldPath), false, "obsolete current alias must not remain");
     return inverseNormalization(row, object(manifest.acceptedCommit, row.oldPath), raw(row.newPath));
   };

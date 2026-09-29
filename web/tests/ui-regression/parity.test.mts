@@ -5,6 +5,7 @@ import { readdirSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import "./release-assembly-deltas.test.mts";
 import ts from "typescript";
 import { createNormalizedReader, assertNormalizationManifest, inverseNormalization } from "./source-normalization.mts";
 import { approvedProtectedPaths, assertApprovedManifest, assertProtectedFixture, assertApprovedSourceDelta, assertRunnerTypeDelta, assertBrowserOperationSource } from "./approved-source-delta.mts";
