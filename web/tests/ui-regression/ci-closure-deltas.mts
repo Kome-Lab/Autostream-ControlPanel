@@ -28,7 +28,7 @@ const records = [
   {
     "path": "web/tests/ui-browser-account-scenarios.mts",
     "beforeSha256": "1ce83295dc3b4d18e3d57ceae4c3ea5541bbf2a896a985ca9fe77ab90e02fb8b",
-    "afterSha256": "b71e895a18599d0a05f82765b7c5ec27b5915713c7c9344e2c50df27ed81b90b"
+    "afterSha256": "8adba739f8d3b35cbfa962474a271fb5be187b41c802168a9f717200ef11339d"
   }
 ] as const;
 export const ciClosurePaths: readonly string[] = records.map(row => row.path);

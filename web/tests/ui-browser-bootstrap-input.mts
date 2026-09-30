@@ -56,6 +56,14 @@ export async function readBootstrapWitness(browser: BrowserHarness) {
 
 export async function withBootstrapInput<T>(browser: BrowserHarness, url: string, mirror: string, callback: () => Promise<T>): Promise<T> {
   const remove = await installBootstrapInput(browser, url, mirror);
+  let failed = false, primary: unknown;
   try { return await callback(); }
-  finally { await remove(); }
+  catch (error) { failed = true; primary = error; throw error; }
+  finally {
+    try { await remove(); }
+    catch (error) {
+      if (failed) throw new AggregateError([primary, error], "Bootstrap observation and cleanup failed", { cause: primary });
+      throw error;
+    }
+  }
 }

@@ -13,7 +13,7 @@ export async function runAccountAppearanceScenario(t: TestContext, rawBrowser: B
   const diagnostic=accountAppearanceDiagnostics(rawBrowser,()=>fixture.uiPreferenceMethods);
   const browser=diagnostic.browser;
   try {
-    await t.test("Account appearance persists 12 themes and 3 modes with DB fallback and save rollback", async () => {
+    await t.test("Account appearance persists 12 themes and 3 modes with DB fallback and save rollback", async (child) => {
 		const preferenceRequestCount = (method: "GET" | "PUT") => fixture.uiPreferenceMethods.filter((value) => value === method).length;
 		const waitForPreferenceSettlement = async (method: "GET" | "PUT", minimumRequests: number) => {
 			assert.ok(minimumRequests > 0, "settlement needs an observed request phase");
@@ -60,18 +60,29 @@ export async function runAccountAppearanceScenario(t: TestContext, rawBrowser: B
     await setStoredDisplay(browser, "ja", "light");
     const bootstrapURL = `${server.baseUrl}/admin/account/`;
     const mirror = JSON.stringify({ theme_id: "cyan", color_mode: "light" });
-    const removeBootstrapInput = await installBootstrapInput(browser, bootstrapURL, mirror);
-    t.after(async () => { preferenceRelease.resolve(); await removeBootstrapInput(); });
+    let removeBootstrapInput: (() => Promise<void>) | undefined = undefined;
+    let bootstrapCleanupStarted = false;
+    const cleanupBootstrap = async () => {
+      if (bootstrapCleanupStarted) return;
+      bootstrapCleanupStarted = true;
+      preferenceRelease.resolve();
+      try { await removeBootstrapInput?.(); }
+      catch (error) { await diagnostic.bootstrapCleanupFailed(error); }
+    };
+    child.after(cleanupBootstrap);
+    await diagnostic.bootstrap("before-navigate");
+    removeBootstrapInput = await installBootstrapInput(browser, bootstrapURL, mirror);
     await browser.navigate(bootstrapURL);
     try {
+      await diagnostic.bootstrap("after-navigate");
       const witness = await readBootstrapWitness(browser);
       assertBootstrapWitness(witness, bootstrapURL, mirror, "cyan", "light");
-      t.diagnostic(`ACCOUNT_BOOTSTRAP_BEFORE_HYDRATION ${JSON.stringify(witness)}`);
+      child.diagnostic(`ACCOUNT_BOOTSTRAP_BEFORE_HYDRATION ${JSON.stringify(witness)}`);
       assert.equal(browser.responses.get("/account/preferences/ui") || 0, preferenceResponsesBefore, "DB response escaped its explicit barrier");
-      await diagnostic.bootstrap("after-navigate");
+    } catch (error) {
+      await diagnostic.failed(error);
     } finally {
-      preferenceRelease.resolve();
-      await removeBootstrapInput();
+      await cleanupBootstrap();
     }
 		diagnostic.bootstrapComplete();
 		await browser.waitFor(
@@ -284,7 +295,7 @@ export function accountAppearanceDiagnostics(browser: BrowserHarness, methods:()
   const observed=new Proxy(browser,{get(target,property){
     const value:unknown=Reflect.get(target,property,target);
     if(typeof value!=="function")return value;
-    if(!["waitFor","waitForRequestHandlersIdle","reload","evaluate","clickAt","pressKey"].includes(String(property)))return value.bind(target);
+     if(!["waitFor","waitForRequestHandlersIdle","reload","evaluate","clickAt","pressKey","navigate","installNewDocumentScript"].includes(String(property)))return value.bind(target);
     return (...args:unknown[])=>{
       const filter=args[0];
       if(property==="waitForRequestHandlersIdle"&&filter&&typeof filter==="object"&&"pathname" in filter&&filter.pathname==="/account/preferences/ui"&&"method" in filter&&(filter.method==="GET"||filter.method==="PUT")){
@@ -301,6 +312,8 @@ export function accountAppearanceDiagnostics(browser: BrowserHarness, methods:()
       try{return Promise.resolve(Reflect.apply(value,target,args)).catch(failed);}catch(error){return failed(error);}
     };
   }});
-  return {browser:observed,observe,bootstrap,bootstrapComplete:()=>{phase=undefined;},failed,dispose:async()=>{try{await browser.evaluate(accountAppearancePointerDispose);}catch(error){if(reported)throw new AggregateError([reportedFailure,error],"Account diagnostic cleanup failed",{cause:reportedFailure});throw error;}},settled:settle,
+  return {browser:observed,observe,bootstrap,bootstrapComplete:()=>{phase=undefined;},failed,
+    bootstrapCleanupFailed:async(error:unknown):Promise<never>=>{if(reported)throw new AggregateError([reportedFailure,error],"Account bootstrap cleanup failed",{cause:reportedFailure});return failed(error);},
+    dispose:async()=>{try{await browser.evaluate(accountAppearancePointerDispose);}catch(error){if(reported)throw new AggregateError([reportedFailure,error],"Account diagnostic cleanup failed",{cause:reportedFailure});throw error;}},settled:settle,
     finish:async()=>{if(diagnosticErrors.length)await failed(new AggregateError(diagnosticErrors,"Account diagnostic observation failed"));}};
 }
