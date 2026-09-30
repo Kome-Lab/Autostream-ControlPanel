@@ -1,0 +1,99 @@
+{
+  "schema_version": 1,
+  "purpose": "PUBLISH_ORIGINAL_FAILED_RUN_ARTIFACT_WITHOUT_REBUILD",
+  "repository": "Kome-Lab/Autostream-ControlPanel",
+  "release_tag": "v2.0.0",
+  "source_commit": "0315845e3af01eff6b97c6164db3ddc3109b55af",
+  "source_tag_object": "a5943d2fd6d06dde38dae08299ae70ab11dd9127",
+  "original_workflow_path": ".github/workflows/release-host.yml",
+  "original_workflow_blob": "5ac364f10ec4499f7a002fe2ae66c516a6d9ceb9",
+  "original_run_id": 36754237494,
+  "original_run_attempt": 1,
+  "original_event": "push",
+  "original_ref": "refs/tags/v2.0.0",
+  "successful_build_job_id": 110020288484,
+  "original_exact_ci_run_id": 36716775255,
+  "original_exact_ci_attempt": 1,
+  "artifact": {
+    "id": 11116660449,
+    "name": "control-panel-release-v2.0.0-0315845e3af01eff6b97c6164db3ddc3109b55af",
+    "size_in_bytes": 24849925,
+    "digest": "sha256:d70f0c18ea6e3cbcb2bfcbc7ebb7da8cd2855f233211bf70e80202445d96e41f",
+    "expires_at": "2026-10-07T17:52:35Z"
+  },
+  "payload_members": [
+    {
+      "member": "SHA256SUMS",
+      "bytes": 665,
+      "sha256": "2b4c389f671255fd0e5745bd0c07176377467ac500fc604faa963289bb1b8435"
+    },
+    {
+      "member": "autostream-control-panel_v2.0.0_linux_amd64.tar.gz",
+      "bytes": 13008446,
+      "sha256": "b23ba3c0e1b1a8e1199f036fffa1ec0413a1920d51b69ddaf8562182af4e5f1a"
+    },
+    {
+      "member": "autostream-control-panel_v2.0.0_linux_amd64.tar.gz.sha256",
+      "bytes": 117,
+      "sha256": "55ac231641e0553ca44927b4fd1a08a69b4112530ef599e8c13fe0f6e71c3395"
+    },
+    {
+      "member": "autostream-control-panel_v2.0.0_linux_arm64.tar.gz",
+      "bytes": 11838334,
+      "sha256": "25295438fcc9a3d2bdd3ccf92f0005d0f93a9c63fde16b2cf566b7524fb7d0aa"
+    },
+    {
+      "member": "autostream-control-panel_v2.0.0_linux_arm64.tar.gz.sha256",
+      "bytes": 117,
+      "sha256": "337a64776112115510fe5af7302d8aae2c3892940f9601a4e795614206af5bab"
+    },
+    {
+      "member": "release-manifest.json",
+      "bytes": 946,
+      "sha256": "49159ed0bb84f1f5ff8fd6781189acb78a9f34b60580b934cf483282319e2779"
+    },
+    {
+      "member": "release-manifest.json.sha256",
+      "bytes": 88,
+      "sha256": "c67e1d5ad0d2e163ea720b54d7112cc2faf5e3c33aa46c66382e759c2921ae26"
+    }
+  ],
+  "release_manifest": {
+    "schema_version": 1,
+    "release_id": "v2.0.0",
+    "channel": "host",
+    "published_at": "2026-09-30T17:51:09Z",
+    "minimum_agent_version": "v1.7.0",
+    "components": [
+      {
+        "service": "control-panel",
+        "source_version": "v2.0.0",
+        "commit": "0315845e3af01eff6b97c6164db3ddc3109b55af",
+        "rollback_compatible": true,
+        "database_schema": "backward_compatible",
+        "artifacts": [
+          {
+            "os": "linux",
+            "arch": "amd64",
+            "name": "autostream-control-panel_v2.0.0_linux_amd64.tar.gz",
+            "size": 13008446,
+            "sha256": "b23ba3c0e1b1a8e1199f036fffa1ec0413a1920d51b69ddaf8562182af4e5f1a"
+          },
+          {
+            "os": "linux",
+            "arch": "arm64",
+            "name": "autostream-control-panel_v2.0.0_linux_arm64.tar.gz",
+            "size": 11838334,
+            "sha256": "25295438fcc9a3d2bdd3ccf92f0005d0f93a9c63fde16b2cf566b7524fb7d0aa"
+          }
+        ]
+      }
+    ]
+  },
+  "recovery_branch": "codex/release-v2-publication-recovery-095",
+  "recovery_workflow_path": ".github/workflows/release-host.yml",
+  "recovery_predicate_type": "https://github.com/Kome-Lab/Autostream-ControlPanel/attestations/release-recovery/v1",
+  "attest_action": "actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d",
+  "statement": "The recovery workflow verifies and publishes the original artifact; it does not build the application. Its certificate identity must be the actual recovery branch/commit, never spoofed as the original tag.",
+  "known_issues": "## v2.0.0 初期導入時の注意事項\n\nこの版は、対象を限定して実運用の確認を行い、後続の修正をv2.0.1以降として提供する方針です。検証済みのソース・配布物の識別と、個別本番環境での運用確認は別です。\n\n- 認可・開始手順・PNG入力・主録画の是正を含みます。一般PC上で観測された音声drop/同期課題は、実運用での影響が未確定です。初回枠で実音声と映像の同期、主録画、停止後の保存動画を確認してください。A/V同期を悪化させた音声入力順の試験変更は採用していません。\n- amd64/arm64の配布物は作成・静的確認されていますが、全本番構成のnative runtime、実Discord、systemd更新・復旧、業務データの復元が全面確認済みという意味ではありません。\n- 新しいCPとEncoderは対応する版の組合せで使用してください。切替途中の不整合な組合せでは新規配信を開始しないでください。既存配信への影響とDB/configの互換性を含めて切替・復旧点を準備してください。\n- 最初は影響を限定した枠で導入し、重要な配信・録画には従来経路や代替録画を残してください。問題時は対象範囲を止め、確保した旧版/DB/configの復旧点へ戻す方針です。Updaterの存在だけで無停止更新・DB自動rollbackが保証されるわけではありません。\n- Dockerの固定versionはv2.0.0です。公開workflowはlatestもこの版へ進めます。運用では導入対象のversionまたはdigestを確認し、未確認の自動追従で全fleetを更新しないでください。\n\n同じ公開v2.0.0の成果物を上書きせず、互換な不具合修正は別versionで追跡します。この公開は実サーバーへのdeployを実行した記録ではありません。"
+}
