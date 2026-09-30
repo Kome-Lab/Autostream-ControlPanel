@@ -28,6 +28,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          fetch-depth: 3
           persist-credentials: false
       - name: Verify fixed original artifact and prepare recovery predicate
         run: python3 -B .github/scripts/recover-release-095.py prepare --work "${RUNNER_TEMP}/recovery-095"
