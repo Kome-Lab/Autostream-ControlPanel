@@ -220,6 +220,14 @@ export class BrowserHarness {
     return Object.freeze({ pid, executable: this.browserProcess.spawnfile, profile: this.userDataDirectory, endpoint: this.socket.url });
   }
 
+  // A scoped test input/observer is removed by its original CDP registration ID.
+  async withNewDocumentScript<T>(source: string, callback: () => Promise<T>): Promise<T> {
+    const result = await this.send("Page.addScriptToEvaluateOnNewDocument", { source });
+    if (typeof result.identifier !== "string") throw new Error("new-document registration ID missing");
+    try { return await callback(); }
+    finally { await this.send("Page.removeScriptToEvaluateOnNewDocument", { identifier: result.identifier }); }
+  }
+
   async browserVersion() {
     return this.sendBrowser("Browser.getVersion");
   }

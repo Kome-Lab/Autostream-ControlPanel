@@ -164,6 +164,18 @@ func (s *MemoryStreamStore) ClaimStreamStart(ctx context.Context, request Stream
 	}
 
 	now := time.Now().UTC()
+	authority := StreamArchiveAuthority{}
+	if request.ArchiveEnabled {
+		startedAt := request.ArchiveStartedAt.UTC()
+		if startedAt.IsZero() {
+			startedAt = now
+		}
+		authority.RunID = StreamArchiveRunIDForStart(startedAt)
+		authority.StartedAt = cloneTimePtr(&startedAt)
+	}
+	if streamStartClockConflict(stream, now, authority) {
+		return ClaimedStreamStart{}, ErrServiceAssignmentConflict
+	}
 	if materialized != nil {
 		if materializePreviousKey != "" {
 			delete(services.assignments, materializePreviousKey)
@@ -180,20 +192,10 @@ func (s *MemoryStreamStore) ClaimStreamStart(ctx context.Context, request Stream
 		actual[materialized.ServiceType] = *materialized
 	}
 
-	authority := StreamArchiveAuthority{}
-	stream.ArchiveRunID = ""
-	stream.ArchiveStartedAt = nil
+	stream.ArchiveRunID = authority.RunID
+	stream.ArchiveStartedAt = cloneTimePtr(authority.StartedAt)
 	stream.ArchiveReportedAt = nil
-	if request.ArchiveEnabled {
-		startedAt := request.ArchiveStartedAt.UTC()
-		if startedAt.IsZero() {
-			startedAt = now
-		}
-		stream.ArchiveRunID = StreamArchiveRunIDForStart(startedAt)
-		stream.ArchiveStartedAt = cloneTimePtr(&startedAt)
-		authority.RunID = stream.ArchiveRunID
-		authority.StartedAt = cloneTimePtr(stream.ArchiveStartedAt)
-	}
+
 	s.artifactReports[stream.ID] = false
 	stream.Status = "starting"
 	stream.UpdatedAt = now
@@ -240,8 +242,12 @@ func (s *MemoryStreamStore) TransitionClaimedStreamStart(ctx context.Context, cl
 	if err != nil || !startAssignmentClaimsEqual(currentClaims, claim.Assignments) {
 		return stream, false, ErrServiceAssignmentConflict
 	}
+	now := time.Now().UTC()
+	if now.Before(stream.UpdatedAt) {
+		return stream, false, ErrServiceAssignmentConflict
+	}
 	stream.Status = strings.TrimSpace(status)
-	stream.UpdatedAt = time.Now().UTC()
+	stream.UpdatedAt = now
 	s.streams[stream.ID] = stream
 	return stream, true, nil
 }

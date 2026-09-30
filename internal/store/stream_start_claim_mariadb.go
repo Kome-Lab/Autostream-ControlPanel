@@ -155,9 +155,25 @@ func (s MariaDBStreamStore) ClaimStreamStart(ctx context.Context, request Stream
 		}
 	}
 
-	// streams.updated_at is DATETIME(0). Keep the returned immutable claim
+	// Migration 079 stores streams.updated_at as DATETIME(6). Keep the claim
 	// byte-for-byte equal to the value that a later transaction reads back.
-	now := time.Now().UTC().Truncate(time.Second)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	authority := StreamArchiveAuthority{}
+	archiveRunID := ""
+	var archiveStartedAt any
+	if request.ArchiveEnabled {
+		startedAt := request.ArchiveStartedAt.UTC().Truncate(time.Microsecond)
+		if startedAt.IsZero() {
+			startedAt = now
+		}
+		archiveRunID = StreamArchiveRunIDForStart(startedAt)
+		archiveStartedAt = startedAt
+		authority.RunID = archiveRunID
+		authority.StartedAt = cloneTimePtr(&startedAt)
+	}
+	if streamStartClockConflict(state.Stream, now, authority) {
+		return ClaimedStreamStart{}, ErrServiceAssignmentConflict
+	}
 	if materialized != nil {
 		if materializePreviousAssignmentID != "" {
 			if _, err := tx.ExecContext(ctx, `DELETE FROM stream_service_assignments WHERE id = ?`, materializePreviousAssignmentID); err != nil {
@@ -181,19 +197,6 @@ VALUES (?, ?, ?, ?, 'primary', NULLIF(?, ''), ?)`, assignmentID, request.StreamI
 		actual[materialized.ServiceType] = *materialized
 	}
 
-	authority := StreamArchiveAuthority{}
-	archiveRunID := ""
-	var archiveStartedAt any
-	if request.ArchiveEnabled {
-		startedAt := request.ArchiveStartedAt.UTC().Truncate(time.Microsecond)
-		if startedAt.IsZero() {
-			startedAt = now
-		}
-		archiveRunID = StreamArchiveRunIDForStart(startedAt)
-		archiveStartedAt = startedAt
-		authority.RunID = archiveRunID
-		authority.StartedAt = cloneTimePtr(&startedAt)
-	}
 	result, err := tx.ExecContext(ctx, `UPDATE streams
 SET status = 'starting', archive_run_id = ?, archive_started_at = ?, archive_reported_at = NULL, updated_at = ?
 WHERE id = ? AND status = ? AND updated_at = ? AND deleted_at IS NULL`, archiveRunID, archiveStartedAt, now, request.StreamID, lockedTarget.Status, lockedTarget.UpdatedAt)
@@ -304,8 +307,11 @@ FROM stream_service_assignments WHERE id = ? FOR UPDATE`, assignment.AssignmentI
 			return stream, false, ErrServiceAssignmentConflict
 		}
 	}
-	// streams.updated_at is DATETIME(0), unlike archive_started_at DATETIME(6).
-	now := time.Now().UTC().Truncate(time.Second)
+	// Both updated_at and archive_started_at use the existing DATETIME(6) precision.
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	if now.Before(stream.UpdatedAt) {
+		return stream, false, ErrServiceAssignmentConflict
+	}
 	result, err := tx.ExecContext(ctx, `UPDATE streams SET status = ?, updated_at = ? WHERE id = ? AND status = 'starting' AND updated_at = ?`, strings.TrimSpace(status), now, claim.StreamID, claim.StreamUpdatedAt)
 	if err != nil {
 		return Stream{}, false, err

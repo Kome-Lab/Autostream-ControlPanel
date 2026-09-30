@@ -2,7 +2,8 @@ import type { TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { BrowserHarness } from "./helpers/browser-harness.mts";
 import { type BrowserRouteFixture, currentUser } from "./ui-browser-fixture.mts";
-import { setStoredDisplay } from "./ui-browser-navigation-helpers.mts";
+import { deferred, setStoredDisplay } from "./ui-browser-navigation-helpers.mts";
+import { assertBootstrapWitness, navigateWithBootstrapInput } from "./ui-browser-bootstrap-input.mts";
 import { clickVisible } from "./ui-regression/visible-trigger.mts";
 
 
@@ -49,23 +50,25 @@ export async function runAccountAppearanceScenario(t: TestContext, rawBrowser: B
 		assert.equal(await browser.evaluate(`localStorage.getItem('autostream.theme')`), "dark", "retained migration data must not be deleted");
 		await waitForPreferenceSettlement("GET", 1);
 
-		fixture.uiPreferenceResponse = { body: { theme_id: "ocean", color_mode: "dark", revision: 4 }, delayMs: 1_200 };
+		const preferenceResponsesBefore = browser.responses.get("/account/preferences/ui") || 0;
+		const preferenceRelease = deferred();
+		fixture.uiPreferenceResponse = { body: { theme_id: "ocean", color_mode: "dark", revision: 4 }, waitUntil: preferenceRelease.promise };
     fixture.uiPreferenceWriteResponse = { body: { theme_id: "violet", color_mode: "light", revision: 5 } };
     fixture.uiPreferenceMethods = [];
 		fixture.uiPreferenceBodies = [];
     await browser.setViewport(1440, 1000);
     await setStoredDisplay(browser, "ja", "light");
-		await browser.evaluate(`localStorage.setItem('autostream.ui_preference', JSON.stringify({ theme_id: 'cyan', color_mode: 'light' })); true`);
-		await diagnostic.bootstrap("mirror-written");
-		await diagnostic.bootstrap("before-navigate");
-		await browser.navigate(`${server.baseUrl}/admin/account/`);
-		try {
-		assert.equal(
-			await diagnostic.bootstrap("after-navigate"),
-			"cyan/light",
-			"external pre-hydration bootstrap did not apply the validated local mirror before the DB response",
-		);
-		} catch (error) { await diagnostic.failed(error); }
+    const bootstrapURL = `${server.baseUrl}/admin/account/`;
+    const mirror = JSON.stringify({ theme_id: "cyan", color_mode: "light" });
+    try {
+      const witness = await navigateWithBootstrapInput(browser, bootstrapURL, mirror);
+      assertBootstrapWitness(witness, bootstrapURL, mirror, "cyan", "light");
+      t.diagnostic(`ACCOUNT_BOOTSTRAP_BEFORE_HYDRATION ${JSON.stringify(witness)}`);
+      assert.equal(browser.responses.get("/account/preferences/ui") || 0, preferenceResponsesBefore, "DB response escaped its explicit barrier");
+      await diagnostic.bootstrap("after-navigate");
+    } finally {
+      preferenceRelease.resolve();
+    }
 		diagnostic.bootstrapComplete();
 		await browser.waitFor(
       `document.documentElement.dataset.theme + '/' + document.documentElement.dataset.colorMode`,

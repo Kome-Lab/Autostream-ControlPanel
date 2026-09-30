@@ -68,6 +68,14 @@ func preparationClaimFixture(t *testing.T, maria bool) (*outputSecretFixture, st
 }
 func claimPreparationFixture(t *testing.T, f *outputSecretFixture) store.ClaimedStreamStart {
 	t.Helper()
+	claim, err := tryClaimPreparationFixture(t, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return claim
+}
+func tryClaimPreparationFixture(t *testing.T, f *outputSecretFixture) (store.ClaimedStreamStart, error) {
+	t.Helper()
 	ctx := t.Context()
 	stream, e := f.streams.GetStream(ctx, f.stream.ID)
 	if e != nil {
@@ -77,11 +85,17 @@ func claimPreparationFixture(t *testing.T, f *outputSecretFixture) store.Claimed
 	if e != nil {
 		t.Fatal(e)
 	}
-	claim, e := f.streams.(store.StreamStartClaimStore).ClaimStreamStart(ctx, store.StreamStartClaimRequest{StreamID: stream.ID, ExpectedStatus: stream.Status, ExpectedStreamUpdatedAt: stream.UpdatedAt, ExpectedPrimaryAssignments: a, ArchiveEnabled: true, ArchiveStartedAt: time.Now().UTC()})
+	startedAt := time.Now().UTC()
+	claim, e := f.streams.(store.StreamStartClaimStore).ClaimStreamStart(ctx, store.StreamStartClaimRequest{StreamID: stream.ID, ExpectedStatus: stream.Status, ExpectedStreamUpdatedAt: stream.UpdatedAt, ExpectedPrimaryAssignments: a, ArchiveEnabled: true, ArchiveStartedAt: startedAt})
 	if e != nil {
-		t.Fatal(e)
+		t.Logf("claim_attempt status=%s stored_updated_at=%s attempt_at=%s stored_after_claim_second=%t primary_assignments=%d", stream.Status, stream.UpdatedAt.Format(time.RFC3339Nano), startedAt.Format(time.RFC3339Nano), stream.UpdatedAt.After(startedAt.Truncate(time.Second)), len(a))
 	}
-	return claim
+	if e == nil {
+		if _, maria := f.streams.(store.MariaDBStreamStore); maria {
+			t.Logf("claim_precision previous_updated_at=%s accepted_updated_at=%s accepted_archive_at=%s", stream.UpdatedAt.Format(time.RFC3339Nano), claim.Stream.UpdatedAt.Format(time.RFC3339Nano), claim.ArchiveAuthority.StartedAt.Format(time.RFC3339Nano))
+		}
+	}
+	return claim, e
 }
 
 type preparationNotificationStore interface {
@@ -103,6 +117,7 @@ func TestStartPreparationClaimMemoryAndMariaDB(t *testing.T) {
 						t.Fatal("fresh real claim not recognized")
 					}
 					original := claimed.OwnershipClaim
+					successorStatus := "starting"
 					switch kind {
 					case "wrong_identity":
 						claimed.OwnershipClaim.StreamIdentity = "stale"
@@ -114,7 +129,19 @@ func TestStartPreparationClaimMemoryAndMariaDB(t *testing.T) {
 						if _, changed, e := f.streams.(store.StreamStartClaimStore).TransitionClaimedStreamStart(ctx, original, "failed"); e != nil || !changed {
 							t.Fatal(e)
 						}
-						_ = claimPreparationFixture(t, f)
+						successor, err := tryClaimPreparationFixture(t, f)
+						if errors.Is(err, store.ErrServiceAssignmentConflict) {
+							// Equal stored authority is rejected before accepting a
+							// successor. Keep checking no live/notification side effect.
+							successorStatus = "failed"
+							t.Log("successor_rejected=ambiguous_clock_conflict")
+						} else if err != nil {
+							t.Fatal(err)
+						} else {
+							if !f.handler.startPreparationClaimCurrent(ctx, successor) || f.handler.startPreparationClaimCurrent(ctx, claimed) {
+								t.Fatal("accepted successor did not fence old claim")
+							}
+						}
 					case "protected_changes":
 						guard := f.services.(store.ServiceAssignmentGuardStore)
 						ready := make(chan struct{})
@@ -157,11 +184,11 @@ func TestStartPreparationClaimMemoryAndMariaDB(t *testing.T) {
 							t.Fatalf("current owner finalization: changed=%v status=%s err=%v", changed, stream.Status, e)
 						}
 					} else {
-						if changed || e == nil {
+						if changed || (e == nil && successorStatus != "failed") {
 							t.Fatal("stale claim completed or enqueued")
 						}
 						current, e := f.streams.GetStream(ctx, f.stream.ID)
-						if e != nil || current.Status != "starting" {
+						if e != nil || current.Status != successorStatus {
 							t.Fatal("stale result changed successor", e)
 						}
 						if _, e := f.streams.(store.StreamDiscordYouTubeLiveNotificationStore).GetLatestDiscordYouTubeLiveNotification(ctx, f.stream.ID); e == nil {
