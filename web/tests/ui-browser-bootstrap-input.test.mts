@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { readFileSync } from "node:fs";
 import { BrowserHarness } from "./helpers/browser-harness.mts";
-import { bootstrapInputObserver, assertBootstrapWitness, type BootstrapWitness } from "./ui-browser-bootstrap-input.mts";
+import { withBootstrapInput, assertBootstrapWitness, type BootstrapWitness } from "./ui-browser-bootstrap-input.mts";
 
 test("Account bootstrap input, actual external application and omission negative", { timeout: 120_000 }, async t => {
   const source = readFileSync(new URL("../public/theme-bootstrap.js", import.meta.url));
@@ -30,7 +30,7 @@ test("Account bootstrap input, actual external application and omission negative
     { name: "invalid values fallback", input: JSON.stringify({ theme_id: "unknown", color_mode: "infrared" }), theme: "autostream", colorMode: "system" },
   ]) {
     await t.test(entry.name, async () => {
-      await browser.withNewDocumentScript(bootstrapInputObserver(url, entry.input), async () => {
+      await withBootstrapInput(browser, url, entry.input, async () => {
         await browser.navigate(url);
         const witness = await browser.evaluate<BootstrapWitness>("globalThis.__accountBootstrapWitness");
         assertBootstrapWitness(witness, url, entry.input, entry.theme, entry.colorMode);
@@ -40,7 +40,7 @@ test("Account bootstrap input, actual external application and omission negative
   for (const mutation of ["omitted", "unreachable"] as const) {
     await t.test(`reject actual ${mutation} bootstrap`, async () => {
       mode = mutation;
-      await browser.withNewDocumentScript(bootstrapInputObserver(url, cyan), async () => {
+      await withBootstrapInput(browser, url, cyan, async () => {
         await browser.navigate(url);
         const witness = await browser.evaluate<BootstrapWitness>("globalThis.__accountBootstrapWitness");
         assert.equal(witness.input, cyan);
@@ -49,6 +49,15 @@ test("Account bootstrap input, actual external application and omission negative
       });
     });
   }
+  await t.test("registration removed when its observation fails", async () => {
+    mode = "normal";
+    await assert.rejects(withBootstrapInput(browser, url, cyan, async () => {
+      await browser.navigate(url);
+      throw new Error("deliberate bootstrap observation failure");
+    }), /deliberate bootstrap observation failure/);
+    await browser.navigate(url);
+    assert.equal(await browser.evaluate("typeof globalThis.__accountBootstrapWitness"), "undefined");
+  });
   await t.test("one-shot registration removed by its original ID", async () => {
     mode = "normal";
     await browser.navigate(url);

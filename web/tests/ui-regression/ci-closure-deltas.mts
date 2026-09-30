@@ -23,12 +23,12 @@ const records = [
   {
     "path": "web/tests/helpers/browser-harness.mts",
     "beforeSha256": "a0c4616658594c7feb2b6f5af873374ff1d921b36cf4448b42e608e33899150a",
-    "afterSha256": "3217b57b2cf22bb9bb048779bc203c8d5d1e91f872b3d865204641b42382386a"
+    "afterSha256": "6f86a5babb7189b89a7f183ab647e5f13cbae5d9d0297ba4edebccd07edf0cdb"
   },
   {
     "path": "web/tests/ui-browser-account-scenarios.mts",
     "beforeSha256": "1ce83295dc3b4d18e3d57ceae4c3ea5541bbf2a896a985ca9fe77ab90e02fb8b",
-    "afterSha256": "77bafc13d975a8547a8283bac568ca008d92aa607c5e9d9936f2b3f0517e34cc"
+    "afterSha256": "b71e895a18599d0a05f82765b7c5ec27b5915713c7c9344e2c50df27ed81b90b"
   }
 ] as const;
 export const ciClosurePaths: readonly string[] = records.map(row => row.path);

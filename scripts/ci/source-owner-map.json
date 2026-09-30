@@ -214,7 +214,7 @@
       },
       {
         "path": "web/tests/helpers/browser-harness.mts",
-        "sha256": "3217b57b2cf22bb9bb048779bc203c8d5d1e91f872b3d865204641b42382386a",
+        "sha256": "6f86a5babb7189b89a7f183ab647e5f13cbae5d9d0297ba4edebccd07edf0cdb",
         "symbols": [
           "BrowserHarness",
           "createCommandSender",
@@ -1336,7 +1336,7 @@
     "destinations": [
       {
         "path": "web/tests/helpers/browser-harness.mts",
-        "sha256": "3217b57b2cf22bb9bb048779bc203c8d5d1e91f872b3d865204641b42382386a",
+        "sha256": "6f86a5babb7189b89a7f183ab647e5f13cbae5d9d0297ba4edebccd07edf0cdb",
         "symbols": [
           "BrowserHarness",
           "createCommandSender",
@@ -1362,7 +1362,7 @@
       },
       {
         "path": "web/tests/ui-browser-account-scenarios.mts",
-        "sha256": "77bafc13d975a8547a8283bac568ca008d92aa607c5e9d9936f2b3f0517e34cc",
+        "sha256": "b71e895a18599d0a05f82765b7c5ec27b5915713c7c9344e2c50df27ed81b90b",
         "symbols": [
           "accountAppearanceDiagnostics",
           "accountAppearancePointerStart",
@@ -5097,7 +5097,7 @@
     "destinations": [
       {
         "path": "web/tests/helpers/browser-harness.mts",
-        "sha256": "3217b57b2cf22bb9bb048779bc203c8d5d1e91f872b3d865204641b42382386a",
+        "sha256": "6f86a5babb7189b89a7f183ab647e5f13cbae5d9d0297ba4edebccd07edf0cdb",
         "symbols": [
           "BrowserHarness",
           "assertNoFatalError",
@@ -5283,7 +5283,7 @@
       },
       {
         "path": "web/tests/helpers/browser-harness.mts",
-        "sha256": "3217b57b2cf22bb9bb048779bc203c8d5d1e91f872b3d865204641b42382386a",
+        "sha256": "6f86a5babb7189b89a7f183ab647e5f13cbae5d9d0297ba4edebccd07edf0cdb",
         "symbols": [
           "BrowserHarness",
           "createCommandSender",

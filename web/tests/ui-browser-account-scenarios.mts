@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { BrowserHarness } from "./helpers/browser-harness.mts";
 import { type BrowserRouteFixture, currentUser } from "./ui-browser-fixture.mts";
 import { deferred, setStoredDisplay } from "./ui-browser-navigation-helpers.mts";
-import { assertBootstrapWitness, navigateWithBootstrapInput } from "./ui-browser-bootstrap-input.mts";
+import { assertBootstrapWitness, installBootstrapInput, readBootstrapWitness } from "./ui-browser-bootstrap-input.mts";
 import { clickVisible } from "./ui-regression/visible-trigger.mts";
 
 
@@ -60,14 +60,18 @@ export async function runAccountAppearanceScenario(t: TestContext, rawBrowser: B
     await setStoredDisplay(browser, "ja", "light");
     const bootstrapURL = `${server.baseUrl}/admin/account/`;
     const mirror = JSON.stringify({ theme_id: "cyan", color_mode: "light" });
+    const removeBootstrapInput = await installBootstrapInput(browser, bootstrapURL, mirror);
+    t.after(async () => { preferenceRelease.resolve(); await removeBootstrapInput(); });
+    await browser.navigate(bootstrapURL);
     try {
-      const witness = await navigateWithBootstrapInput(browser, bootstrapURL, mirror);
+      const witness = await readBootstrapWitness(browser);
       assertBootstrapWitness(witness, bootstrapURL, mirror, "cyan", "light");
       t.diagnostic(`ACCOUNT_BOOTSTRAP_BEFORE_HYDRATION ${JSON.stringify(witness)}`);
       assert.equal(browser.responses.get("/account/preferences/ui") || 0, preferenceResponsesBefore, "DB response escaped its explicit barrier");
       await diagnostic.bootstrap("after-navigate");
     } finally {
       preferenceRelease.resolve();
+      await removeBootstrapInput();
     }
 		diagnostic.bootstrapComplete();
 		await browser.waitFor(

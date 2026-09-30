@@ -46,9 +46,16 @@ export function assertBootstrapWitness(witness: BootstrapWitness | undefined, ur
   if (mode !== "system") assert.equal(witness.dark, mode === "dark");
 }
 
-export async function navigateWithBootstrapInput(browser: BrowserHarness, url: string, mirror: string) {
-  return browser.withNewDocumentScript(bootstrapInputObserver(url, mirror), async () => {
-    await browser.navigate(url);
-    return browser.waitFor<BootstrapWitness>("globalThis.__accountBootstrapWitness", value => value?.status === "loaded" || value?.status === "error", "external bootstrap load/error was not observed");
-  });
+export async function installBootstrapInput(browser: BrowserHarness, url: string, mirror: string) {
+  return browser.installNewDocumentScript(bootstrapInputObserver(url, mirror));
+}
+
+export async function readBootstrapWitness(browser: BrowserHarness) {
+  return browser.waitFor<BootstrapWitness>("globalThis.__accountBootstrapWitness", value => value?.status === "loaded" || value?.status === "error", "external bootstrap load/error was not observed");
+}
+
+export async function withBootstrapInput<T>(browser: BrowserHarness, url: string, mirror: string, callback: () => Promise<T>): Promise<T> {
+  const remove = await installBootstrapInput(browser, url, mirror);
+  try { return await callback(); }
+  finally { await remove(); }
 }

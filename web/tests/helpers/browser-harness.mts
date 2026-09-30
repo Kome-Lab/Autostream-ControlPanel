@@ -221,11 +221,15 @@ export class BrowserHarness {
   }
 
   // A scoped test input/observer is removed by its original CDP registration ID.
-  async withNewDocumentScript<T>(source: string, callback: () => Promise<T>): Promise<T> {
+  async installNewDocumentScript(source: string): Promise<() => Promise<void>> {
     const result = await this.send("Page.addScriptToEvaluateOnNewDocument", { source });
     if (typeof result.identifier !== "string") throw new Error("new-document registration ID missing");
-    try { return await callback(); }
-    finally { await this.send("Page.removeScriptToEvaluateOnNewDocument", { identifier: result.identifier }); }
+    let removed = false;
+    return async () => {
+      if (removed) return;
+      await this.send("Page.removeScriptToEvaluateOnNewDocument", { identifier: result.identifier });
+      removed = true;
+    };
   }
 
   async browserVersion() {
