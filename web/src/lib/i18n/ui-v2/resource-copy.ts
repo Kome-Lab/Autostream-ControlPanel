@@ -7,6 +7,7 @@ const resources: Readonly<Record<string, { title: string; description: string }>
   "/youtube/outputs": { title: "YouTube outputs", description: "Manage RTMP or YouTube Live API outputs used when a stream starts." },
   "/profiles/caption": { title: "Caption profiles", description: "Manage language, segmentation, interim results and timing. Saving and live application have separate outcomes." },
   "/profiles/overlay": { title: "Watermark profiles", description: "Manage the fixed 1920 × 1080 watermark composited over the stream." },
+  "/video-cover-presets": { title: "Video cover presets", description: "Upload and enable images to select them in a stream slot. The watermark remains visible above the cover." },
   "/profiles/archive": { title: "Recording profiles", description: "Configure recording format, retention and upload behavior." },
   "/archive/destinations": { title: "Drive destinations", description: "Manage archive destinations and their selected root folder." },
   "/integrations/oauth-providers": { title: "OAuth login providers", description: "Manage login providers. Scopes remain restricted to login." },

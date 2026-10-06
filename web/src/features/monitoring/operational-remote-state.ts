@@ -5,6 +5,13 @@ import type { Stream, WorkerNode } from "@/types/domain";
 
 export { remoteStateAllowsPositiveSummary };
 
+// A display may describe its last successful snapshot during a normal poll.
+// This does not authorize an action or assert that the pending read succeeded.
+export function remoteStateAllowsSnapshotSummary(state: RemoteState<unknown>, unknownCount: number, hasAuthority: boolean) {
+  return hasAuthority && unknownCount === 0 && (state.kind === "ready" || state.kind === "empty")
+    && (state.freshness.kind === "fresh" || state.freshness.kind === "refreshing");
+}
+
 export const operationalConsumerManifest = Object.freeze({
   dashboard: Object.freeze(["streams", "services"]),
   monitoring: Object.freeze(["services", "streams", "incidents", "diagnostics"]),

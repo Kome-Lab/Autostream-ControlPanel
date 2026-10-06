@@ -31,9 +31,12 @@ export function NodeStatusSummary({ node }: { node: WorkerNode }) {
   const uiText = useUICopy();
   const { locale } = useI18n();
   return (
-    <div className="min-w-0 max-w-48 space-y-1.5 text-sm">
+    <div className="min-w-0 max-w-80 space-y-2 text-sm">
       <NodeStateDetails node={node} />
-      <div className="text-xs font-medium">{locale === "ja" ? "Heartbeat報告: " : "Heartbeat received: "}{node.last_heartbeat_at || (locale === "ja" ? "未報告" : "Not reported")}</div>
+      <div className="text-xs">
+        <div className="font-medium">{locale === "ja" ? "Heartbeat報告" : "Heartbeat received"}</div>
+        <div className="[overflow-wrap:anywhere]">{node.last_heartbeat_at || (locale === "ja" ? "未報告" : "Not reported")}</div>
+      </div>
       <div className="text-xs text-muted-foreground">{node.configure_token_used_at ? uiText("Configure済み") : uiText("Configure未実行")}</div>
     </div>
   );

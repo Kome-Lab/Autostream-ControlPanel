@@ -132,7 +132,7 @@ test("visual settings controller revalidates authority and latches failures with
     getState: () => ({ kind: "ready", freshness: "fresh", revision: stateCalls++ < 2 ? 1 : 2, fingerprint: stateCalls < 3 ? "r1" : "r2" }),
     mutate: async () => { requests++; return {} as never; },
   });
-  assert.equal((await changed.issue({ header_title_mode: "default" })).kind, "blocked");
+  assert.equal((await changed.issue({ header_title_mode: "default" }, 1)).kind, "blocked");
   assert.equal(requests, 0);
 
   const conflict = createStreamVisualActionController({
@@ -140,11 +140,39 @@ test("visual settings controller revalidates authority and latches failures with
     getState: () => ({ kind: "ready", freshness: "fresh", revision: 4, fingerprint: "r4" }),
     mutate: async () => { requests++; throw Object.assign(new Error(), { name: "APIError", status: 409, code: "revision_conflict" }); },
   });
-  assert.equal((await conflict.issue({ header_title_mode: "default" })).kind, "failed");
-  assert.equal((await conflict.issue({ header_title_mode: "default" })).kind, "blocked");
+  assert.equal((await conflict.issue({ header_title_mode: "default" }, 4)).kind, "failed");
+  assert.equal((await conflict.issue({ header_title_mode: "default" }, 4)).kind, "blocked");
   assert.equal(requests, 1);
   conflict.reconcile();
   assert.equal(conflict.unresolved, false);
+});
+
+test("visual save never rebases an older displayed draft onto a newer cache revision", async () => {
+  let requests = 0;
+  const controller = createStreamVisualActionController({
+    getPermission: () => ({ kind: "ready", permissions: ["streams.update"] }),
+    getState: () => ({ kind: "ready", freshness: "fresh", revision: 5, fingerprint: "cache-r5" }),
+    mutate: async () => { requests++; return {} as never; },
+  });
+  assert.deepEqual(await controller.issue({ header_title_mode: "custom", header_title_value: "Draft from r4" }, 4), { kind: "blocked", reason: "authority-changed" });
+  assert.equal(requests, 0, "a cache update before React renders must not authorize the older draft");
+});
+
+test("visual save sends its fixed revision, including a new legacy default at revision zero", async () => {
+  const requests: Record<string, unknown>[] = [];
+  for (const revision of [0, 4]) {
+    const controller = createStreamVisualActionController({
+      getPermission: () => ({ kind: "ready", permissions: ["streams.update"] }),
+      getState: () => ({ kind: "ready", freshness: "fresh", revision, fingerprint: `r${revision}` }),
+      mutate: async (request) => { requests.push(request); return {} as never; },
+    });
+    assert.equal((await controller.issue({ header_title_mode: "default", expected_revision: 99 }, revision)).kind, "succeeded");
+    assert.equal(requests.at(-1)?.expected_revision, revision);
+    for (const invalid of [-1, 0.5, Number.NaN, Number.MAX_SAFE_INTEGER + 1]) {
+      assert.deepEqual(await controller.issue({ header_title_mode: "default" }, invalid), { kind: "blocked", reason: "state-unavailable" });
+    }
+  }
+  assert.equal(requests.length, 2);
 });
 
 test("Cover UI reconciles by GET only, separates desired/applied, and keeps Watermark topmost", () => {

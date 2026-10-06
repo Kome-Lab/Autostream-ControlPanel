@@ -20,6 +20,7 @@ import type { PermissionRequirement } from "../src/lib/foundation/permissions/co
 import type { Freshness, RemoteState } from "../src/lib/foundation/remote-state/contracts.ts";
 import type { DomainStatusPresentation } from "../src/lib/foundation/status/contracts.ts";
 import { assertUIFoundationContractBoundaries } from "./helpers/ui-foundation-contract-imports.mts";
+import { actionInventoryKeys, currentActionInventory, frozenActionInventory, v2ActionInventory } from "./helpers/ui-foundation-action-inventory.mts";
 
 const webRoot = fileURLToPath(new URL("..", import.meta.url));
 const fixtureRoot = join(webRoot, "tests", "fixtures");
@@ -230,6 +231,31 @@ test("frozen inventory has the exact canonical bytes, rows, keys, IDs, and waves
   });
 });
 
+test("the v2 extension uses the same typed schema and current acceptance includes all 106 actions", () => {
+  const raw = readFileSync(join(fixtureRoot, "ui-foundation-action-inventory-v2.jsonl"));
+  assert.equal(raw.length, 2_918);
+  assert.equal(createHash("sha256").update(raw).digest("hex"), "399c58edacfa31e5416c1cd77b4aa26c19cb79182391a97493f380eeffdda7b8");
+  assert.notDeepEqual([...raw.subarray(0, 3)], [0xef, 0xbb, 0xbf]);
+  assert.equal(raw.includes(0x0d), false);
+  assert.equal(raw.at(-1), 0x0a);
+  assert.notEqual(raw.at(-2), 0x0a);
+  const lines = raw.toString("utf8").slice(0, -1).split("\n");
+  assert.deepEqual(v2ActionInventory.map(({ id }) => id), ["RES-41", "RES-42", "RES-43", "RES-44", "RES-45", "RES-46"]);
+  for (const [index, row] of v2ActionInventory.entries()) {
+    assert.deepEqual(Object.keys(row), actionInventoryKeys);
+    assert.equal(JSON.stringify(row), lines[index]);
+    assert.equal(row.migrationWave, "v2");
+    assert.equal(row.userTriggered, "yes");
+  }
+  assert.equal(currentActionInventory.length, 106);
+  assert.equal(new Set(currentActionInventory.map(({ id }) => id)).size, 106);
+  assert.deepEqual(currentActionInventory.map(({ id }) => id), currentActionInventory.map(({ id }) => id).sort());
+  assert.deepEqual(currentActionInventory.filter(({ migrationWave }) => migrationWave !== "v2"), frozenActionInventory);
+  assert.deepEqual(currentActionInventory.filter(({ migrationWave }) => migrationWave === "v2"), v2ActionInventory);
+  assert.equal(currentActionInventory.filter(({ userTriggered }) => userTriggered === "yes").length, 105);
+  assert.deepEqual(currentActionInventory.filter(({ userTriggered }) => userTriggered !== "yes").map(({ id }) => id), ["STR-11"]);
+});
+
 test("excluded automatic operations are the exact six reviewed families", () => {
   const exclusions = JSON.parse(readFileSync(join(fixtureRoot, "ui-foundation-action-exclusions.json"), "utf8"));
   assert.deepEqual(exclusions, [
@@ -279,11 +305,10 @@ test("excluded automatic operations are the exact six reviewed families", () => 
     ["id", "source", "routeOrOperation", "reason"].every((key) => typeof entry[key] === "string" && entry[key] !== "")), true);
   assert.equal(exclusions.some((entry: { routeOrOperation: string }) => entry.routeOrOperation === "POST /auth/session/refresh"), true);
 
-  const inventory = readFileSync(join(fixtureRoot, "ui-foundation-action-inventory.jsonl"), "utf8")
-    .trimEnd()
-    .split("\n")
-    .map((line) => JSON.parse(line));
-  assert.equal(inventory.some((row) => row.id === "AUTH-08" && row.route === "/auth/logout"), true, "logout must remain included");
+  assert.equal(currentActionInventory.some((row) => row.id === "AUTH-08" && row.route === "/auth/logout"), true, "logout must remain included");
+  for (const row of v2ActionInventory) {
+    assert.equal(exclusions.some((entry: { routeOrOperation: string }) => entry.routeOrOperation === `${row.method} ${row.route}`), false, `${row.id} must not be excluded`);
+  }
 });
 
 test("foundation imports, ownership, syntax, and dependency graph stay pure", () => {

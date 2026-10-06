@@ -8,9 +8,10 @@ export type ResourceActionID =
   | "RES-19" | "RES-20" | "RES-21" | "RES-22" | "RES-23" | "RES-24"
   | "RES-25" | "RES-26" | "RES-27" | "RES-28" | "RES-29" | "RES-30"
   | "RES-31" | "RES-32" | "RES-33" | "RES-34" | "RES-35" | "RES-36"
-  | "RES-37" | "RES-38" | "RES-39" | "RES-40";
+  | "RES-37" | "RES-38" | "RES-39" | "RES-40" | "RES-41" | "RES-42"
+  | "RES-43" | "RES-44" | "RES-45" | "RES-46";
 
-export type ResourceActionWave = "3A" | "3B";
+export type ResourceActionWave = "3A" | "3B" | "v2";
 export type ResourceActionOperation = "create" | "update" | "delete" | "secret" | "connect" | "relink" | "test";
 
 export type ResourceActionRow = Readonly<Record<string, unknown>>;
@@ -105,6 +106,12 @@ export const resourceActionDescriptors: readonly ResourceActionTemplate[] = Obje
   row("RES-38", "3A", "delete", "/observability/notification-channels/{id}", "/observability/notification-channels", "DELETE", "notification_channels.delete", "high", "consequence", "resource-target", "notification_channels.delete"),
   row("RES-39", "3A", "test", "/observability/notification-channels/{id}/test", "/observability/notification-channels", "POST", "notification_channels.test", "guarded", "consequence", "resource-target", "notification_channels.test"),
   row("RES-40", "3B", "update", "/security/settings", "/security/settings", "PUT", "system_settings.update", "critical", "typed-fixed", "resource-action", "security.settings.update", false, "SECURITY POLICY"),
+  row("RES-41", "v2", "create", "/discord/target-presets", "/discord/target-presets", "POST", "discord_target_presets.create", "guarded", "consequence", "resource-action", "discord_target_presets.create"),
+  row("RES-42", "v2", "update", "/discord/target-presets/{id}", "/discord/target-presets", "PUT", "discord_target_presets.update", "high", "consequence", "resource-target", "discord_target_presets.update"),
+  row("RES-43", "v2", "delete", "/discord/target-presets/{id}", "/discord/target-presets", "DELETE", "discord_target_presets.delete", "high", "consequence", "resource-target", "discord_target_presets.delete"),
+  row("RES-44", "v2", "create", "/video-cover-presets", "/video-cover-presets", "POST", "video_cover_presets.create", "guarded", "consequence", "resource-action", "video_cover_presets.create"),
+  row("RES-45", "v2", "update", "/video-cover-presets/{id}", "/video-cover-presets", "PUT", "video_cover_presets.update", "high", "consequence", "resource-target", "video_cover_presets.update"),
+  row("RES-46", "v2", "delete", "/video-cover-presets/{id}", "/video-cover-presets", "DELETE", "video_cover_presets.delete", "high", "consequence", "resource-target", "video_cover_presets.delete"),
 ]);
 
 const templates = new Map(resourceActionDescriptors.map((value) => [value.id, value]));
@@ -186,12 +193,21 @@ export function resourceActionRequest(intent: ResourceActionIntent): ResourceAct
   const id = resourceRowID(intent.row);
   if (template.route.includes("{id}") && !id) return undefined;
   if (template.method !== "DELETE" && template.operation !== "test" && !intent.payload) return undefined;
+  const preset = template.sourcePath === "/discord/target-presets" || template.sourcePath === "/video-cover-presets";
+  const revision = intent.row?.revision;
+  if (preset && (template.operation === "update" || template.operation === "delete")) {
+    if (!positiveSafeRevision(revision)) return undefined;
+    // Refresh replaces the row, but must never rebase an older edit payload.
+    if (template.operation === "update" && intent.payload?.expected_revision !== revision) return undefined;
+  }
   const path = template.route.replace("{id}", encodeURIComponent(id));
   return Object.freeze({
     id: intent.id,
     method: template.method,
     path,
-    ...(template.method === "DELETE" || template.operation === "test" ? {} : { body: intent.payload }),
+    ...(preset && template.operation === "delete"
+      ? { body: Object.freeze({ expected_revision: revision }) }
+      : template.method === "DELETE" || template.operation === "test" ? {} : { body: intent.payload }),
   });
 }
 
@@ -243,6 +259,10 @@ export function resourceRowID(value: ResourceActionRow | undefined) {
 
 function nonEmptyArray(value: unknown) {
   return Array.isArray(value) && value.length > 0;
+}
+
+function positiveSafeRevision(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 }
 
 function nonEmptyString(value: unknown) {

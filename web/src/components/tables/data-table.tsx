@@ -2,7 +2,7 @@
 
 import { useEffect, useId } from "react";
 import {
-  type ColumnDef, flexRender, getCoreRowModel, getFilteredRowModel,
+  type ColumnDef, flexRender, functionalUpdate, getCoreRowModel, getFilteredRowModel,
   getPaginationRowModel, getSortedRowModel, useReactTable,
 } from "@tanstack/react-table";
 import { ArrowDown, ArrowUp, ArrowUpDown } from "lucide-react";
@@ -10,6 +10,7 @@ import { useI18n } from "@/components/admin/i18n-provider";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { boundedPageIndex, type TableURLPolicy } from "@/lib/ui-v2/table-state";
 import { useTableURL } from "@/lib/ui-v2/use-table-url";
+import { cn } from "@/lib/utils";
 import { TablePagination, TableToolbar, type TableFilter, type ColumnPresentation } from "./table-controls";
 import { TableRecord } from "./table-record";
 
@@ -25,13 +26,14 @@ type DataTableProps<TData, TValue> = {
   filters?: readonly TableFilter[];
   density?: "compact" | "standard" | "comfortable";
   urlPolicy?: TableURLPolicy;
+  className?: string;
 };
 
 const noFilters: readonly TableFilter[] = [];
 
 export function DataTable<TData, TValue>({
   columns, data, filterPlaceholder, getRowId, minTableWidthClass = "min-w-[980px]",
-  responsive = true, mode = "client", filters = noFilters, density = "standard", urlPolicy, dataReady = true,
+  responsive = true, mode = "client", filters = noFilters, density = "standard", urlPolicy, dataReady = true, className,
 }: DataTableProps<TData, TValue>) {
   const { locale } = useI18n();
   const tableId = useId();
@@ -45,8 +47,15 @@ export function DataTable<TData, TValue>({
     getPaginationRowModel: getPaginationRowModel(),
     manualPagination: mode === "server", manualSorting: mode === "server", manualFiltering: mode === "server",
     enableSorting: mode === "client",
-    autoResetPageIndex: !urlPolicy,
+    // Live query results must not move the reader back to page one. User filters
+    // reset explicitly; the effect below only clamps a page that no longer exists.
+    autoResetPageIndex: false,
     initialState: { pagination: { pageSize: 8 } },
+    onSortingChange: (updater) => table.setState((state) => ({
+      ...state,
+      sorting: functionalUpdate(updater, state.sorting),
+      pagination: { ...state.pagination, pageIndex: 0 },
+    })),
     ...url.binding,
   });
   const { pageIndex, pageSize } = table.getState().pagination;
@@ -56,7 +65,7 @@ export function DataTable<TData, TValue>({
     if (dataReady && url.ready && mode === "client" && pageIndex !== next) table.setPageIndex(next);
   }, [table, pageIndex, pageSize, filteredCount, mode, url.ready, dataReady]);
 
-  return <div data-slot="data-table" data-responsive={responsive} data-density={density} className="min-w-0 space-y-3">
+  return <div data-slot="data-table" data-responsive={responsive} data-density={density} className={cn("min-w-0 space-y-3", className)}>
     <TableToolbar table={table} filters={filters} mode={mode} filterPlaceholder={filterPlaceholder} />
     <p className="text-xs text-muted-foreground" role="status">
       {mode === "server"

@@ -405,6 +405,47 @@ input[data-slot="input"][type="datetime-local"]:focus-within {
 [data-slot="field"] textarea { font-size: 1rem; }
 [data-slot="detail-section"] [data-slot="card"] { box-shadow: none; }
 
+/* Node inventories have wide operational records. Reflow against their actual
+   content width, including the sidebar and browser zoom, without changing other
+   tables or creating a second set of row actions. */
+.node-data-table { container: node-table / inline-size; }
+
+@container node-table (max-width: 108rem) {
+  .node-data-table[data-responsive="true"] table {
+    display: block;
+    min-width: 0;
+    width: 100%;
+  }
+  .node-data-table[data-responsive="true"] thead { display: none; }
+  .node-data-table[data-responsive="true"] tbody { display: grid; }
+  .node-data-table[data-responsive="true"] tbody tr {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.75rem 1rem;
+    padding: 1rem;
+  }
+  .node-data-table[data-responsive="true"] td {
+    display: block;
+    min-width: 0;
+    max-width: none;
+    padding: 0;
+  }
+  .node-data-table[data-responsive="true"] td[headers$="-actions"],
+  .node-data-table[data-responsive="true"] td[colspan],
+  .node-data-table[data-responsive="true"] .ui-record-disclosure { grid-column: 1 / -1; }
+  .node-data-table[data-responsive="true"] .ui-record-label {
+    display: block;
+    margin-bottom: 0.25rem;
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--muted-foreground);
+  }
+  .node-data-table[data-responsive="true"] tr:not([data-record-expanded="true"]) td[data-priority="secondary"] { display: none; }
+  .node-data-table[data-responsive="true"] tr:not([data-record-expanded="true"]) td[data-priority="secondary"]:focus-within { display: block; }
+  .node-data-table button,
+  .node-data-table select { min-height: 2.75rem; }
+}
+
 @media (max-width: 48rem) {
   [data-slot="data-table"][data-responsive="true"] table {
     display: block;
@@ -444,6 +485,10 @@ input[data-slot="input"][type="datetime-local"]:focus-within {
 
 @media (max-width: 30rem) {
   [data-slot="data-table"][data-responsive="true"] tbody tr { grid-template-columns: minmax(0, 1fr); }
+}
+
+@container node-table (max-width: 38rem) {
+  .node-data-table[data-responsive="true"] tbody tr { grid-template-columns: minmax(0, 1fr); }
 }
 
 @media (prefers-reduced-motion: reduce) {

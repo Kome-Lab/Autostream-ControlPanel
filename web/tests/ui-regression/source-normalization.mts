@@ -5,6 +5,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { inverseReleaseAssembly, releaseAssemblyBase, releaseAssemblyPaths } from "./release-assembly-deltas.mts";
 
+import { assertCP174Original, cp174Base, cp174Paths, inverseCP174Source } from "./cp174-source-deltas.mts";
+
 import { ciClosureBase, ciClosurePaths, inverseCIClosure } from "./ci-closure-deltas.mts";
 
 type Replacement = { position: number; count: number; before: string; after: string };
@@ -47,6 +49,7 @@ export function inverseNormalization(row: Mapping, original: Buffer, current: Bu
     forward = forward.slice(0, at) + change.after + forward.slice(at + change.before.length);
     end = change.position + change.before.length; offset += change.after.length - change.before.length;
   }
+  if (cp174Paths.includes(row.newPath)) current = inverseCP174Source(row.newPath, current);
   if (ciClosurePaths.includes(row.newPath)) current = inverseCIClosure(row.newPath, Buffer.from(forward), current);
   if (releaseAssemblyPaths.includes(row.newPath)) current = inverseReleaseAssembly(row.newPath, Buffer.from(forward), current);
   assert.deepEqual(current, Buffer.from(forward), "normalization permits only exact specified name edits");
@@ -84,13 +87,17 @@ export function createNormalizedReader(root: string, io: SourceIO = {
     const row = manifest.currentMappings.find(item => item.oldPath === path);
     if (!row) {
       const bytes = raw(path);
-      const current = ciClosurePaths.includes(path) ? inverseCIClosure(path, object(ciClosureBase, path), bytes) : bytes;
+      if (cp174Paths.includes(path)) assertCP174Original(path, object(cp174Base, path));
+      const prior = cp174Paths.includes(path) ? inverseCP174Source(path, bytes) : bytes;
+      const current = ciClosurePaths.includes(path) ? inverseCIClosure(path, object(ciClosureBase, path), prior) : prior;
       return releaseAssemblyPaths.includes(path)
         ? inverseReleaseAssembly(path, object(releaseAssemblyBase, path), current)
         : current;
     }
     if (row.oldPath !== row.newPath) assert.equal(io.exists(row.oldPath), false, "obsolete current alias must not remain");
-    return inverseNormalization(row, object(manifest.acceptedCommit, row.oldPath), raw(row.newPath));
+    const current = raw(row.newPath);
+    if (cp174Paths.includes(row.newPath)) assertCP174Original(row.newPath, object(cp174Base, row.newPath));
+    return inverseNormalization(row, object(manifest.acceptedCommit, row.oldPath), current);
   };
   return { manifest, raw, read };
 }

@@ -21,6 +21,8 @@
     "test:ui-source:contracts": "node --no-warnings --test tests/browser-source-contract.test.mts",
     "test:ui-source:comparison": "node --no-warnings tests/helpers/run-ui-source-comparison.mts",
     "test:control-platform": "node --no-warnings --test tests/control-platform-features.test.mts tests/browser-preferences-storage.test.mts",
+    "test:release-ui": "node --no-warnings --test --test-concurrency=1 tests/preset-resource-actions.test.mts tests/streams-visual-integration.test.mts tests/ui-regression/preset-components.test.mts tests/ui-regression/polling-state.test.mts tests/ui-regression/node-layout-tabs.test.mts tests/ui-regression/refresh-layout.test.mts",
+    "test:release-ui-browser": "node --no-warnings --test --test-concurrency=1 tests/ui-refresh-layout-browser.test.mts tests/ui-release-layout-browser.test.mts",
     "test:control-platform-browser": "npm run test:ui-foundation-browser",
     "test:service-health": "node --no-warnings --test tests/service-health.test.mts",
     "test:notifications": "node --no-warnings --test tests/notification-channel.test.mts",

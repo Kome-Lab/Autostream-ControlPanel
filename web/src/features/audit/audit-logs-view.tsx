@@ -5,7 +5,7 @@ import { useUICopy } from "@/lib/i18n/ui-v2/use-ui-copy";
 import { japaneseCopy, type UICopy } from "@/lib/i18n/ui-v2/copy";
 
 
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import type { ColumnDef } from "@tanstack/react-table";
 import { Check, Copy, Download, Search } from "lucide-react";
@@ -71,30 +71,33 @@ export function AuditLogsView() {
     {
       accessorKey: "timestamp",
       header: t("time"),
+      meta: { className: "min-w-32" },
       cell: ({ row }) => formatDateTime(row.original.timestamp, timezone),
     },
-    { accessorKey: "actor_username", header: t("actor") },
+    { accessorKey: "actor_username", header: t("actor"), meta: { className: "min-w-36" } },
     {
       accessorKey: "action",
       header: t("action"),
+      meta: { className: "min-w-48" },
       cell: ({ row }) => fixedPresentationText(auditActionLabel(row.original.action), uiText),
     },
     {
       accessorKey: "result",
-      meta: { required: true, priority: 0 },
+      meta: { required: true, priority: 0, className: "min-w-36" },
       header: t("result"),
       cell: ({ row }) => <DomainStatusBadge presentation={presentAuditResultStatus(row.original.result)} translate={t} />,
     },
     {
       id: "resource",
       header: t("resource"),
+      meta: { className: "min-w-40" },
       cell: ({ row }) => {
         const resourceID = row.original.resource_id || "";
         return (
-          <div className="flex items-center gap-2 text-sm">
-            <span>{resourceTypeLabel(row.original.resource_type, uiText)}</span>
+          <div className="flex min-w-0 flex-wrap items-center gap-2 text-sm">
+            <span className="min-w-0 max-w-full [overflow-wrap:break-word]">{resourceTypeLabel(row.original.resource_type, uiText)}</span>
             {resourceID ? (
-              <Button variant="outline" size="icon-sm" aria-label={uiText("対象IDをコピー")} onClick={() => void copyResourceID(resourceID)}>
+              <Button variant="outline" size="icon-sm" className="shrink-0" aria-label={uiText("対象IDをコピー")} onClick={() => void copyResourceID(resourceID)}>
                 {copiedResourceID === resourceID ? <Check className="size-4" /> : <Copy className="size-4" />}
               </Button>
             ) : null}
@@ -102,8 +105,13 @@ export function AuditLogsView() {
         );
       },
     },
-    { accessorKey: "actor_ip", header: "IP", meta: { priority: 2 } },
-    { accessorKey: "user_agent", header: t("userAgent"), meta: { priority: 3 } },
+    { accessorKey: "actor_ip", header: "IP", meta: { priority: 2, className: "min-w-40" } },
+    {
+      accessorKey: "user_agent",
+      header: t("userAgent"),
+      meta: { priority: 3, className: "min-w-56" },
+      cell: ({ row }) => <span className="block max-w-96 [overflow-wrap:anywhere]">{row.original.user_agent || "-"}</span>,
+    },
   ];
 
   const exportParams = new URLSearchParams({
@@ -155,7 +163,11 @@ export function AuditLogsView() {
 }
 
 function formatDateTime(value?: string, timezone?: string) {
-  return formatDateTimeInTimeZone(value, timezone, { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+  const formatted = formatDateTimeInTimeZone(value, timezone, { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+  if (!value || Number.isNaN(Date.parse(value))) return formatted;
+  return <time dateTime={value} className="tabular-nums">{formatted.split(" ").map((part, index) => (
+    <Fragment key={index}>{index > 0 ? " " : null}<span className="inline-block whitespace-nowrap">{part}</span></Fragment>
+  ))}</time>;
 }
 
 function resourceTypeLabel(value?: string, uiText: UICopy = japaneseCopy) {

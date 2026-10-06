@@ -244,6 +244,7 @@ function assertAPIErrorAdapterBoundaries(webRoot: string, parsed: Map<string, ts
     "src/features/nodes/node-action-controller.ts",
     "src/features/observability/action-policy.ts",
     "src/features/resources/resource-action-controller.ts",
+    "src/features/resources/resource-video-cover-form.tsx",
     "src/features/settings/app-settings-action-policy.ts",
     "src/features/streams/stream-action-controller.ts",
     "src/features/streams/stream-control-platform-panel.tsx",

@@ -70,14 +70,15 @@ export function NodeEndpointStateView({
         </span>
       </div>
       {!compact ? <div className="text-xs text-muted-foreground">{state.status.detail}</div> : null}
-      <NodeEndpointSnapshotRow label={uiText("希望値")} snapshot={state.desired} />
+      <NodeEndpointSnapshotRow label={uiText("希望値")} snapshot={state.desired} compact={compact} />
       <NodeEndpointSnapshotRow
         label={state.applied.source === "legacy" ? uiText("反映済み (legacy)") : uiText("反映済み")}
         snapshot={state.applied}
+        compact={compact}
         copied={copied === copyKey}
         onCopy={state.applied.url ? () => onCopy(copyKey, state.applied.url) : undefined}
       />
-      <NodeEndpointSnapshotRow label={uiText("Node報告")} snapshot={state.reported} />
+      <NodeEndpointSnapshotRow label={uiText("Node報告")} snapshot={state.reported} compact={compact} />
     </div>
   );
 }
@@ -128,33 +129,39 @@ function UpdaterTransportStateView({
 function NodeEndpointSnapshotRow({
   label,
   snapshot,
+  compact = false,
   copied = false,
   onCopy,
 }: {
   label: string;
   snapshot: NodeEndpointSnapshot;
+  compact?: boolean;
   copied?: boolean;
   onCopy?: () => Promise<void>;
 }) {
   const uiText = useUICopy();
   return (
-    <div className="grid min-w-0 gap-0.5 sm:grid-cols-[7rem_minmax(0,1fr)_auto] sm:items-start sm:gap-2">
+    <div className={compact
+      ? "grid min-w-0 gap-0.5"
+      : "grid min-w-0 gap-0.5 sm:grid-cols-[7rem_minmax(0,1fr)] sm:items-start sm:gap-2"}>
       <span className="font-medium">{label}</span>
-      <span className={snapshot.url ? "break-all" : "text-muted-foreground"}>
-        {snapshot.url || uiText("未報告")}
-      </span>
-      {onCopy ? (
-        <Button
-          type="button"
-          variant="outline"
-          size="icon-sm"
-          className="justify-self-start"
-          aria-label={uiText("{0} endpointをコピー", label)}
-          onClick={() => void onCopy()}
-        >
-          {copied ? <Check className="size-4" /> : <Link className="size-4" />}
-        </Button>
-      ) : null}
+      <div className="flex min-w-0 items-start gap-2">
+        <span className={snapshot.url ? "min-w-0 break-all" : "text-muted-foreground"}>
+          {snapshot.url || uiText("未報告")}
+        </span>
+        {onCopy ? (
+          <Button
+            type="button"
+            variant="outline"
+            size="icon-sm"
+            className="shrink-0"
+            aria-label={uiText("{0} endpointをコピー", label)}
+            onClick={() => void onCopy()}
+          >
+            {copied ? <Check className="size-4" /> : <Link className="size-4" />}
+          </Button>
+        ) : null}
+      </div>
     </div>
   );
 }

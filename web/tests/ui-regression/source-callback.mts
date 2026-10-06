@@ -39,10 +39,10 @@ export function actualFunction(source: string, name: string, bindings: Record<st
   return actualCallback("const selectedCallback="+declaration.getText(file),"selectedCallback",bindings);
 }
 
-export function actualEffect(source:string,needle:string,bindings:Record<string,unknown>) {
+export function actualEffect(source:string,needle:string,bindings:Record<string,unknown>,hook:"useEffect"|"useLayoutEffect"="useEffect") {
  const file=ts.createSourceFile("owner.tsx",source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);
  const matches:ts.Expression[]=[];
- function visit(node:ts.Node){if(ts.isCallExpression(node)&&node.expression.getText(file)==="useEffect"&&node.arguments[0]?.getText(file).includes(needle))matches.push(node.arguments[0]);ts.forEachChild(node,visit);}
+ function visit(node:ts.Node){if(ts.isCallExpression(node)&&node.expression.getText(file)===hook&&node.arguments[0]?.getText(file).includes(needle))matches.push(node.arguments[0]);ts.forEachChild(node,visit);}
  visit(file);assert.equal(matches.length,1,"unique actual effect");
  return actualCallback("const selectedCallback="+matches[0].getText(file),"selectedCallback",bindings);
 }

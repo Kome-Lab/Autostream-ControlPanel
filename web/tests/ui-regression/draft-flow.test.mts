@@ -91,9 +91,9 @@ function createFlow(editing = false, slotSource = slot, handoff: StreamCreateFoc
   let revision = 0, dirtySections: ReadonlySet<string> = new Set(), draft = { headerTitleValue: "" }, closes = 0, focus = 0;
   const currentCreateRevision = { current: 0 }, savedCreateRevision = { current: 0 };
   const setDirtySections = (next: ReadonlySet<string> | ((current: ReadonlySet<string>) => ReadonlySet<string>)) => { dirtySections = typeof next === "function" ? next(dirtySections) : next; };
-  const update = actualCallback(visualSource, "update", { editing, currentCreateRevision, setCreateRevision: (next: number) => { revision = next; }, setDirtySections, setDraft: (next: (current: typeof draft) => typeof draft) => { draft = next(draft); } });
+  const update = actualCallback(visualSource, "update", { editing, currentCreateRevision, setCreateRevision: (next: number) => { revision = next; }, setCoverSelectionDirty() {}, setDirtySections, setDraft: (next: (current: typeof draft) => typeof draft) => { draft = next(draft); } });
   controller.register({ isDirty: () => editing ? dirtySections.size > 0 : currentCreateRevision.current !== savedCreateRevision.current, saved() {} });
-  const visualState = () => actualCallback(visualSource, "createState", { useMemo: (callback: () => unknown) => callback(), editing, draft, validation: { ready: true }, createRevision: revision, currentCreateRevision, savedCreateRevision, setDirtySections, buildStreamCreateVisualExtension: (value: typeof draft) => ({ visual_settings: { header_title_value: value.headerTitleValue } }) });
+  const visualState = () => actualCallback(visualSource, "createState", { useMemo: (callback: () => unknown) => callback(), editing, draft, validation: { ready: true }, presetSelectionsReady: true, uploading: "", createRevision: revision, currentCreateRevision, savedCreateRevision, setDirtySections, buildStreamCreateVisualExtension: (value: typeof draft) => ({ visual_settings: { header_title_value: value.headerTitleValue } }) });
   const saveAcknowledgements = { current: new WeakMap<object, () => boolean>() };
   const bindings = { setMessage() {}, onActionResult() {}, liveEditing: false, editing, uiText: (key: string) => key, t: (key: string) => key, streamActionBlockedMessage: () => "blocked", isStreamValue: (value: unknown) => Boolean(value && typeof value === "object" && "id" in value), saveAcknowledgements, draft: basic };
   const focusCallback = jsxAt(streams, "SheetContent", "onCloseAutoFocus", editing ? 1 : 0, { createFocus: { current: handoff }, createTrigger: { current: { focus() { focus++; } } }, editTrigger: { current: { focus() { focus++; } } } });
@@ -104,7 +104,7 @@ function createFlow(editing = false, slotSource = slot, handoff: StreamCreateFoc
   const prepare = () => {
     const createVisualState = visualState(), actionIntent = { id: editing ? "STR-02" : "STR-01", payload: { name: "Submitted name", ...(!editing ? createVisualState.extension : {}) } };
     const effect = slotSource.replace("useLayoutEffect(() => {\n    let acknowledged", "useEffect(() => {\n    let acknowledged");
-    actualEffect(effect, "saveAcknowledgements.current.set", { actionIntent, createVisualState, draft: basic, saveAcknowledgements })();
+    actualEffect(effect, "saveAcknowledgements.current.set", { actionIntent, createVisualState, draft: basic, saveAcknowledgements }, "useLayoutEffect")();
     return actionIntent;
   };
   return { controller, state, update, prepare, result, renderBasic, setDirtySections, get dirtySections() { return dirtySections; }, get closes() { return closes; }, get focus() { return focus; } };
@@ -116,6 +116,11 @@ test("UI-DRAFT-FLOW-004: actual form/visual/parent callbacks ack only successful
     assert.equal(flow.controller.dirty(), false); assert.equal(flow.state.prompts, 0); assert.equal(flow.closes, 1); assert.equal(flow.focus, 1);
     flow.result({ kind: "succeeded", value: { id: "created", name: "Submitted name" } }, intent); assert.equal(flow.closes, 1);
   }
+});
+
+test("draft flow extracts the actual commit-time acknowledgement without substituting a passive effect", () => {
+  assert.throws(() => actualEffect(slot, "saveAcknowledgements.current.set", {}), /unique actual effect/, "the passive-effect selector must not silently accept a different hook");
+  assert.equal(typeof actualEffect(slot, "saveAcknowledgements.current.set", {}, "useLayoutEffect"), "function");
 });
 test("UI-DRAFT-FLOW-005: failure 409 unknown validation and mismatched intent cannot acknowledge or close", () => {
   for (const outcome of [{ kind: "failed", error: { kind: "conflict", status: 409, messageKey: "conflict" } }, { kind: "outcome_unknown" }, { kind: "blocked", reason: "invalid-intent" }, { kind: "succeeded", value: null }]) {
@@ -138,7 +143,7 @@ test("UI-DRAFT-FLOW-006: real action control delayed success keeps later basic a
 test("UI-DRAFT-FLOW-007: basic edit leaves visual dirty; only existing independent visual success clears it", async () => {
   const flow = createFlow(true); flow.update("title", { headerTitleValue: "Independent" }); flow.result({ kind: "succeeded", value: { id: "edited", name: "Edited" } }, flow.prepare());
   assert.equal(flow.controller.dirty(), true); assert.equal(flow.closes, 0); assert.equal(flow.state.prompts, 1);
-  const save = actualCallback(visualSource, "save", { visual: { data: {} }, validation: { ready: true }, saving: false, needsRefresh: false, draft: {}, dirtySections: flow.dirtySections, setSaving() {}, setMessage() {}, controller: { issue: async () => ({ kind: "succeeded", value: {} }) }, buildStreamVisualFields: () => ({}), queryClient: { setQueryData() {} }, queryKey: [], setDraft() {}, streamVisualDraftFromSettings: () => ({}), setDirtySections: flow.setDirtySections, setUploadedBackground() {}, setUploadedCover() {}, locale: "en" });
+  const save = actualCallback(visualSource, "save", { visual: { data: { revision: 4 } }, draftRevision: 4, validation: { ready: true }, presetSelectionsReady: true, saving: false, uploading: "", needsRefresh: false, serverSettingsChanged: false, editing: true, coverSelectionDirty: false, draft: {}, dirtySections: flow.dirtySections, setSaving() {}, setMessage() {}, controller: { issue: async (_fields: unknown, revision: number) => { assert.equal(revision, 4); return { kind: "succeeded", value: { revision: 5 } }; } }, buildStreamVisualSaveFields: () => ({}), queryClient: { setQueryData() {} }, queryKey: [], setDraft() {}, setDraftRevision() {}, setCoverPresetRevision() {}, setCoverSelectionDirty() {}, streamVisualDraftFromSettings: () => ({}), setDirtySections: flow.setDirtySections, setUploadedBackground() {}, setUploadedCover() {}, locale: "en" });
   await save(); assert.equal(flow.controller.dirty(), false);
 });
 class SessionError extends Error { status = 401; code = "unauthorized"; }

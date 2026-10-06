@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, LoaderCircle } from "lucide-react";
 import { useI18n } from "@/components/admin/i18n-provider";
 import { DefinitionList } from "@/components/data-display/definition-list";
 import { DomainStatusBadge } from "@/components/foundation/status/domain-status-badge";
@@ -19,14 +19,17 @@ export function DashboardIncidentBanner({ rows, unavailable, refreshing }: {
   const ja = locale === "ja";
   const open = (rows || []).filter((row) => ["open", "active", "firing", "warning", "critical", "acknowledged"].includes(row.status || ""));
   const unknown = (rows || []).filter((row) => !["open", "active", "firing", "warning", "critical", "acknowledged", "resolved", "closed", "suppressed"].includes(row.status || ""));
-  if (!open.length && !unknown.length && !unavailable && rows !== undefined && !refreshing) return null;
-  return <aside data-slot="dashboard-incidents" role="status" className="flex flex-wrap items-center gap-3 rounded-md border border-status-warning-border bg-status-warning-subtle px-4 py-3 text-status-warning-foreground">
-    <AlertTriangle className="size-4 shrink-0" aria-hidden="true" />
+  const quietRefresh = refreshing && rows !== undefined && !unavailable && unknown.length === 0;
+  if (!open.length && !unknown.length && !unavailable && rows !== undefined) return <span className="sr-only" role="status">{refreshing ? (ja ? "インシデントを更新中です。" : "Refreshing incidents.") : ""}</span>;
+  const Icon = quietRefresh ? LoaderCircle : AlertTriangle;
+  return <aside data-slot="dashboard-incidents" role="status" aria-busy={refreshing} className="flex flex-wrap items-center gap-3 rounded-md border border-status-warning-border bg-status-warning-subtle px-4 py-3 text-status-warning-foreground">
+    <Icon className={quietRefresh ? "size-4 shrink-0 animate-spin motion-reduce:animate-none" : "size-4 shrink-0"} aria-hidden="true" />
+    <span className="sr-only">{quietRefresh ? (ja ? "インシデントを更新中です。" : "Refreshing incidents.") : ""}</span>
     <div className="min-w-0 flex-1 text-sm">
       <strong>{open.length ? (ja ? `取得済みの未解決インシデント: ${open.length} 件` : `${open.length} unresolved incidents in loaded results`) : (ja ? "インシデントの状態を確認中" : "Checking incident status")}</strong>
       {open.slice(0, 2).map((row) => <p key={row.id} className="[overflow-wrap:anywhere]">{row.severity || (ja ? "重大度不明" : "Unknown severity")} · {row.title || row.id}</p>)}
       {unknown.length ? <p>{ja ? `状態不明: ${unknown.length} 件。専用画面で確認してください。` : `${unknown.length} incidents have unknown state. Review them in the incident workspace.`}</p> : null}
-      {unavailable ? <p>{ja ? "最新状態を取得できません。前回の表示を含む場合があります。" : "Latest status is unavailable. Displayed data may be stale."}</p> : refreshing ? <p>{ja ? "更新中" : "Refreshing"}</p> : null}
+      {unavailable ? <p>{ja ? "最新状態を取得できません。前回の表示を含む場合があります。" : "Latest status is unavailable. Displayed data may be stale."}</p> : refreshing && !quietRefresh ? <p>{ja ? "更新中" : "Refreshing"}</p> : null}
     </div>
     <Link href="/admin/incidents/" className="min-h-11 py-3 text-sm underline underline-offset-4">{ja ? "インシデントを開く" : "View incidents"}</Link>
   </aside>;

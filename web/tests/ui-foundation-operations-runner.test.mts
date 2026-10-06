@@ -11,7 +11,7 @@ import {
 import type { BrowserSuiteSummary as OperationsSuiteSummary } from "./helpers/ui-foundation-assertions.mts";
 
 test("operations runner has a non-empty, unique, exact, existing suite inventory", () => {
-  assert.equal(requiredOperationSuiteFiles.length, 19);
+  assert.equal(requiredOperationSuiteFiles.length, 20);
   assert.doesNotThrow(() => assertOperationsSuiteInventory(requiredOperationSuiteFiles));
 });
 
@@ -20,6 +20,7 @@ test("operations inventory rejects omissions, Streams/Resource removal, duplicat
     requiredOperationSuiteFiles.slice(1),
     requiredOperationSuiteFiles.filter((file) => file !== "tests/streams-foundation-migration.test.mts"),
     requiredOperationSuiteFiles.filter((file) => file !== "tests/generic-resource-foundation-migration.test.mts"),
+    requiredOperationSuiteFiles.filter((file) => file !== "tests/preset-resource-actions.test.mts"),
     [...requiredOperationSuiteFiles, requiredOperationSuiteFiles[0]],
     requiredOperationSuiteFiles.map((file) => file === "tests/app-settings-foundation-migration.test.mts" ? "tests/app-settings-renamed.test.mts" : file),
   ];

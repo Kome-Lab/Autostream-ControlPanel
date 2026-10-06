@@ -126,6 +126,23 @@ test("partial and stale reasons are explicit in Japanese and English", () => {
   assert.deepEqual(ja.missing, ["Node状態"]);
 });
 
+test("loaded snapshot summaries tolerate polling but never missing, stale or unknown data", () => {
+  const fresh = stateModule.aggregateOperationalQueries("dashboard", { streams: ready([]), services: ready([]) });
+  const refreshing = stateModule.aggregateOperationalQueries("dashboard", { streams: { ...ready([]), isFetching: true }, services: ready([]) });
+  for (const state of [fresh, refreshing]) {
+    assert.equal(stateModule.remoteStateAllowsSnapshotSummary(state, 0, true), true);
+    assert.equal(stateModule.remoteStateAllowsSnapshotSummary(state, 1, true), false);
+    assert.equal(stateModule.remoteStateAllowsSnapshotSummary(state, 0, false), false);
+  }
+  assert.equal(stateModule.remoteStateAllowsPositiveSummary(refreshing, 0, true), false, "an in-flight read cannot become fresh authority");
+  for (const queries of [
+    { streams: ready([]) },
+    { streams: stale([]), services: ready([]) },
+    { streams: loading(), services: loading() },
+    { streams: failed(), services: failed() },
+  ]) assert.equal(stateModule.remoteStateAllowsSnapshotSummary(stateModule.aggregateOperationalQueries("dashboard", queries), 0, true), false);
+});
+
 test("state presenter is read-only, screen-reader associated, and forced-colors visible", () => {
   assert.match(noticeSource, /role=\{presentation\.tone === "error" \? "alert" : "status"\}/);
   assert.match(noticeSource, /aria-live=/);

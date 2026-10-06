@@ -71,6 +71,17 @@ type WorkerActionsContextValue = Readonly<{
 
 const WorkerActionsContext = createContext<WorkerActionsContextValue | null>(null);
 
+type WorkerTablePresentation = {
+  t: ReturnType<typeof useI18n>["t"]; uiText: ReturnType<typeof useUICopy>;
+  copied: string; copyValue: (key: string, value?: string) => Promise<void>;
+};
+const WorkerTableContext = createContext<WorkerTablePresentation | null>(null);
+function useWorkerTablePresentation() {
+  const value = useContext(WorkerTableContext);
+  if (!value) throw new Error("Worker table requires its presentation owner");
+  return value;
+}
+
 export function WorkersView() {
   const uiText = useUICopy();
   const { t, locale } = useI18n();
@@ -114,13 +125,22 @@ export function WorkersView() {
     "service-health": canReadServiceHealth ? remainingQuerySnapshot(serviceHealth) : knownEmptyRemainingQuery(),
   });
 
-  const rows = readStatus === "ready" ? mergeOperationalNodes(canReadWorkers ? workers.data || [] : [], canReadRegisteredNodes ? registeredNodes.data || [] : [], canReadServiceHealth ? serviceHealth.data || [] : []) : [];
+  // A failed authority refresh keeps the last readable snapshot on screen.
+  // Action controllers still require fresh authority; a confirmed permission
+  // change removes its rows through these same permission flags.
+  const rows = useMemo(() => mergeOperationalNodes(
+    canReadWorkers ? workers.data || [] : [],
+    canReadRegisteredNodes ? registeredNodes.data || [] : [],
+    canReadServiceHealth ? serviceHealth.data || [] : [],
+  ), [canReadWorkers, canReadRegisteredNodes, canReadServiceHealth, workers.data, registeredNodes.data, serviceHealth.data]);
   const operationalSummary = summarizeWorkerOperations(rows);
   const activeJobs = rows.reduce((sum, node) => sum + Number(node.metrics?.active_jobs || node.metrics?.runningJobs || 0), 0);
   const warning = operationalSummary.attention;
+  const loadedSnapshot = readStatus === "ready" && (remoteState.kind === "ready" || remoteState.kind === "empty") && remoteState.freshness.kind !== "stale";
+  const refreshing = readRefreshing || workers.isFetching || registeredNodes.isFetching || serviceHealth.isFetching;
   const summaryConfirmed = readStatus === "ready" && !readRefreshing && remoteStateAllowsPositiveSummary(remoteState, 0, canReadAny);
-  const onlineValue = rows.length > 0 || summaryConfirmed ? `${operationalSummary.healthy}/${operationalSummary.total}` : "—";
-  const attentionValue = rows.length > 0 || summaryConfirmed ? warning : "—";
+  const onlineValue = rows.length > 0 || loadedSnapshot ? `${operationalSummary.healthy}/${operationalSummary.total}` : "—";
+  const attentionValue = rows.length > 0 || loadedSnapshot ? warning : "—";
   const unknownSummaryDetail = readStatus !== "ready" || readRefreshing ? readNotice : locale === "ja" ? "全Nodeの最新状態を確認できません" : "The latest state of every node is unavailable";
 
   const copyValue = async (key: string, value?: string) => {
@@ -182,110 +202,21 @@ export function WorkersView() {
     t,
   ]);
 
-  const columns: ColumnDef<WorkerNode>[] = [
-    {
-      accessorKey: "service_name",
-      meta: { required: true, priority: 0, className: "min-w-60" },
-      header: t("name"),
-      cell: ({ row }) => {
-        const nodeID = row.original.service_id || row.original.id;
-        return (
-          <div className="min-w-56">
-            <div className="flex items-center gap-2">
-              <div className="font-medium">{nodeDisplayName(row.original)}</div>
-              <Button variant="outline" size="icon-sm" aria-label={t("workerNodeIdCopy")} onClick={() => copyValue(`node-id-${nodeID}`, nodeID)}>
-                {copied === `node-id-${nodeID}` ? <Check className="size-4" /> : <Copy className="size-4" />}
-              </Button>
-            </div>
-          </div>
-        );
-      },
-    },
-    { accessorKey: "service_type", header: t("nodeType"), meta: { className: "min-w-36" }, cell: ({ row }) => serviceTypeLabel(row.original.service_type) },
-    {
-      id: "endpoint",
-      meta: { priority: 2, className: "min-w-40" },
-      header: t("workerEndpoint"),
-      cell: ({ row }) => {
-        const node = row.original;
-        const url = nodeEndpoint(node);
-        return (
-          <div className="flex items-center gap-2 text-sm">
-            <span className="text-muted-foreground">{url ? t("workerEndpointConfigured") : t("workerEndpointNotConfigured")}</span>
-            {url ? (
-              <Button variant="outline" size="icon-sm" aria-label={t("workerEndpointCopy")} onClick={() => copyValue(`endpoint-${node.service_id || node.id}`, url)}>
-                {copied === `endpoint-${node.service_id || node.id}` ? <Check className="size-4" /> : <Link className="size-4" />}
-              </Button>
-            ) : null}
-          </div>
-        );
-      },
-    },
-    {
-      accessorKey: "status",
-      header: t("status"),
-      meta: { className: "min-w-56 max-w-72" },
-      cell: ({ row }) => (
-        <DomainStatusBadge
-          presentation={presentWorkerOperationalStatus(row.original)}
-          translate={t}
-          showDetail
-        />
-      ),
-    },
-    { id: "assignment", header: locale === "ja" ? "接続・担当・ジョブ" : "Connection / assignment / jobs", meta: { priority: 1, className: "min-w-60" }, cell: ({ row }) => <NodeStateDetails node={row.original} /> },
-    {
-      id: "reported",
-      meta: { priority: 2, className: "min-w-44" },
-      header: t("workerReportedInformation"),
-      cell: ({ row }) => (
-        <div className="text-sm">
-          <div>Version {row.original.reported_version || row.original.version || t("workerNotReported")}</div>
-          <div className="text-muted-foreground">
-            {row.original.reported_os || t("workerOSNotReported")} / {row.original.reported_arch || t("workerArchNotReported")}
-          </div>
-          <div className="text-muted-foreground">{t("workerCapabilityCount", { count: capabilityCount(row.original) })}</div>
-        </div>
-      ),
-    },
-    {
-      accessorKey: "heartbeat_age_sec",
-      header: t("workerHeartbeat"),
-      meta: { className: "min-w-28" },
-      cell: ({ row }) => formatWorkerHeartbeat(row.original, undefined, uiText),
-    },
-    {
-      id: "load",
-      header: t("workerLoad"),
-      meta: { className: "min-w-36" },
-      cell: ({ row }) => (
-        <div className="text-sm">
-          <div>CPU {formatNodeMetricPercent(row.original.metrics, "cpu", uiText)}</div>
-          <div className="text-muted-foreground">MEM {formatNodeMetricPercent(row.original.metrics, "memory", uiText)}</div>
-        </div>
-      ),
-    },
-    {
-      id: "actions",
-      header: t("actions"),
-      meta: { className: "min-w-36" },
-      cell: WorkerActionsCell,
-    },
-  ];
+  const columns = workerTableColumns(t, locale);
 
   return (
     <div className="space-y-5" data-screen-family="workers">
       <PageHeader title={t("workers")} description={t("workerPageDescription")}
-        actions={<Button variant="outline" disabled={readStatus !== "ready" || readRefreshing || workers.isFetching || registeredNodes.isFetching || serviceHealth.isFetching} onClick={() => {
+        actions={<Button variant="outline" aria-busy={refreshing} disabled={readStatus !== "ready" || refreshing} onClick={() => {
           if (canReadWorkers) void workers.refetch();
           if (canReadRegisteredNodes) void registeredNodes.refetch();
           if (canReadServiceHealth) void serviceHealth.refetch();
-        }}><RotateCw aria-hidden="true" />{locale === "ja" ? "更新" : "Refresh"}</Button>} />
+        }}><RotateCw className={refreshing ? "size-4 animate-spin motion-reduce:animate-none" : "size-4"} aria-hidden="true" />{locale === "ja" ? "更新" : "Refresh"}<span className="sr-only" role="status">{refreshing ? (readRefreshing ? readNotice : locale === "ja" ? "取得済みデータを表示しながら更新中です。" : "Refreshing while keeping loaded data visible.") : ""}</span></Button>} />
       <NodeWorkspaceNavigation active="workers" canRegister={canReadRegisteredNodes} canOperate={canReadWorkers || canReadServiceHealth || canReadRegisteredNodes} />
       <section className="grid gap-4 md:grid-cols-3">
-        <MetricCard title={t("onlineNodes")} value={onlineValue} detail={summaryConfirmed ? t("statusNodeHealthy") : unknownSummaryDetail} tone={summaryConfirmed && warning === 0 ? "ok" : "warning"} />
-        <MetricCard title={t("workerActiveJobs")} value={rows.length > 0 || summaryConfirmed ? activeJobs : "—"} detail={readStatus === "ready" && !readRefreshing ? t("workerCurrentlyProcessing") : readNotice} />
-        <MetricCard title={t("attentionRequired")} value={attentionValue} detail={summaryConfirmed ? t("workerAttentionDetail") : unknownSummaryDetail} tone={warning > 0 ? "danger" : summaryConfirmed ? "ok" : "warning"} />
+        <MetricCard title={t("onlineNodes")} value={onlineValue} detail={loadedSnapshot ? (locale === "ja" ? "取得済みの接続・稼働状態" : "Connection and health in loaded data.") : unknownSummaryDetail} tone={summaryConfirmed && warning === 0 ? "ok" : "warning"} />
+        <MetricCard title={t("workerActiveJobs")} value={rows.length > 0 || loadedSnapshot ? activeJobs : "—"} detail={loadedSnapshot ? (locale === "ja" ? "取得済みの実行ジョブ数" : "Running jobs reported in loaded data.") : readStatus === "ready" && !readRefreshing ? t("workerCurrentlyProcessing") : readNotice} />
+        <MetricCard title={t("attentionRequired")} value={attentionValue} detail={loadedSnapshot ? (locale === "ja" ? "取得済み情報で要確認のNode" : "Nodes needing review in loaded data.") : unknownSummaryDetail} tone={warning > 0 ? "danger" : summaryConfirmed ? "ok" : "warning"} />
       </section>
 
       {restartNotice ? <p role="status" className="rounded-md border bg-muted px-3 py-2 text-sm">{restartNotice}</p> : null}
@@ -331,14 +262,141 @@ export function WorkersView() {
       ) : null}
 
       <DetailSection title={locale === "ja" ? "登録・稼働・担当" : "Registration, health and assignment"} description={locale === "ja" ? "接続・プロセス稼働・担当・ジョブを個別に確認してください。再起動の影響は既存の確認画面に表示します。" : "Review connection, process health, assignments and jobs separately. Restart impact is shown in the confirmation."}>
-          {readStatus !== "ready" || readRefreshing ? <p role={readStatus === "error" ? "alert" : "status"} className="mb-3">{readNotice}</p> : null}
-          {readStatus === "ready" && (remoteState.kind !== "ready" || remoteState.freshness.kind !== "fresh") ? <div className="mb-3"><RemainingStateNotice state={remoteState} consumer="workers" /></div> : null}
-          <WorkerActionsContext.Provider value={workerActionsContextValue}>
-            <DataTable columns={columns} data={rows} filterPlaceholder={t("workerFilterPlaceholder")} getRowId={(row) => row.service_id || row.id} minTableWidthClass="min-w-[980px]" />
-          </WorkerActionsContext.Provider>
+          {readStatus !== "ready" ? <p role={readStatus === "error" ? "alert" : "status"} className="mb-3">{readNotice}</p> : null}
+          {readStatus === "ready" && !loadedSnapshot ? <div className="mb-3"><RemainingStateNotice state={remoteState} consumer="workers" /></div> : null}
+          <WorkerTableContext.Provider value={{ t, uiText, copied, copyValue }}><WorkerActionsContext.Provider value={workerActionsContextValue}>
+            <DataTable className="node-data-table" columns={columns} data={rows} filterPlaceholder={t("workerFilterPlaceholder")} getRowId={(row) => row.service_id || row.id} minTableWidthClass="min-w-[980px]" />
+          </WorkerActionsContext.Provider></WorkerTableContext.Provider>
       </DetailSection>
     </div>
   );
+}
+
+export function workerTableColumns(t: ReturnType<typeof useI18n>["t"], locale: "ja" | "en"): ColumnDef<WorkerNode>[] {
+  return [
+    {
+      accessorKey: "service_name",
+      meta: { required: true, priority: 0, className: "min-w-60" },
+      header: t("name"),
+      cell: WorkerNameCell,
+    },
+    { accessorKey: "service_type", header: t("nodeType"), meta: { className: "min-w-36" }, cell: WorkerTypeCell },
+    {
+      id: "endpoint",
+      meta: { priority: 2, className: "min-w-64" },
+      header: t("workerEndpoint"),
+      cell: WorkerEndpointCell,
+    },
+    {
+      accessorKey: "status",
+      header: t("status"),
+      meta: { className: "min-w-56 max-w-72" },
+      cell: WorkerStatusCell,
+    },
+    { id: "assignment", header: locale === "ja" ? "接続・担当・ジョブ" : "Connection / assignment / jobs", meta: { priority: 1, className: "min-w-60" }, cell: WorkerAssignmentCell },
+    {
+      id: "reported",
+      meta: { priority: 2, className: "min-w-44" },
+      header: t("workerReportedInformation"),
+      cell: WorkerReportCell,
+    },
+    {
+      accessorKey: "heartbeat_age_sec",
+      header: t("workerHeartbeat"),
+      meta: { className: "min-w-28" },
+      cell: WorkerHeartbeatCell,
+    },
+    {
+      id: "load",
+      header: t("workerLoad"),
+      meta: { className: "min-w-36" },
+      cell: WorkerLoadCell,
+    },
+    {
+      id: "actions",
+      header: t("actions"),
+      meta: { className: "min-w-36" },
+      cell: WorkerActionsCell,
+    },
+  ];
+}
+
+function WorkerNameCell({ row }: CellContext<WorkerNode, unknown>) {
+  const { t, copied, copyValue } = useWorkerTablePresentation();
+  const nodeID = row.original.service_id || row.original.id;
+  return (
+    <div className="min-w-0">
+      <div className="flex items-center gap-2">
+        <div className="font-medium">{nodeDisplayName(row.original)}</div>
+        <Button variant="outline" size="icon-sm" aria-label={t("workerNodeIdCopy")} onClick={() => copyValue(`node-id-${nodeID}`, nodeID)}>
+          {copied === `node-id-${nodeID}` ? <Check className="size-4" /> : <Copy className="size-4" />}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function WorkerTypeCell({ row }: CellContext<WorkerNode, unknown>) {
+  return serviceTypeLabel(row.original.service_type);
+}
+
+function WorkerEndpointCell({ row }: CellContext<WorkerNode, unknown>) {
+  const { t, copied, copyValue } = useWorkerTablePresentation();
+  const node = row.original;
+  const url = nodeEndpoint(node);
+  return (
+    <div className="flex items-center gap-2 text-sm">
+      <span className="text-muted-foreground">{url ? t("workerEndpointConfigured") : t("workerEndpointNotConfigured")}</span>
+      {url ? (
+        <Button variant="outline" size="icon-sm" aria-label={t("workerEndpointCopy")} onClick={() => copyValue(`endpoint-${node.service_id || node.id}`, url)}>
+          {copied === `endpoint-${node.service_id || node.id}` ? <Check className="size-4" /> : <Link className="size-4" />}
+        </Button>
+      ) : null}
+    </div>
+  );
+}
+
+function WorkerStatusCell({ row }: CellContext<WorkerNode, unknown>) {
+  const { t } = useWorkerTablePresentation();
+  return (
+        <DomainStatusBadge
+          presentation={presentWorkerOperationalStatus(row.original)}
+          translate={t}
+          showDetail
+        />
+      );
+}
+
+function WorkerAssignmentCell({ row }: CellContext<WorkerNode, unknown>) {
+  return <NodeStateDetails node={row.original} />;
+}
+
+function WorkerReportCell({ row }: CellContext<WorkerNode, unknown>) {
+  const { t } = useWorkerTablePresentation();
+  return (
+        <div className="text-sm">
+          <div>Version {row.original.reported_version || row.original.version || t("workerNotReported")}</div>
+          <div className="text-muted-foreground">
+            {row.original.reported_os || t("workerOSNotReported")} / {row.original.reported_arch || t("workerArchNotReported")}
+          </div>
+          <div className="text-muted-foreground">{t("workerCapabilityCount", { count: capabilityCount(row.original) })}</div>
+        </div>
+      );
+}
+
+function WorkerHeartbeatCell({ row }: CellContext<WorkerNode, unknown>) {
+  const { uiText } = useWorkerTablePresentation();
+  return formatWorkerHeartbeat(row.original, undefined, uiText);
+}
+
+function WorkerLoadCell({ row }: CellContext<WorkerNode, unknown>) {
+  const { uiText } = useWorkerTablePresentation();
+  return (
+        <div className="text-sm">
+          <div>CPU {formatNodeMetricPercent(row.original.metrics, "cpu", uiText)}</div>
+          <div className="text-muted-foreground">MEM {formatNodeMetricPercent(row.original.metrics, "memory", uiText)}</div>
+        </div>
+      );
 }
 
 function WorkerActionsCell({ row }: CellContext<WorkerNode, unknown>) {

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useSyncExternalStore } from "react";
 import { DraftExitContext, useDraftExit } from "@/components/forms/draft-exit";
 import { resourceCopy } from "@/lib/i18n/ui-v2/resource-copy";
 import { PageHeader } from "@/components/shell/page-header";
@@ -17,8 +17,13 @@ export function ResourcePage({ pageId }: { pageId: ResourcePageId }) {
   const { t, locale } = useI18n();
   const currentUser = useCurrentUser();
   const page = resourcePages[pageId];
-  const defaultTab = page.resources[0]?.path || "";
-  const [tab, setTab] = useState(defaultTab);
+  const requestedTab = useSyncExternalStore(subscribeResourceHash, resourceHashSnapshot, resourceHashServerSnapshot);
+  const [selection, setSelection] = useState<{ pageId: ResourcePageId; path: string } | null>(null);
+  const defaultTab = preferredResourceTab(page.resources, currentUser.data, requestedTab);
+  const selectedResource = selection?.pageId === pageId ? page.resources.find((resource) => resource.path === selection.path) : undefined;
+  const tab = selectedResource && (!currentUser.data || resourceAccess(selectedResource, currentUser.data).read)
+    ? selectedResource.path
+    : defaultTab;
   const draftExit = useDraftExit({ enabled: Boolean(currentUser.data?.user), pending: false });
 
   return (
@@ -28,10 +33,10 @@ export function ResourcePage({ pageId }: { pageId: ResourcePageId }) {
       {page.resources.length === 1 ? (
         <ResourcePanel resource={page.resources[0]} currentUser={currentUser.data} />
       ) : (
-        <Tabs value={tab} onValueChange={(value) => draftExit.request(() => setTab(value))} className="space-y-4">
+        <Tabs value={tab} onValueChange={(value) => draftExit.request(() => setSelection({ pageId, path: value }))} className="space-y-4">
           <TabsList className="h-auto min-w-0 max-w-full flex-wrap justify-start">
             {page.resources.map((resource) => (
-              <TabsTrigger key={resource.path} value={resource.path} className="h-auto min-w-0 max-w-full whitespace-normal [overflow-wrap:anywhere]">
+              <TabsTrigger key={resource.path} value={resource.path} disabled={Boolean(currentUser.data) && !resourceAccess(resource, currentUser.data).read} className="h-auto min-w-0 max-w-full whitespace-normal [overflow-wrap:anywhere]">
                 {resourceCopy(resource, locale).title}
               </TabsTrigger>
             ))}
@@ -45,6 +50,22 @@ export function ResourcePage({ pageId }: { pageId: ResourcePageId }) {
       )}
     </div></DraftExitContext.Provider>
   );
+}
+
+function subscribeResourceHash(onChange: () => void) {
+  window.addEventListener("hashchange", onChange);
+  return () => window.removeEventListener("hashchange", onChange);
+}
+function resourceHashSnapshot() {
+  try { return decodeURIComponent(window.location.hash.slice(1)); }
+  catch { return ""; }
+}
+function resourceHashServerSnapshot() { return ""; }
+
+export function preferredResourceTab(resources: readonly ResourceDefinition[], currentUser: Parameters<typeof hasPermission>[0], requested = "") {
+  const readable = resources.filter((resource) => resourceAccess(resource, currentUser).read);
+  const target = readable.find((resource) => resource.path === requested || resource.path.split("/").at(-1) === requested);
+  return target?.path || readable[0]?.path || resources[0]?.path || "";
 }
 
 export function ResourcePanel({ resource, currentUser }: { resource: ResourceDefinition; currentUser: Parameters<typeof hasPermission>[0] }) {

@@ -25,6 +25,7 @@ export function RegisteredNodeGroup({
     <DetailSection title={title} description={description} actions={<Badge variant="outline">{rows.length}</Badge>}>
       {rows.length > 0 ? (
         <DataTable
+          className="node-data-table"
           columns={columns}
           data={rows}
           filterPlaceholder={filterPlaceholder ?? (locale === "ja" ? "Node名、種別、状態で検索" : "Search node name, type or status")}

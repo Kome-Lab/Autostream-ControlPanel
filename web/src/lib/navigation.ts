@@ -100,10 +100,10 @@ export const navigationSections: NavigationSection[] = [
       navItem("/admin/registered-nodes/", "registeredNodes", serverCogIcon, ["api_tokens.create"], "登録済みNodeを編集・削除", "Edit and remove registered nodes"),
       navItem("/admin/workers/", "workers", serverCogIcon, ["workers.read", "service_health.read", "api_tokens.create"], "Worker・EncoderとNodeサービスの状態・操作", "Operate Workers, Encoders, and Node services"),
       navItem("/admin/encoder/", "encoder", gaugeIcon, ["encoder_profiles.read"], "配信品質の標準設定", "Standardize encoding quality"),
-      navItem("/admin/discord/", "discord", messageCircleIcon, ["discord_configs.read"], "配信起動に使うDiscord BOT", "Configure Discord bots used for stream automation"),
+      navItem("/admin/discord/", "discord", messageCircleIcon, ["discord_configs.read", "discord_target_presets.read"], "Discord BOTと配信先プリセット", "Configure Discord bots and target presets"),
       navItem("/admin/youtube/", "youtube", videoIcon, ["youtube_outputs.read"], "YouTube出力と公開設定", "Configure YouTube outputs and visibility"),
       navItem("/admin/caption/", "caption", captionsIcon, ["caption_profiles.read"], "字幕生成の標準設定", "Standardize caption generation"),
-      navItem("/admin/overlay/", "overlay", layersIcon, ["overlay_profiles.read"], "案件ごとのウォーターマーク", "Manage stream watermarks"),
+      navItem("/admin/overlay/", "overlay", layersIcon, ["overlay_profiles.read", "video_cover_presets.read"], "ウォーターマークと蓋画像プリセット", "Manage watermarks and video cover presets"),
     ],
   },
   {

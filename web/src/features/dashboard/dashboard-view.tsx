@@ -13,7 +13,7 @@ import { useCurrentUser, useResourceData, useServiceHealth, useStreams } from "@
 import { OperationalStateNotice } from "@/features/monitoring/operational-state-notice";
 import {
   aggregateOperationalQueries, countOperationalStreams, knownEmptyOperationalQuery,
-  operationalQuerySnapshot, remoteStateAllowsPositiveSummary,
+  operationalQuerySnapshot, remoteStateAllowsSnapshotSummary,
   serviceAvailabilityContribution, summarizeServiceAvailability,
 } from "@/features/monitoring/operational-remote-state";
 import { hasPermission } from "@/lib/auth/permissions";
@@ -47,7 +47,7 @@ export function DashboardView() {
     return contribution.kind === "known" && !contribution.positive;
   });
   const unknownIssueCount = statusCounts.unknown + serviceCoverage.unknownCount;
-  const issueSummaryConfirmed = remoteStateAllowsPositiveSummary(remoteState, unknownIssueCount, canReadStreams || canReadServices);
+  const issueSummaryConfirmed = remoteStateAllowsSnapshotSummary(remoteState, unknownIssueCount, canReadStreams || canReadServices);
   const refreshing = streams.isFetching || services.isFetching || (canReadIncidents && incidents.isFetching);
   const refresh = () => {
     if (canReadStreams) void streams.refetch();
@@ -78,7 +78,7 @@ export function DashboardView() {
           {groups.issues.length || serviceIssues.length ? <ul className="space-y-3">
             {groups.issues.map((row) => <li key={row.id}><Link href="/admin/streams/" className="flex items-start gap-2 text-sm text-primary underline"><AlertTriangle className="size-4 shrink-0" aria-hidden="true" />{row.name}</Link></li>)}
             {serviceIssues.slice(0, 6).map((row) => <li key={row.id}><Link href="/admin/service-health/" className="text-sm text-primary underline">{row.service_name || row.service_id || row.id}</Link></li>)}
-          </ul> : <p className="text-sm">{issueSummaryConfirmed ? (ja ? "参照可能な配信・サービスに対応待ちはありません。" : "No pending issues in accessible streams and services.") : (ja ? "要対応の有無を判定できません。" : "Cannot determine whether action is required.")}</p>}
+          </ul> : <p className="text-sm">{issueSummaryConfirmed ? (ja ? "取得済みの配信・サービスに対応待ちはありません。" : "No pending issues in the loaded streams and services.") : (ja ? "要対応の有無を判定できません。" : "Cannot determine whether action is required.")}</p>}
           {unknownIssueCount > 0 ? <p className="mt-3 text-sm text-status-warning">{ja ? "状態不明: " + unknownIssueCount + " 件" : unknownIssueCount + " items have unknown state"}</p> : null}
         </DetailSection>
       </div>

@@ -23,6 +23,7 @@ export type ResourceFormKind =
   | "youtube-output"
   | "caption-profile"
   | "overlay-profile"
+  | "video-cover-preset"
   | "archive-profile"
   | "drive-destination"
   | "oauth-provider"
@@ -56,7 +57,7 @@ export const resourcePages = {
   },
   discord: {
     titleKey: "discord",
-    description: "Discord BOT Nodeの登録情報とBOTトークンを管理します。Guild、VC、Chat Channelは配信枠で指定します。",
+    description: "Discord BOTの登録情報と、配信枠で使うサーバー・チャット・ボイスチャンネルのプリセットを管理します。",
     resources: [
       {
         title: "Discord BOT設定",
@@ -70,7 +71,7 @@ export const resourcePages = {
       {
         title: "Discord配信先プリセット",
         path: "/discord/target-presets",
-        description: "Guild、Chat、Voiceの組を再利用します。配信枠への保存時に値をsnapshotし、後のプリセット変更では既存枠を変えません。",
+        description: "サーバー・チャット・ボイスチャンネルの組を再利用します。プリセットを変更しても、既存の配信枠には保存済みの配信先を保持します。",
         form: "discord-target-preset",
         deletable: true,
         permissions: { read: "discord_target_presets.read", create: "discord_target_presets.create", update: "discord_target_presets.update", delete: "discord_target_presets.delete" },
@@ -110,7 +111,7 @@ export const resourcePages = {
   },
   overlay: {
     titleKey: "overlay",
-    description: "映像に合成する1920x1080固定のウォーターマーク画像を管理します。字幕やチャットは映像生成側の設定として扱います。",
+    description: "ウォーターマークと、映像を覆う蓋画像のプリセットを管理します。蓋画像を表示中もウォーターマークはその上に表示されます。",
     resources: [
       {
         title: "ウォーターマーク設定",
@@ -120,6 +121,15 @@ export const resourcePages = {
         deletable: true,
         permissions: { read: "overlay_profiles.read", create: "overlay_profiles.create", update: "overlay_profiles.update", delete: "overlay_profiles.delete" },
         createTemplate: { name: "station-logo", config: { watermark_enabled: true, watermark_image_url: "", watermark_canvas_width: 1920, watermark_canvas_height: 1080, watermark_fit_mode: "scale_to_output" } },
+      },
+      {
+        title: "蓋画像プリセット",
+        path: "/video-cover-presets",
+        description: "配信枠で選択するVideo Cover画像です。画像を登録して有効にすると、配信枠の作成・編集画面で選べます。",
+        form: "video-cover-preset",
+        deletable: true,
+        permissions: { read: "video_cover_presets.read", create: "video_cover_presets.create", update: "video_cover_presets.update", delete: "video_cover_presets.delete" },
+        createTemplate: { name: "配信準備中", enabled: true },
       },
     ],
   },

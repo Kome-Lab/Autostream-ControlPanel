@@ -20,7 +20,7 @@ import {
   aggregateOperationalQueries,
   operationalQuerySnapshot,
   projectOperationalQuery,
-  remoteStateAllowsPositiveSummary,
+  remoteStateAllowsSnapshotSummary,
   serviceAvailabilityContribution,
   summarizeKnownStatuses,
   summarizeServiceAvailability,
@@ -79,7 +79,8 @@ export function MonitoringView() {
           <div className="flex min-w-56 flex-col items-start gap-1 text-sm sm:items-end">
             <div className={`flex items-center gap-2 font-medium ${hasError ? "text-red-700 dark:text-red-300" : "text-emerald-700 dark:text-emerald-300"}`}>
               {hasError ? <AlertCircle className="size-4" /> : <CheckCircle2 className="size-4" />}
-              {hasError ? uiText("一部の情報を取得できません") : remoteState.freshness?.kind === "refreshing" ? uiText("取得済みの値を表示しながら更新中です。") : uiText("監視情報は正常に取得済み")}
+              {hasError ? uiText("一部の情報を取得できません") : uiText("監視情報は正常に取得済み")}
+              <span className="sr-only" role="status">{remoteState.freshness?.kind === "refreshing" ? uiText("取得済みの値を表示しながら更新中です。") : ""}</span>
             </div>
             <div className="text-muted-foreground">{uiText("最終更新:")}{lastUpdated}</div>
             <div className="text-muted-foreground">{uiText("自動更新: Nodeは10秒ごと")}</div>
@@ -106,7 +107,7 @@ export function MonitoringView() {
       <section className="grid gap-6 xl:grid-cols-2">
         <DiagnosticsPanel diagnostics={diagnosticRows} loading={diagnostics.isLoading} error={diagnostics.isError} onRetry={() => void diagnostics.refetch()} entityLabels={entityLabels} />
         <OperationalFocus services={serviceRows} incidents={incidentRows} diagnostics={diagnosticRows} entityLabels={entityLabels} locale={locale}
-          summaryConfirmed={[serviceState, incidentState, diagnosticState].every((state) => remoteStateAllowsPositiveSummary(state, 0, true))} />
+          summaryConfirmed={[serviceState, incidentState, diagnosticState].every((state) => remoteStateAllowsSnapshotSummary(state, 0, true))} />
       </section>
       </DetailSection>
     </div>
@@ -231,7 +232,7 @@ function OperationalFocus({ services, incidents, diagnostics, entityLabels, loca
           {uiText("確認対象")}</CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
-        {!summaryConfirmed ? <p role="status">{uiText("未取得または更新前の情報があるため、要対応の全件数は確定していません。")}</p> : !hasAttention && unknownCount === 0 ? <EmptyState message={uiText("優先対応が必要な項目はありません。")} /> : null}
+        {!summaryConfirmed ? <p role="status">{uiText("未取得または更新前の情報があるため、要対応の全件数は確定していません。")}</p> : !hasAttention && unknownCount === 0 ? <EmptyState message={(locale === "ja" ? "取得済みデータ: " : "Loaded data: ") + uiText("優先対応が必要な項目はありません。")} /> : null}
         {unknownCount > 0 ? <div role="status" className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200">{locale === "ja" ? `${unknownCount}件は状態不明のため、正常・要対応のどちらにも数えていません。` : `${unknownCount} items have unknown status and are excluded from healthy and attention counts.`}</div> : null}
         {offlineServices.slice(0, 4).map((service) => (
           <AttentionRow key={service.id || service.service_id || service.service_name} title={service.service_name || service.service_id || "-"} detail={`${serviceTypeLabel(service.service_type)} / ${formatHeartbeat(service.heartbeat_age_sec, uiText)}`} status={service.health_status || service.status || "-"} />

@@ -5,7 +5,7 @@ import { useUICopy } from "@/lib/i18n/ui-v2/use-ui-copy";
 import { japaneseCopy, type UICopy } from "@/lib/i18n/ui-v2/copy";
 
 
-import { type ReactNode } from "react";
+import { Fragment, type ReactNode } from "react";
 import { Badge } from "@/components/ui/badge";
 import { auditActionLabel } from "@/lib/audit-action";
 import { type ResourceDefinition } from "@/features/resources/resource-config";
@@ -182,6 +182,9 @@ export function formatResourceCell(resource: ResourceDefinition, value: unknown,
   if (resource.path === "/integrations/oauth-accounts" && key === "oauth_refresh_status" && isRecord(value)) {
     return <OAuthRefreshStatus value={value} timezone={timezone} />;
   }
+  if (resource.path === "/integrations/oauth-accounts" && ["access_token_refreshed_at", "refresh_token_updated_at"].includes(key) && typeof value === "string" && value) {
+    return <OAuthDateTime value={value} timezone={timezone} />;
+  }
   if (resource.path === "/observability/notification-channels" && key === "type" && typeof value === "string") {
     return notificationChannelTypeLabel(value);
   }
@@ -312,13 +315,21 @@ function OAuthRefreshStatus({ value, timezone }: { value: Record<string, unknown
   const failureCode = typeof value.failure_code === "string" ? value.failure_code : "";
   const relinkRequired = value.relink_required === true;
   return (
-    <div className="space-y-1 text-sm leading-relaxed">
-      <div><span className="text-muted-foreground">{uiText("最終試行:")}</span>{attemptedAt ? formatScalarValue("access_token_refresh_attempted_at", attemptedAt, timezone, uiText) : uiText("未実行")}</div>
-      {failedAt ? <div><span className="text-muted-foreground">{uiText("最終失敗:")}</span>{formatScalarValue("access_token_refresh_failed_at", failedAt, timezone, uiText)}</div> : <div><span className="text-muted-foreground">{uiText("失敗状態:")}</span>{uiText("なし")}</div>}
-      {failureCode ? <div><span className="text-muted-foreground">{uiText("失敗分類:")}</span>{oauthRefreshFailureLabel(failureCode, uiText)}</div> : null}
-      <div><span className="text-muted-foreground">{uiText("再連携:")}</span>{relinkRequired ? <span className="font-medium text-destructive">{uiText("必要")}</span> : uiText("不要")}</div>
+    <div className="min-w-0 space-y-1 text-sm leading-relaxed">
+      <div className="flex flex-wrap gap-x-1"><span className="whitespace-nowrap text-muted-foreground">{uiText("最終試行:")}</span>{attemptedAt ? <OAuthDateTime value={attemptedAt} timezone={timezone} /> : uiText("未実行")}</div>
+      {failedAt ? <div className="flex flex-wrap gap-x-1"><span className="whitespace-nowrap text-muted-foreground">{uiText("最終失敗:")}</span><OAuthDateTime value={failedAt} timezone={timezone} /></div> : <div className="flex flex-wrap gap-x-1"><span className="whitespace-nowrap text-muted-foreground">{uiText("失敗状態:")}</span>{uiText("なし")}</div>}
+      {failureCode ? <div className="flex flex-wrap gap-x-1"><span className="whitespace-nowrap text-muted-foreground">{uiText("失敗分類:")}</span><span className="min-w-0">{oauthRefreshFailureLabel(failureCode, uiText)}</span></div> : null}
+      <div className="flex flex-wrap gap-x-1"><span className="whitespace-nowrap text-muted-foreground">{uiText("再連携:")}</span>{relinkRequired ? <span className="font-medium text-destructive">{uiText("必要")}</span> : uiText("不要")}</div>
     </div>
   );
+}
+
+function OAuthDateTime({ value, timezone }: { value: string; timezone?: string }) {
+  const formatted = formatScalarValue("timestamp", value, timezone);
+  if (Number.isNaN(Date.parse(value))) return formatted;
+  return <time dateTime={value} className="min-w-0 tabular-nums">{formatted.split(" ").map((part, index) => (
+    <Fragment key={index}>{index > 0 ? " " : null}<span className="inline-block whitespace-nowrap">{part}</span></Fragment>
+  ))}</time>;
 }
 
 function oauthRefreshFailureLabel(value: string, uiText: UICopy = japaneseCopy) {

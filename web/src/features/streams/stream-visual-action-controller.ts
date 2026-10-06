@@ -47,11 +47,13 @@ export function createStreamVisualActionController(dependencies: Readonly<{
     evaluate,
     get pending() { return pending; },
     get unresolved() { return unresolved; },
-    async issue(fields: Record<string, unknown>, uploadSessionID?: string): Promise<VisualActionResult> {
+    async issue(fields: Record<string, unknown>, expectedRevision: number, uploadSessionID?: string): Promise<VisualActionResult> {
+      if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) return blocked("state-unavailable");
       const unavailable = evaluate();
       if (unavailable) return unavailable;
       const opened = dependencies.getState();
       if (opened.kind !== "ready" || opened.revision === undefined || !opened.fingerprint) return blocked("state-unavailable");
+      if (opened.revision !== expectedRevision) return blocked("authority-changed");
       pending = true;
       try {
         const permission = dependencies.getPermission();
@@ -61,9 +63,9 @@ export function createStreamVisualActionController(dependencies: Readonly<{
         if (current.kind !== "ready" || current.freshness !== "fresh" || current.revision === undefined || !current.fingerprint) {
           return blocked("state-unavailable");
         }
-        if (current.revision !== opened.revision || current.fingerprint !== opened.fingerprint) return blocked("authority-changed");
+        if (current.revision !== expectedRevision || current.fingerprint !== opened.fingerprint) return blocked("authority-changed");
         try {
-          const value = await dependencies.mutate(buildVisualUpdate(current.revision, fields, uploadSessionID));
+          const value = await dependencies.mutate({ ...buildVisualUpdate(expectedRevision, fields, uploadSessionID), expected_revision: expectedRevision });
           return Object.freeze({ kind: "succeeded" as const, value });
         } catch (error) {
           const adapted = adaptAPIError(error);

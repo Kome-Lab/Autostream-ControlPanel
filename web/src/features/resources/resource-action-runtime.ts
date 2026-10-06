@@ -9,7 +9,7 @@ import {
   type ResourceActionRow,
 } from "@/features/resources/resource-action-descriptors";
 import type { ResourceActionAuthority, ResourceActionStateSnapshot } from "@/features/resources/resource-action-controller";
-import { apiDelete, apiGet, apiPost, apiPut } from "@/lib/api/client";
+import { apiDelete, apiDeleteJSON, apiGet, apiPost, apiPut } from "@/lib/api/client";
 import type { PermissionSnapshot } from "@/lib/foundation/permissions/evaluator";
 import type { CurrentUser } from "@/types/domain";
 
@@ -55,7 +55,9 @@ export async function refreshResourceAction(queryClient: QueryClient, intent: Re
 
 export async function mutateResourceAction(request: ResourceActionRequest & Readonly<{ signal: AbortSignal }>) {
   if (request.signal.aborted) throw new DOMException("Cancelled", "AbortError");
-  if (request.method === "DELETE") return apiDelete<unknown>(request.path);
+  if (request.method === "DELETE") return request.body === undefined
+    ? apiDelete<unknown>(request.path)
+    : apiDeleteJSON<unknown>(request.path, request.body);
   if (request.method === "PUT") return apiPut<unknown>(request.path, request.body);
   return apiPost<unknown>(request.path, request.body);
 }

@@ -3,10 +3,10 @@ import { notificationFeedback } from "@/lib/i18n/ui-v2/presentation-copy";
 import { useUICopy } from "@/lib/i18n/ui-v2/use-ui-copy";
 
 
-import { useState } from "react";
+import { createContext, useContext, useState, type ReactNode } from "react";
 import { Check, Copy, Send } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import type { ColumnDef } from "@tanstack/react-table";
+import type { CellContext, ColumnDef } from "@tanstack/react-table";
 import { DataTable } from "@/components/tables/data-table";
 import { DomainStatusBadge } from "@/components/foundation/status/domain-status-badge";
 import { presentNodeConnectivityStatus, presentNodeHealthStatus } from "@/lib/foundation/status/node-presenters";
@@ -28,6 +28,21 @@ import { OAuthAccountRelinkButton } from "./oauth-account-relink-button";
 import { observabilityActionButtons } from "./resource-observability-actions";
 import { DeleteResourceButton } from "./delete-resource-button";
 import { columnLabel, formatResourceCell } from "./resource-presentation";
+
+type ResourceTablePresentation = {
+  value: (cell: CellContext<ResourceRow, unknown>) => ReactNode;
+  identity: (row: ResourceRow) => ReactNode;
+  actions: (row: ResourceRow) => ReactNode;
+};
+const ResourceTableContext = createContext<ResourceTablePresentation | null>(null);
+function useResourceTablePresentation() {
+  const value = useContext(ResourceTableContext);
+  if (!value) throw new Error("Resource table requires its presentation owner");
+  return value;
+}
+function ResourceValueCell(cell: CellContext<ResourceRow, unknown>) { return useResourceTablePresentation().value(cell); }
+function ResourceIdentityCell({ row }: CellContext<ResourceRow, unknown>) { return useResourceTablePresentation().identity(row.original); }
+function ResourceActionsCell({ row }: CellContext<ResourceRow, unknown>) { return useResourceTablePresentation().actions(row.original); }
 
 export function ResourceTable({
   rows,
@@ -136,6 +151,33 @@ export function ResourceTable({
     "/stream-logs": "stream_name", "/audit-logs": "actor_username",
   };
   const identity = [familyIdentity[resource.path], "name", "username", "service_name", "id"].find((column) => column && columns.includes(column));
+  const presentation: ResourceTablePresentation = {
+    value: ({ row, column }) => resource.path === "/service-health" && (column.id === "status" || column.id === "health_status")
+      ? <DomainStatusBadge presentation={(column.id === "status" ? presentNodeConnectivityStatus : presentNodeHealthStatus)(row.original[column.id])} translate={t} showDetail />
+      : column.id === "status" && statusPresenter
+      ? <DomainStatusBadge presentation={statusPresenter(row.original[column.id])} translate={t} showDetail />
+      : column.id === identity && (row.original[column.id] === undefined || row.original[column.id] === null || row.original[column.id] === "")
+      ? resourceRowLabel(row.original, uiText)
+      : formatResourceCell(resource, row.original[column.id], column.id, timezone, uiText),
+    identity: (row) => resourceRowLabel(row, uiText),
+    actions: rowActions,
+  };
+  const definitions = resourceTableColumns(columns, identity, locale, uiText, t, showActions, resource.path);
+
+  return <ResourceTableContext.Provider value={presentation}><DataTable columns={definitions} data={rows} getRowId={(row, index) => resourceRowID(row) || String(row.name ?? index)}
+    mode={resourceHistoryConfig(resource.path) || resource.path.startsWith("/observability/") ? "server" : "client"}
+    filterPlaceholder={locale === "ja" ? "取得済みデータを検索" : "Search loaded records"}
+    density="compact" minTableWidthClass="min-w-[980px]" /></ResourceTableContext.Provider>;
+
+}
+
+const oauthColumnWidths: Readonly<Record<string, string>> = {
+  oauth_account_display_name: "min-w-40", account_usage: "min-w-36", account_summary: "min-w-48",
+  access_token_refreshed_at: "min-w-36", oauth_refresh_status: "min-w-56 max-w-80", refresh_token_updated_at: "min-w-36",
+};
+
+export function resourceTableColumns(columns: string[], identity: string | undefined, locale: "ja" | "en", uiText: ReturnType<typeof useUICopy>, t: ReturnType<typeof useI18n>["t"], showActions: boolean, resourcePath?: string): ColumnDef<ResourceRow>[] {
+  const oauthAccounts = resourcePath === "/integrations/oauth-accounts";
   const definitions: ColumnDef<ResourceRow>[] = columns.map((column, index) => ({
     id: column,
     accessorFn: (row) => typeof row[column] === "object" ? "" : row[column],
@@ -143,28 +185,19 @@ export function ResourceTable({
     meta: {
       required: column === identity || index === 0 || ["name", "id", "status", "severity"].includes(column),
       priority: column === identity || ["name", "id", "status", "severity"].includes(column) ? 0 : ["updated_at", "created_at", "confidence", "evidence"].includes(column) ? 1 : 2,
+      className: oauthAccounts ? oauthColumnWidths[column] : undefined,
     },
-    cell: ({ row }) => resource.path === "/service-health" && (column === "status" || column === "health_status")
-      ? <DomainStatusBadge presentation={(column === "status" ? presentNodeConnectivityStatus : presentNodeHealthStatus)(row.original[column])} translate={t} showDetail />
-      : column === "status" && statusPresenter
-      ? <DomainStatusBadge presentation={statusPresenter(row.original[column])} translate={t} showDetail />
-      : column === identity && (row.original[column] === undefined || row.original[column] === null || row.original[column] === "")
-      ? resourceRowLabel(row.original, uiText)
-      : formatResourceCell(resource, row.original[column], column, timezone, uiText),
+    cell: ResourceValueCell,
   }));
   if (!identity) definitions.unshift({
     id: "record-identity", header: uiText("名前"), meta: { required: true, priority: 0 },
-    cell: ({ row }) => resourceRowLabel(row.original, uiText),
+    cell: ResourceIdentityCell,
   });
   if (showActions) definitions.push({
-    id: "actions", header: t("actions"), meta: { required: true, priority: 0 },
-    cell: ({ row }) => rowActions(row.original),
+    id: "actions", header: t("actions"), meta: { required: true, priority: 0, className: oauthAccounts ? "min-w-36" : undefined },
+    cell: ResourceActionsCell,
   });
-  return <DataTable columns={definitions} data={rows} getRowId={(row, index) => resourceRowID(row) || String(row.name ?? index)}
-    mode={resourceHistoryConfig(resource.path) || resource.path.startsWith("/observability/") ? "server" : "client"}
-    filterPlaceholder={locale === "ja" ? "取得済みデータを検索" : "Search loaded records"}
-    density="compact" minTableWidthClass="min-w-[980px]" />;
-
+  return definitions;
 }
 
 function CopyResourceIDButton({ id, copied, onCopy }: { id: string; copied: boolean; onCopy: (id: string) => Promise<void> }) {

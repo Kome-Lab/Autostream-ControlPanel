@@ -103,13 +103,14 @@ test('UI-VISUAL-LABEL-013: all six actual ModeSelect calls link unique localized
  const helper=file.statements.find(n=>ts.isFunctionDeclaration(n)&&n.name?.text==='ModeSelect');assert.ok(helper);
  const code=ts.transpileModule(helper.getText(file)+'\nfunction Fields(){return <>'+calls.join('\n')+'</>};exports.Fields=Fields;',{compilerOptions:{jsx:ts.JsxEmit.ReactJSX,module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
  const selects=await import('../../src/components/ui/select.tsx'),{defaultStreamVisualDraft}=await import('../../src/features/streams/stream-visual-draft.ts');
+ const {visualPresetOptions}=await import('../../src/features/streams/stream-visual-settings-section.tsx');
  for(const locale of ['ja','en'] as const){
-   const output:{Fields?:ComponentType}={},values={...selects,useId,locale,draft:defaultStreamVisualDraft(),controlsDisabled:false,uploadedBackground:false,uploadedCover:false,discordRows:[],coverRows:[],rowString:()=>'',update(){assert.fail('label rendering must not update');}};
+   const output:{Fields?:ComponentType}={},values={...selects,useId,locale,draft:defaultStreamVisualDraft(),controlsDisabled:false,uploadedBackground:false,uploadedCover:false,discordRows:[],coverRows:[],canReadDiscordPresets:true,canReadCoverPresets:true,canSelectDiscordPreset:true,canSelectCoverPreset:true,coverPresetRevision:0,visualPresetOptions,selectDiscordPreset(){assert.fail('label rendering must not update');},selectCoverPreset(){assert.fail('label rendering must not update');},rowString:()=>'',update(){assert.fail('label rendering must not update');}};
    new Function('exports','require',...Object.keys(values),code)(output,createRequire(import.meta.url),...Object.values(values));assert.ok(output.Fields);
    const html=renderToStaticMarkup(createElement('div',null,createElement(output.Fields),createElement(output.Fields))),dom=actualMarkupDOM(html);
    const peers=dom.document.querySelectorAll('[role=combobox]'),labels=dom.document.querySelectorAll('label');assert.equal(peers.length,12);assert.equal(labels.length,12);assert.equal(new Set(labels.map(l=>l.textContent)).size,6);
    for(const peer of peers){const labelsFor=labels.filter(label=>label.htmlFor===peer.id);assert.equal(labelsFor.length,1);assert.equal(peer.getAttribute('aria-labelledby'),labelsFor[0].id);assert.ok(labelsFor[0].textContent.trim());assert.doesNotMatch(labelsFor[0].getAttribute('class')||'',/hidden|sr-only/);}
-   assert.match(html,locale==='ja'?/シーン背景モード/:/Scene background mode/);assert.match(html,locale==='ja'?/Video Coverプリセット/:/Video Cover preset/);
+   assert.match(html,locale==='ja'?/シーン背景モード/:/Scene background mode/);assert.match(html,locale==='ja'?/蓋画像プリセット/:/Video cover preset/);
    const condition={...conditions[0],locale:'en',mode:'light',theme:'autostream'};assertObservation(dom.run<UIObservation>(observationExpression),condition);
    for(const fault of ['missing','wrong','empty','duplicate']){const bad=actualMarkupDOM(html),peer=bad.document.querySelector('[role=combobox]')!,label=bad.document.getElementById(peer.getAttribute('aria-labelledby')!)!;
      if(fault==='missing')label.id='missing';if(fault==='wrong')peer.setAttribute('aria-labelledby','wrong');if(fault==='empty')label.ownText='';if(fault==='duplicate')bad.main.add(new Element('LABEL','Duplicate')).id=label.id;
@@ -150,7 +151,7 @@ test('UI-FORM-SECTIONS-010: actual create/edit/live forms link visible real regi
     for(const id of targets){
       const sections=[...html.matchAll(/<section\b([^>]*)>([\s\S]*?)<\/section>/g)].filter(m=>m[1].includes('id="'+id+'"'));
       assert.equal(sections.length,1);assert.match(sections[0][1],/tabindex="-1"/);assert.match(sections[0][1],/aria-label="[^"]+"/);assert.doesNotMatch(sections[0][1],/hidden|sr-only/);
-      if(!id.endsWith('-visual')){assert.match(sections[0][2],/<fieldset/);assert.match(sections[0][2],/<legend/);assert.match(sections[0][2],/<input|role="combobox"/);}else assert.match(sections[0][2],/Video Cover/);
+      if(!id.endsWith('-visual')){assert.match(sections[0][2],/<fieldset/);assert.match(sections[0][2],/<legend/);assert.match(sections[0][2],/<input|role="combobox"/);}else assert.match(sections[0][2],/video cover/i);
     }
     assert.equal(mutations,0);
   }

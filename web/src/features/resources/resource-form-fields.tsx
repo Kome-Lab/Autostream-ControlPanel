@@ -7,6 +7,7 @@ import { type SubmitResource, type ResourceRow } from "./resource-form-types";
 import { EncoderProfileForm, DiscordConfigForm, DiscordTargetPresetForm, YouTubeOutputForm } from "./resource-stream-forms";
 import { CaptionProfileForm } from "./resource-caption-form";
 import { OverlayProfileForm } from "./resource-overlay-form";
+import { VideoCoverPresetForm } from "./resource-video-cover-form";
 import { ArchiveProfileForm, DriveDestinationForm } from "./resource-archive-forms";
 import { OAuthProviderForm, OAuthAccountRenameForm, OAuthAccountConnectForm } from "./resource-oauth-forms";
 import { UserForm, RoleForm } from "./resource-access-forms";
@@ -27,6 +28,8 @@ export function ResourceFormFields({ resource, disabled, submit, initial, submit
       return <CaptionProfileForm disabled={disabled} submit={submit} initial={initial} submitLabel={submitLabel} />;
     case "overlay-profile":
       return <OverlayProfileForm disabled={disabled} submit={submit} initial={initial} submitLabel={submitLabel} />;
+    case "video-cover-preset":
+      return <VideoCoverPresetForm disabled={disabled} submit={submit} initial={initial} submitLabel={submitLabel} />;
     case "archive-profile":
       return <ArchiveProfileForm disabled={disabled} submit={submit} initial={initial} submitLabel={submitLabel} />;
     case "drive-destination":

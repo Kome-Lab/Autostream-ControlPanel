@@ -1,15 +1,17 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { inverseReleaseAssembly, releaseAssemblyBase, releaseAssemblyPaths, releaseAssemblySource } from "./release-assembly-deltas.mts";
+import { cp174Paths, inverseCP174Source } from "./cp174-source-deltas.mts";
 import { createNormalizedReader } from "./source-normalization.mts";
 
 const root = fileURLToPath(new URL("../../..", import.meta.url));
 const object = (commit: string, path: string) => execFileSync("git", ["show", commit + ":" + path], { cwd: root, maxBuffer: 32 * 1024 * 1024 });
-const raw = (path: string) => object("HEAD", path);
+const raw = (path: string) => readFileSync(resolve(root, path));
+const assemblyRaw = (path: string) => cp174Paths.includes(path) ? inverseCP174Source(path, raw(path)) : raw(path);
 const io = { raw, object, exists: (path: string) => existsSync(resolve(root, path)) };
 const expectedPaths = [
   ".github/workflows/ci.yml",
@@ -30,7 +32,7 @@ test("UI-RELEASE-ASSEMBLY-001: exactly eleven existing sources bind both fixed G
   assert.equal(new Set(releaseAssemblyPaths).size, 11);
   const reader = createNormalizedReader(root, io);
   for (const path of releaseAssemblyPaths) {
-    const before = object(releaseAssemblyBase, path), current = raw(path);
+    const before = object(releaseAssemblyBase, path), current = assemblyRaw(path);
     assert.deepEqual(current, object(releaseAssemblySource, path));
     assert.deepEqual(inverseReleaseAssembly(path, before, current), before);
     if (path !== ".github/workflows/ci.yml") assert.deepEqual(reader.read(path), before);
@@ -43,7 +45,7 @@ test("UI-RELEASE-ASSEMBLY-001: exactly eleven existing sources bind both fixed G
 
 test("UI-RELEASE-ASSEMBLY-002: missing, extra, truncated, reverted and wrong-original source bytes fail closed", () => {
   for (const path of releaseAssemblyPaths) {
-    const before = object(releaseAssemblyBase, path), current = raw(path);
+    const before = object(releaseAssemblyBase, path), current = assemblyRaw(path);
     for (const mutant of [Buffer.alloc(0), Buffer.concat([current, Buffer.from("\n")]), current.subarray(0, current.length - 1), before]) {
       assert.throws(() => inverseReleaseAssembly(path, before, mutant), /exact specified name edits/);
     }

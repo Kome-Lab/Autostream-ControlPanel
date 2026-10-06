@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { readMovedSource } from "./helpers/moved-source.mts";
 import { register } from "node:module";
 import test from "node:test";
+import { assertResourceActionInventory, currentActionInventory } from "./helpers/ui-foundation-action-inventory.mts";
 
 import type { ResourceActionIntent, ResourceActionTemplate } from "../src/features/resources/resource-action-descriptors.ts";
 import type { ResourceActionStateSnapshot } from "../src/features/resources/resource-action-controller.ts";
@@ -32,26 +32,12 @@ const {
   resourceActionRequest,
 } = await import("../src/features/resources/resource-action-descriptors.ts");
 const { createResourceActionController } = await import("../src/features/resources/resource-action-controller.ts");
+const canonicalResourceActions = resourceActionDescriptors.filter(({ wave }) => wave === "3A" || wave === "3B");
 
-type InventoryRow = {
-  id: string;
-  route: string;
-  method: string;
-  risk: string;
-  confirmation: string;
-  duplicateScope: string;
-  audit: string;
-  migrationWave: string;
-};
-
-const inventory = readFileSync(new URL("./fixtures/ui-foundation-action-inventory.jsonl", import.meta.url), "utf8")
-  .trim()
-  .split(/\r?\n/u)
-  .map((line) => JSON.parse(line) as InventoryRow)
-  .filter((entry) => entry.id.startsWith("RES-"));
+const inventory = currentActionInventory.filter(({ id }) => id.startsWith("RES-"));
 
 test("Generic Resources declares the canonical RES 40/40 and frozen wave denominators", () => {
-  const ids = resourceActionDescriptors.map(({ id }) => id);
+  const ids = canonicalResourceActions.map(({ id }) => id);
   assert.equal(ids.length, 40);
   assert.equal(new Set(ids).size, 40);
   assert.deepEqual(ids, Array.from({ length: 40 }, (_, index) => `RES-${String(index + 1).padStart(2, "0")}`));
@@ -62,23 +48,13 @@ test("Generic Resources declares the canonical RES 40/40 and frozen wave denomin
   ]);
 });
 
-test("the typed table is mechanically identical to the canonical inventory authority", () => {
-  assert.equal(inventory.length, 40);
-  for (const entry of inventory) {
-    const descriptor = resourceActionDescriptors.find(({ id }) => id === entry.id);
-    assert.ok(descriptor, entry.id);
-    assert.equal(descriptor.route, entry.route, `${entry.id} route`);
-    assert.equal(descriptor.method, entry.method, `${entry.id} method`);
-    assert.equal(descriptor.risk, entry.risk, `${entry.id} risk`);
-    assert.equal(descriptor.auditAction, entry.audit, `${entry.id} audit`);
-    assert.equal(descriptor.wave, entry.migrationWave, `${entry.id} wave`);
-    assert.equal(descriptor.duplicateScope, inventoryDuplicateScope(entry.duplicateScope), `${entry.id} duplicate scope`);
-    assert.equal(descriptor.confirmation, inventoryConfirmation(entry.confirmation), `${entry.id} confirmation`);
-  }
+test("the typed table is mechanically identical to all 46 current canonical Resource actions", () => {
+  assert.equal(inventory.length, 46);
+  assertResourceActionInventory(inventory, resourceActionDescriptors);
 });
 
 test("all 40 requests preserve their exact endpoint, method, and payload presence", () => {
-  for (const template of resourceActionDescriptors) {
+  for (const template of canonicalResourceActions) {
     const intent = intentFor(template);
     const request = resourceActionRequest(intent);
     assert.ok(request, template.id);
@@ -239,7 +215,9 @@ test("desktop and mobile rows share one guarded action factory and cached rows s
   const source = readMovedSource(new URL("../src/features/resources/resource-page.tsx", import.meta.url));
   assert.match(source, /const rowActions = \(row: ResourceRow\) =>/);
   // UI renewal 001 section 6.3: one real table row, not two hidden controller trees.
-  assert.equal((source.match(/cell: \(\{ row \}\) => rowActions\(row\.original\)/g) || []).length, 1);
+  assert.equal((source.match(/cell: ResourceActionsCell/g) || []).length, 1);
+  assert.match(source, /function ResourceActionsCell\(\{ row \}[\s\S]*?useResourceTablePresentation\(\)\.actions\(row\.original\)/);
+  assert.match(source, /actions: rowActions/);
   assert.match(source, /<DataTable columns=\{definitions\} data=\{rows\}/);
   assert.match(source, /query\.isLoading && rows\.length === 0/);
   assert.match(source, /rows\.length === 0 && query\.isError \? null/);
@@ -265,19 +243,6 @@ function intentFor(template: ResourceActionTemplate): ResourceActionIntent {
     ...(template.method === "DELETE" || template.operation === "test" ? {} : { payload }),
     publicLabel: "Public Resource",
   });
-}
-
-function inventoryDuplicateScope(value: string) {
-  if (value === "RA") return "resource-action";
-  if (value === "RT") return "resource-target";
-  if (value === "SESS") return "session-flow";
-  throw new Error(`unknown duplicate scope: ${value}`);
-}
-
-function inventoryConfirmation(value: string) {
-  if (value === "C") return "consequence";
-  if (value.startsWith("T(")) return value === "T(deepgram_api_key)" || value === "T(SECURITY POLICY)" ? "typed-fixed" : "typed-label";
-  throw new Error(`unknown confirmation: ${value}`);
 }
 
 function resourceHarness(options: {

@@ -5419,7 +5419,7 @@
       },
       {
         "path": "web/src/features/nodes/node-registration-view.tsx",
-        "sha256": "88c00b7c619be5755ba1393acc47ed261baef4c1e6f8c835fd954f264dbb7ef6",
+        "sha256": "5acb8deb18aa920b2157bb8fd049954a57e313e0770166896b113c52583a6da2",
         "symbols": [
           "LegacyNodeRegistrationView",
           "NodeRegistrationView",
@@ -5429,15 +5429,15 @@
           "openEditNode",
           "submitEditNode"
         ],
-        "physical_lines": 360
+        "physical_lines": 364
       },
       {
         "path": "web/src/features/nodes/registered-node-columns.tsx",
-        "sha256": "b560dc7ba0427922e71619eccdcc9d319c96cc612ea42e19173cc5a7c6ed19e5",
+        "sha256": "5ebbfd507c0a110f0f2bf693b04f5b89ac1fc4a4edcf05c16dad8a08b00a19e1",
         "symbols": [
           "createRegisteredNodeColumns"
         ],
-        "physical_lines": 179
+        "physical_lines": 208
       },
       {
         "path": "web/src/features/nodes/use-node-registration-mutations.ts",

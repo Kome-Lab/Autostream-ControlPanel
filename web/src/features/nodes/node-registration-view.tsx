@@ -31,7 +31,7 @@ import { RegisteredNodeGroup } from "./registered-node-group";
 import { NodeConfigurationCard } from "./node-configuration-card";
 import { NodeEditDialog } from "./node-edit-dialog";
 import { useNodeRegistrationMutations } from "./use-node-registration-mutations";
-import { createRegisteredNodeColumns } from "./registered-node-columns";
+import { createRegisteredNodeColumns, RegisteredNodeTableContext } from "./registered-node-columns";
 
 
 export function NodeRegistrationView({ mode = "registration" }: { mode?: NodeRegistrationViewMode }) {
@@ -128,6 +128,7 @@ function LegacyNodeRegistrationView({ mode = "registration" }: { mode?: NodeRegi
   const registeredRemoteState = aggregateRemainingQueries("nodes", {
     "registered-nodes": remainingQuerySnapshot(registeredNodes),
   });
+  const registeredSnapshotAvailable = (registeredRemoteState.kind === "ready" || registeredRemoteState.kind === "empty") && registeredRemoteState.freshness.kind !== "stale";
   const operationalRegisteredRows = registeredRows.filter((node) => node.service_type !== "update_agent");
   const updaterRegisteredRows = registeredRows.filter((node) => node.service_type === "update_agent");
 
@@ -170,10 +171,12 @@ function LegacyNodeRegistrationView({ mode = "registration" }: { mode?: NodeRegi
   const showRegistration = mode !== "registered";
   const showRegistered = mode !== "registration";
 
-  const registeredColumns = createRegisteredNodeColumns({
+  const registeredTablePresentation = {
     t, copyValue, copied, timezone, allowed, canRevokeRuntimeToken, canResolveRuntimeSecrets, canExecuteSystemUpdates, canDeleteNode,
     actions: { loadConfiguration, regenerateConfigureToken, rotateRuntimeToken, deleteNode }, openEditNode,
-  }, uiText);
+    uiText,
+  };
+  const registeredColumns = createRegisteredNodeColumns(registeredTablePresentation, uiText);
 
   return (
     <div className="space-y-5" data-screen-family={mode === "registered" ? "registered-nodes" : "nodes"}>
@@ -308,14 +311,15 @@ function LegacyNodeRegistrationView({ mode = "registration" }: { mode?: NodeRegi
               <CardTitle>{uiText("登録済みNode")}</CardTitle>
               <CardDescription>{uiText("作成済みNode、Configure実行状況、最終Heartbeatを確認できます。")}</CardDescription>
             </div>
-            <Button variant="outline" size="sm" onClick={() => registeredNodes.refetch()} disabled={registeredNodes.isFetching}>
-              <RotateCw className="size-4" />
-              {registeredNodes.isFetching ? uiText("更新中") : locale === "ja" ? "更新" : "Refresh"}
+            <Button variant="outline" size="sm" onClick={() => registeredNodes.refetch()} aria-busy={registeredNodes.isFetching} disabled={registeredNodes.isFetching}>
+              <RotateCw className={registeredNodes.isFetching ? "size-4 animate-spin motion-reduce:animate-none" : "size-4"} aria-hidden="true" />
+              {locale === "ja" ? "更新" : "Refresh"}
+              <span className="sr-only" role="status">{registeredNodes.isFetching ? uiText("更新中") : ""}</span>
             </Button>
           </div>
         </CardHeader>
         <CardContent className="space-y-3">
-          {registeredRemoteState.kind !== "ready" || registeredRemoteState.freshness.kind !== "fresh" ? (
+          {!registeredSnapshotAvailable ? (
             <RemainingStateNotice state={registeredRemoteState} consumer="nodes" />
           ) : null}
           {createToken.data?.node ? (
@@ -328,7 +332,7 @@ function LegacyNodeRegistrationView({ mode = "registration" }: { mode?: NodeRegi
             </div>
           ) : null}
           <div className="text-sm text-muted-foreground">{uiText("登録済み:")}{registeredRows.length} Node</div>
-          <div className="grid gap-4">
+          <RegisteredNodeTableContext.Provider value={registeredTablePresentation}><div className="grid gap-4">
             <RegisteredNodeGroup
               title={uiText("Nodeサービス")}
               description={uiText("Worker、Encoder / Recorder、Discord BOT、Observabilityの登録・稼働情報")}
@@ -344,7 +348,7 @@ function LegacyNodeRegistrationView({ mode = "registration" }: { mode?: NodeRegi
                 filterPlaceholder={uiText("Updater名、Host ID、状態で検索")}
               />
             ) : null}
-          </div>
+          </div></RegisteredNodeTableContext.Provider>
         </CardContent>
       </Card>
       ) : null}

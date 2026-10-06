@@ -141,7 +141,7 @@ test("UI-DRAFT-009: real Security result and resource-tab callbacks keep one dra
   actualJSXCallback(mutant,"ResourceActionConfirmationHost","onResult",bindings)({kind:"succeeded"});
   assert.throws(()=>assert.equal(saved,"edited"),/before/);
   const {state,controller}=setup();state.dirty=true;
-  const change=actualJSXCallback(source("features/resources/resource-page.tsx"),"Tabs","onValueChange",{draftExit:controller,setTab:(value:string)=>{tab=value;}});
+  const change=actualJSXCallback(source("features/resources/resource-page.tsx"),"Tabs","onValueChange",{draftExit:controller,pageId:"security",setSelection:(value:{pageId:string;path:string})=>{assert.equal(value.pageId,"security");tab=value.path;}});
   change("/secrets/status");assert.equal(tab,"/security/settings");
   state.discard=true;change("/secrets/status");assert.equal(tab,"/secrets/status");
   assert.match(current,/dirtyRef\.current\) return;/);

@@ -34,6 +34,7 @@ export function GenericResourcePanel({ resource, access, currentUser }: { resour
   const copy = resourceCopy(resource, locale);
   const queryClient = useQueryClient();
   const query = useResourceData<unknown>(resource.path, access.read);
+  const quietRefresh = query.isFetching && query.status === "success" && query.data !== undefined;
   const appSettings = useAppSettings();
   const timezone = appSettings.data?.timezone;
   const historyConfig = useMemo(() => resourceHistoryConfig(resource.path), [resource.path]);
@@ -125,17 +126,18 @@ export function GenericResourcePanel({ resource, access, currentUser }: { resour
 
   return (
     <DetailSection title={copy.title} description={copy.description} actions={<div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" disabled={query.isFetching} onClick={() => {
+          <Button variant="outline" size="sm" aria-busy={query.isFetching} disabled={query.isFetching} onClick={() => {
             void query.refetch().then((result) => {
               if (result.isSuccess) resourceActionController.reconcile();
             });
           }}>
-            <RefreshCcw className="size-4" />
+            <RefreshCcw className={query.isFetching ? "size-4 animate-spin motion-reduce:animate-none" : "size-4"} aria-hidden="true" />
             {locale === "ja" ? "更新" : "Refresh"}
+            <span className="sr-only" role="status">{quietRefresh ? (locale === "ja" ? "取得済みデータを表示しながら更新中です。" : "Refreshing; showing previously received data.") : ""}</span>
           </Button>
         </div>}>
       <div className="space-y-4">
-        {query.isFetching && query.data !== undefined ? <p role="status" className="text-sm text-muted-foreground">{locale === "ja" ? "取得済みデータを表示しながら更新中です。" : "Refreshing; showing previously received data."}</p> : null}
+        {query.isFetching && query.data !== undefined && !quietRefresh ? <p role="status" className="text-sm text-muted-foreground">{locale === "ja" ? "取得済みデータを表示しながら更新中です。" : "Refreshing; showing previously received data."}</p> : null}
         {query.isError ? <QueryErrorNotice onRetry={() => {
           void query.refetch().then((result) => {
             if (result.isSuccess) resourceActionController.reconcile();

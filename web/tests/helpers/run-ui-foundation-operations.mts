@@ -25,6 +25,7 @@ export const requiredOperationSuiteFiles = Object.freeze([
   "tests/streams-visual-integration.test.mts",
   "tests/operational-remote-state.test.mts",
   "tests/generic-resource-foundation-migration.test.mts",
+  "tests/preset-resource-actions.test.mts",
   "tests/app-settings-foundation-migration.test.mts",
   "tests/remaining-consumers-foundation.test.mts",
   "tests/ui-foundation-final-gate.test.mts",

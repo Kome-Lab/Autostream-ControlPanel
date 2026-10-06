@@ -112,7 +112,8 @@ export function DiscordTargetPresetForm({ disabled, submit, initial, submitLabel
   const [guildID, setGuildID] = useState(() => rowString(row, ["guild_id"]));
   const [textChannelID, setTextChannelID] = useState(() => rowString(row, ["text_channel_id"]));
   const [voiceChannelID, setVoiceChannelID] = useState(() => rowString(row, ["voice_channel_id"]));
-  const input = { name, guildID, textChannelID, voiceChannelID, ...(initial ? { revision: numberValue(rowString(row, ["revision"]), 0) } : {}) };
+  const [revision] = useState(() => initial ? numberValue(rowString(row, ["revision"]), 0) : undefined);
+  const input = { name, guildID, textChannelID, voiceChannelID, ...(revision !== undefined ? { revision } : {}) };
   const ready = validDiscordTargetPreset(input);
 
   useNonSecretDraft([name, guildID, textChannelID, voiceChannelID]);

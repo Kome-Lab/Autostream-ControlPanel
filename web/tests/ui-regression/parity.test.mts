@@ -5,8 +5,12 @@ import { readdirSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { resourceActionDescriptors } from "../../src/features/resources/resource-action-descriptors.ts";
+import { assertResourceActionInventory, currentActionInventory, frozenActionInventory, v2ActionInventory } from "../helpers/ui-foundation-action-inventory.mts";
 import "./release-assembly-deltas.test.mts";
 import "./ci-closure-deltas.test.mts";
+import "./cp174-source-deltas.test.mts";
+import { cp174ProtectedPaths } from "./cp174-source-deltas.mts";
 import ts from "typescript";
 import { createNormalizedReader, assertNormalizationManifest, inverseNormalization } from "./source-normalization.mts";
 import { approvedProtectedPaths, assertApprovedManifest, assertProtectedFixture, assertApprovedSourceDelta, assertRunnerTypeDelta, assertBrowserOperationSource } from "./approved-source-delta.mts";
@@ -42,16 +46,34 @@ test("UI-PARITY-002: 100 actions keep original permission, payload, duplicate an
     for (const path of row.current_owner_paths) assert.ok(existsSync(resolve(root, path)), row.id + ": missing owner");
   }
 });
-test("UI-PARITY-003: original 733 records retain 728 current owners and five fixed-history-only sources with prior bounded deltas", () => {
+test("UI-PARITY-002-V2: current parity includes all 106 actions and the six preset mutation owners", () => {
+  const original = fixture("actions").actions.map((row: { original: unknown }) => row.original);
+  assert.deepEqual(frozenActionInventory, original, "the 100-action authority remains unchanged");
+  assert.equal(currentActionInventory.length, 106);
+  assert.equal(new Set(currentActionInventory.map(({ id }) => id)).size, 106);
+  assert.deepEqual(currentActionInventory.filter(({ migrationWave }) => migrationWave !== "v2"), original);
+  assert.deepEqual(currentActionInventory.filter(({ migrationWave }) => migrationWave === "v2"), v2ActionInventory);
+  assert.deepEqual(v2ActionInventory.map(({ id }) => id), ["RES-41", "RES-42", "RES-43", "RES-44", "RES-45", "RES-46"]);
+  assertResourceActionInventory(currentActionInventory, resourceActionDescriptors);
+  for (const row of v2ActionInventory) {
+    const ownerPath = "web/src/features/resources/" + row.uiSource.split("/")[0];
+    assert.ok(existsSync(resolve(root, ownerPath)), row.id + ": missing current mutation owner");
+  }
+});
+test("UI-PARITY-003: original 733 records retain 728 current owners and five fixed-history-only sources with prior bounded deltas and one CP174 backend delta", () => {
   const records = fixture("protected").protected;
   assert.ok(records.length > 100);
   const manifest = fixture("approved-source-deltas");
   assertProtectedFixture(read("web/tests/fixtures/ui-regression/protected.json"), manifest);
   assertBrowserOperationSource(read(manifest.g3OperationDelta.newSource.path), manifest);
   assert.equal(records.length, 733);
-  let rawMatches = 0, normalizedMatches = 0, historicalMatches = 0, deltas = 0, ciDeltas = 0;
+  let rawMatches = 0, normalizedMatches = 0, historicalMatches = 0, deltas = 0, ciDeltas = 0, cp174Deltas = 0;
   for (const row of records) {
-    if (approvedProtectedPaths.some(path => path === row.path)) {
+    if (cp174ProtectedPaths.includes(row.path)) {
+      assert.equal(sha(rawBase(row.path)), row.sha256, row.path);
+      assert.deepEqual(read(row.path), rawBase(row.path), "CP174 finite inverse restores the original protected backend bytes");
+      cp174Deltas++;
+    } else if (approvedProtectedPaths.some(path => path === row.path)) {
       assert.equal(sha(rawBase(row.path)), row.sha256, row.path);
       assertApprovedSourceDelta(row.path, rawBase(row.path), read(row.path), manifest); deltas++;
     } else if (ciProtectedPaths.some(path => path === row.path)) {
@@ -64,8 +86,8 @@ test("UI-PARITY-003: original 733 records retain 728 current owners and five fix
       else rawMatches++;
     }
   }
-  assert.equal(historicalMatches, 5); assert.equal(rawMatches + normalizedMatches + deltas + ciDeltas, 728);
-  assert.equal(rawMatches + normalizedMatches, 722); assert.equal(deltas, 4); assert.equal(ciDeltas, 2);
+  assert.equal(historicalMatches, 5); assert.equal(rawMatches + normalizedMatches + deltas + ciDeltas + cp174Deltas, 728);
+  assert.equal(rawMatches + normalizedMatches, 721); assert.equal(deltas, 4); assert.equal(ciDeltas, 2); assert.equal(cp174Deltas, 1);
 });
 function navigationBindings(source: string) {
   const bindings: { href: string; permissions: string[]; key: string }[] = [];
@@ -85,7 +107,45 @@ function navigationBindings(source: string) {
 test("UI-PARITY-004: navigation groups retain every exact route and permission binding", () => {
   const before = navigationBindings(rawBase("web/src/lib/navigation.ts").toString("utf8"));
   assert.equal(before.length, 26);
-  assert.deepEqual(navigationBindings(read("web/src/lib/navigation.ts").toString("utf8")), before);
+  // Keep the immutable base authoritative for every original binding. The
+  // current UI adds only these two independent preset-read alternatives.
+  const expected = structuredClone(before);
+  for (const [href, original, addition] of [
+    ["/admin/discord/", "discord_configs.read", "discord_target_presets.read"],
+    ["/admin/overlay/", "overlay_profiles.read", "video_cover_presets.read"],
+  ]) {
+    const binding = expected.find(row => row.href === href);
+    assert.ok(binding, href + ": missing original route");
+    assert.deepEqual(binding.permissions, [original], href + ": original permission binding changed");
+    binding.permissions.push(addition);
+  }
+  const currentSource = read("web/src/lib/navigation.ts").toString("utf8");
+  const current = navigationBindings(currentSource);
+  const assertCurrent = (bindings: ReturnType<typeof navigationBindings>) => {
+    assert.deepEqual(bindings, expected, "current navigation permits only the two approved preset read additions");
+  };
+  assertCurrent(current);
+  assert.deepEqual([...currentSource.matchAll(/\bkey:\s*["']([^"']+)["']/g)].map(match => match[1]),
+    ["navOperations", "navMonitoring", "navProfiles", "navAdministration"]);
+
+  for (const [href, permissions] of [
+    ["/admin/discord/", ["discord_configs.read"]],
+    ["/admin/overlay/", ["overlay_profiles.read"]],
+    ["/admin/discord/", ["discord_target_presets.read"]],
+    ["/admin/overlay/", ["video_cover_presets.read"]],
+    ["/admin/discord/", ["discord_configs.read", "discord_target_presets.read", "discord_target_presets.read"]],
+    ["/admin/overlay/", ["overlay_profiles.read", "video_cover_presets.create"]],
+    ["/admin/streams/", ["streams.read", "discord_target_presets.read"]],
+  ] satisfies [string, string[]][]) {
+    const mutant = structuredClone(current);
+    mutant.find(row => row.href === href)!.permissions = permissions;
+    assert.throws(() => assertCurrent(mutant), /only the two approved preset read additions/);
+  }
+  const changedKey = structuredClone(current);
+  changedKey[0].key = "unapproved";
+  for (const mutant of [current.slice(1), [...current, structuredClone(current[0])], changedKey]) {
+    assert.throws(() => assertCurrent(mutant), /only the two approved preset read additions/);
+  }
 });
 test("UI-PARITY-005: runtime dependencies and original browser registration stay fixed with the exact type-only closure", () => {
   const before = JSON.parse(rawBase("web/package.json").toString("utf8"));

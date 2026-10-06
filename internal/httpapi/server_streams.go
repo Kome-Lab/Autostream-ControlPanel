@@ -342,6 +342,11 @@ func (s *Server) deleteStream(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) streamsWithAssignedNodes(ctx context.Context, streams []store.Stream) ([]store.Stream, error) {
+	// List responses must stay JSON arrays even when a store returns a nil
+	// slice for a successful query with no rows.
+	if streams == nil {
+		return []store.Stream{}, nil
+	}
 	for index := range streams {
 		stream, err := s.streamWithAssignedNodes(ctx, streams[index])
 		if err != nil {
