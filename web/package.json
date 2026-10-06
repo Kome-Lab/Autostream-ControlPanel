@@ -55,7 +55,7 @@
     "echarts": "^6.1.0",
     "hls.js": "^1.7.0",
     "lucide-react": "^1.26.0",
-    "next": "16.3.3",
+    "next": "16.3.6",
     "postcss": "^8.5.23",
     "radix-ui": "^1.6.7",
     "react": "^19.2.8",
@@ -78,6 +78,9 @@
   "overrides": {
     "sharp": "0.35.4",
     "js-yaml": "4.3.2",
+    "source-map-js": "1.2.2",
+    "brace-expansion@1.x": "1.1.21",
+    "brace-expansion@5.x": "5.0.12",
     "next": {
       "postcss": "8.5.23"
     }

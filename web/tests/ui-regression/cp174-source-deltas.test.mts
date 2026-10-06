@@ -9,6 +9,7 @@ import test from "node:test";
 import { assertCP174Original, assertCP174SourceDelta, cp174Base, cp174Paths, cp174ProtectedPaths, inverseCP174Source } from "./cp174-source-deltas.mts";
 import { createNormalizedReader } from "./source-normalization.mts";
 import { releaseAssemblyBase, releaseAssemblySource } from "./release-assembly-deltas.mts";
+import { cp176Base, cp176Paths, inverseCP176DependencyRepair } from "./cp176-dependency-deltas.mts";
 
 const root = fileURLToPath(new URL("../../..", import.meta.url));
 const raw = (path: string) => readFileSync(resolve(root, path));
@@ -16,6 +17,8 @@ const object = (commit: string, path: string) => execFileSync("git", ["show", co
 const io = { raw, object, exists: (path: string) => existsSync(resolve(root, path)) };
 const expectedPaths = ["internal/httpapi/server_streams.go", "web/package.json", ".github/workflows/ci.yml"];
 const hash = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
+const beforeDependencyRepair = (path: string) => cp176Paths.includes(path)
+  ? inverseCP176DependencyRepair(path, object(cp176Base, path), raw(path)) : raw(path);
 
 test("UI-CP174-001: exactly three finite deltas restore the actual fixed CP174 base and historical authority", () => {
   assert.equal(cp174Base, "0315845e3af01eff6b97c6164db3ddc3109b55af");
@@ -23,7 +26,7 @@ test("UI-CP174-001: exactly three finite deltas restore the actual fixed CP174 b
   assert.deepEqual(cp174ProtectedPaths, ["internal/httpapi/server_streams.go"]);
   const reader = createNormalizedReader(root);
   for (const path of cp174Paths) {
-    const before = object(cp174Base, path), current = raw(path);
+    const before = object(cp174Base, path), current = beforeDependencyRepair(path);
     assert.notDeepEqual(current, before);
     assertCP174Original(path, before);
     assert.deepEqual(assertCP174SourceDelta(path, before, current), before);
@@ -42,7 +45,7 @@ test("UI-CP174-001: exactly three finite deltas restore the actual fixed CP174 b
 
 test("UI-CP174-002: missing, reverted, truncated, extra and wrong-original bytes cannot use a historical fallback", () => {
   for (const path of cp174Paths) {
-    const before = object(cp174Base, path), current = raw(path);
+    const before = object(cp174Base, path), current = beforeDependencyRepair(path);
     for (const mutant of [Buffer.alloc(0), before, current.subarray(0, current.length - 1), Buffer.concat([current, Buffer.from("drift")])]) {
       assert.throws(() => inverseCP174Source(path, mutant), /exact specified name edits/);
       assert.throws(() => assertCP174SourceDelta(path, before, mutant), /exact specified name edits/);

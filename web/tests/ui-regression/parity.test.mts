@@ -15,6 +15,7 @@ import ts from "typescript";
 import { createNormalizedReader, assertNormalizationManifest, inverseNormalization } from "./source-normalization.mts";
 import { approvedProtectedPaths, assertApprovedManifest, assertProtectedFixture, assertApprovedSourceDelta, assertRunnerTypeDelta, assertBrowserOperationSource } from "./approved-source-delta.mts";
 import { ciProtectedPaths, assertCISourceDelta, assertTypeDependencies } from "./ci-source-deltas.mts";
+import { cp176Base, cp176Paths, inverseCP176DependencyRepair } from "./cp176-dependency-deltas.mts";
 const root = fileURLToPath(new URL("../../..", import.meta.url));
 const normalizedSource = createNormalizedReader(root);
 const read = normalizedSource.read;
@@ -202,8 +203,10 @@ test("UI-PARITY-007: exact supplement rejects missing, unknown, wrong original, 
 test("UI-PARITY-008: finite name inverse binds accepted Git bytes and rejects source, registration and historical authority drift", () => {
   const { manifest, raw } = normalizedSource;
   const original = (path: string) => execFileSync("git", ["show", manifest.acceptedCommit + ":" + path], { cwd: root, maxBuffer: 32 * 1024 * 1024 });
+  const beforeDependencyRepair = (path: string) => cp176Paths.includes(path)
+    ? inverseCP176DependencyRepair(path, execFileSync("git", ["show", cp176Base + ":" + path], { cwd: root }), raw(path)) : raw(path);
   for (const row of manifest.currentMappings) {
-    const before = original(row.oldPath), current = raw(row.newPath);
+    const before = original(row.oldPath), current = beforeDependencyRepair(row.newPath);
     assert.deepEqual(inverseNormalization(row, before, current), before);
     assert.throws(() => inverseNormalization(row, Buffer.concat([before, Buffer.from("drift")]), current), /accepted Git raw/);
     assert.throws(() => inverseNormalization(row, before, Buffer.concat([current, Buffer.from("\n")])) , /exact specified name edits/);
@@ -237,7 +240,7 @@ test("UI-PARITY-008: finite name inverse binds accepted Git bytes and rejects so
     const pkg = structuredClone(current); mutate(pkg);
     assert.throws(() => inverseNormalization(row, original(row.oldPath), Buffer.from(JSON.stringify(pkg))), /exact specified name edits/);
   }
-  for (const path of ["web/tests/fixtures/ui-regression/protected.json", "web/tests/fixtures/ui-regression/approved-source-deltas.json", "web/tests/fixtures/ui-regression/ci-source-deltas.json", "web/package-lock.json", "web/tsconfig.ui-regression.json"]) assert.deepEqual(raw(path), original(path));
+  for (const path of ["web/tests/fixtures/ui-regression/protected.json", "web/tests/fixtures/ui-regression/approved-source-deltas.json", "web/tests/fixtures/ui-regression/ci-source-deltas.json", "web/package-lock.json", "web/tsconfig.ui-regression.json"]) assert.deepEqual(beforeDependencyRepair(path), original(path));
   for (const row of manifest.historyOnly) assert.equal(sha(read(row.path)), row.originalSha256);
   const missing = new Error("controlled immutable object unavailable");
   const old = manifest.historyOnly[0].path;

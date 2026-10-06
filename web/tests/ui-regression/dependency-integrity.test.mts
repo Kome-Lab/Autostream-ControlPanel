@@ -5,9 +5,10 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { createNormalizedReader } from "./source-normalization.mts";
 import { assertCIManifest, assertCISourceDelta, assertLockDelta, assertPackageRegistration } from "./ci-source-deltas.mts";
+import { cp176Base, cp176Paths, inverseCP176DependencyRepair } from "./cp176-dependency-deltas.mts";
 
 const root = fileURLToPath(new URL("../../..", import.meta.url));
-const read = createNormalizedReader(root).read;
+const { read, raw } = createNormalizedReader(root);
 const base = "28a9ff71ea9925722000a2933c59c79b8cc8b9b2";
 const before = (path: string) => execFileSync("git", ["show", base + ":" + path], { cwd: root });
 const supplement = JSON.parse(read("web/tests/fixtures/ui-regression/ci-source-deltas.json").toString("utf8"));
@@ -54,7 +55,9 @@ test("UI-DEPENDENCY-003: lock negatives reach missing peers, altered old integri
 });
 
 test("UI-DEPENDENCY-004: installed dependency versions must match the new lock; a stale local cache is a failure", () => {
-  const lock = JSON.parse(read("web/package-lock.json").toString()) as { packages: Record<string, { version?: string; optional?: boolean }> };
+  const path = "web/package-lock.json", bytes = raw(path);
+  inverseCP176DependencyRepair(path, execFileSync("git", ["show", cp176Base + ":" + path], { cwd: root }), bytes);
+  const lock = JSON.parse(bytes.toString()) as { packages: Record<string, { version?: string; optional?: boolean }> };
   const mismatches: { path: string; expected: string; actual: string }[] = [];
   for (const [path, item] of Object.entries(lock.packages)) {
     if (!path || !item.version) continue;
@@ -64,4 +67,28 @@ test("UI-DEPENDENCY-004: installed dependency versions must match the new lock; 
     if (actual !== item.version) mismatches.push({ path, expected: item.version, actual });
   }
   assert.deepEqual(mismatches, [], "exact new lock required; do not rewrite it to fit an old cache");
+});
+
+test("UI-DEPENDENCY-005: bounded UI176 repair retains accepted raw and rejects version, integrity, script and unrelated drift", () => {
+  for (const path of cp176Paths) {
+    const original = execFileSync("git", ["show", cp176Base + ":" + path], { cwd: root }), current = raw(path);
+    assert.notDeepEqual(current, original, "UI176 current candidate must contain the repair");
+    assert.deepEqual(inverseCP176DependencyRepair(path, original, current), original);
+    assert.throws(() => inverseCP176DependencyRepair(path, Buffer.concat([original, Buffer.from("changed")]), current), /original dependency hash/);
+    const parsed = JSON.parse(current.toString());
+    const changes = path.endsWith("package-lock.json") ? [
+      () => { parsed.packages["node_modules/next"].version = "16.3.7"; },
+      () => { parsed.packages["node_modules/next"].integrity = "changed"; },
+      () => { parsed.packages["node_modules/unrelated"] = { version: "1.0.0" }; },
+    ] : [
+      () => { parsed.dependencies.next = "16.3.7"; },
+      () => { parsed.overrides["brace-expansion@1.x"] = "5.0.12"; },
+      () => { parsed.scripts.lint = "echo skipped"; },
+    ];
+    for (const change of changes) {
+      change();
+      assert.throws(() => inverseCP176DependencyRepair(path, original, Buffer.from(JSON.stringify(parsed))), /exact repaired dependency hash/);
+    }
+    assert.throws(() => inverseCP176DependencyRepair("go.mod", original, current), /unknown UI176/);
+  }
 });
