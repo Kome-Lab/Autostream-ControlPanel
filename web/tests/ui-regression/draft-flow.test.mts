@@ -103,8 +103,7 @@ function createFlow(editing = false, slotSource = slot, handoff: StreamCreateFoc
   const result = actualCallback(slotSource, "handleSaveResult", { ...bindings, onSaved: parent });
   const prepare = () => {
     const createVisualState = visualState(), actionIntent = { id: editing ? "STR-02" : "STR-01", payload: { name: "Submitted name", ...(!editing ? createVisualState.extension : {}) } };
-    const effect = slotSource.replace("useLayoutEffect(() => {\n    let acknowledged", "useEffect(() => {\n    let acknowledged");
-    actualEffect(effect, "saveAcknowledgements.current.set", { actionIntent, createVisualState, draft: basic, saveAcknowledgements }, "useLayoutEffect")();
+    actualEffect(slotSource, "saveAcknowledgements.current.set", { actionIntent, createVisualState, draft: basic, saveAcknowledgements }, "useLayoutEffect")();
     return actionIntent;
   };
   return { controller, state, update, prepare, result, renderBasic, setDirtySections, get dirtySections() { return dirtySections; }, get closes() { return closes; }, get focus() { return focus; } };

@@ -5419,7 +5419,7 @@
       },
       {
         "path": "web/src/features/nodes/node-registration-view.tsx",
-        "sha256": "5acb8deb18aa920b2157bb8fd049954a57e313e0770166896b113c52583a6da2",
+        "sha256": "ffe720ce7d50606e516782d66e70b58e07969957d01dc6aa15f63da3e417c312",
         "symbols": [
           "LegacyNodeRegistrationView",
           "NodeRegistrationView",

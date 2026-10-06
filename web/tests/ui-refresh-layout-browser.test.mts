@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { BrowserHarness, ensureWebServer, type RouteResolver, type StubResponse } from "./helpers/browser-harness.mts";
@@ -8,6 +9,10 @@ import { waitForShell } from "./ui-browser-query-auth-helpers.mts";
 import { waitForAnimationFrames } from "./ui-browser-navigation-helpers.mts";
 import { clickVisible } from "./ui-regression/visible-trigger.mts";
 import { paint } from "./ui-regression/navigation.mts";
+import { conditions, inventory } from "./ui-regression/matrix.mts";
+import { createConditionRunner } from "./ui-regression/condition-lifecycle.mts";
+import { assertObservation, observationExpression, type UIObservation } from "./ui-regression/observation.mts";
+import { assertLayout, layoutExpression, type LayoutObservation } from "./ui-regression/layout-observation.mts";
 
 const oauthPath = "/integrations/oauth-accounts";
 const oauthAccount = {
@@ -184,6 +189,77 @@ test("CP live polling preserves OAuth drafts, node confirmation and Workers page
   browser.assertNoFatalError();
 });
 
+test("idle notification regions retain the required forced-colors observation contract", { timeout: 90_000 }, async t => {
+  const server = await ensureWebServer(webRoot, requestedBaseUrl);
+  t.after(() => server.close());
+  const evidence = process.env.AUTOSTREAM_UI174_EVIDENCE_DIR;
+  const persist = (name: string, value: unknown) => {
+    if (!evidence) return;
+    mkdirSync(resolve(evidence, "notifications"), { recursive: true });
+    writeFileSync(join(resolve(evidence, "notifications"), name), JSON.stringify(value, null, 2) + "\n", { flag: "wx" });
+  };
+  const run = createConditionRunner(server.baseUrl, persist);
+  // Reuse the original immutable inventory, condition fixture and observation
+  // assertions. These focused cases do not replace the full CI matrix.
+  for (const family of ["captions", "monitoring", "dashboard", "workers", "nodes"]) {
+    const condition = conditions.find(item => item.family === family && item.exercise === "forced-colors" && item.width === 390 && item.locale === "en" && item.mode === "light" && item.theme === "autostream");
+    const surface = inventory.surfaces.find(item => item.id === family);
+    assert.ok(condition && surface, "use an existing registered forced-colors condition");
+    await run(condition, surface, async (browser, fixture) => {
+      await browser.navigate(server.baseUrl + condition.route);
+      await waitForShell(browser, "Account menu");
+      await browser.waitForResponseCount(surface.primary, 1);
+      await browser.waitForRequestHandlersIdle();
+      await paint(browser);
+      const observation = await browser.evaluate<UIObservation>(observationExpression);
+      persist(condition.id + ".observation.json", observation);
+      assertObservation(observation, condition);
+      assert.equal(observation.media.forcedColors, true);
+      assert.ok(observation.notices.every(notice => notice.text.trim()), "every exposed status notification has real text");
+      assert.deepEqual(fixture.trace.filter(request => request.method !== "GET" && request.path !== "/auth/session/refresh"), [], "notification checks cannot mutate application state");
+      if (evidence) await writeFile(join(resolve(evidence), `forced-colors-${family}-390.png`), await browser.captureScreenshot(), { flag: "wx" });
+      browser.assertNoFatalError();
+    });
+    t.diagnostic(`${family}/390/en/light: original forced-colors observation and nonempty notification contract passed`);
+  }
+});
+
+test("magnified stream visual controls remain reachable with the original layout contract", { timeout: 90_000 }, async t => {
+  const server = await ensureWebServer(webRoot, requestedBaseUrl);
+  t.after(() => server.close());
+  const evidence = process.env.AUTOSTREAM_UI174_EVIDENCE_DIR;
+  const persist = (name: string, value: unknown) => {
+    if (!evidence) return;
+    mkdirSync(resolve(evidence, "magnified"), { recursive: true });
+    writeFileSync(join(resolve(evidence, "magnified"), name), JSON.stringify(value, null, 2) + "\n", { flag: "wx" });
+  };
+  const run = createConditionRunner(server.baseUrl, persist);
+  const planned = conditions.filter(item => item.family === "stream-create-edit" && item.exercise === "css-magnification-200" && item.width === 390);
+  const surface = inventory.surfaces.find(item => item.id === "stream-create-edit");
+  assert.equal(planned.length, 4, "both locales and light/dark use the existing inventory");
+  assert.ok(surface);
+  for (const condition of planned) await run(condition, surface, async (browser, fixture) => {
+    await browser.navigate(server.baseUrl + condition.route);
+    await waitForShell(browser, condition.locale === "ja" ? "アカウントメニュー" : "Account menu");
+    await browser.waitForResponseCount(surface.primary, 1);
+    await browser.waitFor(`document.querySelectorAll('[role="dialog"]').length`, value => value === 1, "the actual stream creation dialog");
+    await browser.waitForRequestHandlersIdle();
+    await paint(browser);
+    assert.equal(await browser.evaluate("document.documentElement.style.zoom='2';true"), true);
+    await paint(browser);
+    const layout = await browser.evaluate<LayoutObservation>(layoutExpression);
+    persist(condition.id + ".layout.json", layout);
+    assertLayout(layout);
+    const observation = await browser.evaluate<UIObservation>(observationExpression);
+    persist(condition.id + ".observation.json", observation);
+    assertObservation(observation, condition);
+    assert.deepEqual(fixture.trace.filter(request => request.method !== "GET" && request.path !== "/auth/session/refresh"), [], "magnified layout checks cannot mutate application state");
+    if (evidence) await writeFile(join(resolve(evidence), `magnified-create-${condition.locale}-${condition.mode}-390.png`), await browser.captureScreenshot(), { flag: "wx" });
+    browser.assertNoFatalError();
+    t.diagnostic(`stream-create-edit/390/${condition.locale}/${condition.mode}/CSS 200%: original layout and observation contracts passed`);
+  });
+});
+
 test("Monitoring and Dashboard retain geometry during real scheduled GETs at desktop and mobile widths", { timeout: 120_000 }, async t => {
   const server = await ensureWebServer(webRoot, requestedBaseUrl);
   t.after(() => server.close());
@@ -205,7 +281,14 @@ test("Monitoring and Dashboard retain geometry during real scheduled GETs at des
   const fixture = createBrowserRouteFixture(registration);
   fixture.healthResponse = { body: [node], delayMs: 1_200 };
   fixture.streamsResponse = { body: [] };
-  await browser.configureDeterministicDocument({ source: `localStorage.setItem(${JSON.stringify(localeStorageKey)}, "ja");`, timezone: "Asia/Tokyo", locale: "ja-JP" });
+  // Use the existing browser matrix wall clock so a minute rollover does not
+  // change the intentional Last updated value in the full-text comparison.
+  // Native timers and performance.now still advance; scheduled GETs stay real.
+  await browser.configureDeterministicDocument({
+    source: "const UIClock=Date;const uiNow=UIClock.parse('2026-09-01T01:00:00Z');globalThis.Date=class extends UIClock{constructor(...args){super(...(args.length?args:[uiNow]));}static now(){return uiNow;}};" +
+      `localStorage.setItem(${JSON.stringify(localeStorageKey)}, "ja");`,
+    timezone: "Asia/Tokyo", locale: "ja-JP",
+  });
   for (const [route, family, anchors] of [
     ["/admin/monitoring/", "monitoring", ['[data-slot="detail-section"]', '[data-slot="detail-section"]:last-child']],
     ["/admin/", "dashboard", ["#dashboard-waiting", "#dashboard-recent"]],
@@ -217,6 +300,8 @@ test("Monitoring and Dashboard retain geometry during real scheduled GETs at des
     await browser.waitFor(`document.querySelector(${JSON.stringify(root + ' [data-freshness="fresh"]')}) !== null`, Boolean, "successful initial operational data", 10_000);
     await browser.waitForRequestHandlersIdle({ pathname: "/service-health", method: "GET" });
     await paint(browser);
+    assert.equal(await browser.evaluate("Date.now()"), Date.parse("2026-09-01T01:00:00Z"), "the display clock is deterministic");
+    const elapsedBefore = await browser.evaluate<number>("performance.now()");
     const snapshot = () => browser.evaluate<{ y: number[]; scrollY: number; text: string; overflow: boolean }>(`(() => {
       const root = document.querySelector(${JSON.stringify(root)});
       const nodes = ${JSON.stringify(anchors)}.map(selector => root.querySelector(selector));
@@ -238,6 +323,7 @@ test("Monitoring and Dashboard retain geometry during real scheduled GETs at des
     await browser.waitFor(`document.querySelector(${JSON.stringify(root + ' [data-freshness="fresh"]')}) !== null`, Boolean, "scheduled GET settled successfully", 5_000);
     await paint(browser);
     const after = await snapshot();
+    assert.ok(await browser.evaluate<number>("performance.now()") - elapsedBefore >= 1_000, "scheduled GETs and delayed responses still consume real elapsed time");
     for (const state of [fetching, after]) {
       assert.equal(state.text, before.text, `${family}/${width}: loaded wording remains stable`);
       assert.equal(state.scrollY, before.scrollY, `${family}/${width}: viewport scroll remains stable`);
@@ -318,8 +404,14 @@ test("v2 preset screens enforce permissions, distinguish failed and empty reads,
     { href: "/admin/discord/#target-presets", rel: "noopener noreferrer" },
     { href: "/admin/overlay/#video-cover-presets", rel: "noopener noreferrer" },
   ], "both preset management links preserve the current creation form");
+  assert.equal(await browser.evaluate("document.querySelector('#create-stream-visual').scrollIntoView({block:'start',inline:'nearest'});true"), true);
   await paint(browser);
   await capture("stream-create-only-390.png");
+  for (const [index, name] of [[2, "discord"], [3, "cover"]] as const) {
+    assert.equal(await browser.evaluate(`document.querySelectorAll('#create-stream-visual fieldset > .grid > section')[${index}].scrollIntoView({block:'start',inline:'nearest'});true`), true);
+    await paint(browser);
+    await capture(`stream-create-${name}-390.png`);
+  }
   t.diagnostic("390px stream creation: all four v2 settings enabled for create-only permission; both separate-tab preset links available");
 
   fixture.authResponse = { body: permissionUser(["video_cover_presets.read"]) };
@@ -351,16 +443,19 @@ test("v2 preset screens enforce permissions, distinguish failed and empty reads,
   await navigate("/admin/overlay/#video-cover-presets");
   await clickVisible(browser, 'main button', /^Edit Browser cover preset$/);
   await browser.waitFor(`document.querySelector('[role="dialog"] input[type="text"]')?.value === 'Browser cover preset'`, Boolean, "preset editor opens with its saved baseline", 5_000);
+  assert.equal(await browser.evaluate(`document.querySelector('[role="dialog"] h2')?.textContent.trim()`), "Edit Video cover presets", "the editor title must have a readable action and resource name");
+  assert.equal(await browser.evaluate(`document.querySelector('[role="dialog"] button[type="submit"]')?.textContent.trim()`), "Update", "the submit button describes an action, not a successful outcome");
   assert.equal(await browser.evaluate(`document.querySelector('[role="dialog"] input[type="file"]')?.disabled`), true, "preset-only update permission cannot upload stream media");
   assert.equal(await browser.evaluate(`document.querySelector('[role="dialog"]')?.textContent.includes('The saved image is selected.')`), true, "saved image remains usable without upload permission");
   await clickVisible(browser, editInput);
   await browser.fillSelector(editInput, "Unsaved conflict draft");
-  await clickVisible(browser, '[role="dialog"] button[type="submit"]', /^Updated$/);
+  await clickVisible(browser, '[role="dialog"] button[type="submit"]', /^Update$/);
   await browser.waitFor(`document.querySelector('[role="alertdialog"]') !== null`, Boolean, "update requires confirmation", 5_000);
   await clickVisible(browser, '[role="alertdialog"] button[data-confirm-action]', /^Run$/);
   await browser.waitForResponseCount(`/video-cover-presets/${preset.id}`, 1, 5_000);
   await browser.waitFor(`document.querySelector('[role="dialog"]')?.textContent.includes('The resource has changed.')`, Boolean, "revision conflict is disclosed in the retained editor", 5_000);
   assert.equal(await browser.evaluate(`document.querySelector(${JSON.stringify(editInput)})?.value`), "Unsaved conflict draft", "conflict must not reset the input");
+  assert.equal(await browser.evaluate(`document.querySelector('[role="dialog"] button[type="submit"]')?.textContent.trim()`), "Update", "a revision conflict must not label the edit as successful");
   assert.deepEqual(writes, [{ method: "PUT", path: `/video-cover-presets/${preset.id}`, body: { name: "Unsaved conflict draft", asset_id: preset.asset_id, asset_variant_id: preset.asset_variant_id, enabled: true, expected_revision: 4 } }], "one fixture-only mutation, using the editor's original revision and saved image; no automatic retry");
   await capture("video-cover-revision-conflict-1440.png");
   t.diagnostic("Fixture PUT expected_revision=4 received 409; saved image and unsaved name retained; no automatic retry or unrelated mutation");

@@ -314,7 +314,7 @@ function LegacyNodeRegistrationView({ mode = "registration" }: { mode?: NodeRegi
             <Button variant="outline" size="sm" onClick={() => registeredNodes.refetch()} aria-busy={registeredNodes.isFetching} disabled={registeredNodes.isFetching}>
               <RotateCw className={registeredNodes.isFetching ? "size-4 animate-spin motion-reduce:animate-none" : "size-4"} aria-hidden="true" />
               {locale === "ja" ? "更新" : "Refresh"}
-              <span className="sr-only" role="status">{registeredNodes.isFetching ? uiText("更新中") : ""}</span>
+              <span className="sr-only" role={registeredNodes.isFetching ? "status" : undefined} aria-live="polite">{registeredNodes.isFetching ? (locale === "ja" ? uiText("更新中") : "Refreshing") : ""}</span>
             </Button>
           </div>
         </CardHeader>

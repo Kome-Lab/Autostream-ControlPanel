@@ -21,5 +21,5 @@ export function MonitoringMetric({ state, value, detail, tone, ...props }: Compo
   return <><MetricCard {...props} value={available ? value : "—"}
     tone={!available ? "default" : state.freshness?.kind === "fresh" ? tone : tone === "danger" ? "danger" : "warning"}
     detail={available ? [explanation, detail].filter(Boolean).join(" ") : explanation} />
-    <span className="sr-only" role="status">{state.freshness?.kind === "refreshing" ? uiText("取得済みの値を表示しながら更新中です。") : ""}</span></>;
+    <span className="sr-only" role={state.freshness?.kind === "refreshing" ? "status" : undefined} aria-live="polite">{state.freshness?.kind === "refreshing" ? uiText("取得済みの値を表示しながら更新中です。") : ""}</span></>;
 }

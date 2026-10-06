@@ -38,6 +38,7 @@ test("monitoring metric details retain the successful snapshot copy during polli
       }), locale);
       const detail = (html: string) => html.match(/<p class="mt-1 text-sm text-muted-foreground">(.*?)<\/p>/)?.[1];
       assert.ok(detail(render(false))?.includes("Known snapshot"));
+      assert.doesNotMatch(render(false), /<span class="sr-only" role="status"/);
       assert.equal(detail(render(true)), detail(render(false)), "regular polling must not insert detail text that resizes the card");
     }
   }
@@ -55,6 +56,7 @@ test("monitoring and dashboard keep loaded summaries stable during successful po
         for (const [key, rows] of sections) { client.setQueryData(key, rows); setMode(client, key, mode); }
       });
       assert.equal(visibleText(render("refreshing")), visibleText(render("fresh")), `${View.name}/${locale}: successful snapshot text must not change during a poll`);
+      assert.doesNotMatch(render("fresh"), /<span class="sr-only" role="status"/);
       assert.notEqual(visibleText(render("stale")), visibleText(render("fresh")), "failed polling must still disclose stale data");
     }
   }
@@ -95,7 +97,8 @@ test("operational notice keeps snapshot copy stable while announcing actual refr
 test("incident polling adds no banner or paragraph for known data and preserves unknown and error notices", () => {
   const render = (rows: Parameters<typeof DashboardIncidentBanner>[0]["rows"], refreshing: boolean, unavailable = false) => renderUI(createElement(DashboardIncidentBanner, { rows, refreshing, unavailable }), "en");
   for (const refreshing of [false, true]) assert.doesNotMatch(render([], refreshing), /<aside|<p/);
-  assert.match(render([], true), /class="sr-only" role="status">Refreshing incidents/);
+  assert.doesNotMatch(render([], false), /role="status"/);
+  assert.match(render([], true), /class="sr-only" role="status" aria-live="polite">Refreshing incidents/);
   const open = [{ id: "incident", status: "open", title: "Still unresolved", severity: "critical" }];
   const fresh = render(open, false), refreshing = render(open, true);
   assert.equal((fresh.match(/<p[ >]/g) || []).length, (refreshing.match(/<p[ >]/g) || []).length);
@@ -115,12 +118,13 @@ test("Workers normal data and permission polls keep metric copy and notice flow 
   });
   for (const empty of [false, true]) {
     const fresh = render("fresh", false, empty);
+    assert.doesNotMatch(fresh, /<span class="sr-only" role="status"/);
     const details = (html: string) => [...html.matchAll(/<p class="mt-1 text-sm text-muted-foreground">(.*?)<\/p>/g)].map(match => match[1]);
     assert.equal(details(fresh).length, 3, "three real MetricCard details");
     for (const html of [render("refreshing", false, empty), render("fresh", true, empty)]) {
       assert.deepEqual(details(html), details(fresh));
       assert.doesNotMatch(html, /data-remote-consumer="workers"|<p[^>]*class="mb-3"/);
-      assert.match(html, /aria-busy="true"/); assert.match(html, /class="sr-only" role="status">(?:Refreshing|Rechecking)/);
+      assert.match(html, /aria-busy="true"/); assert.match(html, /class="sr-only" role="status" aria-live="polite">(?:Refreshing|Rechecking)/);
       assert.doesNotMatch(html, /text-emerald-700/, "polling is not asserted to be freshly confirmed healthy");
       if (empty) assert.match(html, />0\/0</, "cached successful empty remains measured");
     }
@@ -139,7 +143,8 @@ test("registered node normal polling uses the existing refresh button and keeps 
     assert.doesNotMatch(fresh, /data-remote-consumer="nodes"/);
     assert.doesNotMatch(refreshing, /data-remote-consumer="nodes"/);
     assert.match(refreshing, /aria-busy="true"/);
-    assert.match(refreshing, /class="sr-only" role="status">Updating/);
+    assert.doesNotMatch(fresh, /<span class="sr-only" role="status"/);
+    assert.match(refreshing, /class="sr-only" role="status" aria-live="polite">Refreshing/);
   }
   for (const mode of ["stale", "missing", "loading"] as const) {
     const html = render(mode);
@@ -158,7 +163,8 @@ test("resource normal polling adds no paragraph while read failure, initial load
   const fresh = render("fresh"), refreshing = render("refreshing");
   assert.equal((fresh.match(/<p[ >]/g) || []).length, (refreshing.match(/<p[ >]/g) || []).length);
   assert.match(refreshing, /Existing record/); assert.match(refreshing, /aria-busy="true"/);
-  assert.match(refreshing, /class="sr-only" role="status">Refreshing/);
+  assert.doesNotMatch(fresh, /<span class="sr-only" role="status"/);
+  assert.match(refreshing, /class="sr-only" role="status" aria-live="polite">Refreshing/);
   assert.match(render("stale"), /role="alert"/);
   assert.match(render("loading"), /aria-label="Loading"/);
   assert.match(render("fresh", false), /permission|Permission/);

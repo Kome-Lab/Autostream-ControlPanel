@@ -211,7 +211,7 @@ export function WorkersView() {
           if (canReadWorkers) void workers.refetch();
           if (canReadRegisteredNodes) void registeredNodes.refetch();
           if (canReadServiceHealth) void serviceHealth.refetch();
-        }}><RotateCw className={refreshing ? "size-4 animate-spin motion-reduce:animate-none" : "size-4"} aria-hidden="true" />{locale === "ja" ? "更新" : "Refresh"}<span className="sr-only" role="status">{refreshing ? (readRefreshing ? readNotice : locale === "ja" ? "取得済みデータを表示しながら更新中です。" : "Refreshing while keeping loaded data visible.") : ""}</span></Button>} />
+        }}><RotateCw className={refreshing ? "size-4 animate-spin motion-reduce:animate-none" : "size-4"} aria-hidden="true" />{locale === "ja" ? "更新" : "Refresh"}<span className="sr-only" role={refreshing ? "status" : undefined} aria-live="polite">{refreshing ? (readRefreshing ? readNotice : locale === "ja" ? "取得済みデータを表示しながら更新中です。" : "Refreshing while keeping loaded data visible.") : ""}</span></Button>} />
       <NodeWorkspaceNavigation active="workers" canRegister={canReadRegisteredNodes} canOperate={canReadWorkers || canReadServiceHealth || canReadRegisteredNodes} />
       <section className="grid gap-4 md:grid-cols-3">
         <MetricCard title={t("onlineNodes")} value={onlineValue} detail={loadedSnapshot ? (locale === "ja" ? "取得済みの接続・稼働状態" : "Connection and health in loaded data.") : unknownSummaryDetail} tone={summaryConfirmed && warning === 0 ? "ok" : "warning"} />

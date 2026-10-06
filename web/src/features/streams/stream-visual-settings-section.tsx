@@ -54,6 +54,8 @@ type Props = {
   onCreateState: (state: StreamCreateVisualState) => void;
 };
 
+const visualButtonClassName = "h-auto min-h-8 min-w-0 max-w-full whitespace-normal [overflow-wrap:anywhere]";
+
 export function StreamVisualSettingsSection({ stream, canUpdate, onCreateState }: Props) {
   const uiText = useUICopy();
   const { locale, t } = useI18n();
@@ -251,12 +253,12 @@ export function StreamVisualSettingsSection({ stream, canUpdate, onCreateState }
   const controlsDisabled = !canUpdate || saving || (editing && !visual.data);
   const saveDisabled = controlsDisabled || dirtySections.size === 0 || !validation.ready || !presetSelectionsReady || Boolean(uploading) || visual.isFetching || needsRefresh || serverSettingsChanged;
   return (
-    <fieldset className="space-y-4 rounded-lg border p-4" aria-describedby="stream-visual-help">
-      <legend className="px-1 text-sm font-semibold">{locale === "ja" ? "背景・表示名・Discord配信先・蓋画像（Video Cover）" : "Background, display title, Discord target, and video cover"}</legend>
+    <fieldset className="min-w-0 space-y-4 rounded-lg border p-4" aria-describedby="stream-visual-help">
+      <legend className="max-w-full px-1 text-sm font-semibold [overflow-wrap:anywhere]">{locale === "ja" ? "背景・表示名・Discord配信先・蓋画像（Video Cover）" : "Background, display title, Discord target, and video cover"}</legend>
       <p id="stream-visual-help" className="text-xs text-muted-foreground">{locale === "ja" ? "背景・表示名・Discord配信先は次回の配信開始から適用されます。配信中の蓋画像の表示・解除は配信枠の詳細画面から操作できます。" : "Background, display title, and Discord target changes apply at the next start. Show or hide the cover during a stream from its detail view."}</p>
       {visual.isError ? <p role="alert" className="text-sm text-destructive">{locale === "ja" ? "ビジュアル設定を取得できません。保存せず再読込してください。" : "Visual settings are unavailable. Reload before saving."}</p> : null}
       {serverSettingsChanged ? <p role="alert" className="text-sm text-amber-700 dark:text-amber-300">{locale === "ja" ? "編集中にサーバーの設定が更新されました。入力内容は保持しています。最新設定を再読込してから保存してください。" : "The server settings changed while you were editing. Your draft is preserved. Reload the latest settings before saving."}</p> : null}
-      <div className="grid gap-4 xl:grid-cols-2">
+      <div className="grid min-w-0 gap-4 xl:grid-cols-2">
         <VisualGroup title={locale === "ja" ? "シーン背景" : "Scene background"}>
           <ModeSelect purpose={locale === "ja" ? "シーン背景モード" : "Scene background mode"} value={draft.backgroundMode} disabled={controlsDisabled || uploadedBackground} onChange={(value) => update("background", { backgroundMode: value as StreamVisualDraft["backgroundMode"] })} options={[["default", locale === "ja" ? "既定" : "Default"], ["image", locale === "ja" ? "画像（cover / center crop）" : "Image (cover / center crop)"]]} />
           {draft.backgroundMode === "image" ? <UploadControl label={locale === "ja" ? "背景画像をアップロード" : "Upload background image"} busy={uploading === "background"} disabled={controlsDisabled || uploadedBackground} onFile={(file) => void upload("background", file)} /> : null}
@@ -281,7 +283,7 @@ export function StreamVisualSettingsSection({ stream, canUpdate, onCreateState }
           </dl> : null}
           {discordPresetUpdated ? <div className="space-y-2 rounded-md border border-amber-300 p-2 text-xs">
             <p role="status">{locale === "ja" ? `プリセット更新あり：選択済み r${draft.discordTargetPresetRevision}、最新 r${selectedDiscordRevision}。保存済みの配信先は自動変更されません。` : `Preset update available: selected r${draft.discordTargetPresetRevision}, latest r${selectedDiscordRevision}. Saved targets are not changed automatically.`}</p>
-            <Button type="button" size="sm" variant="outline" disabled={controlsDisabled || !canSelectDiscordPreset} onClick={() => selectDiscordPreset(draft.discordTargetPresetID)}>{locale === "ja" ? "最新値を適用" : "Use latest preset values"}</Button>
+            <Button type="button" size="sm" variant="outline" className={visualButtonClassName} disabled={controlsDisabled || !canSelectDiscordPreset} onClick={() => selectDiscordPreset(draft.discordTargetPresetID)}>{locale === "ja" ? "最新値を適用" : "Use latest preset values"}</Button>
           </div> : null}
           {visual.data?.discord_preset_deleted && draft.discordTargetMode === "preset" && draft.discordTargetPresetID === visual.data.discord_target_preset_id ? <p role="status" className="text-xs text-amber-700 dark:text-amber-300">{locale === "ja" ? "元のプリセットは削除済みです。保存済みの配信先を保持しています。" : "The source preset was deleted. The saved target is retained."}</p> : null}
           <PresetListStatus locale={locale} allowed={canReadDiscordPresets} authorityStatus={currentUser.status} status={discordPresets.status} fetching={discordPresets.isFetching} count={discordRows.length} onRefresh={() => void discordPresets.refetch()} manageHref="/admin/discord/#target-presets" manageLabel={locale === "ja" ? "Discordプリセット管理（別タブ）" : "Manage Discord presets (new tab)"} />
@@ -291,7 +293,7 @@ export function StreamVisualSettingsSection({ stream, canUpdate, onCreateState }
           {draft.coverSource === "preset" ? <ModeSelect purpose={locale === "ja" ? "蓋画像プリセット" : "Video cover preset"} value={draft.coverPresetID} disabled={controlsDisabled || !canSelectCoverPreset} onChange={selectCoverPreset} options={[["", locale === "ja" ? "選択してください" : "Select a preset"], ...visualPresetOptions(coverRows, draft.coverPresetID, locale === "ja" ? "設定済みプリセット（現在は選択不可）" : "Saved preset (currently unavailable)", coverPresetRevision)]} /> : null}
           {coverPresetUpdated ? <div className="space-y-2 rounded-md border border-amber-300 p-2 text-xs">
             <p role="status">{locale === "ja" ? `蓋画像プリセット更新あり：選択済み r${coverPresetRevision}、最新 r${selectedCoverRevision}。開始時の表示設定だけを変更しても保存済み画像は変わりません。` : `Video cover preset update available: selected r${coverPresetRevision}, latest r${selectedCoverRevision}. Changing only the start visibility keeps the saved image.`}</p>
-            <Button type="button" size="sm" variant="outline" disabled={controlsDisabled || !canSelectCoverPreset} onClick={() => selectCoverPreset(draft.coverPresetID)}>{locale === "ja" ? "最新の蓋画像を適用" : "Use the latest cover image"}</Button>
+            <Button type="button" size="sm" variant="outline" className={visualButtonClassName} disabled={controlsDisabled || !canSelectCoverPreset} onClick={() => selectCoverPreset(draft.coverPresetID)}>{locale === "ja" ? "最新の蓋画像を適用" : "Use the latest cover image"}</Button>
           </div> : null}
           {draft.coverSource === "upload" ? <><UploadControl label={locale === "ja" ? "蓋画像をアップロード" : "Upload cover image"} busy={uploading === "cover"} disabled={controlsDisabled || uploadedCover} onFile={(file) => void upload("cover", file)} /><VisualPreview label={locale === "ja" ? "蓋画像のプレビュー" : "Video cover preview"} imageURL={coverPreview} emptyLabel={draft.coverAssetID ? locale === "ja" ? "保存済みの蓋画像を使用します。" : "The saved cover image is selected." : locale === "ja" ? "蓋画像を選択してください。" : "Select a video cover image."} /></> : null}
           {draft.coverSource !== "none" ? <label className="flex min-h-10 items-center gap-2 rounded-md border px-3 text-sm"><Checkbox checked={draft.coverStartActive} disabled={controlsDisabled} onCheckedChange={(value) => update("cover", { coverStartActive: value === true })} />{locale === "ja" ? "配信開始時からCoverを表示" : "Show cover when the stream starts"}</label> : null}
@@ -310,7 +312,7 @@ export function StreamVisualSettingsSection({ stream, canUpdate, onCreateState }
   );
 }
 
-function VisualGroup({ title, children }: { title: string; children: React.ReactNode }) { return <section className="space-y-3 rounded-md border bg-muted/10 p-3"><h3 className="text-sm font-medium">{title}</h3>{children}</section>; }
+function VisualGroup({ title, children }: { title: string; children: React.ReactNode }) { return <section className="min-w-0 space-y-3 rounded-md border bg-muted/10 p-3"><h3 className="text-sm font-medium">{title}</h3>{children}</section>; }
 type VisualSelectOption = readonly [value: string, label: string, disabled?: boolean];
 
 export function buildStreamVisualSaveFields(draft: StreamVisualDraft, sections: ReadonlySet<StreamVisualSection>, preserveCoverSelection: boolean) {
@@ -358,15 +360,15 @@ export function PresetListStatus({ locale, allowed, authorityStatus, status, fet
   return <div className="space-y-2">
     {message ? <p role={authorityStatus === "error" || (allowed && status === "error") ? "alert" : "status"} className={allowed && status === "error" ? "text-xs text-destructive" : "text-xs text-muted-foreground"}>{message}</p> : null}
     {allowed && authorityStatus === "success" ? <div className="flex flex-wrap gap-2">
-      <Button type="button" variant="outline" size="sm" disabled={fetching} onClick={onRefresh}><RefreshCcw aria-hidden="true" className="size-4" />{locale === "ja" ? "プリセット一覧を再取得" : "Refresh preset list"}</Button>
-      <Button asChild type="button" variant="ghost" size="sm"><a href={manageHref} target="_blank" rel="noopener noreferrer"><ExternalLink aria-hidden="true" className="size-4" />{manageLabel}</a></Button>
+      <Button type="button" variant="outline" size="sm" className={visualButtonClassName} disabled={fetching} onClick={onRefresh}><RefreshCcw aria-hidden="true" className="size-4" />{locale === "ja" ? "プリセット一覧を再取得" : "Refresh preset list"}</Button>
+      <Button asChild type="button" variant="ghost" size="sm" className={visualButtonClassName}><a href={manageHref} target="_blank" rel="noopener noreferrer"><ExternalLink aria-hidden="true" className="size-4" />{manageLabel}</a></Button>
     </div> : null}
   </div>;
 }
 
 function ModeSelect({ purpose, value, options, disabled, onChange }: { purpose: string; value: string; options: readonly VisualSelectOption[]; disabled?: boolean; onChange: (value: string) => void }) {
   const id = useId();
-  return <div className="space-y-2"><label id={`${id}-label`} htmlFor={id} className="text-sm font-medium">{purpose}</label><Select value={value || "__select__"} onValueChange={onChange} disabled={disabled}><SelectTrigger id={id} aria-labelledby={`${id}-label`} className="w-full"><SelectValue /></SelectTrigger><SelectContent>{options.map(([optionValue, label, optionDisabled]) => <SelectItem key={optionValue || "empty"} value={optionValue || "__select__"} disabled={!optionValue || optionDisabled}>{label}</SelectItem>)}</SelectContent></Select></div>;
+  return <div className="min-w-0 space-y-2"><label id={`${id}-label`} htmlFor={id} className="text-sm font-medium">{purpose}</label><Select value={value || "__select__"} onValueChange={onChange} disabled={disabled}><SelectTrigger id={id} aria-labelledby={`${id}-label`} className="w-full min-w-0"><SelectValue /></SelectTrigger><SelectContent>{options.map(([optionValue, label, optionDisabled]) => <SelectItem key={optionValue || "empty"} value={optionValue || "__select__"} disabled={!optionValue || optionDisabled}>{label}</SelectItem>)}</SelectContent></Select></div>;
 }
 function UploadControl({ label, busy, disabled, onFile }: { label: string; busy: boolean; disabled?: boolean; onFile: (file?: File) => void }) { return <label className="inline-flex min-h-10 cursor-pointer items-center gap-2 rounded-md border px-3 text-sm has-[:disabled]:cursor-not-allowed has-[:disabled]:opacity-50">{busy ? <LoaderCircle className="size-4 animate-spin" /> : <ImageUp className="size-4" />}{label}<input className="sr-only" type="file" accept="image/png,image/jpeg,image/webp" disabled={disabled || busy} onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; onFile(file); }} /></label>; }
 function VisualPreview({ label, imageURL, emptyLabel }: { label: string; imageURL: string; emptyLabel: string }) { return <div className="relative aspect-video overflow-hidden rounded-md border bg-muted/40" role="img" aria-label={imageURL ? label : emptyLabel} data-crop="cover-center" style={imageURL ? { backgroundImage: `url(${JSON.stringify(imageURL)})`, backgroundPosition: "center", backgroundSize: "cover" } : undefined}><span className="absolute bottom-1 left-1 rounded bg-background/85 px-2 py-1 text-[11px]">{imageURL ? label : emptyLabel}</span></div>; }

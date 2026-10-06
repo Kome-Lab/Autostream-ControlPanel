@@ -80,7 +80,7 @@ export function MonitoringView() {
             <div className={`flex items-center gap-2 font-medium ${hasError ? "text-red-700 dark:text-red-300" : "text-emerald-700 dark:text-emerald-300"}`}>
               {hasError ? <AlertCircle className="size-4" /> : <CheckCircle2 className="size-4" />}
               {hasError ? uiText("一部の情報を取得できません") : uiText("監視情報は正常に取得済み")}
-              <span className="sr-only" role="status">{remoteState.freshness?.kind === "refreshing" ? uiText("取得済みの値を表示しながら更新中です。") : ""}</span>
+              <span className="sr-only" role={remoteState.freshness?.kind === "refreshing" ? "status" : undefined} aria-live="polite">{remoteState.freshness?.kind === "refreshing" ? uiText("取得済みの値を表示しながら更新中です。") : ""}</span>
             </div>
             <div className="text-muted-foreground">{uiText("最終更新:")}{lastUpdated}</div>
             <div className="text-muted-foreground">{uiText("自動更新: Nodeは10秒ごと")}</div>

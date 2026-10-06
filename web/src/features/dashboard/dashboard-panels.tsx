@@ -20,7 +20,7 @@ export function DashboardIncidentBanner({ rows, unavailable, refreshing }: {
   const open = (rows || []).filter((row) => ["open", "active", "firing", "warning", "critical", "acknowledged"].includes(row.status || ""));
   const unknown = (rows || []).filter((row) => !["open", "active", "firing", "warning", "critical", "acknowledged", "resolved", "closed", "suppressed"].includes(row.status || ""));
   const quietRefresh = refreshing && rows !== undefined && !unavailable && unknown.length === 0;
-  if (!open.length && !unknown.length && !unavailable && rows !== undefined) return <span className="sr-only" role="status">{refreshing ? (ja ? "インシデントを更新中です。" : "Refreshing incidents.") : ""}</span>;
+  if (!open.length && !unknown.length && !unavailable && rows !== undefined) return <span className="sr-only" role={refreshing ? "status" : undefined} aria-live="polite">{refreshing ? (ja ? "インシデントを更新中です。" : "Refreshing incidents.") : ""}</span>;
   const Icon = quietRefresh ? LoaderCircle : AlertTriangle;
   return <aside data-slot="dashboard-incidents" role="status" aria-busy={refreshing} className="flex flex-wrap items-center gap-3 rounded-md border border-status-warning-border bg-status-warning-subtle px-4 py-3 text-status-warning-foreground">
     <Icon className={quietRefresh ? "size-4 shrink-0 animate-spin motion-reduce:animate-none" : "size-4 shrink-0"} aria-hidden="true" />

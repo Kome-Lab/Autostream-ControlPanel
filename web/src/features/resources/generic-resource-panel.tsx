@@ -133,7 +133,7 @@ export function GenericResourcePanel({ resource, access, currentUser }: { resour
           }}>
             <RefreshCcw className={query.isFetching ? "size-4 animate-spin motion-reduce:animate-none" : "size-4"} aria-hidden="true" />
             {locale === "ja" ? "更新" : "Refresh"}
-            <span className="sr-only" role="status">{quietRefresh ? (locale === "ja" ? "取得済みデータを表示しながら更新中です。" : "Refreshing; showing previously received data.") : ""}</span>
+            <span className="sr-only" role={quietRefresh ? "status" : undefined} aria-live="polite">{quietRefresh ? (locale === "ja" ? "取得済みデータを表示しながら更新中です。" : "Refreshing; showing previously received data.") : ""}</span>
           </Button>
         </div>}>
       <div className="space-y-4">

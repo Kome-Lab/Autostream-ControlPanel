@@ -31,6 +31,7 @@ export function EditResourceButton({ resource, row, disabled, controller }: { re
   const [pending, setPending] = useState<PendingResourceSubmission | null>(null);
   const [dispatching, setDispatching] = useState(false);
   const id = resourceRowID(row);
+  const copy = resourceCopy(resource, locale);
   const legacyMutation = useMutation<unknown, Error, Record<string, unknown>>({
     mutationFn: async (payload) => apiPut(`${resource.path}/${encodeURIComponent(id)}`, payload),
     onSuccess: async () => {
@@ -106,10 +107,10 @@ export function EditResourceButton({ resource, row, disabled, controller }: { re
       </DialogTrigger>
       <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
         <DialogHeader>
-          <DialogTitle>{resourceCopy(resource, locale).title}{uiText("を編集")}</DialogTitle>
+          <DialogTitle>{locale === "ja" ? copy.title + uiText("を編集") : "Edit " + copy.title}</DialogTitle>
           <DialogDescription>{resource.form === "user" ? uiText("ユーザー名、メールアドレス、割り当てロールを更新します。") : uiText("作成済みの設定をフォームで更新します。秘密情報は空欄のまま更新すると既存値を保持する項目があります。")}</DialogDescription>
         </DialogHeader>
-        <ResourceFormFields resource={resource} disabled={legacyMutation.isPending || Boolean(pending) || dispatching} submit={submit} initial={row} submitLabel={uiText("更新")} />
+        <ResourceFormFields resource={resource} disabled={legacyMutation.isPending || Boolean(pending) || dispatching} submit={submit} initial={row} submitLabel={locale === "ja" ? uiText("更新") : "Update"} />
         {message ? <p className="text-sm text-muted-foreground">{message}</p> : null}
         {pending ? (
           <ResourceActionConfirmationHost
