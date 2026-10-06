@@ -46,18 +46,24 @@ test("monitoring metric details retain the successful snapshot copy during polli
 
 test("monitoring and dashboard keep loaded summaries stable during successful polling", () => {
   const visibleText = (html: string) => html.replace(/<span class="sr-only"[^>]*>[\s\S]*?<\/span>/g, "").replace(/<[^>]*>/g, "");
+  const snapshotAt = Date.parse("2026-09-01T01:00:00Z");
   for (const locale of ["ja", "en"] as const) {
     for (const View of [MonitoringView, DashboardView]) {
-      const render = (mode: QueryMode) => renderUI(createElement(View), locale, "/admin/", client => {
+      const render = (mode: QueryMode, updatedAt = snapshotAt) => renderUI(createElement(View), locale, "/admin/", client => {
         const sections: Array<[readonly string[], unknown[]]> = [
           [["service-health"], [worker]], [["streams"], []],
           [["resource", "/observability/incidents"], []], [["resource", "/observability/diagnostics"], []],
         ];
-        for (const [key, rows] of sections) { client.setQueryData(key, rows); setMode(client, key, mode); }
+        // Compare the same acquired snapshot, independent of wall-clock minute boundaries.
+        for (const [key, rows] of sections) { client.setQueryData(key, rows, { updatedAt }); setMode(client, key, mode); }
       });
       assert.equal(visibleText(render("refreshing")), visibleText(render("fresh")), `${View.name}/${locale}: successful snapshot text must not change during a poll`);
       assert.doesNotMatch(render("fresh"), /<span class="sr-only" role="status"/);
       assert.notEqual(visibleText(render("stale")), visibleText(render("fresh")), "failed polling must still disclose stale data");
+      if (View === MonitoringView) {
+        assert.match(visibleText(render("fresh")), /09\/01 10:00/, "the acquired snapshot timestamp remains visible");
+        assert.match(visibleText(render("fresh", snapshotAt + 60_000)), /09\/01 10:01/, "a newly acquired snapshot advances the displayed timestamp");
+      }
     }
   }
 });
