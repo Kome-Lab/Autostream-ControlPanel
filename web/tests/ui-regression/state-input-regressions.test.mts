@@ -213,8 +213,10 @@ test('UI-WORKER-REFRESH-014: actual view and QueryClient keep permitted rows thr
   if(state==='background-refresh'){
    assert.equal(notice,'','normal cached refresh must not insert a flow notice');
    const button=before.match(/<button[^>]*aria-busy="true"[^>]*>[\s\S]*?<\/button>/)?.[0]||'';
-   assert.match(button,/size-4 animate-spin/);assert.match(button,/<span class="sr-only" role="status">/);
-   assert.match(button,locale==='ja'?/取得済みデータを表示しながら更新中/:/Refreshing while keeping loaded data visible/);
+   assert.match(button,/size-4 animate-spin/);
+   const notification=button.match(/<span\b[^>]*class="sr-only"[^>]*>[\s\S]*?<\/span>/)?.[0];assert.ok(notification,'cached refresh retains its live notification owner');
+   assert.match(notification,/\brole="status"/);assert.match(notification,/\baria-live="polite"/);
+   assert.match(notification,locale==='ja'?/取得済みデータを表示しながら更新中/:/Refreshing while keeping loaded data visible/);
   }else assert.ok(notice,'partial and stale source state notices remain visible');
   const held=Promise.withResolvers<typeof auth>(),pending=client.fetchQuery({queryKey:['auth','me'],queryFn:()=>held.promise,staleTime:0});const during=render();assert.equal(stateHTML(during),notice,'auth refresh preserves partial/stale notices and quiet cached refresh');assert.match(during,/<button[^>]*aria-busy="true"[^>]*>/);assert.match(during,/Retained Worker/);assert.doesNotMatch(during,/PRIVATE_RESOURCE_ERROR/);held.resolve(auth);await pending;client.clear();
  }
@@ -292,7 +294,10 @@ test('UI-REFRESH-013: actual scoped driver selects the page action or registered
  const source=readFileSync(new URL('../../src/features/nodes/node-registration-view.tsx',import.meta.url),'utf8');
  const callback=actualCallback('const action='+source.match(/onClick=\{(\(\) => registeredNodes\.refetch\(\))\}/)![1],'action',{registeredNodes:{refetch(){return 'actual-refetch';}}});assert.equal(callback(),'actual-refetch');
  for(const family of ['streams-list','nodes'])for(const locale of ['ja','en'] as const)for(const fault of ['none','hidden','disabled','duplicate','wrong-owner']){
-   if(family==='nodes'){const html=renderUI(createElement(NodeRegistrationView,{mode:'registered'}),locale,'/admin/registered-nodes/');const button=html.match(/<button[^>]*aria-busy="false"[^>]*>[\s\S]*?<\/button>/)?.[0];assert.ok(button,'registered refresh action remains in the actual markup');assert.equal(button.replace(/<[^>]*>/g,'').trim(),locale==='ja'?'更新':'Refresh');assert.match(button,/<span class="sr-only" role="status"><\/span>/);}
+   if(family==='nodes'){
+    const html=renderUI(createElement(NodeRegistrationView,{mode:'registered'}),locale,'/admin/registered-nodes/');const button=html.match(/<button[^>]*aria-busy="false"[^>]*>[\s\S]*?<\/button>/)?.[0];assert.ok(button,'registered refresh action remains in the actual markup');assert.equal(button.replace(/<[^>]*>/g,'').trim(),locale==='ja'?'更新':'Refresh');
+    const notification=button.match(/<span\b[^>]*class="sr-only"[^>]*>[\s\S]*?<\/span>/)?.[0];assert.ok(notification,'idle refresh keeps the persistent live notification owner');assert.match(notification,/\baria-live="polite"/);assert.doesNotMatch(notification,/\brole=/,'idle notification must not expose an empty status');assert.equal(notification.replace(/<[^>]*>/g,'').trim(),'');
+   }
    const current=fixtureFor(family,'stale'),dom=observerDOM();dom.main.children=[];current.get(current.surface.primary);current.fixture.refresh();
    const page=dom.main.add(new Element('DIV'));page.setAttribute('data-screen-family','registered-nodes');const owner=page.add(new Element('DIV'));owner.setAttribute('data-slot',fault==='wrong-owner'?'other':family==='streams-list'?'page-actions-secondary':'card-header');
    const button=owner.add(new Element('BUTTON',locale==='ja'?'更新':'Refresh'));button.hidden=fault==='hidden';button.disabled=fault==='disabled';
