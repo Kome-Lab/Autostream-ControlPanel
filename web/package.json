@@ -76,7 +76,7 @@
     "typescript": "^6.0.3"
   },
   "overrides": {
-    "sharp": "0.35.4",
+    "sharp": "0.35.5",
     "js-yaml": "4.3.2",
     "source-map-js": "1.2.2",
     "brace-expansion@1.x": "1.1.21",

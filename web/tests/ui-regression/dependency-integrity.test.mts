@@ -79,10 +79,13 @@ test("UI-DEPENDENCY-005: bounded UI176 repair retains accepted raw and rejects v
     const changes = path.endsWith("package-lock.json") ? [
       () => { parsed.packages["node_modules/next"].version = "16.3.7"; },
       () => { parsed.packages["node_modules/next"].integrity = "changed"; },
+      () => { parsed.packages["node_modules/sharp"].version = "0.35.4"; },
+      () => { parsed.packages["node_modules/@img/sharp-libvips-linux-x64"].integrity = "changed"; },
       () => { parsed.packages["node_modules/unrelated"] = { version: "1.0.0" }; },
     ] : [
       () => { parsed.dependencies.next = "16.3.7"; },
       () => { parsed.overrides["brace-expansion@1.x"] = "5.0.12"; },
+      () => { parsed.overrides.sharp = "0.35.4"; },
       () => { parsed.scripts.lint = "echo skipped"; },
     ];
     for (const change of changes) {

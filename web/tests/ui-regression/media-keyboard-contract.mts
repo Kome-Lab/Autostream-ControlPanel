@@ -65,11 +65,14 @@ export async function exerciseUnavailableMedia(browser:BrowserHarness,condition:
         // Native Space has page-scroll semantics on this disabled host. Return
         // through the predeclared adjacent real link using one Tab/Shift+Tab,
         // not DOM focus/scroll, before comparing the final visible snapshot.
-        await browser.evaluate(`(() => {const v=globalThis.${marker},matches=[...document.querySelectorAll('main[data-screen-family=archive-share] a[href="/archive-shares/ui-synthetic-share/download"]')];if(document.activeElement!==v.host||!v.host.isConnected||matches.length!==1)throw Error('negative media restoration owner missing');v.returnPeer=matches[0];return true;})()`);
+        await browser.evaluate(`(() => {const v=globalThis.${marker},matches=[...document.querySelectorAll('main[data-screen-family=archive-share] a[href="/archive-shares/ui-synthetic-share/download"]')];if(document.activeElement!==v.host||!v.host.isConnected||matches.length!==1)throw Error('negative media restoration owner missing');v.returnPeer=matches[0];v.last=null;v.stable=0;return true;})()`);
         await browser.pressTab("forward");restorationTabs++;
         assert.equal(await browser.evaluate(mediaReturnPeer),true,"native Tab must reach the exact visible existing media download peer");
         await browser.pressTab("backward");restorationTabs++;
         assert.equal(await browser.evaluate(`document.activeElement===globalThis.${marker}.host&&globalThis.${marker}.host.isConnected`),true,"native reverse Tab must restore the original media host");
+        // Returning focus can start another native scroll. Its own scrollend
+        // and stable frames must complete before the unchanged UA comparison.
+        await browser.waitFor(mediaInputSettled,Boolean,"same media owner native return scroll settlement");
       }
       const next=await observe(key==="Enter"?"negative-enter":"negative-space-return");assert.deepEqual(next,ua,"negative native input must not change the media snapshot");
       await assertMediaFixture(browser,condition);

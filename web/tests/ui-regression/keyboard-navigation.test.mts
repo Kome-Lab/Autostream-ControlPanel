@@ -416,6 +416,41 @@ test('UI-MEDIA-INPUT-025: real negative-key caller observes finite native scroll
  assert.ok(mediaReturnPeer.includes('elementFromPoint'),'restoration observes the real hit target');
 });
 
+test('UI-MEDIA-RETURN-176: the real negative-key caller settles native Tab return before observing and fails closed on unsettled or replaced scroll owners',async()=>{
+ const {exerciseUnavailableMedia}=await import('./media-keyboard-contract.mts');
+ const {runInNewContext}=await import('node:vm');
+ const condition=conditions.find(c=>c.id==='accessibility--public-archive-share--ready--autostream--light--ja--390--keyboard')!;
+ for(const fault of ['none','deadline','owner','geometry']as const){
+  const listeners=new Map<object,Map<string,Set<(e:unknown)=>void>>>();
+  const node=()=>{const n={isConnected:true,parentElement:null as unknown,scrollLeft:0,scrollTop:0,getAttribute:(k:string)=>k==='src'?'data:video/mp4;base64,AAAAHGZ0eXBtcDQyAAAAAG1wNDJpc29t':null,closest:()=>null,contains:(e:unknown)=>e===n,
+   getBoundingClientRect:()=>({x:0,y:0,left:0,top:0,right:100,bottom:50,width:100,height:50}),
+   addEventListener:(k:string,f:(e:unknown)=>void)=>{let m=listeners.get(n);if(!m){m=new Map();listeners.set(n,m);}if(!m.has(k))m.set(k,new Set());m.get(k)!.add(f);},removeEventListener:(k:string,f:(e:unknown)=>void)=>listeners.get(n)?.get(k)?.delete(f)};return n;};
+  const root=node(),host=node(),peer=node();host.parentElement=root;peer.parentElement=root;
+  const document={activeElement:host as unknown,querySelectorAll:(s:string)=>s.includes('a[href')?[peer]:[host],elementFromPoint:()=>peer};
+  let returned=false,returnFrames=0,cleanups=0;
+  const dispatch=(k:string)=>{for(const f of listeners.get(root)?.get(k)||[])f({target:root});};
+  const context={document,innerWidth:390,innerHeight:844,getComputedStyle:()=>({visibility:'visible',display:'block',opacity:'1',outlineStyle:'solid',outlineWidth:'2'}),__uiKeyboardPlan:{medias:[{element:host}]},
+   requestAnimationFrame:(f:()=>void)=>{if(returned){returnFrames++;if(fault==='owner')host.parentElement=peer;
+    if(fault==='geometry')root.scrollTop=NaN;
+    else if(fault==='deadline'||returnFrames<=2){root.scrollTop+=10;dispatch('scroll');}
+    if(fault==='none'&&returnFrames===2)dispatch('scrollend');}f();}};
+  const ua={document:1,host:2,node:3,kind:'media',relation:'host',role:'media',stable:true,focusedAncestors:1,uaFocusable:0,mediaState:'error',indicator:true,visible:true,disabled:true,focusable:true,complete:true,
+   media:{ready:0,network:3,error:4,source:true,currentSource:true,paused:true,atStart:true},focusables:[{node:3,relation:'host',role:'media',disabled:true}]}as const;
+  const keys:string[]=[],observations:number[]=[];
+  const browser={requests:new Map(),responseStatuses:new Map(),
+   evaluate:async(e:string)=>{if(e.includes('v.host.removeEventListener'))cleanups++;return JSON.parse(JSON.stringify(await runInNewContext(e,context)));},
+   pressNativeKey:async(key:string)=>{keys.push(key);for(const f of listeners.get(host)?.get('keydown')||[])f({target:host,code:key,isTrusted:true,repeat:false});},
+   pressTab:async(direction:string)=>{keys.push(direction);document.activeElement=direction==='forward'?peer:host;returned=direction==='backward';},
+   observeNativeFocus:async()=>{if(returned)assert.ok(returnFrames>=4,'native return scroll must settle before the unchanged UA proof');observations.push(returnFrames);return ua;},
+   waitFor:async(e:string,p:(v:unknown)=>boolean)=>{for(let n=0;n<5;n++){const value=await runInNewContext(e,context);if(p(value))return value;}throw Error('native return deadline');}
+  }as unknown as BrowserHarness;
+  if(fault==='none'){assert.equal(await exerciseUnavailableMedia(browser,condition,ua),2);assert.deepEqual(observations,[0,4]);assert.equal(root.scrollTop,20);}
+  else{await assert.rejects(exerciseUnavailableMedia(browser,condition,ua),fault==='deadline'?/native return deadline/:fault==='owner'?/scroll owner replaced/:/geometry unavailable/);assert.deepEqual(observations,[0],'failed return cannot reach the UA comparison');}
+  assert.deepEqual(keys,['Enter','Space','forward','backward'],'native input is issued once without retries or synthetic focus');assert.equal(cleanups,1);
+  assert.equal('__uiUnavailableMedia'in context,false);assert.equal([...listeners.values()].flatMap(m=>[...m.values()].map(s=>s.size)).reduce((a,b)=>a+b,0),0);
+ }
+});
+
 test('UI-LINK-025: native link expectations require default navigation and exact settled fixture GET while Space stays inactive',async()=>{
  const {assertLinkActivation,publicDownloadPath}=await import('./native-link-activation.mts');const {createUIFixture}=await import('./route-fixture.mts');
  const condition=conditions.find(c=>c.family==='public-archive-share'&&c.exercise==='keyboard')!;
