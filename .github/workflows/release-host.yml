@@ -131,7 +131,7 @@ jobs:
             echo "Control Panel release publication must run on a GitHub-hosted runner." >&2
             exit 1
           fi
-      - uses: actions/download-artifact@96dc968c16b1e91bb81db51b7a8786906658a842 # v8.0.0
+      - uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
           name: control-panel-release-${{ needs.release-host.outputs.version }}-${{ github.sha }}
           path: artifacts
