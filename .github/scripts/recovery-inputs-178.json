@@ -1,0 +1,99 @@
+{
+  "schema_version": 1,
+  "purpose": "PUBLISH_ORIGINAL_FAILED_RUN_ARTIFACT_WITHOUT_REBUILD",
+  "repository": "Kome-Lab/Autostream-ControlPanel",
+  "release_tag": "v2.0.1",
+  "source_commit": "9c75188147daf8435d005651a8266ae31ce39653",
+  "source_tag_object": "e540351b4e8649ab75a1e0c02952aef1de1e36a9",
+  "original_workflow_path": ".github/workflows/release-host.yml",
+  "original_workflow_blob": "5ac364f10ec4499f7a002fe2ae66c516a6d9ceb9",
+  "original_run_id": 37758047568,
+  "original_run_attempt": 1,
+  "original_event": "push",
+  "original_ref": "refs/tags/v2.0.1",
+  "successful_build_job_id": 113247388433,
+  "original_exact_ci_run_id": 37561937948,
+  "original_exact_ci_attempt": 1,
+  "artifact": {
+    "id": 11541007570,
+    "name": "control-panel-release-v2.0.1-9c75188147daf8435d005651a8266ae31ce39653",
+    "size_in_bytes": 24868129,
+    "digest": "sha256:acdbfd6630f658d2e39480cba34ceb7a9b36f1b8d9a6f38f7cce96b0a7bca4b0",
+    "expires_at": "2026-10-15T09:43:03Z"
+  },
+  "payload_members": [
+    {
+      "member": "SHA256SUMS",
+      "bytes": 665,
+      "sha256": "2796eb307d9fdb822360fdd5d35e98974272a1295fddb4d878896dd4b6a43a83"
+    },
+    {
+      "member": "autostream-control-panel_v2.0.1_linux_amd64.tar.gz",
+      "bytes": 13016884,
+      "sha256": "8fef4227ef1f505bb9923f18b5d5164d32d91b923d0358fd984eade332737997"
+    },
+    {
+      "member": "autostream-control-panel_v2.0.1_linux_amd64.tar.gz.sha256",
+      "bytes": 117,
+      "sha256": "688f213065f1bc6a95d1773278d0bfa6f8122c04a0b98909e7d9f66f23b3017f"
+    },
+    {
+      "member": "autostream-control-panel_v2.0.1_linux_arm64.tar.gz",
+      "bytes": 11848100,
+      "sha256": "1caa280934e3d89bbfc06fd8c1a5533b02f1f6fc1b714a964352af1c88dbce24"
+    },
+    {
+      "member": "autostream-control-panel_v2.0.1_linux_arm64.tar.gz.sha256",
+      "bytes": 117,
+      "sha256": "4b40b78dcf56133b3043d783f0f4e32eef855a9aebcc942168c5047df518e147"
+    },
+    {
+      "member": "release-manifest.json",
+      "bytes": 946,
+      "sha256": "e833413f1276d43928e0aa494184a843cd4883f220d1970e44ca888e1d16e155"
+    },
+    {
+      "member": "release-manifest.json.sha256",
+      "bytes": 88,
+      "sha256": "f012a6ec9a83789beb5e2aa96a2a7e22c984283d3d07b82aa33bcaa0d75b2915"
+    }
+  ],
+  "release_manifest": {
+    "schema_version": 1,
+    "release_id": "v2.0.1",
+    "channel": "host",
+    "published_at": "2026-10-08T09:41:36Z",
+    "minimum_agent_version": "v1.7.0",
+    "components": [
+      {
+        "service": "control-panel",
+        "source_version": "v2.0.1",
+        "commit": "9c75188147daf8435d005651a8266ae31ce39653",
+        "rollback_compatible": true,
+        "database_schema": "backward_compatible",
+        "artifacts": [
+          {
+            "os": "linux",
+            "arch": "amd64",
+            "name": "autostream-control-panel_v2.0.1_linux_amd64.tar.gz",
+            "size": 13016884,
+            "sha256": "8fef4227ef1f505bb9923f18b5d5164d32d91b923d0358fd984eade332737997"
+          },
+          {
+            "os": "linux",
+            "arch": "arm64",
+            "name": "autostream-control-panel_v2.0.1_linux_arm64.tar.gz",
+            "size": 11848100,
+            "sha256": "1caa280934e3d89bbfc06fd8c1a5533b02f1f6fc1b714a964352af1c88dbce24"
+          }
+        ]
+      }
+    ]
+  },
+  "recovery_branch": "fix/part5-ui-178-publication-recovery",
+  "recovery_workflow_path": ".github/workflows/release-host.yml",
+  "recovery_predicate_type": "https://github.com/Kome-Lab/Autostream-ControlPanel/attestations/release-recovery/v1",
+  "attest_action": "actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6",
+  "statement": "The recovery workflow verifies and publishes the original artifact; it does not build the application. Its certificate identity must be the actual recovery branch/commit, never spoofed as the original tag.",
+  "known_issues": "## v2.0.1 既知事項\n\n- Chrome標準ズームは未確認です。更新後に利用者が確認してください。\n- braces GHSA-vfj7-8cjw-p6xmは未修復です。UI176では開発・lint側の1 advisory / 5 high package findingsでした。正式配布物はGo binaryと静的UIですが、本番全般の安全性や監査0件を主張しません。\n- 本公開では本番DB診断・migration・本番更新を実行していません。\n- 任意背景色と蓋画像適用時の選択版固定は別scopeです。\n- 既存Updaterの更新画面でControl Panelのみを選び、現在の担当Agent・対象版・更新可否・確認画面を確認して通常更新してください。結果不明時は同じjobを確認し、重複投入しないでください。"
+}
