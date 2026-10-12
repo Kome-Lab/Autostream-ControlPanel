@@ -1,15 +1,17 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { ciClosureBase, ciClosurePaths, inverseCIClosure } from "./ci-closure-deltas.mts";
 import { createNormalizedReader } from "./source-normalization.mts";
+import { historicalUI188Source } from "./ui188-current-source-deltas.mts";
 
 const root = fileURLToPath(new URL("../../..", import.meta.url));
 const object = (commit: string, path: string) => execFileSync("git", ["show", commit + ":" + path], { cwd: root, maxBuffer: 32 * 1024 * 1024 });
-const raw = (path: string) => object("HEAD", path);
+const raw = (path: string) => readFileSync(resolve(root, path));
+const historicalRaw = (path: string) => historicalUI188Source(path, raw(path), object);
 const io = { raw, object, exists: (path: string) => existsSync(resolve(root, path)) };
 const expectedPaths = [
   "internal/httpapi/server_start_preparation_claim_test.go",
@@ -23,7 +25,7 @@ test("UI-CI-CLOSURE-001: exactly five changed sources bind fixed before and actu
   assert.deepEqual(ciClosurePaths, expectedPaths);
   assert.equal(new Set(ciClosurePaths).size, 5);
   for (const path of ciClosurePaths) {
-    const before = object(ciClosureBase, path), current = raw(path);
+    const before = object(ciClosureBase, path), current = historicalRaw(path);
     assert.notDeepEqual(before, current);
     assert.deepEqual(inverseCIClosure(path, before, current), before);
   }
@@ -35,7 +37,7 @@ test("UI-CI-CLOSURE-001: exactly five changed sources bind fixed before and actu
 
 test("UI-CI-CLOSURE-002: omitted, truncated, extra, reverted and wrong-original bytes fail closed", () => {
   for (const path of ciClosurePaths) {
-    const before = object(ciClosureBase, path), current = raw(path);
+    const before = object(ciClosureBase, path), current = historicalRaw(path);
     for (const mutant of [Buffer.alloc(0), current.subarray(0, current.length - 1), Buffer.concat([current, Buffer.from("drift")]), before]) {
       assert.throws(() => inverseCIClosure(path, before, mutant), /exact specified name edits/);
     }

@@ -10,6 +10,7 @@ import { actualCallback, actualFunction } from "./source-callback.mts";
 const { I18nProvider } = await import("../../src/components/admin/i18n-provider.tsx");
 const { StreamDetailOperations, readinessResult } = await import("../../src/features/streams/stream-detail-operations.tsx");
 const { createStreamActionController } = await import("../../src/features/streams/stream-action-controller.ts");
+const { cacheStreamActionResponse } = await import("../../src/features/streams/stream-action-runtime.ts");
 const stream = { id: "stream-a", name: "日本語の利用者名", status: "ready", updated_at: "2026-09-01T00:00:00Z" };
 
 test("UI-STREAM-IDENTITY-001: actual primary cell and dialog close callbacks retain the exact original trigger", () => {
@@ -74,7 +75,7 @@ test("UI-STREAM-DETAIL-003: real controller retains denied/stale/unknown/pending
 test("UI-STREAM-DETAIL-004: actual parent callback owns result, refresh, and detail feedback", () => {
   const source = readFileSync(new URL("../../src/features/streams/streams-view.tsx", import.meta.url), "utf8");
   const notices: unknown[] = []; let refreshes = 0;
-  const callback = actualCallback(source, "handleStreamActionResult", { ja: false, readinessResult,
+  const callback = actualCallback(source, "handleStreamActionResult", { ja: false, readinessResult, cacheStreamActionResponse,
     setActionNotice: (value: unknown) => notices.push(value), setCreatedStreams() {}, streamActionLabel: () => "Action",
     queryClient: { invalidateQueries() { refreshes++; } }, streamActionBlockedMessage: () => "Blocked", t: (key: string) => key });
   callback({ kind: "succeeded", value: { stream_id: stream.id, ready: true, missing_service_types: [], issues: [] } }, { id: "STR-08", stream });

@@ -10,6 +10,7 @@ import { assertCP174Original, assertCP174SourceDelta, cp174Base, cp174Paths, cp1
 import { createNormalizedReader } from "./source-normalization.mts";
 import { releaseAssemblyBase, releaseAssemblySource } from "./release-assembly-deltas.mts";
 import { cp176Base, cp176Paths, inverseCP176DependencyRepair } from "./cp176-dependency-deltas.mts";
+import { historicalUI188Source } from "./ui188-current-source-deltas.mts";
 
 const root = fileURLToPath(new URL("../../..", import.meta.url));
 const raw = (path: string) => readFileSync(resolve(root, path));
@@ -17,8 +18,9 @@ const object = (commit: string, path: string) => execFileSync("git", ["show", co
 const io = { raw, object, exists: (path: string) => existsSync(resolve(root, path)) };
 const expectedPaths = ["internal/httpapi/server_streams.go", "web/package.json", ".github/workflows/ci.yml"];
 const hash = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
+const historicalRaw = (path: string) => historicalUI188Source(path, raw(path), object);
 const beforeDependencyRepair = (path: string) => cp176Paths.includes(path)
-  ? inverseCP176DependencyRepair(path, object(cp176Base, path), raw(path)) : raw(path);
+  ? inverseCP176DependencyRepair(path, object(cp176Base, path), historicalRaw(path)) : historicalRaw(path);
 
 test("UI-CP174-001: exactly three finite deltas restore the actual fixed CP174 base and historical authority", () => {
   assert.equal(cp174Base, "0315845e3af01eff6b97c6164db3ddc3109b55af");
@@ -34,7 +36,7 @@ test("UI-CP174-001: exactly three finite deltas restore the actual fixed CP174 b
     const mapping = reader.manifest.currentMappings.find(row => row.newPath === path);
     assert.deepEqual(reader.read(mapping?.oldPath ?? path), mapping ? object(reader.manifest.acceptedCommit, mapping.oldPath) : before);
   }
-  assert.deepEqual(inverseCP174Source(".github/workflows/ci.yml", raw(".github/workflows/ci.yml")), object(releaseAssemblySource, ".github/workflows/ci.yml"));
+  assert.deepEqual(inverseCP174Source(".github/workflows/ci.yml", historicalRaw(".github/workflows/ci.yml")), object(releaseAssemblySource, ".github/workflows/ci.yml"));
   for (const name of ["protected.json", "source-normalization.json", "approved-source-deltas.json", "ci-source-deltas.json"]) {
     const path = "web/tests/fixtures/ui-regression/" + name;
     assert.deepEqual(raw(path), object(cp174Base, path));
@@ -106,19 +108,24 @@ function assertRequiredReleaseUI(pkg: Package, workflow: Workflow) {
   assert.ok(workflow.jobs.web.steps.some(step => step.run === "npm run test:ui-regression:parity"), "independent CP174 contract is executed by required web CI");
 }
 
-test("UI-CP174-003: current raw package and workflow independently require both suites and every successful job result", () => {
+test("UI-CP174-003: current raw package and workflow independently require both suites and every successful job result", async t => {
   const pkg = JSON.parse(raw("web/package.json").toString("utf8")) as Package;
   const workflow = yaml.load(raw(".github/workflows/ci.yml").toString("utf8"));
   assertRequiredReleaseUI(pkg, workflow);
   const command = workflow.jobs.overall.steps[0].run as string;
   const env = Object.fromEntries(resultKeys.map(key => [key, "success"]));
-  const run = (values: Record<string, string>) => spawnSync("bash", ["-c", command], { env: { ...process.env, ...values }, encoding: "utf8", timeout: 5_000 });
-  assert.equal(run(env).status, 0);
-  for (const key of resultKeys) for (const result of ["failure", "cancelled", "skipped", ""]) {
-    const failed = run({ ...env, [key]: result });
-    assert.equal(failed.error, undefined); assert.equal(failed.signal, null);
-    assert.notEqual(failed.status, 0, `${key}=${result} cannot satisfy overall`);
-  }
+  await t.test("Linux native overall shell; Windows never discovers or launches a Bash/WSL alias", { skip: process.platform !== "linux" }, () => {
+    const executable = "/bin/bash";
+    assert.ok(existsSync(executable), "canonical Linux Bash is required");
+    const run = (values: Record<string, string>) => {
+      const result = spawnSync(executable, ["-c", command], { env: { ...process.env, ...values }, encoding: "utf8", timeout: 5_000 });
+      t.diagnostic(JSON.stringify({ executable, exit: result.status, signal: result.signal, spawnErrorCode: (result.error as NodeJS.ErrnoException | undefined)?.code ?? null }));
+      assert.equal(result.error, undefined); assert.equal(result.signal, null);
+      return result.status;
+    };
+    assert.equal(run(env), 0);
+    for (const key of resultKeys) for (const result of ["failure", "cancelled", "skipped", ""]) assert.notEqual(run({ ...env, [key]: result }), 0, `${key}=${result} cannot satisfy overall`);
+  });
   for (const name of Object.keys(expectedScripts)) {
     for (const command of ["", "true", pkg.scripts[name] + " --test-skip-pattern=.*", pkg.scripts[name] + " || true"]) {
       const copy = structuredClone(pkg); copy.scripts[name] = command;
@@ -159,7 +166,8 @@ const browserSources = [
 function assertBrowserWitness(path: string, bytes: Buffer) {
   const row = browserSources.find(source => source.path === path);
   assert.ok(row, "unknown CP174 browser witness");
-  assert.equal(hash(bytes), row.sha256, "CP174 required browser witness bytes changed");
+  // Bind the current F05/F08 witness first, then preserve its historical hash.
+  assert.equal(hash(historicalUI188Source(path, bytes, object)), row.sha256, "CP174 required browser witness bytes changed");
 }
 test("UI-CP174-004: required browser witnesses cannot be omitted, skipped, returned early or weakened", () => {
   for (const { path, guard, candidateSha256, sha256, additions } of browserSources) {
@@ -171,7 +179,7 @@ test("UI-CP174-004: required browser witnesses cannot be omitted, skipped, retur
     const mutants = ["", source.replace("test(\"CP", "test.skip(\"CP"), source.replace("async t => {", "async t => { return;"), source.replace(guard, "void 0;"), ...additions.map(addition => source.replace(addition, "omitted correction"))];
     for (const mutant of mutants) {
       assert.notEqual(mutant, source, "negative control must change the actual witness");
-      assert.throws(() => assertBrowserWitness(path, Buffer.from(mutant)), /browser witness bytes changed/);
+      assert.throws(() => assertBrowserWitness(path, Buffer.from(mutant)), /browser witness bytes changed|reviewed finite UI188 source bytes/);
     }
   }
   assert.match(raw("web/tests/ui-regression/parity.test.mts").toString("utf8"), /^import "\.\/cp174-source-deltas\.test\.mts";$/m, "CP174 independent tests are imported unconditionally by the existing required suite");

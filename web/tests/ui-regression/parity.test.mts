@@ -10,6 +10,7 @@ import { assertResourceActionInventory, currentActionInventory, frozenActionInve
 import "./release-assembly-deltas.test.mts";
 import "./ci-closure-deltas.test.mts";
 import "./cp174-source-deltas.test.mts";
+import "./ui188-current-source-deltas.test.mts";
 import { cp174ProtectedPaths } from "./cp174-source-deltas.mts";
 import ts from "typescript";
 import { createNormalizedReader, assertNormalizationManifest, inverseNormalization } from "./source-normalization.mts";
@@ -52,7 +53,37 @@ test("UI-PARITY-002-V2: current parity includes all 106 actions and the six pres
   assert.deepEqual(frozenActionInventory, original, "the 100-action authority remains unchanged");
   assert.equal(currentActionInventory.length, 106);
   assert.equal(new Set(currentActionInventory.map(({ id }) => id)).size, 106);
-  assert.deepEqual(currentActionInventory.filter(({ migrationWave }) => migrationWave !== "v2"), original);
+  const changes: Readonly<Record<string, string>> = {
+    "RES-13": "T(deepgram_api_key)", "RES-24": "T(provider label)", "RES-25": "T(provider label)",
+    "RES-32": "T(public username)", "RES-34": "T(role label)", "RES-35": "T(role label)", "RES-40": "T(SECURITY POLICY)",
+  };
+  const assertCurrent = (current: typeof currentActionInventory, historical: typeof frozenActionInventory) => {
+    assert.equal(historical.length, 100, "independent frozen source cardinality");
+    for (const [id, old] of Object.entries(changes)) {
+      const matches = historical.filter(row => row.id === id);
+      assert.equal(matches.length, 1, "independent old ID must occur once");
+      assert.equal(matches[0].confirmation, old, "independent old confirmation value");
+    }
+    const expected = [...historical.map(row => Object.hasOwn(changes, row.id) ? { ...row, confirmation: "C" } : row), ...v2ActionInventory].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+    assert.deepEqual(current, expected, "only seven independent confirmation fields may change in current106");
+    assert.equal(current.filter(row => row.id.startsWith("RES-")).length, 46);
+    assert.equal(current.filter(row => row.id.startsWith("RES-") && row.risk === "critical").length, 7);
+  };
+  assertCurrent(currentActionInventory, frozenActionInventory);
+  for (const mutate of [
+    (rows: (typeof currentActionInventory)[number][]) => { rows.pop(); },
+    (rows: (typeof currentActionInventory)[number][]) => { rows.push({ ...rows[0], id: "RES-99" }); },
+    (rows: (typeof currentActionInventory)[number][]) => { rows.push(rows[0]); },
+    (rows: (typeof currentActionInventory)[number][]) => { rows[0] = { ...rows[0], id: "wrong-ID" }; },
+    (rows: (typeof currentActionInventory)[number][]) => { const i = rows.findIndex(row => row.id === "RES-13"); rows[i] = { ...rows[i], confirmation: "T(deepgram_api_key)" }; },
+    (rows: (typeof currentActionInventory)[number][]) => { const i = rows.findIndex(row => row.id === "RES-13"); rows[i] = { ...rows[i], confirmation: "N" }; },
+    (rows: (typeof currentActionInventory)[number][]) => { const i = rows.findIndex(row => row.id === "RES-13"); rows[i] = { ...rows[i], permission: "streams.read" }; },
+  ]) {
+    const rows = structuredClone(currentActionInventory) as (typeof currentActionInventory)[number][]; mutate(rows);
+    assert.throws(() => assertCurrent(rows, frozenActionInventory), /only seven independent confirmation fields/);
+  }
+  const wrongOld = frozenActionInventory.map(row => row.id === "RES-13" ? { ...row, confirmation: "C" } : row);
+  assert.throws(() => assertCurrent(currentActionInventory, wrongOld), /independent old confirmation value/);
   assert.deepEqual(currentActionInventory.filter(({ migrationWave }) => migrationWave === "v2"), v2ActionInventory);
   assert.deepEqual(v2ActionInventory.map(({ id }) => id), ["RES-41", "RES-42", "RES-43", "RES-44", "RES-45", "RES-46"]);
   assertResourceActionInventory(currentActionInventory, resourceActionDescriptors);
@@ -201,10 +232,10 @@ test("UI-PARITY-007: exact supplement rejects missing, unknown, wrong original, 
 });
 
 test("UI-PARITY-008: finite name inverse binds accepted Git bytes and rejects source, registration and historical authority drift", () => {
-  const { manifest, raw } = normalizedSource;
+  const { manifest, raw, historicalRaw } = normalizedSource;
   const original = (path: string) => execFileSync("git", ["show", manifest.acceptedCommit + ":" + path], { cwd: root, maxBuffer: 32 * 1024 * 1024 });
   const beforeDependencyRepair = (path: string) => cp176Paths.includes(path)
-    ? inverseCP176DependencyRepair(path, execFileSync("git", ["show", cp176Base + ":" + path], { cwd: root }), raw(path)) : raw(path);
+    ? inverseCP176DependencyRepair(path, execFileSync("git", ["show", cp176Base + ":" + path], { cwd: root }), historicalRaw(path)) : historicalRaw(path);
   for (const row of manifest.currentMappings) {
     const before = original(row.oldPath), current = beforeDependencyRepair(row.newPath);
     assert.deepEqual(inverseNormalization(row, before, current), before);

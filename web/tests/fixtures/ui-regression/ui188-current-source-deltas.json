@@ -1,0 +1,878 @@
+{
+  "schemaVersion": 1,
+  "purpose": "Historical lineage only. Current behavior executes current raw source; hashes do not establish acceptance.",
+  "records": [
+    {
+      "path": ".github/workflows/ci.yml",
+      "beforeCommit": "4ffd232189da53077c99d7fad844735b8024366f",
+      "beforeSha256": "85b1b68ff9b9d42292b63bfc73d439ed520263b2d315815407219fd1282928cf",
+      "afterCommit": "d3e78bb125c3f5090bef84ddd08bec224a1baf31",
+      "afterSha256": "3de8fd1218ad2afa52f4981386708b39f0be0aaf72afda9ed0348631665059ca",
+      "specifications": [
+        "F01",
+        "F02",
+        "F03",
+        "F07"
+      ],
+      "allowedChanges": "Retain exact caller pin and blocking UI188 SQL/Web registration; preserve all previous required jobs and diagnostics.",
+      "behaviorTests": [
+        "web/tests/ui-regression/cp174-source-deltas.test.mts",
+        "web/tests/ui188-stream-operations.test.mts"
+      ]
+    },
+    {
+      "path": "internal/httpapi/routes_characterization_test.go",
+      "beforeCommit": "fade8df68aacc2ce484a2ace470f12789eb83f82",
+      "beforeSha256": "5159ac09dfa0e2665648ab03177676250dc2dbaa24306cdd2c21bdafe5401770",
+      "afterCommit": "d3e78bb125c3f5090bef84ddd08bec224a1baf31",
+      "afterSha256": "f2258c0fae1e60e24c04a79f7f76f216217ddc4086039cc51221557d1fc0e7e9",
+      "specifications": [
+        "F01",
+        "F07",
+        "F08"
+      ],
+      "allowedChanges": "Require Encoder/Worker in atomic creation and its valid-role fixtures; retain unauthorized, invalid input, rollback, archive and other-stream negatives, plus scoped media preview permissions.",
+      "behaviorTests": [
+        "internal/httpapi/ui188_stream_operations_test.go",
+        "internal/httpapi/ui188_stream_operations_mariadb_test.go",
+        "internal/httpapi/stream_create_isolation_test.go",
+        "web/tests/ui188-stream-operations.test.mts"
+      ]
+    },
+    {
+      "path": "web/package.json",
+      "beforeCommit": "9c75188147daf8435d005651a8266ae31ce39653",
+      "beforeSha256": "cee9ab572e4384dd52ccd78d31209f0a0a1f4cc9439fa8f14928aa7c52447d04",
+      "afterCommit": "d3e78bb125c3f5090bef84ddd08bec224a1baf31",
+      "afterSha256": "c3f39c1a52f9ba56efcdfd8a3d0803d0ce2f93d314411bfcd84fe6f6aea70fe4",
+      "specifications": [
+        "F01",
+        "F02",
+        "F03",
+        "F07",
+        "F10",
+        "F11"
+      ],
+      "allowedChanges": "Add only the fixed UI188 test script; dependencies, overrides and old scripts remain unchanged.",
+      "behaviorTests": [
+        "web/tests/ui-regression/dependency-integrity.test.mts",
+        "web/tests/ui188-stream-operations.test.mts"
+      ]
+    },
+    {
+      "path": "web/tests/helpers/browser-harness.mts",
+      "beforeCommit": "e6ea35616d6586c8acef3976b9b8328f3c2569a3",
+      "beforeSha256": "6f86a5babb7189b89a7f183ab647e5f13cbae5d9d0297ba4edebccd07edf0cdb",
+      "afterCommit": "d3e78bb125c3f5090bef84ddd08bec224a1baf31",
+      "afterSha256": "10c4eb5bdbd96ae23a53b3aceacae8861ef060314dce72f1fe6a1aa0770ba2a5",
+      "specifications": [
+        "F08",
+        "F09"
+      ],
+      "allowedChanges": "Add only explicit image bytes/content type to external browser fixtures; retain Fetch settlement, owner, failure and cleanup behavior.",
+      "behaviorTests": [
+        "web/tests/ui-regression/keyboard-navigation.test.mts",
+        "web/tests/helpers/browser-request-lifecycle.test.mts",
+        "web/tests/ui-refresh-layout-browser.test.mts"
+      ]
+    },
+    {
+      "path": "go.mod",
+      "beforeCommit": "195bb0a5c90dd35ed911e5ba5e506efee13d3843",
+      "beforeSha256": "4d5423a6e1351f8dac9b37cad5c24257d0c3bbb6e5d471f2b5987621a2394ffc",
+      "afterCommit": "d3e78bb125c3f5090bef84ddd08bec224a1baf31",
+      "afterSha256": "94906924b223e3d277b57eae0021f80a3ba1074fc96b2e515c287c21265c4d41",
+      "specifications": [
+        "F01",
+        "F07"
+      ],
+      "allowedChanges": "Keep accepted Contracts f62ddfaf exact caller pin and its checksums; no runtime dependency change in R2.",
+      "behaviorTests": [
+        "internal/httpapi/ui188_stream_operations_test.go",
+        "internal/videocover/videocover_test.go"
+      ]
+    },
+    {
+      "path": "go.sum",
+      "beforeCommit": "195bb0a5c90dd35ed911e5ba5e506efee13d3843",
+      "beforeSha256": "de6e07f1e240be28eae153d8980baa61b49c4b9c4c95b05b1f85eb7cb2083f55",
+      "afterCommit": "d3e78bb125c3f5090bef84ddd08bec224a1baf31",
+      "afterSha256": "b522be941749cf12779c787c81fd7b9cb1f497d80c60d2a88a6eaa159c83b5d0",
+      "specifications": [
+        "F01",
+        "F07"
+      ],
+      "allowedChanges": "Keep accepted Contracts f62ddfaf exact caller pin and its checksums; no runtime dependency change in R2.",
+      "behaviorTests": [
+        "internal/httpapi/ui188_stream_operations_test.go",
+        "internal/videocover/videocover_test.go"
+      ]
+    },
+    {
+      "path": "internal/database/control_platform_features_migration_test.go",
+      "beforeCommit": "b04d0b456ce0e664fa8c474f2a531649cbf02ec5",
+      "beforeSha256": "9064b8831e92e27dc15ab3af36e4b88ef8b7b2eb04db0a983e8af27268c68843",
+      "afterCommit": "d3e78bb125c3f5090bef84ddd08bec224a1baf31",
+      "afterSha256": "3ff14519e12717a92545a0c9f5bcdb904c62a5aacf3819d7231af427692703ef",
+      "specifications": [
+        "F01",
+        "F07",
+        "F08"
+      ],
+      "allowedChanges": "Require Encoder/Worker in atomic creation and its valid-role fixtures; retain unauthorized, invalid input, rollback, archive and other-stream negatives, plus scoped media preview permissions.",
+      "behaviorTests": [
+        "internal/httpapi/ui188_stream_operations_test.go",
+        "internal/httpapi/ui188_stream_operations_mariadb_test.go",
+        "internal/httpapi/stream_create_isolation_test.go",
+        "web/tests/ui188-stream-operations.test.mts"
+      ]
+    },
+    {
+      "path": "internal/httpapi/control_platform_features.go",
+      "beforeCommit": "b04d0b456ce0e664fa8c474f2a531649cbf02ec5",
+      "beforeSha256": "efb07ea47c80bbf56a5fa87e0c7563a6e572d824a58c4a38d53a2c0e7d894437",
+      "afterCommit": "d3e78bb125c3f5090bef84ddd08bec224a1baf31",
+      "afterSha256": "0a5a934155541165dd989fb0504f46e789c8276109130c47c9fa0e53b1068e87",
+      "specifications": [
+        "F01",
+        "F07",
+        "F08"
+      ],
+      "allowedChanges": "Require Encoder/Worker in atomic creation and its valid-role fixtures; retain unauthorized, invalid input, rollback, archive and other-stream negatives, plus scoped media preview permissions.",
+      "behaviorTests": [
+        "internal/httpapi/ui188_stream_operations_test.go",
+        "internal/httpapi/ui188_stream_operations_mariadb_test.go",
+        "internal/httpapi/stream_create_isolation_test.go",
+        "web/tests/ui188-stream-operations.test.mts"
+      ]
+    },
+    {
+      "path": "internal/httpapi/control_platform_visual_cover.go",
+      "beforeCommit": "b04d0b456ce0e664fa8c474f2a531649cbf02ec5",
+      "beforeSha256": "24a78b256168e74debcd0d0a7bba99327d76d2ada3c146fef01fe30ca75b51b3",
+      "afterCommit": "d3e78bb125c3f5090bef84ddd08bec224a1baf31",
+      "afterSha256": "773e26e3b1df512b13ba246c17040ca6ef79ebc3e4b1c127d3fb2972ebb9390d",
+      "specifications": [
+        "F07",
+        "F08",
+        "F09",
+        "F11"
+      ],
+      "allowedChanges": "Persist exact candidate/applied variants and revisions, protect referenced media, reconcile without duplicate audit, and distinguish ambiguous requests from applied outcomes.",
+      "behaviorTests": [
+        "internal/httpapi/ui188_stream_operations_mariadb_test.go",
+        "internal/httpapi/ui188_cover_reconcile_test.go",
+        "internal/videocover/videocover_test.go",
+        "web/tests/ui188-stream-operations.test.mts"
+      ]
+    },
+    {
+      "path": "internal/httpapi/server_audit.go",
+      "beforeCommit": "ac69c3d0fa318797514484f012defb66a3e10178",
+      "beforeSha256": "195af2ef3f0700919cb459ba3b574775a9bce511663360026e92c091b65fa95d",
+      "afterCommit": "d3e78bb125c3f5090bef84ddd08bec224a1baf31",
+      "afterSha256": "2c8dee582ec5bae299c86fa606364c8a72a2d17bbbee23bc44e35cf25cc766ad",
+      "specifications": [
+        "F10",
+        "F11"
+      ],
+      "allowedChanges": "Represent real lifecycle states and request/success/failure labels in Japanese without changing internal action IDs or secret projection.",
+      "behaviorTests": [
+        "web/tests/ui-foundation-status.test.mts",
+        "web/tests/notification-channel.test.mts",
+        "internal/httpapi/server_audit_projection_test.go"
+      ]
+    },
+    {
+      "path": "internal/httpapi/server_audit_projection_test.go",
+      "beforeCommit": "ac69c3d0fa318797514484f012defb66a3e10178",
+      "beforeSha256": "c1782ec6c3c7f6afe85309ed231798e604ef501455601624a8fc9f6b6e061efe",
+      "afterCommit": "d3e78bb125c3f5090bef84ddd08bec224a1baf31",
+      "afterSha256": "049000e807bb3b579123470e6b1c8a56efd7ed6d293c1cf47e6125c94317c588",
+      "specifications": [
+        "F10",
+        "F11"
+      ],
+      "allowedChanges": "Represent real lifecycle states and request/success/failure labels in Japanese without changing internal action IDs or secret projection.",
+      "behaviorTests": [
+        "web/tests/ui-foundation-status.test.mts",
+        "web/tests/notification-channel.test.mts",
+        "internal/httpapi/server_audit_projection_test.go"
+      ]
+    },
+    {
+      "path": "internal/httpapi/server_lifecycle_barrier_fixture_test.go",
+      "beforeCommit": "8863c785aaf70f443e396ed3f90045bdee71d15e",
+      "beforeSha256": "ba9b5c844c3d612b1c74ea6704feac73939eaee04f5e066e57343d0301334473",
+      "afterCommit": "d3e78bb125c3f5090bef84ddd08bec224a1baf31",
+      "afterSha256": "953bbd58207b41bcddc12dc2513c815ebd4d1a01c40e7c5f2079d96fca90bcc4",
+      "specifications": [
+        "F01",
+        "F02",
+        "F03"
+      ],
+      "allowedChanges": "Bind atomic stop claims/receipts and monotonic mutation versions; protect pending execution, archive data and other assignments; preserve concurrency barriers.",
+      "behaviorTests": [
+        "internal/httpapi/ui188_stream_operations_test.go",
+        "internal/httpapi/ui188_stream_operations_mariadb_test.go",
+        "web/tests/stream-operations-convergence.test.mts"
+      ]
+    },
+    {
+      "path": "internal/httpapi/server_node_registration_test.go",
+      "beforeCommit": "8863c785aaf70f443e396ed3f90045bdee71d15e",
+      "beforeSha256": "ef67b5320a97ec9336f8d002e46033f84eacc87cea2c34449a9bbfd306b3dad6",
+      "afterCommit": "d3e78bb125c3f5090bef84ddd08bec224a1baf31",
+      "afterSha256": "1101aefd56de07dd1d75bdfe0722bbb2eab7d4b1ff9aec04428f88ff5b52c89d",
+      "specifications": [
+        "F01",
+        "F07",
+        "F08"
+      ],
+      "allowedChanges": "Require Encoder/Worker in atomic creation and its valid-role fixtures; retain unauthorized, invalid input, rollback, archive and other-stream negatives, plus scoped media preview permissions.",
+      "behaviorTests": [
+        "internal/httpapi/ui188_stream_operations_test.go",
+        "internal/httpapi/ui188_stream_operations_mariadb_test.go",
+        "internal/httpapi/stream_create_isolation_test.go",
+        "web/tests/ui188-stream-operations.test.mts"
+      ]
+    },
+    {
+      "path": "internal/httpapi/server_service_registry.go",
+      "beforeCommit": "ac69c3d0fa318797514484f012defb66a3e10178",
+      "beforeSha256": "f950f640ebdb451114570f76258c620bfb3c49314ed0bd432cbc921b013645ff",
+      "afterCommit": "d3e78bb125c3f5090bef84ddd08bec224a1baf31",
+      "afterSha256": "80b9d182f3f87ba8b15dc40674ef309083002716a88b1b4a26088f6dee6a47eb",
+      "specifications": [
+        "F01",
+        "F07",
+        "F08"
+      ],
+      "allowedChanges": "Require Encoder/Worker in atomic creation and its valid-role fixtures; retain unauthorized, invalid input, rollback, archive and other-stream negatives, plus scoped media preview permissions.",
+      "behaviorTests": [
+        "internal/httpapi/ui188_stream_operations_test.go",
+        "internal/httpapi/ui188_stream_operations_mariadb_test.go",
+        "internal/httpapi/stream_create_isolation_test.go",
+        "web/tests/ui188-stream-operations.test.mts"
+      ]
+    },
+    {
+      "path": "internal/httpapi/server_service_registry_test.go",
+      "beforeCommit": "ac69c3d0fa318797514484f012defb66a3e10178",
+      "beforeSha256": "4d5030828107974bc79e89f0316039641990ac0d2f257c2235b00a2ad7bafa38",
+      "afterCommit": "d3e78bb125c3f5090bef84ddd08bec224a1baf31",
+      "afterSha256": "571df28997a2765eb26b6ddf72214a234c62003cab99fa447d1855ce281ad2b3",
+      "specifications": [
+        "F01",
+        "F07",
+        "F08"
+      ],
+      "allowedChanges": "Require Encoder/Worker in atomic creation and its valid-role fixtures; retain unauthorized, invalid input, rollback, archive and other-stream negatives, plus scoped media preview permissions.",
+      "behaviorTests": [
+        "internal/httpapi/ui188_stream_operations_test.go",
+        "internal/httpapi/ui188_stream_operations_mariadb_test.go",
+        "internal/httpapi/stream_create_isolation_test.go",
+        "web/tests/ui188-stream-operations.test.mts"
+      ]
+    },
+    {
+      "path": "internal/httpapi/server_stream_lifecycle_test.go",
+      "beforeCommit": "195bb0a5c90dd35ed911e5ba5e506efee13d3843",
+      "beforeSha256": "96e1956b79214b384adbada9c9f855de56ece519c4fe58095c882b6e53862ee3",
+      "afterCommit": "d3e78bb125c3f5090bef84ddd08bec224a1baf31",
+      "afterSha256": "cdfd1bd2e74de904769d1e46f5878b1db453e8d3f013e841828ff580c4595868",
+      "specifications": [
+        "F01",
+        "F07",
+        "F08"
+      ],
+      "allowedChanges": "Require Encoder/Worker in atomic creation and its valid-role fixtures; retain unauthorized, invalid input, rollback, archive and other-stream negatives, plus scoped media preview permissions.",
+      "behaviorTests": [
+        "internal/httpapi/ui188_stream_operations_test.go",
+        "internal/httpapi/ui188_stream_operations_mariadb_test.go",
+        "internal/httpapi/stream_create_isolation_test.go",
+        "web/tests/ui188-stream-operations.test.mts"
+      ]
+    },
+    {
+      "path": "internal/httpapi/server_stream_settings_test.go",
+      "beforeCommit": "ac69c3d0fa318797514484f012defb66a3e10178",
+      "beforeSha256": "bce9553a98c07822646eff1a182decdd07d332c4ac198400a127851574d4fe3e",
+      "afterCommit": "d3e78bb125c3f5090bef84ddd08bec224a1baf31",
+      "afterSha256": "12e0c0545f40d7bee050f7e722926281745e0af01347830ec695da8b9c99a12e",
+      "specifications": [
+        "F01",
+        "F07",
+        "F08"
+      ],
+      "allowedChanges": "Require Encoder/Worker in atomic creation and its valid-role fixtures; retain unauthorized, invalid input, rollback, archive and other-stream negatives, plus scoped media preview permissions.",
+      "behaviorTests": [
+        "internal/httpapi/ui188_stream_operations_test.go",
+        "internal/httpapi/ui188_stream_operations_mariadb_test.go",
+        "internal/httpapi/stream_create_isolation_test.go",
+        "web/tests/ui188-stream-operations.test.mts"
+      ]
+    },
+    {
+      "path": "internal/httpapi/server_stream_stop.go",
+      "beforeCommit": "ac69c3d0fa318797514484f012defb66a3e10178",
+      "beforeSha256": "e5d8ce6e881e3c645a0c618508b12559195be5c1d4eb3de445b1287c3cb9d619",
+      "afterCommit": "d3e78bb125c3f5090bef84ddd08bec224a1baf31",
+      "afterSha256": "ff2e3c84b9038cffcc9d0bbb5b2111543de3e067ada509d56fde08168f9ec1ff",
+      "specifications": [
+        "F01",
+        "F02",
+        "F03"
+      ],
+      "allowedChanges": "Bind atomic stop claims/receipts and monotonic mutation versions; protect pending execution, archive data and other assignments; preserve concurrency barriers.",
+      "behaviorTests": [
+        "internal/httpapi/ui188_stream_operations_test.go",
+        "internal/httpapi/ui188_stream_operations_mariadb_test.go",
+        "web/tests/stream-operations-convergence.test.mts"
+      ]
+    },
+    {
+      "path": "internal/httpapi/server_streams.go",
+      "beforeCommit": "4ffd232189da53077c99d7fad844735b8024366f",
+      "beforeSha256": "3b1760c9328c333f6af5904d89bfa297f2967b3cb671720bd72dfddf703437d7",
+      "afterCommit": "d3e78bb125c3f5090bef84ddd08bec224a1baf31",
+      "afterSha256": "d348f16ab1c444ea28af8f64ed209f5b4154a47304d022cade64f431a91822d2",
+      "specifications": [
+        "F01",
+        "F07",
+        "F08"
+      ],
+      "allowedChanges": "Require Encoder/Worker in atomic creation and its valid-role fixtures; retain unauthorized, invalid input, rollback, archive and other-stream negatives, plus scoped media preview permissions.",
+      "behaviorTests": [
+        "internal/httpapi/ui188_stream_operations_test.go",
+        "internal/httpapi/ui188_stream_operations_mariadb_test.go",
+        "internal/httpapi/stream_create_isolation_test.go",
+        "web/tests/ui188-stream-operations.test.mts"
+      ]
+    },
+    {
+      "path": "internal/httpapi/stream_archive_profile_test.go",
+      "beforeCommit": "e70a043383a79b28ce9e781daaca47fb3f66f241",
+      "beforeSha256": "10a6035dbdd50e16c20cef316b15967456b46bdd90d9c35859083986ef787ad9",
+      "afterCommit": "d3e78bb125c3f5090bef84ddd08bec224a1baf31",
+      "afterSha256": "50f12a4fc73ca9447ddb65b31ac481ac289eb5a3bd38a68494253a33618ac47e",
+      "specifications": [
+        "F01",
+        "F07",
+        "F08"
+      ],
+      "allowedChanges": "Require Encoder/Worker in atomic creation and its valid-role fixtures; retain unauthorized, invalid input, rollback, archive and other-stream negatives, plus scoped media preview permissions.",
+      "behaviorTests": [
+        "internal/httpapi/ui188_stream_operations_test.go",
+        "internal/httpapi/ui188_stream_operations_mariadb_test.go",
+        "internal/httpapi/stream_create_isolation_test.go",
+        "web/tests/ui188-stream-operations.test.mts"
+      ]
+    },
+    {
+      "path": "internal/httpapi/stream_create_isolation_test.go",
+      "beforeCommit": "e70a043383a79b28ce9e781daaca47fb3f66f241",
+      "beforeSha256": "c67131c48218d764200c3e713e8f36ec68e629cd0eb79623ef3e406cbb059063",
+      "afterCommit": "d3e78bb125c3f5090bef84ddd08bec224a1baf31",
+      "afterSha256": "20f8d384c8e05695b1340dd267df8780b1147f1a3f070868d3fd1aaa6d71e737",
+      "specifications": [
+        "F01",
+        "F07",
+        "F08"
+      ],
+      "allowedChanges": "Require Encoder/Worker in atomic creation and its valid-role fixtures; retain unauthorized, invalid input, rollback, archive and other-stream negatives, plus scoped media preview permissions.",
+      "behaviorTests": [
+        "internal/httpapi/ui188_stream_operations_test.go",
+        "internal/httpapi/ui188_stream_operations_mariadb_test.go",
+        "internal/httpapi/stream_create_isolation_test.go",
+        "web/tests/ui188-stream-operations.test.mts"
+      ]
+    },
+    {
+      "path": "internal/httpapi/stream_create_json_framing_test.go",
+      "beforeCommit": "d482ab2d41191f5ed6e200502e395eef80df1ab0",
+      "beforeSha256": "3c71eec0b69273afaa904ffe108ab8fd8d1a00bc995503400a5a7197f99f41ff",
+      "afterCommit": "d3e78bb125c3f5090bef84ddd08bec224a1baf31",
+      "afterSha256": "c3d386a1a5bb60c26282a8278c3f74c37989c900ba20d383ad397c7e822c88e8",
+      "specifications": [
+        "F01",
+        "F07",
+        "F08"
+      ],
+      "allowedChanges": "Require Encoder/Worker in atomic creation and its valid-role fixtures; retain unauthorized, invalid input, rollback, archive and other-stream negatives, plus scoped media preview permissions.",
+      "behaviorTests": [
+        "internal/httpapi/ui188_stream_operations_test.go",
+        "internal/httpapi/ui188_stream_operations_mariadb_test.go",
+        "internal/httpapi/stream_create_isolation_test.go",
+        "web/tests/ui188-stream-operations.test.mts"
+      ]
+    },
+    {
+      "path": "internal/httpapi/streams_management_test.go",
+      "beforeCommit": "e70a043383a79b28ce9e781daaca47fb3f66f241",
+      "beforeSha256": "71f6ea015d644b3d00a3f7582bdead1211fe997704d305a7e8726acad5a89247",
+      "afterCommit": "d3e78bb125c3f5090bef84ddd08bec224a1baf31",
+      "afterSha256": "0e0b60af2926df29223abcf765d28cfc8efafb2782113e55c758df254d67cd30",
+      "specifications": [
+        "F01",
+        "F07",
+        "F08"
+      ],
+      "allowedChanges": "Require Encoder/Worker in atomic creation and its valid-role fixtures; retain unauthorized, invalid input, rollback, archive and other-stream negatives, plus scoped media preview permissions.",
+      "behaviorTests": [
+        "internal/httpapi/ui188_stream_operations_test.go",
+        "internal/httpapi/ui188_stream_operations_mariadb_test.go",
+        "internal/httpapi/stream_create_isolation_test.go",
+        "web/tests/ui188-stream-operations.test.mts"
+      ]
+    },
+    {
+      "path": "internal/mediaassets/sql_repository.go",
+      "beforeCommit": "56fe869d230056fa4f6a4fa732afe03d5716a5e3",
+      "beforeSha256": "5d5095c6172404e1dc54be598c8530323652fe83d9ed45d73d1b5c0c1292edb4",
+      "afterCommit": "d3e78bb125c3f5090bef84ddd08bec224a1baf31",
+      "afterSha256": "af9d8e095d6b6e53219739fe9f08be642932d87b238285a02b8959fcf4db65cb",
+      "specifications": [
+        "F07",
+        "F08",
+        "F09",
+        "F11"
+      ],
+      "allowedChanges": "Persist exact candidate/applied variants and revisions, protect referenced media, reconcile without duplicate audit, and distinguish ambiguous requests from applied outcomes.",
+      "behaviorTests": [
+        "internal/httpapi/ui188_stream_operations_mariadb_test.go",
+        "internal/httpapi/ui188_cover_reconcile_test.go",
+        "internal/videocover/videocover_test.go",
+        "web/tests/ui188-stream-operations.test.mts"
+      ]
+    },
+    {
+      "path": "internal/store/memory.go",
+      "beforeCommit": "8863c785aaf70f443e396ed3f90045bdee71d15e",
+      "beforeSha256": "e25aa996f064de1330690b6a1433a809a5684223487648f4a596ba893176d3bc",
+      "afterCommit": "d3e78bb125c3f5090bef84ddd08bec224a1baf31",
+      "afterSha256": "f3c2ccb768ae0fa7103f7b8bf51e958466e138a68fb2c2b594dcafeb1e4d8300",
+      "specifications": [
+        "F01",
+        "F02",
+        "F03"
+      ],
+      "allowedChanges": "Bind atomic stop claims/receipts and monotonic mutation versions; protect pending execution, archive data and other assignments; preserve concurrency barriers.",
+      "behaviorTests": [
+        "internal/httpapi/ui188_stream_operations_test.go",
+        "internal/httpapi/ui188_stream_operations_mariadb_test.go",
+        "web/tests/stream-operations-convergence.test.mts"
+      ]
+    },
+    {
+      "path": "internal/store/memory_service_assignments_events.go",
+      "beforeCommit": "8863c785aaf70f443e396ed3f90045bdee71d15e",
+      "beforeSha256": "cf8fba5931d5569e5bf3e4654d9ff5c77c262758c5df9cb6ba7416d594cf91d1",
+      "afterCommit": "d3e78bb125c3f5090bef84ddd08bec224a1baf31",
+      "afterSha256": "3892535837821d03a95ea95721966d97dace2c09284e774a022ec8a9d818ec7f",
+      "specifications": [
+        "F01",
+        "F02",
+        "F03"
+      ],
+      "allowedChanges": "Bind atomic stop claims/receipts and monotonic mutation versions; protect pending execution, archive data and other assignments; preserve concurrency barriers.",
+      "behaviorTests": [
+        "internal/httpapi/ui188_stream_operations_test.go",
+        "internal/httpapi/ui188_stream_operations_mariadb_test.go",
+        "web/tests/stream-operations-convergence.test.mts"
+      ]
+    },
+    {
+      "path": "internal/store/memory_stream_settings.go",
+      "beforeCommit": "8863c785aaf70f443e396ed3f90045bdee71d15e",
+      "beforeSha256": "357fbe0e14a0d3a026ef6c5e229b4fea81874d839946e63be333fb4951091b7c",
+      "afterCommit": "d3e78bb125c3f5090bef84ddd08bec224a1baf31",
+      "afterSha256": "9eae7ccad568ae943d4ebdbf734c1badc86c653d8b60a0f17050cbe794cbd582",
+      "specifications": [
+        "F01",
+        "F07",
+        "F08"
+      ],
+      "allowedChanges": "Require Encoder/Worker in atomic creation and its valid-role fixtures; retain unauthorized, invalid input, rollback, archive and other-stream negatives, plus scoped media preview permissions.",
+      "behaviorTests": [
+        "internal/httpapi/ui188_stream_operations_test.go",
+        "internal/httpapi/ui188_stream_operations_mariadb_test.go",
+        "internal/httpapi/stream_create_isolation_test.go",
+        "web/tests/ui188-stream-operations.test.mts"
+      ]
+    },
+    {
+      "path": "internal/store/memory_stream_start_claim.go",
+      "beforeCommit": "68c838846cc6bd75d20f14bcea4da42dad69c943",
+      "beforeSha256": "9b227a0b7c72f5919bb9ce226f14f774f7c12c12756bc9da994b3cf6f3dd9265",
+      "afterCommit": "d3e78bb125c3f5090bef84ddd08bec224a1baf31",
+      "afterSha256": "85a89465639996ecfe548799c3db7426134b1c8676752de814dbd0b0d187dc3e",
+      "specifications": [
+        "F01",
+        "F02",
+        "F03"
+      ],
+      "allowedChanges": "Bind atomic stop claims/receipts and monotonic mutation versions; protect pending execution, archive data and other assignments; preserve concurrency barriers.",
+      "behaviorTests": [
+        "internal/httpapi/ui188_stream_operations_test.go",
+        "internal/httpapi/ui188_stream_operations_mariadb_test.go",
+        "web/tests/stream-operations-convergence.test.mts"
+      ]
+    },
+    {
+      "path": "internal/store/service_assignment_guard.go",
+      "beforeCommit": "b04d0b456ce0e664fa8c474f2a531649cbf02ec5",
+      "beforeSha256": "9e1a06be15228c59c7f2e980c8ebd0219d1569217db2e03422a5728f1d5ca579",
+      "afterCommit": "d3e78bb125c3f5090bef84ddd08bec224a1baf31",
+      "afterSha256": "7bd03c08d3ad3d7a0a0843fb36b287ce5011a7056abdb628fa4ddf5c579fa4a4",
+      "specifications": [
+        "F01",
+        "F02",
+        "F03"
+      ],
+      "allowedChanges": "Bind atomic stop claims/receipts and monotonic mutation versions; protect pending execution, archive data and other assignments; preserve concurrency barriers.",
+      "behaviorTests": [
+        "internal/httpapi/ui188_stream_operations_test.go",
+        "internal/httpapi/ui188_stream_operations_mariadb_test.go",
+        "web/tests/stream-operations-convergence.test.mts"
+      ]
+    },
+    {
+      "path": "internal/store/service_assignment_guard_locks_mariadb.go",
+      "beforeCommit": "8863c785aaf70f443e396ed3f90045bdee71d15e",
+      "beforeSha256": "1351b792e9bea6c0cedbdc06fa307d38003b06f0a0bb8aa93bfe000154bd548d",
+      "afterCommit": "d3e78bb125c3f5090bef84ddd08bec224a1baf31",
+      "afterSha256": "e35b69712ae7ac4ea37d5e5654eca9b0a4e890d7766352bc9e4cd06f08cbceab",
+      "specifications": [
+        "F01",
+        "F02",
+        "F03"
+      ],
+      "allowedChanges": "Bind atomic stop claims/receipts and monotonic mutation versions; protect pending execution, archive data and other assignments; preserve concurrency barriers.",
+      "behaviorTests": [
+        "internal/httpapi/ui188_stream_operations_test.go",
+        "internal/httpapi/ui188_stream_operations_mariadb_test.go",
+        "web/tests/stream-operations-convergence.test.mts"
+      ]
+    },
+    {
+      "path": "internal/store/service_assignment_guard_order_mariadb.go",
+      "beforeCommit": "8863c785aaf70f443e396ed3f90045bdee71d15e",
+      "beforeSha256": "fd8aaede4f0ab7502ff57f6130e8f87cd9f927d3c27c9c8c7712dc00443d2809",
+      "afterCommit": "d3e78bb125c3f5090bef84ddd08bec224a1baf31",
+      "afterSha256": "3157180cd70e0106177ecc61c7570e149923fb95fac0fccf3268cd9c2dd77000",
+      "specifications": [
+        "F01",
+        "F02",
+        "F03"
+      ],
+      "allowedChanges": "Bind atomic stop claims/receipts and monotonic mutation versions; protect pending execution, archive data and other assignments; preserve concurrency barriers.",
+      "behaviorTests": [
+        "internal/httpapi/ui188_stream_operations_test.go",
+        "internal/httpapi/ui188_stream_operations_mariadb_test.go",
+        "web/tests/stream-operations-convergence.test.mts"
+      ]
+    },
+    {
+      "path": "internal/streamvisual/memory.go",
+      "beforeCommit": "e70a043383a79b28ce9e781daaca47fb3f66f241",
+      "beforeSha256": "4de98aaffbb83d3ff2b3ea7b91b26ec5fa16e2e4e53430d02c5c16f0f0619a0d",
+      "afterCommit": "d3e78bb125c3f5090bef84ddd08bec224a1baf31",
+      "afterSha256": "2f82b4ef6fca3455f23d69256a66f97e7265815188d26a16d6e735f2d2d89e1e",
+      "specifications": [
+        "F01",
+        "F02",
+        "F03"
+      ],
+      "allowedChanges": "Bind atomic stop claims/receipts and monotonic mutation versions; protect pending execution, archive data and other assignments; preserve concurrency barriers.",
+      "behaviorTests": [
+        "internal/httpapi/ui188_stream_operations_test.go",
+        "internal/httpapi/ui188_stream_operations_mariadb_test.go",
+        "web/tests/stream-operations-convergence.test.mts"
+      ]
+    },
+    {
+      "path": "internal/streamvisual/repository.go",
+      "beforeCommit": "b04d0b456ce0e664fa8c474f2a531649cbf02ec5",
+      "beforeSha256": "52b0768e021d98aacc0be01016ffc0813a4211d44a9353e63bc5bedeba85e803",
+      "afterCommit": "d3e78bb125c3f5090bef84ddd08bec224a1baf31",
+      "afterSha256": "6ee8ca5df2f7e8dddcc5cbd1de6ac23a2aef83389d38234f4938a4f2ce81f6a1",
+      "specifications": [
+        "F01",
+        "F07",
+        "F08"
+      ],
+      "allowedChanges": "Require Encoder/Worker in atomic creation and its valid-role fixtures; retain unauthorized, invalid input, rollback, archive and other-stream negatives, plus scoped media preview permissions.",
+      "behaviorTests": [
+        "internal/httpapi/ui188_stream_operations_test.go",
+        "internal/httpapi/ui188_stream_operations_mariadb_test.go",
+        "internal/httpapi/stream_create_isolation_test.go",
+        "web/tests/ui188-stream-operations.test.mts"
+      ]
+    },
+    {
+      "path": "internal/streamvisual/types.go",
+      "beforeCommit": "b04d0b456ce0e664fa8c474f2a531649cbf02ec5",
+      "beforeSha256": "b3c69e5d71fafbc315d795d549de195e70afbd6293797c3697c4dbd79769a088",
+      "afterCommit": "d3e78bb125c3f5090bef84ddd08bec224a1baf31",
+      "afterSha256": "ee9ed31e80f0b79641b02499e737ec1d2dd05d9d239b77bf341af8fb4b9add2f",
+      "specifications": [
+        "F01",
+        "F07",
+        "F08"
+      ],
+      "allowedChanges": "Require Encoder/Worker in atomic creation and its valid-role fixtures; retain unauthorized, invalid input, rollback, archive and other-stream negatives, plus scoped media preview permissions.",
+      "behaviorTests": [
+        "internal/httpapi/ui188_stream_operations_test.go",
+        "internal/httpapi/ui188_stream_operations_mariadb_test.go",
+        "internal/httpapi/stream_create_isolation_test.go",
+        "web/tests/ui188-stream-operations.test.mts"
+      ]
+    },
+    {
+      "path": "internal/videocover/memory.go",
+      "beforeCommit": "018379199d33a9fa9edeb46f52507b154566c3f7",
+      "beforeSha256": "a9b9f36df665595bf1094a6392d9609490c517628bcd13e087097a4b3ae75d33",
+      "afterCommit": "d3e78bb125c3f5090bef84ddd08bec224a1baf31",
+      "afterSha256": "6e1f7a716dc7855e662360e0752a4537c8677572c13cec14484cc34deaadc9c8",
+      "specifications": [
+        "F07",
+        "F08",
+        "F09",
+        "F11"
+      ],
+      "allowedChanges": "Persist exact candidate/applied variants and revisions, protect referenced media, reconcile without duplicate audit, and distinguish ambiguous requests from applied outcomes.",
+      "behaviorTests": [
+        "internal/httpapi/ui188_stream_operations_mariadb_test.go",
+        "internal/httpapi/ui188_cover_reconcile_test.go",
+        "internal/videocover/videocover_test.go",
+        "web/tests/ui188-stream-operations.test.mts"
+      ]
+    },
+    {
+      "path": "internal/videocover/sql.go",
+      "beforeCommit": "018379199d33a9fa9edeb46f52507b154566c3f7",
+      "beforeSha256": "79386abc512db5473dec44656f9247ff4b832a5165146d8a732297ed757acbf5",
+      "afterCommit": "d3e78bb125c3f5090bef84ddd08bec224a1baf31",
+      "afterSha256": "1313cd21bb47f183cc4e642994c2ea7e4ce860745b6ee193793266953f543fcc",
+      "specifications": [
+        "F07",
+        "F08",
+        "F09",
+        "F11"
+      ],
+      "allowedChanges": "Persist exact candidate/applied variants and revisions, protect referenced media, reconcile without duplicate audit, and distinguish ambiguous requests from applied outcomes.",
+      "behaviorTests": [
+        "internal/httpapi/ui188_stream_operations_mariadb_test.go",
+        "internal/httpapi/ui188_cover_reconcile_test.go",
+        "internal/videocover/videocover_test.go",
+        "web/tests/ui188-stream-operations.test.mts"
+      ]
+    },
+    {
+      "path": "internal/videocover/types.go",
+      "beforeCommit": "018379199d33a9fa9edeb46f52507b154566c3f7",
+      "beforeSha256": "8beb91b2b0cf35c3c14ae46cceffb40ce2a276851ec2bffcc7dc25604f78ea0c",
+      "afterCommit": "d3e78bb125c3f5090bef84ddd08bec224a1baf31",
+      "afterSha256": "f6045cb82b9b9a09eaac785da623012151a6a0b9069c3c94abc075e06f0f5d60",
+      "specifications": [
+        "F07",
+        "F08",
+        "F09",
+        "F11"
+      ],
+      "allowedChanges": "Persist exact candidate/applied variants and revisions, protect referenced media, reconcile without duplicate audit, and distinguish ambiguous requests from applied outcomes.",
+      "behaviorTests": [
+        "internal/httpapi/ui188_stream_operations_mariadb_test.go",
+        "internal/httpapi/ui188_cover_reconcile_test.go",
+        "internal/videocover/videocover_test.go",
+        "web/tests/ui188-stream-operations.test.mts"
+      ]
+    },
+    {
+      "path": "internal/videocover/videocover_test.go",
+      "beforeCommit": "018379199d33a9fa9edeb46f52507b154566c3f7",
+      "beforeSha256": "96cf75cb055f28ecc7dd1ed646afc320e19365ec77c9c1ee12d4b9b70ee642c1",
+      "afterCommit": "d3e78bb125c3f5090bef84ddd08bec224a1baf31",
+      "afterSha256": "142a8206da11c41eab2f9c382b4b3f4af2294a54e31caf8ee1db29b2311b31af",
+      "specifications": [
+        "F07",
+        "F08",
+        "F09",
+        "F11"
+      ],
+      "allowedChanges": "Persist exact candidate/applied variants and revisions, protect referenced media, reconcile without duplicate audit, and distinguish ambiguous requests from applied outcomes.",
+      "behaviorTests": [
+        "internal/httpapi/ui188_stream_operations_mariadb_test.go",
+        "internal/httpapi/ui188_cover_reconcile_test.go",
+        "internal/videocover/videocover_test.go",
+        "web/tests/ui188-stream-operations.test.mts"
+      ]
+    },
+    {
+      "path": "web/src/components/foundation/confirmation/high-risk-confirmation.ts",
+      "beforeCommit": "45a7327c5108e1a1de6117974df7da699b149bd7",
+      "beforeSha256": "224361b3d6f11bea8943366a719b0efb739b8680a4e0453d6bd7418ef154cdb3",
+      "afterCommit": "d3e78bb125c3f5090bef84ddd08bec224a1baf31",
+      "afterSha256": "ca842c99b409bdd6d999b6dc8094839c3b1984723ef68814e2948b8e7df20442",
+      "specifications": [
+        "F05"
+      ],
+      "allowedChanges": "Operational confirmation uses consequence and safe public label; retain risk, permission, audit, submit revalidation and duplicate protection.",
+      "behaviorTests": [
+        "web/tests/ui-foundation-confirmation.test.mts",
+        "web/tests/generic-resource-foundation-migration.test.mts",
+        "web/tests/ui-foundation-final-gate.test.mts"
+      ]
+    },
+    {
+      "path": "web/src/lib/api/client.ts",
+      "beforeCommit": "b943329859b06d641f43fa8e85e95ea6cb088a6f",
+      "beforeSha256": "10f1d01500814f24f8c771f152b98c6328cba4d730ec9924f7433cb8e1cfd22f",
+      "afterCommit": "d3e78bb125c3f5090bef84ddd08bec224a1baf31",
+      "afterSha256": "7b464d488d42e664befc6b5eff7351a2a8dd2e41a8808d9782cb7f8b87a06b96",
+      "specifications": [
+        "F02"
+      ],
+      "allowedChanges": "Retain accepted optional read cancellation signal; preserve authentication, CSRF, response and error handling.",
+      "behaviorTests": [
+        "web/tests/stream-operations-convergence.test.mts",
+        "web/tests/ui-regression/condition-lifecycle.test.mts"
+      ]
+    },
+    {
+      "path": "web/src/lib/foundation/actions/confirmation-policy.ts",
+      "beforeCommit": "45a7327c5108e1a1de6117974df7da699b149bd7",
+      "beforeSha256": "1c5471b62b2178eb1955e8fe205dd8f8d61ae250c231a3d23a04fc21142fd43b",
+      "afterCommit": "d3e78bb125c3f5090bef84ddd08bec224a1baf31",
+      "afterSha256": "7bae8501af2f2aa5063d8427b043100dff8c8e0de0918b5649d0f84a3f548700",
+      "specifications": [
+        "F05"
+      ],
+      "allowedChanges": "Operational confirmation uses consequence and safe public label; retain risk, permission, audit, submit revalidation and duplicate protection.",
+      "behaviorTests": [
+        "web/tests/ui-foundation-confirmation.test.mts",
+        "web/tests/generic-resource-foundation-migration.test.mts",
+        "web/tests/ui-foundation-final-gate.test.mts"
+      ]
+    },
+    {
+      "path": "web/src/lib/foundation/status/lifecycle-presenters.ts",
+      "beforeCommit": "78c379cb927dbda9c189a76b4ff39f414d0b0851",
+      "beforeSha256": "6c8dfa25abc458781246fd805038b15d4a80a3661b0680b11c6df48c33464937",
+      "afterCommit": "d3e78bb125c3f5090bef84ddd08bec224a1baf31",
+      "afterSha256": "de97204b082d18883718bc79f106c65c4b9d318011c49475e13ae5fa57c4699d",
+      "specifications": [
+        "F10",
+        "F11"
+      ],
+      "allowedChanges": "Represent real lifecycle states and request/success/failure labels in Japanese without changing internal action IDs or secret projection.",
+      "behaviorTests": [
+        "web/tests/ui-foundation-status.test.mts",
+        "web/tests/notification-channel.test.mts",
+        "internal/httpapi/server_audit_projection_test.go"
+      ]
+    },
+    {
+      "path": "web/src/lib/foundation/status/observability-presenters.ts",
+      "beforeCommit": "78c379cb927dbda9c189a76b4ff39f414d0b0851",
+      "beforeSha256": "4e448856cbe5b4c16c226cf61facf1f37347a2978a06a586f64af3a6efa63aa4",
+      "afterCommit": "d3e78bb125c3f5090bef84ddd08bec224a1baf31",
+      "afterSha256": "238d6b2f51cbee5fababbcfc98e02360c7bc53664c9b8f1475b18a53556046d4",
+      "specifications": [
+        "F10",
+        "F11"
+      ],
+      "allowedChanges": "Represent real lifecycle states and request/success/failure labels in Japanese without changing internal action IDs or secret projection.",
+      "behaviorTests": [
+        "web/tests/ui-foundation-status.test.mts",
+        "web/tests/notification-channel.test.mts",
+        "internal/httpapi/server_audit_projection_test.go"
+      ]
+    },
+    {
+      "path": "web/src/lib/foundation/status/presenter-core.ts",
+      "beforeCommit": "78c379cb927dbda9c189a76b4ff39f414d0b0851",
+      "beforeSha256": "1072d57ab9a5198a362943f30e187055ce53d8cda229fa8e46dfa7bf2a7fea8b",
+      "afterCommit": "d3e78bb125c3f5090bef84ddd08bec224a1baf31",
+      "afterSha256": "14d31752f27c5afc5d2f618e6ae844cc9b27cf8b1aefb2ec3d0bff5b05149b37",
+      "specifications": [
+        "F10",
+        "F11"
+      ],
+      "allowedChanges": "Represent real lifecycle states and request/success/failure labels in Japanese without changing internal action IDs or secret projection.",
+      "behaviorTests": [
+        "web/tests/ui-foundation-status.test.mts",
+        "web/tests/notification-channel.test.mts",
+        "internal/httpapi/server_audit_projection_test.go"
+      ]
+    },
+    {
+      "path": "internal/httpapi/server_start_preparation_claim_test.go",
+      "beforeCommit": "68c838846cc6bd75d20f14bcea4da42dad69c943",
+      "beforeSha256": "2e5c0a486f19731f4fcf5e0ffcee8eb0dd589798db5628930d989353b97e7407",
+      "afterCommit": "d3e78bb125c3f5090bef84ddd08bec224a1baf31",
+      "afterSha256": "b9e013d77e3583f535f328ae45ffb4b29dd8b6d8824c3094120e9965dd157063",
+      "specifications": [
+        "F01",
+        "F07",
+        "F08"
+      ],
+      "allowedChanges": "Require Encoder/Worker in atomic creation and its valid-role fixtures; retain unauthorized, invalid input, rollback, archive and other-stream negatives, plus scoped media preview permissions.",
+      "behaviorTests": [
+        "internal/httpapi/ui188_stream_operations_test.go",
+        "internal/httpapi/ui188_stream_operations_mariadb_test.go",
+        "internal/httpapi/stream_create_isolation_test.go",
+        "web/tests/ui188-stream-operations.test.mts"
+      ]
+    },
+    {
+      "path": "web/tests/ui-refresh-layout-browser.test.mts",
+      "beforeCommit": "0b7ed16d941f888523305f9507a03ec59416a609",
+      "beforeSha256": "e50b93b846a35cb340487c069827a13bc4e3f9e9267d58654e30f7a3400de4aa",
+      "afterCommit": "d3e78bb125c3f5090bef84ddd08bec224a1baf31",
+      "afterSha256": "bef00a2241bc5ac9726fe1f625049ef963db389ada183369846aff2747394336",
+      "specifications": [
+        "F05",
+        "F08"
+      ],
+      "allowedChanges": "Decode saved preset preview before editing; assert no operational typed input; retain all original permission/conflict/mutation guards.",
+      "behaviorTests": [
+        "web/tests/ui-refresh-layout-browser.test.mts",
+        "web/tests/ui-regression/cp174-source-deltas.test.mts"
+      ]
+    },
+    {
+      "path": "web/tests/helpers/run-ui-foundation-browser.mts",
+      "beforeCommit": "9c75188147daf8435d005651a8266ae31ce39653",
+      "beforeSha256": "b6d5b465ada57dfd5663f7d6100aadb988c50768bdf16ba8b141244fe762111b",
+      "afterCommit": "d3e78bb125c3f5090bef84ddd08bec224a1baf31",
+      "afterSha256": "eec3f4101497c625942bdcd7505aefe2c89f4445bef8c008e496a762e9dd6063",
+      "specifications": [
+        "F05"
+      ],
+      "allowedChanges": "Replace exactly the old operational typed-confirmation scenario title and assertions with button-only confirmation, retaining the 35-test denominator, focus, duplicate, permission and revalidation checks.",
+      "behaviorTests": [
+        "web/tests/ui-foundation-confirmation-browser.test.mts",
+        "web/tests/ui-regression/browser-contracts.test.mts",
+        "web/tests/ui-foundation-confirmation.test.mts"
+      ]
+    },
+    {
+      "path": "web/tests/ui-foundation-confirmation-browser.test.mts",
+      "beforeCommit": "9c75188147daf8435d005651a8266ae31ce39653",
+      "beforeSha256": "bd7f8158b2a8cd0c9a86823d8fadf830fbbe2a2d235ba7181c71e73447043fe9",
+      "afterCommit": "d3e78bb125c3f5090bef84ddd08bec224a1baf31",
+      "afterSha256": "07476a07c5199b677abfb973dd6ce1af9a3da8c8a139802b058c843522632108",
+      "specifications": [
+        "F05"
+      ],
+      "allowedChanges": "Replace exactly the old operational typed-confirmation scenario title and assertions with button-only confirmation, retaining the 35-test denominator, focus, duplicate, permission and revalidation checks.",
+      "behaviorTests": [
+        "web/tests/ui-foundation-confirmation-browser.test.mts",
+        "web/tests/ui-regression/browser-contracts.test.mts",
+        "web/tests/ui-foundation-confirmation.test.mts"
+      ]
+    }
+  ]
+}

@@ -9,6 +9,7 @@ import { assertCP174Original, cp174Base, cp174Paths, inverseCP174Source } from "
 
 import { ciClosureBase, ciClosurePaths, inverseCIClosure } from "./ci-closure-deltas.mts";
 import { cp176Base, cp176Paths, inverseCP176DependencyRepair } from "./cp176-dependency-deltas.mts";
+import { historicalUI188Source } from "./ui188-current-source-deltas.mts";
 
 type Replacement = { position: number; count: number; before: string; after: string };
 type Mapping = { oldPath: string; newPath: string; acceptedSha256: string; currentSha256: string; replacements: Replacement[] };
@@ -74,6 +75,7 @@ export function createNormalizedReader(root: string, io: SourceIO = {
   const raw = (path: string) => { assert.ok(safePath(path)); return io.raw(path); };
   const manifest = assertNormalizationManifest(raw("web/tests/fixtures/ui-regression/source-normalization.json"));
   const object = io.object;
+  const historicalRaw = (path: string) => historicalUI188Source(path, raw(path), object);
   const dependencies = (path: string, current: Buffer) => cp176Paths.includes(path)
     ? inverseCP176DependencyRepair(path, object(cp176Base, path), current) : current;
   const read = (path: string): Buffer => {
@@ -89,7 +91,7 @@ export function createNormalizedReader(root: string, io: SourceIO = {
     }
     const row = manifest.currentMappings.find(item => item.oldPath === path);
     if (!row) {
-      const bytes = dependencies(path, raw(path));
+      const bytes = dependencies(path, historicalRaw(path));
       if (cp174Paths.includes(path)) assertCP174Original(path, object(cp174Base, path));
       const prior = cp174Paths.includes(path) ? inverseCP174Source(path, bytes) : bytes;
       const current = ciClosurePaths.includes(path) ? inverseCIClosure(path, object(ciClosureBase, path), prior) : prior;
@@ -98,9 +100,9 @@ export function createNormalizedReader(root: string, io: SourceIO = {
         : current;
     }
     if (row.oldPath !== row.newPath) assert.equal(io.exists(row.oldPath), false, "obsolete current alias must not remain");
-    const current = dependencies(row.newPath, raw(row.newPath));
+    const current = dependencies(row.newPath, historicalRaw(row.newPath));
     if (cp174Paths.includes(row.newPath)) assertCP174Original(row.newPath, object(cp174Base, row.newPath));
     return inverseNormalization(row, object(manifest.acceptedCommit, row.oldPath), current);
   };
-  return { manifest, raw, read };
+  return { manifest, raw, historicalRaw, read };
 }

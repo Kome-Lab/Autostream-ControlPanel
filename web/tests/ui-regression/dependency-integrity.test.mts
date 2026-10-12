@@ -8,7 +8,7 @@ import { assertCIManifest, assertCISourceDelta, assertLockDelta, assertPackageRe
 import { cp176Base, cp176Paths, inverseCP176DependencyRepair } from "./cp176-dependency-deltas.mts";
 
 const root = fileURLToPath(new URL("../../..", import.meta.url));
-const { read, raw } = createNormalizedReader(root);
+const { read, raw, historicalRaw } = createNormalizedReader(root);
 const base = "28a9ff71ea9925722000a2933c59c79b8cc8b9b2";
 const before = (path: string) => execFileSync("git", ["show", base + ":" + path], { cwd: root });
 const supplement = JSON.parse(read("web/tests/fixtures/ui-regression/ci-source-deltas.json").toString("utf8"));
@@ -71,7 +71,7 @@ test("UI-DEPENDENCY-004: installed dependency versions must match the new lock; 
 
 test("UI-DEPENDENCY-005: bounded UI176 repair retains accepted raw and rejects version, integrity, script and unrelated drift", () => {
   for (const path of cp176Paths) {
-    const original = execFileSync("git", ["show", cp176Base + ":" + path], { cwd: root }), current = raw(path);
+    const original = execFileSync("git", ["show", cp176Base + ":" + path], { cwd: root }), current = historicalRaw(path);
     assert.notDeepEqual(current, original, "UI176 current candidate must contain the repair");
     assert.deepEqual(inverseCP176DependencyRepair(path, original, current), original);
     assert.throws(() => inverseCP176DependencyRepair(path, Buffer.concat([original, Buffer.from("changed")]), current), /original dependency hash/);

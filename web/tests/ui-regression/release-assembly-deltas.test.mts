@@ -7,11 +7,13 @@ import test from "node:test";
 import { inverseReleaseAssembly, releaseAssemblyBase, releaseAssemblyPaths, releaseAssemblySource } from "./release-assembly-deltas.mts";
 import { cp174Paths, inverseCP174Source } from "./cp174-source-deltas.mts";
 import { createNormalizedReader } from "./source-normalization.mts";
+import { historicalUI188Source } from "./ui188-current-source-deltas.mts";
 
 const root = fileURLToPath(new URL("../../..", import.meta.url));
 const object = (commit: string, path: string) => execFileSync("git", ["show", commit + ":" + path], { cwd: root, maxBuffer: 32 * 1024 * 1024 });
 const raw = (path: string) => readFileSync(resolve(root, path));
-const assemblyRaw = (path: string) => cp174Paths.includes(path) ? inverseCP174Source(path, raw(path)) : raw(path);
+const historicalRaw = (path: string) => historicalUI188Source(path, raw(path), object);
+const assemblyRaw = (path: string) => cp174Paths.includes(path) ? inverseCP174Source(path, historicalRaw(path)) : historicalRaw(path);
 const io = { raw, object, exists: (path: string) => existsSync(resolve(root, path)) };
 const expectedPaths = [
   ".github/workflows/ci.yml",
