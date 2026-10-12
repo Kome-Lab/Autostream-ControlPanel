@@ -30,7 +30,7 @@ export const independentRequiredBrowserScenarioNames = Object.freeze([
   "Bundle 7 affected surfaces are responsive at every canonical width",
   "status focus remains visible in normal and forced-colors modes",
   "false-positive guards reject invalid observable outcomes",
-  "high-risk and compatibility confirmations preserve browser focus, literal input, state, and intent boundaries",
+  "operation confirmations preserve browser focus, button-only confirmation, state, and intent boundaries",
   "conflict renders safe error and hides diagnostic metadata",
   "failed renders safe error without retry",
   "revalidation unavailable blocks confirmation and returns focus",

@@ -315,7 +315,7 @@
       },
       {
         "path": "web/tests/helpers/browser-runner-inventory-fixture.mts",
-        "sha256": "4454a500ca1ce9e9f7428b628a0efe6354123529a2424edd881f1feadcbd586c",
+        "sha256": "a1bd067ba24cd0aa6639e24a127e425f864dca15caddbab4ca8e5459e90e7af8",
         "symbols": [
           "browserSummary",
           "passingBrowserInventoryFixture",
