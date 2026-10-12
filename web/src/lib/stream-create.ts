@@ -9,8 +9,8 @@ export type StreamCreateValues = {
   watermarkEnabled: boolean;
   overlayProfileID: string;
   encoderAudioGainDB: number;
-  // Assignment values are used only by an explicit settings edit. Undefined
-  // preserves the server-side assignment, while an empty string unassigns it.
+  // Creation requires both roles. On edits, undefined preserves ownership
+  // and an explicit empty string unassigns the selected role.
   encoderServiceID?: string;
   workerServiceID?: string;
   scheduledStartAt?: string;
@@ -59,6 +59,8 @@ export function buildStreamCreatePayload(values: StreamCreateValues): Record<str
     caption_profile_id: values.captionProfileID,
     overlay_profile_id: values.watermarkEnabled ? values.overlayProfileID : "",
     encoder_audio_gain_db: values.encoderAudioGainDB,
+    encoder_service_id: values.encoderServiceID,
+    worker_service_id: values.workerServiceID,
     scheduled_start_at: values.scheduledStartAt,
   });
 }

@@ -1,8 +1,7 @@
-
 import { japaneseCopy, type UICopy } from "@/lib/i18n/ui-v2/copy";
 import type { StreamActionExecutionResult } from "@/features/streams/stream-action-controller";
 import type { StreamActionIntent } from "@/features/streams/stream-action-descriptors";
-import type { Stream } from "@/types/domain";
+export { isStreamValue } from "@/features/streams/stream-action-response";
 
 export function streamActionLabel(id: StreamActionIntent["id"], uiText: UICopy = japaneseCopy) {
   const labels: Record<StreamActionIntent["id"], string> = {
@@ -20,13 +19,4 @@ export function streamActionBlockedMessage(reason: Extract<StreamActionExecution
   if (reason === "duplicate") return uiText("同じ操作を処理中です。");
   if (reason === "reconciliation-required") return uiText("前回の結果を確認できないため再送を抑止しています。最新状態または監査ログを確認してください。");
   return uiText("最新の権限または配信状態を確認できないため、操作を送信しませんでした。");
-}
-
-export function isStreamValue(value: unknown): value is Stream {
-  return typeof value === "object"
-    && value !== null
-    && !Array.isArray(value)
-    && typeof (value as Record<string, unknown>).id === "string"
-    && typeof (value as Record<string, unknown>).name === "string"
-    && typeof (value as Record<string, unknown>).status === "string";
 }

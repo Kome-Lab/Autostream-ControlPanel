@@ -1,15 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import {registerHooks} from "node:module";
+registerHooks({resolve(specifier,context,next){if(specifier==="./audit-action")return next("./audit-action.ts",context);return next(specifier,context)}});
 
 import { auditActionLabel } from "../src/lib/audit-action.ts";
-import {
+const {
   buildNotificationChannelPayload,
   normalizeNotificationChannelEventTypeFilter,
   notificationChannelTestFeedback,
   notificationChannelTypeLabel,
   notificationDeliveryEventKey,
   notificationDeliveryPresentation,
-} from "../src/lib/notification-channel.ts";
+} = await import("../src/lib/notification-channel.ts");
 
 const basePayload = {
   editing: true,

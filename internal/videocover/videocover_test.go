@@ -105,6 +105,9 @@ func TestHistoricalActionResultCannotOverwriteCurrentActionState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err = repository.RecordApplied(t.Context(), "stream-race", 1, "show-a", true, first.RequestedRevision); err != nil {
+		t.Fatal(err)
+	}
 	second, err := repository.PrepareAction(t.Context(), "stream-race", ActionRequest{
 		Active: false, ExpectedJobGeneration: 1, ExpectedRevision: first.RequestedRevision,
 		IdempotencyKey: "hide-b", HideConfirmed: true,
@@ -120,7 +123,7 @@ func TestHistoricalActionResultCannotOverwriteCurrentActionState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if late.Status != "confirming" || late.LastIdempotencyKey != "hide-b" || late.DesiredRevision != second.RequestedRevision || late.AppliedRevision != nil {
+	if late.Status != "confirming" || late.LastIdempotencyKey != "hide-b" || late.DesiredRevision != second.RequestedRevision || late.AppliedRevision == nil || *late.AppliedRevision != first.RequestedRevision {
 		t.Fatalf("historical result overwrote current action: %#v", late)
 	}
 	settled, err := repository.RecordApplied(t.Context(), "stream-race", 1, "hide-b", false, second.RequestedRevision)

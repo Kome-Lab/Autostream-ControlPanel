@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/example/autostream-control-panel/internal/servicecall"
 	"github.com/example/autostream-control-panel/internal/store"
@@ -22,6 +23,18 @@ func (s *Server) stopStream(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_stream_failed"})
+		return
+	}
+	sourceVersion := stream.UpdatedAt.UTC().Format(time.RFC3339Nano)
+	var request struct {
+		ExpectedUpdatedAt *string `json:"expected_updated_at"`
+	}
+	if err := decodeOptionalSingleJSON(r, &request); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_stop_request"})
+		return
+	}
+	if request.ExpectedUpdatedAt != nil && *request.ExpectedUpdatedAt != sourceVersion {
+		writeJSON(w, http.StatusConflict, map[string]string{"code": "stop_source_version_changed"})
 		return
 	}
 	if !isManuallyStoppableStreamStatus(stream.Status) {
@@ -42,7 +55,12 @@ func (s *Server) stopStream(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]any{"code": "missing_stream_assignments", "missing_service_types": missing})
 		return
 	}
-	stopping, transitioned, err := s.streams.TransitionStreamStatus(r.Context(), stream.ID, stream.Status, "stopping")
+	stopReceipts, supported := s.streams.(store.NormalStopReceiptStore)
+	if !supported {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "atomic_stop_receipt_unavailable"})
+		return
+	}
+	stopping, transitioned, err := stopReceipts.ClaimNormalStop(r.Context(), stream)
 	if errors.Is(err, store.ErrNotFound) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
 		return
@@ -64,7 +82,7 @@ func (s *Server) stopStream(w http.ResponseWriter, r *http.Request) {
 	results = sanitizeDispatchResults(results)
 	results = s.normalizeManualStopAlreadyStoppedResults(r.Context(), stream.ID, results)
 	if hasDispatchFailure(results) {
-		failed, transitioned, transitionErr := s.streams.TransitionStreamStatus(r.Context(), stream.ID, "stopping", "failed")
+		failed, transitioned, transitionErr := stopReceipts.FailNormalStop(r.Context(), stream.ID, stream.UpdatedAt)
 		if errors.Is(transitionErr, store.ErrNotFound) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
 			return
@@ -111,7 +129,12 @@ func (s *Server) stopStream(w http.ResponseWriter, r *http.Request) {
 	if encoderStopReceiptErr != nil {
 		log.Printf("youtube relay static encoder stop receipt marker failed after confirmed stop: stream_id=%s error_type=%T", stream.ID, encoderStopReceiptErr)
 	}
-	completed, transitioned, transitionErr := s.streams.TransitionStreamStatus(r.Context(), stream.ID, "stopping", "completed")
+	receipts, supported := s.streams.(store.NormalStopReceiptStore)
+	if !supported {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "atomic_stop_receipt_unavailable"})
+		return
+	}
+	completed, transitioned, transitionErr := receipts.CompleteNormalStop(r.Context(), stream.ID, sourceVersion, stream.UpdatedAt)
 	if errors.Is(transitionErr, store.ErrNotFound) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
 		return
@@ -207,7 +230,12 @@ func (s *Server) forceStopStream(w http.ResponseWriter, r *http.Request) {
 	// concurrent force-stop requests (including requests on different Panel
 	// processes) from sending duplicate stop dispatches.
 	var results []servicecall.DispatchResult
-	updated, transitioned, err := s.streams.TransitionStreamStatus(r.Context(), stream.ID, stream.Status, "failed")
+	receipts, supported := s.streams.(store.NormalStopReceiptStore)
+	if !supported {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "atomic_stop_receipt_unavailable"})
+		return
+	}
+	updated, transitioned, err := receipts.ClaimForceStop(r.Context(), stream)
 	if errors.Is(err, store.ErrNotFound) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
 		return
@@ -257,7 +285,7 @@ func (s *Server) forceStopStream(w http.ResponseWriter, r *http.Request) {
 		log.Printf("youtube relay static encoder stop receipt marker failed after confirmed force stop: stream_id=%s error_type=%T", stream.ID, encoderStopReceiptErr)
 	}
 
-	completed, completedTransitioned, completionTransitionErr := s.streams.TransitionStreamStatus(r.Context(), stream.ID, "failed", "completed")
+	completed, completedTransitioned, completionTransitionErr := receipts.CompleteConfirmedForceStop(r.Context(), stream.ID, updated.UpdatedAt)
 	if errors.Is(completionTransitionErr, store.ErrNotFound) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
 		return

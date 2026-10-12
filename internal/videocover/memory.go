@@ -9,10 +9,11 @@ import (
 )
 
 type memoryAction struct {
-	Fingerprint       string
-	RequestedRevision uint64
-	Status            string
-	SafeErrorCode     string
+	RequestedAssetVariantID string
+	Fingerprint             string
+	RequestedRevision       uint64
+	Status                  string
+	SafeErrorCode           string
 }
 type MemoryRepository struct {
 	mu      sync.Mutex
@@ -165,6 +166,10 @@ func (m *MemoryRepository) RecordStartApplied(_ context.Context, streamID string
 	if revision == 0 || state.DesiredRevision != revision || state.DesiredActive != active {
 		return State{}, ErrRevisionConflict
 	}
+	state.AppliedAssetVariantID = ""
+	if active {
+		state.AppliedAssetVariantID = state.AssetVariantID
+	}
 	state.AppliedActive = &active
 	state.AppliedRevision = &revision
 	state.Status = "applied"
@@ -222,7 +227,7 @@ func (m *MemoryRepository) LookupActionReplay(_ context.Context, streamID string
 	}
 	return PreparedAction{
 		State: NormalizeState(state), Replay: true, Dispatch: false, RequestedRevision: prior.RequestedRevision,
-		Outcome: prior.Status, SafeErrorCode: prior.SafeErrorCode,
+		Outcome: prior.Status, SafeErrorCode: prior.SafeErrorCode, RequestedAssetVariantID: prior.RequestedAssetVariantID,
 	}, true, nil
 }
 
@@ -249,7 +254,7 @@ func (m *MemoryRepository) LookupActionOutcome(_ context.Context, streamID strin
 	}
 	return PreparedAction{
 		State: NormalizeState(state), Replay: true, Dispatch: false, RequestedRevision: prior.RequestedRevision,
-		Outcome: prior.Status, SafeErrorCode: prior.SafeErrorCode,
+		Outcome: prior.Status, SafeErrorCode: prior.SafeErrorCode, RequestedAssetVariantID: prior.RequestedAssetVariantID,
 	}, true, nil
 }
 
@@ -278,10 +283,13 @@ func (m *MemoryRepository) PrepareAction(_ context.Context, streamID string, req
 		}
 		return PreparedAction{
 			State: NormalizeState(state), Replay: true, Dispatch: false, RequestedRevision: prior.RequestedRevision,
-			Outcome: prior.Status, SafeErrorCode: prior.SafeErrorCode,
+			Outcome: prior.Status, SafeErrorCode: prior.SafeErrorCode, RequestedAssetVariantID: prior.RequestedAssetVariantID,
 		}, nil
 	}
 	if state.DesiredRevision != request.ExpectedRevision {
+		return PreparedAction{}, ErrRevisionConflict
+	}
+	if state.Status == "confirming" || (state.Status == "idle" && state.LastIdempotencyKey != "") {
 		return PreparedAction{}, ErrRevisionConflict
 	}
 	next := state.DesiredRevision + 1
@@ -291,6 +299,9 @@ func (m *MemoryRepository) PrepareAction(_ context.Context, streamID string, req
 		}
 	}
 	now := m.now()
+	if request.CandidateVariantID != "" {
+		state.AssetVariantID = request.CandidateVariantID
+	}
 	state.DesiredActive = request.Active
 	state.DesiredRevision = next
 	state.LastIdempotencyKey = request.IdempotencyKey
@@ -298,8 +309,8 @@ func (m *MemoryRepository) PrepareAction(_ context.Context, streamID string, req
 	state.LastErrorCode = ""
 	state.UpdatedAt = now
 	states[latest] = state
-	m.actions[key] = memoryAction{Fingerprint: fingerprint, RequestedRevision: next, Status: "pending"}
-	return PreparedAction{State: NormalizeState(state), Dispatch: true, RequestedRevision: next}, nil
+	m.actions[key] = memoryAction{Fingerprint: fingerprint, RequestedRevision: next, RequestedAssetVariantID: state.AssetVariantID, Status: "pending"}
+	return PreparedAction{State: NormalizeState(state), Dispatch: true, RequestedRevision: next, RequestedAssetVariantID: state.AssetVariantID}, nil
 }
 func (m *MemoryRepository) RecordApplied(_ context.Context, streamID string, generation uint64, key string, active bool, revision uint64) (State, error) {
 	m.mu.Lock()
@@ -321,7 +332,12 @@ func (m *MemoryRepository) RecordApplied(_ context.Context, streamID string, gen
 	action.SafeErrorCode = ""
 	m.actions[actionKey] = action
 	if !updateRuntime {
+		state.RecordedAction = recordedMemoryAction(action)
 		return NormalizeState(state), nil
+	}
+	state.AppliedAssetVariantID = ""
+	if active {
+		state.AppliedAssetVariantID = state.AssetVariantID
 	}
 	state.AppliedActive = &active
 	state.AppliedRevision = &revision
@@ -329,6 +345,7 @@ func (m *MemoryRepository) RecordApplied(_ context.Context, streamID string, gen
 	state.LastErrorCode = ""
 	state.UpdatedAt = m.now()
 	m.states[streamID][generation] = state
+	state.RecordedAction = recordedMemoryAction(action)
 	return NormalizeState(state), nil
 }
 func (m *MemoryRepository) RecordAmbiguous(_ context.Context, streamID string, generation uint64, key string) (State, error) {
@@ -343,7 +360,7 @@ func (m *MemoryRepository) RecordAmbiguous(_ context.Context, streamID string, g
 	if !ok {
 		return State{}, ErrNotFound
 	}
-	if !actionMayResolve(action.Status) {
+	if !actionMayResolve(action.Status) || action.Status == "confirming" {
 		return NormalizeState(state), nil
 	}
 	updateRuntime := currentActionMayResolve(state, key, action)
@@ -351,12 +368,14 @@ func (m *MemoryRepository) RecordAmbiguous(_ context.Context, streamID string, g
 	action.SafeErrorCode = "transport_outcome_unknown"
 	m.actions[actionKey] = action
 	if !updateRuntime {
+		state.RecordedAction = recordedMemoryAction(action)
 		return NormalizeState(state), nil
 	}
 	state.Status = "confirming"
 	state.LastErrorCode = "transport_outcome_unknown"
 	state.UpdatedAt = m.now()
 	m.states[streamID][generation] = state
+	state.RecordedAction = recordedMemoryAction(action)
 	return NormalizeState(state), nil
 }
 func (m *MemoryRepository) RecordFailed(_ context.Context, streamID string, generation uint64, key, code string) (State, error) {
@@ -379,13 +398,19 @@ func (m *MemoryRepository) RecordFailed(_ context.Context, streamID string, gene
 	action.SafeErrorCode = safeCode(code)
 	m.actions[actionKey] = action
 	if !updateRuntime {
+		state.RecordedAction = recordedMemoryAction(action)
 		return NormalizeState(state), nil
 	}
 	state.Status = "failed"
 	state.LastErrorCode = action.SafeErrorCode
 	state.UpdatedAt = m.now()
 	m.states[streamID][generation] = state
+	state.RecordedAction = recordedMemoryAction(action)
 	return NormalizeState(state), nil
+}
+
+func recordedMemoryAction(action memoryAction) *PreparedAction {
+	return &PreparedAction{RequestedRevision: action.RequestedRevision, RequestedAssetVariantID: action.RequestedAssetVariantID, Outcome: action.Status, SafeErrorCode: action.SafeErrorCode}
 }
 
 func currentActionMayResolve(state State, key string, action memoryAction) bool {

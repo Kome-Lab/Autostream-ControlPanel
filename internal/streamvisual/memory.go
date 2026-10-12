@@ -64,6 +64,9 @@ func (r *MemoryRepository) Update(ctx context.Context, streamID, _ string, updat
 	if err != nil {
 		return Settings{}, err
 	}
+	if err := validateMemoryCandidates(current, next, update); err != nil {
+		return Settings{}, err
+	}
 	next.Revision++
 	next.UpdatedAt = time.Now().UTC()
 	r.mu.Lock()
@@ -72,17 +75,19 @@ func (r *MemoryRepository) Update(ctx context.Context, streamID, _ string, updat
 	return next, nil
 }
 
-func (r *MemoryRepository) CreateStream(ctx context.Context, _ string, input Create) (store.Stream, Settings, error) {
+func (r *MemoryRepository) CreateStream(ctx context.Context, userID string, input Create) (store.Stream, Settings, error) {
 	if r.streams == nil || strings.TrimSpace(input.Name) == "" || input.Settings.ExpectedRevision != 0 {
 		return store.Stream{}, Settings{}, ErrInvalidSettings
 	}
-	stream, err := r.streams.CreateStream(ctx, strings.TrimSpace(input.Name))
+	streamID, err := newID()
 	if err != nil {
 		return store.Stream{}, Settings{}, err
 	}
-	settings, _, err := applyUpdate(DefaultSettings(stream.ID), input.Settings)
+	settings, _, err := applyUpdate(DefaultSettings(streamID), input.Settings)
 	if err != nil {
-		_ = r.streams.DeleteStream(ctx, stream.ID)
+		return store.Stream{}, Settings{}, err
+	}
+	if err := validateMemoryCandidates(DefaultSettings(streamID), settings, input.Settings); err != nil {
 		return store.Stream{}, Settings{}, err
 	}
 	if strings.TrimSpace(settings.DiscordTargetMode) == "" {
@@ -90,12 +95,18 @@ func (r *MemoryRepository) CreateStream(ctx context.Context, _ string, input Cre
 	}
 	if strings.TrimSpace(input.StreamSettings.AutoStartTrigger) == "discord_voice_join" &&
 		(strings.TrimSpace(input.StreamSettings.DiscordConfigID) == "" || strings.TrimSpace(settings.DiscordGuildID) == "" || strings.TrimSpace(settings.DiscordVoiceChannelID) == "") {
-		_ = r.streams.DeleteStream(ctx, stream.ID)
 		return store.Stream{}, Settings{}, ErrInvalidSettings
 	}
-	stream, err = r.streams.UpdateStreamSettings(ctx, stream.ID, input.StreamSettings)
+	creator, ok := r.streams.(interface {
+		CreateAssignedStream(context.Context, string, string, string, store.StreamSettings, store.StreamCreateAssignments) (store.Stream, error)
+	})
+	if !ok {
+		return store.Stream{}, Settings{}, store.ErrServiceAssignmentGuardUnavailable
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	stream, err := creator.CreateAssignedStream(ctx, streamID, strings.TrimSpace(input.Name), userID, input.StreamSettings, input.Assignments)
 	if err != nil {
-		_ = r.streams.DeleteStream(ctx, stream.ID)
 		return store.Stream{}, Settings{}, err
 	}
 	now := time.Now().UTC()
@@ -103,10 +114,31 @@ func (r *MemoryRepository) CreateStream(ctx context.Context, _ string, input Cre
 	settings.DiscordSnapshotRevision = 1
 	settings.CreatedAt = now
 	settings.UpdatedAt = now
-	r.mu.Lock()
 	r.settings[stream.ID] = settings
-	r.mu.Unlock()
 	return stream, settings, nil
+}
+
+func validateMemoryCandidates(current, next Settings, update Update) error {
+	if update.CoverCandidates == nil {
+		return nil
+	}
+	if len(next.CoverCandidates) > 32 {
+		return ErrInvalidSettings
+	}
+	seen := map[string]bool{}
+	for _, candidate := range next.CoverCandidates {
+		if strings.TrimSpace(candidate.Name) == "" || len([]rune(candidate.Name)) > 128 || candidate.Source != "upload" && candidate.Source != "preset" || candidate.VariantID == "" || candidate.AssetID == "" || seen[candidate.VariantID] {
+			return ErrInvalidSettings
+		}
+		seen[candidate.VariantID] = true
+		old, exists := SelectCoverCandidate(current, candidate.VariantID)
+		// The memory authority has no transactional media/preset resolver. Fail
+		// closed for new references rather than asserting ownership from input.
+		if !exists || old.CoverAssetID != candidate.AssetID || old.CoverSource != candidate.Source || old.CoverPresetID != candidate.PresetID || old.CoverPresetRevision != candidate.PresetRevision {
+			return ErrAssetClaim
+		}
+	}
+	return nil
 }
 
 func (r *MemoryRepository) InspectAssets(context.Context, Settings) (AssetReadiness, error) {

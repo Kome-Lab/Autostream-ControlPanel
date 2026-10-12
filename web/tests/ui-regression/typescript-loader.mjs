@@ -7,6 +7,9 @@ export function initialize(data) {
 }
 
 export async function resolve(specifier, context, nextResolve) {
+	if (specifier === "next/image") {
+		return { url: "autostream-test:next-image-interop", shortCircuit: true };
+	}
   if (specifier.startsWith("@/")) {
     const target = new URL("src/" + specifier.slice(2), webRoot);
     for (const extension of [".ts", ".tsx"]) {
@@ -29,6 +32,11 @@ export async function resolve(specifier, context, nextResolve) {
 }
 
 export async function load(url, context, nextLoad) {
+	if (url === "autostream-test:next-image-interop") {
+		// Node ESM wraps this real Next CommonJS module; Next's bundler unwraps it.
+		const target = new URL("node_modules/next/image.js", webRoot).href;
+		return { format: "module", shortCircuit: true, source: `import imageModule from ${JSON.stringify(target)}; export default imageModule.default;` };
+	}
   if (!url.startsWith(webRoot) || !url.endsWith(".tsx")) return nextLoad(url, context);
   const { readFile } = await import("node:fs/promises");
   const ts = (await import(compiler)).default;

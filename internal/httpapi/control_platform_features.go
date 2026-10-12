@@ -379,6 +379,46 @@ func writeMediaAssetError(w http.ResponseWriter, err error) {
 	writeJSON(w, status, map[string]string{"code": code})
 }
 
+func (s *Server) streamMediaPreview(w http.ResponseWriter, r *http.Request) {
+	if s.mediaAssets == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "media_assets_unavailable"})
+		return
+	}
+	asset, err := s.mediaAssets.OpenInternalVariant(r.Context(), r.PathValue("id"), r.PathValue("variant_id"))
+	if err != nil {
+		writeMediaAssetError(w, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "private, no-store")
+	writeMediaVariantBytes(w, asset)
+}
+
+func (s *Server) presetMediaPreview(w http.ResponseWriter, r *http.Request) {
+	preset, err := s.videoCovers.GetPreset(r.Context(), r.PathValue("id"), false)
+	if err != nil {
+		writeVideoCoverError(w, err)
+		return
+	}
+	if preset.AssetVariantID != r.PathValue("variant_id") {
+		writeJSON(w, http.StatusForbidden, map[string]string{"code": "media_asset_forbidden"})
+		return
+	}
+	reader, ok := s.mediaAssets.(interface {
+		OpenPresetVariant(context.Context, string, string) (mediaassets.InternalAsset, error)
+	})
+	if !ok {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "media_assets_unavailable"})
+		return
+	}
+	asset, err := reader.OpenPresetVariant(r.Context(), preset.ID, preset.AssetVariantID)
+	if err != nil {
+		writeMediaAssetError(w, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "private, no-store")
+	writeMediaVariantBytes(w, asset)
+}
+
 func (s *Server) internalMediaAsset(w http.ResponseWriter, r *http.Request) {
 	if s.mediaAssets == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "media_assets_unavailable"})
@@ -413,6 +453,10 @@ func (s *Server) internalMediaAsset(w http.ResponseWriter, r *http.Request) {
 		writeMediaAssetError(w, err)
 		return
 	}
+	writeMediaVariantBytes(w, internal)
+}
+
+func writeMediaVariantBytes(w http.ResponseWriter, internal mediaassets.InternalAsset) {
 	defer internal.Reader.Close()
 	digestBytes, err := hex.DecodeString(internal.Variant.SHA256)
 	if err != nil {

@@ -69,20 +69,20 @@ test("real confirmation body renders only safe translated presentation data", as
     onTypedInputChange: () => {},
   }));
   assert.match(markup, /Worker Alpha/);
-  assert.match(markup, /Type &quot;Worker Alpha&quot; to confirm\./);
+  assert.doesNotMatch(markup, /<input|Type &quot;/);
   assert.match(markup, /Impact/);
   assert.match(markup, /Recovery and rollback/);
   assert.match(markup, /Credential and capability impact/);
   assert.match(markup, /Audit record/);
-  assert.match(markup, /aria-describedby=/);
-  assert.match(markup, /autoComplete="off"/);
-  assert.match(markup, /spellCheck="false"/);
+  assert.match(markup,/data-confirmation-section="target"/);
+  assert.doesNotMatch(markup, /autoComplete=/);
+  assert.doesNotMatch(markup, /spellCheck=/);
   assert.equal(markup.includes("private-worker-id-9f"), false);
   assert.equal(markup.includes("resource_changed"), false);
   assert.equal(markup.includes("revision"), false);
 
   const invalidMarkup = renderToStaticMarkup(createElement(HighRiskConfirmation, {
-    descriptor: descriptor({ risk: "critical", confirmation: consequence(true) }),
+    descriptor: descriptor({ risk: "critical", confirmation: consequence(false) }),
     open: false,
     evaluation: allowedEvaluation,
     state: { kind: "ready" },
@@ -129,7 +129,7 @@ test("B-05 i18n copy is exact, parallel, placeholder-bounded, and token-literal"
 test("AST guard rejects retired confirmation definitions and callers while preserving Foundation owners", () => {
   assert.deepEqual(assertConfirmationFoundationBoundaries(webRoot), {
     dangerConsumerCount: 0,
-    frameConsumerCount: 5,
+    frameConsumerCount: 4,
     rendererConsumerCount: 9,
     reviewedFileCount: 4,
   });

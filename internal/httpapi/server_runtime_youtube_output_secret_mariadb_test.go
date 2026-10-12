@@ -49,6 +49,6 @@ func TestSelectedYouTubeOutputSecretMariaDB(t *testing.T) {
 		}
 		key := outputSecretRandom(t)
 		auth := store.NewMariaDBAuthStoreWithSecretKey(db, key)
-		return outputSecretStores{auth, auth, store.NewMariaDBAuditStore(db), store.NewMariaDBStreamStore(db), store.NewMariaDBProfileStore(db), store.NewMariaDBSecretStore(db, key), store.NewMariaDBRuntimeSecretLeaseStore(db)}
+		return outputSecretStores{auth, auth, store.NewMariaDBAuditStore(db), store.NewMariaDBStreamStore(db), store.NewMariaDBProfileStore(db), store.NewMariaDBSecretStore(db, key), store.NewMariaDBRuntimeSecretLeaseStore(db), db}
 	})
 }

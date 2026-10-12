@@ -58,11 +58,11 @@ test("Streams declares the canonical STR 11/11 action mapping", () => {
 
 test("STR routes, methods, and fixed payloads preserve server authority", () => {
   const cases: Array<[StreamActionIntent, unknown]> = [
-    [{ id: "STR-01", payload: { name: "Public Stream A" }, publicLabel: "Public Stream A" }, ["POST", "/streams", { name: "Public Stream A" }]],
+    [{ id: "STR-01", payload: { name: "Public Stream A",encoder_service_id:"encoder-a",worker_service_id:"worker-a",visual_settings:{} }, publicLabel: "Public Stream A" }, ["POST", "/streams", { name: "Public Stream A",encoder_service_id:"encoder-a",worker_service_id:"worker-a",visual_settings:{} }]],
     [{ id: "STR-02", stream: stream(), payload: { encoder_service_id: "" } }, ["PUT", "/streams/stream-a/settings", { encoder_service_id: "" }]],
     [{ id: "STR-03", stream: stream("live"), payload: { encoder_audio_gain_db: 1 } }, ["PUT", "/streams/stream-a/runtime-settings", { encoder_audio_gain_db: 1 }]],
     [{ id: "STR-04", stream: stream() }, ["POST", "/streams/stream-a/start", undefined]],
-    [{ id: "STR-05", stream: stream("live") }, ["POST", "/streams/stream-a/stop", undefined]],
+    [{ id: "STR-05", stream: stream("live") }, ["POST", "/streams/stream-a/stop", {expected_updated_at:"2026-09-02T00:00:00Z"}]],
     [{ id: "STR-06", stream: stream("stopping") }, ["POST", "/streams/stream-a/force-stop", undefined]],
     [{ id: "STR-07", stream: stream("failed"), staticRelayRecoveryAvailable: true }, ["POST", "/streams/stream-a/youtube/relay-static/recovery/resolve", { confirm_external_cleanup: true }]],
     [{ id: "STR-08", stream: stream() }, ["POST", "/streams/stream-a/start-readiness", undefined]],
@@ -96,7 +96,7 @@ test("STR-02 permission builder treats explicit empty and unchanged fields as pr
 test("critical actions use the public stream label and never a private identifier as typed token", () => {
   for (const id of ["STR-06", "STR-07", "STR-10"] as const) {
     const descriptor = buildStreamActionDescriptor({ id, stream: stream("failed"), staticRelayRecoveryAvailable: true });
-    assert.equal(descriptor?.confirmation.mode, "typed-target");
+    assert.equal(descriptor?.confirmation.mode, "consequence");
     assert.equal(descriptor?.target.publicLabel, "Public Stream A");
     assert.notEqual(descriptor?.target.publicLabel, descriptor?.target.resourceId);
   }

@@ -16,7 +16,7 @@ export type ArchiveActionDefinition = Readonly<{
 
 export const archiveActionDefinitions: readonly ArchiveActionDefinition[] = Object.freeze([
   Object.freeze({ id: "ARC-01", method: "PUT", route: "/streams/{sid}/artifacts/{aid}", permission: "archives.delete", risk: "guarded", confirmation: "consequence", auditAction: "archive.artifact.rename" }),
-  Object.freeze({ id: "ARC-02", method: "DELETE", route: "/streams/{sid}/artifacts/{aid}", permission: "archives.delete", risk: "critical", confirmation: "typed-target", auditAction: "archive.artifact.delete" }),
+  Object.freeze({ id: "ARC-02", method: "DELETE", route: "/streams/{sid}/artifacts/{aid}", permission: "archives.delete", risk: "critical", confirmation: "consequence", auditAction: "archive.artifact.delete" }),
   Object.freeze({ id: "ARC-03", method: "POST", route: "/streams/{sid}/artifacts/{aid}/shares", permission: "archives.download", risk: "high", confirmation: "consequence", auditAction: "archive.artifact.share.create", oneTimeOutput: true }),
   Object.freeze({ id: "ARC-04", method: "DELETE", route: "/streams/{sid}/artifacts/{aid}/shares/{share}", permission: "archives.delete", risk: "high", confirmation: "consequence", auditAction: "archive.artifact.share.revoke" }),
   Object.freeze({ id: "ARC-05", method: "GET_HANDOFF", route: "/streams/{sid}/artifacts/{aid}/download", permission: "archives.download", risk: "routine", confirmation: "none", auditAction: "archive.artifact.download" }),

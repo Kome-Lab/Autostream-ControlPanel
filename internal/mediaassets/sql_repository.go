@@ -246,8 +246,12 @@ func (r *SQLRepository) OpenInternalVariant(ctx context.Context, streamID, varia
       WHERE sv.stream_id=? AND (sv.background_variant_id=v.id OR sv.cover_variant_id=v.id)
       UNION ALL
       SELECT 1 FROM stream_video_cover_runtime vr
-      WHERE vr.stream_id=? AND vr.asset_variant_id=v.id
-    )`, strings.TrimSpace(variantID), strings.TrimSpace(streamID), strings.TrimSpace(streamID))
+      WHERE vr.stream_id=? AND (vr.asset_variant_id=v.id OR vr.applied_asset_variant_id=v.id)
+      UNION ALL
+      SELECT 1 FROM stream_video_cover_candidates c WHERE c.stream_id=? AND c.variant_id=v.id
+      UNION ALL
+      SELECT 1 FROM stream_video_cover_actions a WHERE a.stream_id=? AND a.requested_asset_variant_id=v.id
+    )`, strings.TrimSpace(variantID), strings.TrimSpace(streamID), strings.TrimSpace(streamID), strings.TrimSpace(streamID), strings.TrimSpace(streamID))
 	variant, err := scanVariant(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return InternalAsset{}, ErrForbidden
@@ -261,6 +265,30 @@ func (r *SQLRepository) OpenInternalVariant(ctx context.Context, streamID, varia
 		return InternalAsset{}, ErrIntegrity
 	}
 	if err := r.processor.Verify(processedFromVariant(variant)); err != nil {
+		return InternalAsset{}, ErrIntegrity
+	}
+	reader, err := r.storage.Open(variant.StorageKey)
+	if err != nil {
+		return InternalAsset{}, ErrIntegrity
+	}
+	return InternalAsset{Asset: asset, Variant: variant, Reader: reader}, nil
+}
+
+// OpenPresetVariant authorizes only the current image of a visible preset.
+// It exposes no actor-owned asset enumeration or storage paths.
+func (r *SQLRepository) OpenPresetVariant(ctx context.Context, presetID, variantID string) (InternalAsset, error) {
+	variant, err := scanVariant(r.db.QueryRowContext(ctx, variantSelect+` WHERE v.id=? AND v.status='ready' AND EXISTS(SELECT 1 FROM video_cover_presets p WHERE p.id=? AND p.asset_variant_id=v.id AND p.deleted_at IS NULL)`, strings.TrimSpace(variantID), strings.TrimSpace(presetID)))
+	if errors.Is(err, sql.ErrNoRows) {
+		return InternalAsset{}, ErrForbidden
+	}
+	if err != nil {
+		return InternalAsset{}, err
+	}
+	asset, err := scanAsset(r.db.QueryRowContext(ctx, assetSelect+` WHERE id=? AND deleted_at IS NULL`, variant.AssetID))
+	if err != nil {
+		return InternalAsset{}, ErrIntegrity
+	}
+	if err = r.processor.Verify(processedFromVariant(variant)); err != nil {
 		return InternalAsset{}, ErrIntegrity
 	}
 	reader, err := r.storage.Open(variant.StorageKey)
@@ -334,7 +362,9 @@ func (r *SQLRepository) GarbageCollect(ctx context.Context, now time.Time, limit
         OR (a.owner_type='upload_draft' AND us.owner_type='upload_draft' AND us.expires_at<=?))
       AND NOT EXISTS (SELECT 1 FROM stream_visual_settings sv WHERE sv.background_asset_id=a.id OR sv.cover_asset_id=a.id)
       AND NOT EXISTS (SELECT 1 FROM video_cover_presets p WHERE p.asset_id=a.id AND p.deleted_at IS NULL)
-      AND NOT EXISTS (SELECT 1 FROM stream_video_cover_runtime vr JOIN media_asset_variants v ON v.id=vr.asset_variant_id WHERE v.asset_id=a.id)
+      AND NOT EXISTS (SELECT 1 FROM stream_video_cover_candidates c WHERE c.asset_id=a.id)
+      AND NOT EXISTS (SELECT 1 FROM stream_video_cover_runtime vr JOIN media_asset_variants v ON v.id=vr.asset_variant_id OR v.id=vr.applied_asset_variant_id WHERE v.asset_id=a.id)
+      AND NOT EXISTS (SELECT 1 FROM stream_video_cover_actions ca JOIN media_asset_variants v ON v.id=ca.requested_asset_variant_id WHERE v.asset_id=a.id)
       ORDER BY a.id LIMIT ?`, now, now, limit)
 	if err != nil {
 		return 0, err
@@ -399,13 +429,16 @@ func (r *SQLRepository) deleteUnreferencedAsset(ctx context.Context, id string, 
 	// a second fail-closed check for any preset row the purge retained.
 	if _, err := tx.ExecContext(ctx, `DELETE FROM video_cover_presets
       WHERE asset_id=? AND deleted_at IS NOT NULL
-      AND NOT EXISTS (SELECT 1 FROM stream_visual_settings sv WHERE sv.cover_preset_id=video_cover_presets.id)`, id); err != nil {
+      AND NOT EXISTS (SELECT 1 FROM stream_visual_settings sv WHERE sv.cover_preset_id=video_cover_presets.id)
+      AND NOT EXISTS (SELECT 1 FROM stream_video_cover_candidates c WHERE c.preset_id=video_cover_presets.id)`, id); err != nil {
 		return 0, err
 	}
 	result, err := tx.ExecContext(ctx, `DELETE FROM media_assets WHERE id=?
       AND NOT EXISTS (SELECT 1 FROM stream_visual_settings sv WHERE sv.background_asset_id=media_assets.id OR sv.cover_asset_id=media_assets.id)
       AND NOT EXISTS (SELECT 1 FROM video_cover_presets p WHERE p.asset_id=media_assets.id)
-      AND NOT EXISTS (SELECT 1 FROM stream_video_cover_runtime vr JOIN media_asset_variants v ON v.id=vr.asset_variant_id WHERE v.asset_id=media_assets.id)`, id)
+      AND NOT EXISTS (SELECT 1 FROM stream_video_cover_candidates c WHERE c.asset_id=media_assets.id)
+      AND NOT EXISTS (SELECT 1 FROM stream_video_cover_runtime vr JOIN media_asset_variants v ON v.id=vr.asset_variant_id OR v.id=vr.applied_asset_variant_id WHERE v.asset_id=media_assets.id)
+      AND NOT EXISTS (SELECT 1 FROM stream_video_cover_actions ca JOIN media_asset_variants v ON v.id=ca.requested_asset_variant_id WHERE v.asset_id=media_assets.id)`, id)
 	if err != nil {
 		return 0, err
 	}

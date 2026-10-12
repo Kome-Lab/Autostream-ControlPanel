@@ -1,5 +1,9 @@
 // Fixed UI copy. Interpolated values retain their original meaning.
 export const messages = {
+  "担当EncoderとWorkerを選択して、配信経路と枠をまとめて保存します。": "Select an Encoder and Worker to save the stream and its assignments together.",
+  "担当Workerを選択してください。": "Select a Worker.",
+  "担当Encoderを選択してください。": "Select an Encoder.",
+  "別の枠で使用中のNodeは選択できません。オフラインのNodeを選んだ場合は、開始前に稼働状態を確認してください。": "Nodes used by another stream cannot be selected. Check offline nodes before starting.",
   "{0}の{1}を受け付けました。最新状態を確認してください。": "Accepted {1} for {0}. Check the latest state.",
   "操作結果を確認できません。再送せず、配信枠の最新状態または監査ログを確認してください。": "The operation outcome is unknown. Check the latest stream state or audit log before sending another request.",
   "{0} 再送せず、最新状態を確認してください。": "{0} Check the latest state before sending another request.",
@@ -21,7 +25,7 @@ export const messages = {
   "通信状態を確認して再試行してください。新しい操作は一覧が更新されてから行ってください。": "Check your connection and retry. Wait for the list to refresh before performing another operation.",
   "配信枠を作成": "Create stream slot",
   "Discord VCの開始条件、入力、出力、録画を設定します。": "Configure Discord voice triggers, input, outputs and recording.",
-  "{0} を作成しました。稼働中の配信を保護するためNode割り当ては変更していません。開始前にこの配信枠を編集し、担当Nodeを明示的に割り当ててください。": "Created {0}. Existing node assignments are preserved to protect active streams. Edit this stream and explicitly assign its nodes before starting.",
+  "{0} を作成し、EncoderとWorkerを割り当てました。開始前に出力先と開始準備を確認してください。": "Created {0} and assigned its Encoder and Worker. Review its output and readiness before starting.",
   "配信枠を編集": "Edit stream",
   "待機中または終了済みの配信枠の設定を変更します。": "Edit settings for a waiting or finished stream.",
   "{0} の設定を更新しました。開始前に担当Nodeと出力先を確認してください。": "Updated settings for {0}. Check assigned nodes and outputs before starting.",

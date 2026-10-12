@@ -2,19 +2,15 @@
 
 import {
   createElement,
-  useId,
   useState,
-  type ComponentProps,
   type MouseEvent,
   type ReactNode,
 } from "react";
 
 import { ConfirmationDialogFrame } from "@/components/foundation/confirmation/confirmation-dialog-frame";
-import { Input } from "@/components/ui/input";
 import {
   confirmationPublicTargetValues,
   resolveHighRiskConfirmationPlan,
-  typedConfirmationMatches,
 } from "@/lib/foundation/actions/confirmation-policy";
 import { isActionInvocationAllowed } from "@/lib/foundation/permissions/evaluator";
 import type {
@@ -108,10 +104,7 @@ export function HighRiskConfirmation({
   const invocationAllowed = isActionInvocationAllowed(evaluation);
   const unavailable = plan.kind === "invalid" || !presentation || !invocationAllowed;
   const [typedInput, setTypedInput] = useState("");
-  const requiredToken = plan.kind === "typed-target" ? plan.token : undefined;
-  const typedMatch = requiredToken === undefined
-    || typedConfirmationMatches(typedInput, requiredToken);
-  const confirmEnabled = !unavailable && state.kind === "ready" && typedMatch;
+  const confirmEnabled = !unavailable && state.kind === "ready";
   const submitting = state.kind === "submitting";
   const busy = state.kind === "revalidating" || submitting;
 
@@ -184,13 +177,9 @@ export function HighRiskConfirmationBody({
   descriptor,
   context,
   translate,
-  typedInput,
-  onTypedInputChange,
 }: HighRiskConfirmationBodyProps): ReactNode {
   const plan = resolveHighRiskConfirmationPlan(descriptor);
   const presentation = copySafePresentation(descriptor);
-  const inputId = useId();
-  const mismatchId = useId();
   if (plan.kind === "invalid" || !presentation) return null;
 
   const targetValues = confirmationPublicTargetValues(descriptor);
@@ -239,42 +228,6 @@ export function HighRiskConfirmationBody({
     translate("confirmationAuditHeading"),
     createElement("p", null, translate(presentation.auditLabelKey)),
   ));
-
-  if (plan.kind === "typed-target") {
-    const mismatch = typedInput.length > 0
-      && !typedConfirmationMatches(typedInput, plan.token);
-    const inputProps: ComponentProps<typeof Input> &
-      Readonly<{ "data-confirmation-token-input": string }> = {
-      id: inputId,
-      value: typedInput,
-      autoFocus: true,
-      autoComplete: "off",
-      spellCheck: false,
-      "data-confirmation-token-input": "",
-      ...(mismatch
-        ? { "aria-invalid": true, "aria-describedby": mismatchId }
-        : {}),
-      onChange: (event) => onTypedInputChange(event.currentTarget.value),
-    };
-    sections.push(createElement(
-      "div",
-      { key: "typed-target", "data-confirmation-typed-target": "" },
-      createElement(
-        "p",
-        null,
-        translate("confirmationTypeTokenInstruction", { token: plan.token }),
-      ),
-      createElement("label", { htmlFor: inputId }, translate("confirmationTokenInputLabel")),
-      createElement(Input, inputProps),
-      mismatch
-        ? createElement(
-            "p",
-            { id: mismatchId, role: "alert" },
-            translate("confirmationTypedTokenMismatch"),
-          )
-        : null,
-    ));
-  }
 
   return createElement("div", { "data-confirmation-body": "" }, ...sections);
 }

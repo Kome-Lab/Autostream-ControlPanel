@@ -12,6 +12,8 @@ type MemoryStreamStore struct {
 	serviceAssignmentGuard                     *MemoryAuthStore
 	youtubeRelayBindingOutputMu                sync.Mutex
 	streams                                    map[string]Stream
+	normalStopPending                          map[string]bool
+	normalStopReceipts                         map[string]time.Time
 	logs                                       map[string][]StreamLog
 	artifacts                                  map[string][]StreamArtifact
 	artifactReports                            map[string]bool

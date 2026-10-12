@@ -1,3 +1,4 @@
+import {auditActionLabel} from "./audit-action";
 export type NotificationChannelPayloadInput = {
   editing: boolean;
   migrateToGlobalSMTP?: boolean;
@@ -44,7 +45,9 @@ export function notificationDeliveryPresentation(delivery: unknown) {
   const eventKey = notificationDeliveryEventKey(delivery);
   if (!isRecord(delivery)) return { eventKey, detail: "", sentAt: "" };
   const metadata = isRecord(delivery.metadata) ? delivery.metadata : {};
-  const detail = stringValue(metadata.summary);
+  const status=stringValue(metadata.result)||stringValue(metadata.status);
+ const resultLabel=({request:"要求済み・反映未確認",success:"成功",failure:"失敗"} as Record<string,string>)[status]||status;
+ const detail = stringValue(delivery.event_type)==="admin.audit" && stringValue(metadata.action) && resultLabel ? `${auditActionLabel(stringValue(metadata.action))} / ${resultLabel}` : stringValue(metadata.summary);
   return {
     eventKey,
     detail: detail === "<redacted>" ? "" : detail,

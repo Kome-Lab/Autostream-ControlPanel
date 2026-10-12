@@ -25,13 +25,16 @@ func (s *Server) registerStreamRoutes() {
 	s.mux.HandleFunc("DELETE /media-assets/{id}", s.requireAnyPermission([]string{"streams.create", "streams.update"}, s.deleteMediaAsset))
 	s.mux.HandleFunc("GET /internal/streams/{stream_id}/media-assets/{variant_id}", s.internalMediaAsset)
 	s.mux.HandleFunc("GET /streams/{id}", s.requirePermission("streams.read", s.getStream))
+	s.mux.HandleFunc("GET /streams/{id}/stop-outcome", s.requirePermission("streams.read", s.getStreamStopOutcome))
 	s.mux.HandleFunc("GET /streams/{id}/visual-settings", s.requirePermission("streams.read", s.getStreamVisualSettings))
+	s.mux.HandleFunc("GET /streams/{id}/media-assets/{variant_id}", s.requirePermission("streams.read", s.streamMediaPreview))
 	s.mux.HandleFunc("PUT /streams/{id}/visual-settings", s.requirePermission("streams.update", s.updateStreamVisualSettings))
 	s.mux.HandleFunc("GET /streams/{id}/video-cover-state", s.requirePermission("streams.read", s.getVideoCoverState))
 	s.mux.HandleFunc("PUT /streams/{id}/video-cover-state", s.requirePermission("", s.updateVideoCoverState))
 	s.mux.HandleFunc("GET /video-cover-presets", s.requirePermission("video_cover_presets.read", s.listVideoCoverPresets))
 	s.mux.HandleFunc("POST /video-cover-presets", s.requirePermission("video_cover_presets.create", s.createVideoCoverPreset))
 	s.mux.HandleFunc("GET /video-cover-presets/{id}", s.requirePermission("video_cover_presets.read", s.getVideoCoverPreset))
+	s.mux.HandleFunc("GET /video-cover-presets/{id}/media-assets/{variant_id}", s.requirePermission("video_cover_presets.read", s.presetMediaPreview))
 	s.mux.HandleFunc("PUT /video-cover-presets/{id}", s.requirePermission("video_cover_presets.update", s.updateVideoCoverPreset))
 	s.mux.HandleFunc("DELETE /video-cover-presets/{id}", s.requirePermission("video_cover_presets.delete", s.deleteVideoCoverPreset))
 	s.mux.HandleFunc("DELETE /streams/{id}", s.requirePermission("streams.delete", s.deleteStream))
@@ -170,6 +173,7 @@ var createStreamV2Fields = map[string]struct{}{
 	"archive_oauth_account_id": {}, "archive_folder_id": {}, "archive_shared_drive": {},
 	"archive_shared_drive_id": {}, "archive_file_name": {}, "archive_retention_days": {},
 	"youtube_output_id": {}, "encoder_input_url": {},
+	"encoder_service_id": {}, "worker_service_id": {},
 	"upload_session_id": {}, "visual_settings": {},
 }
 
@@ -212,12 +216,14 @@ func (s *Server) createStream(w http.ResponseWriter, r *http.Request) {
 	current := currentFromContext(r.Context())
 	var stream store.Stream
 	_, visualSettingsPresent := fields["visual_settings"]
-	_, uploadSessionPresent := fields["upload_session_id"]
 	if !visualSettingsPresent {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "visual_settings_required"})
 		return
 	}
-	if uploadSessionPresent && streamArchiveDirectRequested(body) {
+	// Direct legacy archive creation spans separate profile/integration stores
+	// and cannot participate in this atomic reservation. Existing legacy rows
+	// remain editable; new creation uses a pre-existing archive profile.
+	if streamArchiveDirectRequested(body) {
 		writeJSON(w, http.StatusConflict, map[string]string{"code": "stream_draft_archive_create_unsupported"})
 		return
 	}
@@ -247,26 +253,33 @@ func (s *Server) createStream(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
 		return
 	}
-	stream, _, err = creator.CreateStream(r.Context(), current.User.ID, streamvisual.Create{Name: body.Name, UploadSessionID: envelope.UploadSessionID, Settings: visualUpdate, StreamSettings: settings})
+	if assignmentRequestServiceID(body.EncoderServiceID) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "encoder_service_required"})
+		return
+	}
+	if assignmentRequestServiceID(body.WorkerServiceID) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "worker_service_required"})
+		return
+	}
+	if code, status := s.validateStreamServiceAssignmentRequest(r.Context(), body, current.Permissions); code != "" {
+		writeJSON(w, status, map[string]string{"code": code})
+		return
+	}
+	assignments := store.StreamCreateAssignments{EncoderServiceID: assignmentRequestServiceID(body.EncoderServiceID), WorkerServiceID: assignmentRequestServiceID(body.WorkerServiceID)}
+	stream, _, err = creator.CreateStream(r.Context(), current.User.ID, streamvisual.Create{Name: body.Name, UploadSessionID: envelope.UploadSessionID, Settings: visualUpdate, StreamSettings: settings, Assignments: assignments})
 	if err != nil {
+		if code, status, handled := serviceAssignmentHTTPError(err, false); handled {
+			writeJSON(w, status, map[string]string{"code": code})
+			return
+		}
 		writeStreamVisualError(w, err)
 		return
 	}
-	if streamArchiveDirectRequested(body) {
-		settings, err = s.materializeStreamArchiveSettings(r.Context(), stream, settings, body)
-		if err != nil {
-			writeJSON(w, streamArchiveSettingsStatus(err), map[string]string{"code": streamArchiveSettingsCode(err)})
-			return
-		}
-		stream, err = s.streams.UpdateStreamSettings(r.Context(), stream.ID, settings)
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "update_stream_settings_failed"})
-			return
-		}
+	// Configuration, media claims and both unoccupied primary assignments are
+	// committed together. Creation never transfers another stream's services.
+	for _, assignment := range []struct{ id, serviceType string }{{assignments.EncoderServiceID, "encoder_recorder"}, {assignments.WorkerServiceID, "worker"}} {
+		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "services.assign", ResourceType: "service", ResourceID: assignment.id, Result: "success", Metadata: map[string]any{"stream_id": stream.ID, "service_type": assignment.serviceType, "assignment_role": "primary", "source": "stream_create"}})
 	}
-	// Creating a stream persists configuration only. Runtime ownership changes
-	// remain an explicit settings update so a new inactive slot cannot steal a
-	// service assignment from a live stream or an in-flight archive package.
 	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.create", ResourceType: "stream", ResourceID: stream.ID, Result: "success", Metadata: streamSettingsAuditMetadata(stream)})
 	writeJSON(w, http.StatusCreated, stream)
 }

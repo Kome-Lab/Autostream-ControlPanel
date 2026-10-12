@@ -72,7 +72,7 @@ func TestAdminAuditNotificationSummaryUsesRedactedEvent(t *testing.T) {
 	if strings.Contains(summary, "raw-secret-token") || strings.Contains(metadata, "raw-secret-token") {
 		t.Fatalf("admin audit notification leaked raw secret: summary=%q metadata=%s", summary, metadata)
 	}
-	if summary != "管理イベント: secrets.update / success" {
+	if summary != "管理イベント: secrets.update / 成功" {
 		t.Fatalf("admin audit summary duplicated structured resource fields: %q", summary)
 	}
 	if severity := adminAuditNotificationSeverity(event); severity != "warning" {

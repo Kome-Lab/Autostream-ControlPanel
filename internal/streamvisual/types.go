@@ -50,45 +50,56 @@ func (o OptionalString) MarshalJSON() ([]byte, error) {
 }
 
 type Settings struct {
-	StreamID                    string    `json:"stream_id"`
-	BackgroundMode              string    `json:"background_mode"`
-	BackgroundAssetID           string    `json:"background_asset_id,omitempty"`
-	BackgroundVariantID         string    `json:"background_variant_id,omitempty"`
-	HeaderTitleMode             string    `json:"header_title_mode"`
-	HeaderTitleValue            string    `json:"header_title_value,omitempty"`
-	DiscordTargetMode           string    `json:"discord_target_mode,omitempty"`
-	DiscordTargetPresetID       string    `json:"discord_target_preset_id,omitempty"`
-	DiscordTargetPresetRevision uint64    `json:"discord_target_preset_revision,omitempty"`
-	DiscordSnapshotRevision     uint64    `json:"discord_snapshot_revision"`
-	DiscordGuildID              string    `json:"discord_guild_id,omitempty"`
-	DiscordTextChannelID        string    `json:"discord_text_channel_id,omitempty"`
-	DiscordVoiceChannelID       string    `json:"discord_voice_channel_id,omitempty"`
-	DiscordPresetDeleted        bool      `json:"discord_preset_deleted,omitempty"`
-	CoverSource                 string    `json:"cover_source"`
-	CoverPresetID               string    `json:"cover_preset_id,omitempty"`
-	CoverPresetRevision         uint64    `json:"cover_preset_revision,omitempty"`
-	CoverAssetID                string    `json:"cover_asset_id,omitempty"`
-	CoverVariantID              string    `json:"cover_variant_id,omitempty"`
-	CoverStartActive            bool      `json:"cover_start_active"`
-	Revision                    uint64    `json:"revision"`
-	CreatedAt                   time.Time `json:"created_at"`
-	UpdatedAt                   time.Time `json:"updated_at"`
+	CoverCandidates             []CoverCandidate `json:"cover_candidates"`
+	StreamID                    string           `json:"stream_id"`
+	BackgroundMode              string           `json:"background_mode"`
+	BackgroundAssetID           string           `json:"background_asset_id,omitempty"`
+	BackgroundVariantID         string           `json:"background_variant_id,omitempty"`
+	HeaderTitleMode             string           `json:"header_title_mode"`
+	HeaderTitleValue            string           `json:"header_title_value,omitempty"`
+	DiscordTargetMode           string           `json:"discord_target_mode,omitempty"`
+	DiscordTargetPresetID       string           `json:"discord_target_preset_id,omitempty"`
+	DiscordTargetPresetRevision uint64           `json:"discord_target_preset_revision,omitempty"`
+	DiscordSnapshotRevision     uint64           `json:"discord_snapshot_revision"`
+	DiscordGuildID              string           `json:"discord_guild_id,omitempty"`
+	DiscordTextChannelID        string           `json:"discord_text_channel_id,omitempty"`
+	DiscordVoiceChannelID       string           `json:"discord_voice_channel_id,omitempty"`
+	DiscordPresetDeleted        bool             `json:"discord_preset_deleted,omitempty"`
+	CoverSource                 string           `json:"cover_source"`
+	CoverPresetID               string           `json:"cover_preset_id,omitempty"`
+	CoverPresetRevision         uint64           `json:"cover_preset_revision,omitempty"`
+	CoverAssetID                string           `json:"cover_asset_id,omitempty"`
+	CoverVariantID              string           `json:"cover_variant_id,omitempty"`
+	CoverStartActive            bool             `json:"cover_start_active"`
+	Revision                    uint64           `json:"revision"`
+	CreatedAt                   time.Time        `json:"created_at"`
+	UpdatedAt                   time.Time        `json:"updated_at"`
 }
 
 type Update struct {
-	ExpectedRevision            uint64         `json:"expected_revision"`
-	UploadSessionID             string         `json:"upload_session_id,omitempty"`
-	BackgroundMode              OptionalString `json:"background_mode"`
-	BackgroundAssetID           OptionalString `json:"background_asset_id"`
-	BackgroundVariantID         OptionalString `json:"background_variant_id"`
-	HeaderTitleMode             OptionalString `json:"header_title_mode"`
-	HeaderTitleValue            OptionalString `json:"header_title_value"`
-	DiscordTarget               OptionalDiscordTarget `json:"discord_target"`
-	CoverSource                 OptionalString `json:"cover_source"`
-	CoverPresetID               OptionalString `json:"cover_preset_id"`
-	CoverAssetID                OptionalString `json:"cover_asset_id"`
-	CoverVariantID              OptionalString `json:"cover_variant_id"`
-	CoverStartActive            *bool          `json:"cover_start_active,omitempty"`
+	CoverCandidates     *[]CoverCandidate     `json:"cover_candidates,omitempty"`
+	ExpectedRevision    uint64                `json:"expected_revision"`
+	UploadSessionID     string                `json:"upload_session_id,omitempty"`
+	BackgroundMode      OptionalString        `json:"background_mode"`
+	BackgroundAssetID   OptionalString        `json:"background_asset_id"`
+	BackgroundVariantID OptionalString        `json:"background_variant_id"`
+	HeaderTitleMode     OptionalString        `json:"header_title_mode"`
+	HeaderTitleValue    OptionalString        `json:"header_title_value"`
+	DiscordTarget       OptionalDiscordTarget `json:"discord_target"`
+	CoverSource         OptionalString        `json:"cover_source"`
+	CoverPresetID       OptionalString        `json:"cover_preset_id"`
+	CoverAssetID        OptionalString        `json:"cover_asset_id"`
+	CoverVariantID      OptionalString        `json:"cover_variant_id"`
+	CoverStartActive    *bool                 `json:"cover_start_active,omitempty"`
+}
+
+type CoverCandidate struct {
+	Name           string `json:"name"`
+	Source         string `json:"source"`
+	PresetID       string `json:"preset_id,omitempty"`
+	PresetRevision uint64 `json:"preset_revision,omitempty"`
+	AssetID        string `json:"asset_id,omitempty"`
+	VariantID      string `json:"variant_id,omitempty"`
 }
 
 type DiscordTarget struct {
@@ -122,10 +133,11 @@ func (target *OptionalDiscordTarget) UnmarshalJSON(raw []byte) error {
 }
 
 type Create struct {
-	Name            string               `json:"name"`
-	UploadSessionID string               `json:"upload_session_id,omitempty"`
-	Settings        Update               `json:"visual_settings"`
-	StreamSettings  store.StreamSettings `json:"-"`
+	Name            string                        `json:"name"`
+	UploadSessionID string                        `json:"upload_session_id,omitempty"`
+	Settings        Update                        `json:"visual_settings"`
+	StreamSettings  store.StreamSettings          `json:"-"`
+	Assignments     store.StreamCreateAssignments `json:"-"`
 }
 
 type AssetReadiness struct {

@@ -30,6 +30,51 @@ type gatedLifecycleTransitionStore struct {
 	release     chan struct{}
 }
 
+func (s *gatedLifecycleTransitionStore) ClaimNormalStop(ctx context.Context, expected store.Stream) (store.Stream, bool, error) {
+	select {
+	case s.entered <- struct{}{}:
+	case <-ctx.Done():
+		return store.Stream{}, false, ctx.Err()
+	}
+	select {
+	case <-s.release:
+	case <-ctx.Done():
+		return store.Stream{}, false, ctx.Err()
+	}
+	return s.StreamStore.(store.NormalStopReceiptStore).ClaimNormalStop(ctx, expected)
+}
+func (s *gatedLifecycleTransitionStore) ClaimForceStop(ctx context.Context, expected store.Stream) (store.Stream, bool, error) {
+	select {
+	case s.entered <- struct{}{}:
+	case <-ctx.Done():
+		return store.Stream{}, false, ctx.Err()
+	}
+	select {
+	case <-s.release:
+	case <-ctx.Done():
+		return store.Stream{}, false, ctx.Err()
+	}
+	return s.StreamStore.(store.NormalStopReceiptStore).ClaimForceStop(ctx, expected)
+}
+func (s *gatedLifecycleTransitionStore) MarkNormalStopUnconfirmed(ctx context.Context, id string) error {
+	return s.StreamStore.(store.NormalStopReceiptStore).MarkNormalStopUnconfirmed(ctx, id)
+}
+func (s *gatedLifecycleTransitionStore) CompleteNormalStop(ctx context.Context, id, source string, claim time.Time) (store.Stream, bool, error) {
+	return s.StreamStore.(store.NormalStopReceiptStore).CompleteNormalStop(ctx, id, source, claim)
+}
+func (s *gatedLifecycleTransitionStore) FailNormalStop(ctx context.Context, id string, claim time.Time) (store.Stream, bool, error) {
+	return s.StreamStore.(store.NormalStopReceiptStore).FailNormalStop(ctx, id, claim)
+}
+func (s *gatedLifecycleTransitionStore) CompleteConfirmedForceStop(ctx context.Context, id string, claim time.Time) (store.Stream, bool, error) {
+	return s.StreamStore.(store.NormalStopReceiptStore).CompleteConfirmedForceStop(ctx, id, claim)
+}
+func (s *gatedLifecycleTransitionStore) RecordNormalStopReceipt(ctx context.Context, id, source string, at time.Time) error {
+	return s.StreamStore.(store.NormalStopReceiptStore).RecordNormalStopReceipt(ctx, id, source, at)
+}
+func (s *gatedLifecycleTransitionStore) HasNormalStopReceipt(ctx context.Context, id, source string) (bool, error) {
+	return s.StreamStore.(store.NormalStopReceiptStore).HasNormalStopReceipt(ctx, id, source)
+}
+
 func (s *gatedLifecycleTransitionStore) ClaimStreamStart(ctx context.Context, request store.StreamStartClaimRequest) (store.ClaimedStreamStart, error) {
 	if s.startClaims == nil {
 		return store.ClaimedStreamStart{}, store.ErrServiceAssignmentGuardUnavailable

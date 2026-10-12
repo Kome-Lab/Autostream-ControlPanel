@@ -36,7 +36,7 @@ func NewMariaDBRepository(db *sql.DB, media *mediaassets.SQLRepository) *SQLRepo
 }
 
 func DefaultSettings(streamID string) Settings {
-	return Settings{StreamID: streamID, BackgroundMode: "default", HeaderTitleMode: "default", CoverSource: "none", DiscordSnapshotRevision: 1, Revision: 0}
+	return Settings{StreamID: streamID, BackgroundMode: "default", HeaderTitleMode: "default", CoverSource: "none", CoverCandidates: []CoverCandidate{}, DiscordSnapshotRevision: 1, Revision: 0}
 }
 
 func (r *SQLRepository) Get(ctx context.Context, streamID string) (Settings, error) {
@@ -52,6 +52,7 @@ func (r *SQLRepository) Get(ctx context.Context, streamID string) (Settings, err
 
 type queryer interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }
 
 const visualSelect = `SELECT sv.stream_id,sv.background_mode,COALESCE(sv.background_asset_id,''),COALESCE(sv.background_variant_id,''),
@@ -67,7 +68,11 @@ func getSettingsWith(ctx context.Context, q queryer, streamID string, lock bool)
 	if lock {
 		query += ` FOR UPDATE`
 	}
-	return scanSettings(q.QueryRowContext(ctx, query, streamID))
+	settings, err := scanSettings(q.QueryRowContext(ctx, query, streamID))
+	if err == nil {
+		err = loadCoverCandidates(ctx, q, &settings)
+	}
+	return settings, err
 }
 
 type scanner interface{ Scan(...any) error }
@@ -127,6 +132,9 @@ func (r *SQLRepository) Update(ctx context.Context, streamID, userID string, upd
 	if err := r.resolveAndValidate(ctx, tx, userID, streamID, &next, changes); err != nil {
 		return Settings{}, err
 	}
+	if err := r.resolveCoverCandidates(ctx, tx, userID, current, &next, update); err != nil {
+		return Settings{}, err
+	}
 	now := r.now()
 	next.Revision = current.Revision + 1
 	next.UpdatedAt = now
@@ -172,13 +180,16 @@ func (r *SQLRepository) CreateStream(ctx context.Context, userID string, input C
 	// Creation has no prior persisted snapshot. Any selected media must therefore
 	// be resolved and validated from the canonical visual input.
 	changes.backgroundSelection = settings.BackgroundMode == "image"
-	changes.coverSelection = settings.CoverSource != "none"
+	changes.coverSelection = settings.CoverSource != "none" && input.Settings.CoverCandidates == nil
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return store.Stream{}, Settings{}, err
 	}
 	defer tx.Rollback()
 	if _, err = tx.ExecContext(ctx, `INSERT INTO streams(id,name,status,created_at,updated_at)VALUES(?,?,'created',?,?)`, stream.ID, stream.Name, now, now); err != nil {
+		return store.Stream{}, Settings{}, err
+	}
+	if err = store.AssignNewStreamServicesTx(ctx, tx, stream.ID, userID, input.Assignments, now); err != nil {
 		return store.Stream{}, Settings{}, err
 	}
 	if sessionID := strings.TrimSpace(input.UploadSessionID); sessionID != "" {
@@ -197,6 +208,9 @@ func (r *SQLRepository) CreateStream(ctx context.Context, userID string, input C
 		}
 	}
 	if err = r.resolveAndValidate(ctx, tx, userID, stream.ID, &settings, changes); err != nil {
+		return store.Stream{}, Settings{}, err
+	}
+	if err = r.resolveCoverCandidates(ctx, tx, userID, settingsBase, &settings, input.Settings); err != nil {
 		return store.Stream{}, Settings{}, err
 	}
 	if strings.TrimSpace(input.StreamSettings.AutoStartTrigger) == "discord_voice_join" &&
@@ -218,6 +232,8 @@ func (r *SQLRepository) CreateStream(ctx context.Context, userID string, input C
 		return store.Stream{}, Settings{}, err
 	}
 	applyStreamSettings(&stream, streamSettings)
+	stream.AssignedEncoderID = strings.TrimSpace(input.Assignments.EncoderServiceID)
+	stream.AssignedWorkerID = strings.TrimSpace(input.Assignments.WorkerServiceID)
 	return stream, settings, nil
 }
 
@@ -236,6 +252,9 @@ func selectedUploadAssetIDs(settings Settings, changes updateChanges) []string {
 	}
 	if changes.coverSelection && settings.CoverSource == "upload" {
 		add(settings.CoverAssetID)
+	}
+	for _, assetID := range changes.newCoverUploadAssets {
+		add(assetID)
 	}
 	return selected
 }
@@ -294,15 +313,26 @@ func applyStreamSettings(stream *store.Stream, settings store.StreamSettings) {
 }
 
 type updateChanges struct {
-	discord             bool
-	backgroundSelection bool
-	coverSelection      bool
+	newCoverUploadAssets []string
+	discord              bool
+	backgroundSelection  bool
+	coverSelection       bool
 }
 
 func applyUpdate(current Settings, update Update) (Settings, updateChanges, error) {
 	next := current
 	changes := updateChanges{
 		backgroundSelection: update.BackgroundMode.Set || update.BackgroundAssetID.Set || update.BackgroundVariantID.Set,
+	}
+	if update.CoverCandidates != nil {
+		next.CoverCandidates = append([]CoverCandidate{}, (*update.CoverCandidates)...)
+		for _, candidate := range next.CoverCandidates {
+			if candidate.Source == "upload" {
+				if _, exists := SelectCoverCandidate(current, candidate.VariantID); !exists {
+					changes.newCoverUploadAssets = append(changes.newCoverUploadAssets, candidate.AssetID)
+				}
+			}
+		}
 	}
 	if update.BackgroundMode.Set {
 		if !update.BackgroundMode.Valid || strings.TrimSpace(update.BackgroundMode.Value) == "" {
@@ -435,6 +465,18 @@ func applyUpdate(current Settings, update Update) (Settings, updateChanges, erro
 		next.CoverStartActive = false
 	}
 	changes.coverSelection = update.CoverSource.Set || (next.CoverSource == "preset" && coverPresetInput) || (next.CoverSource == "upload" && coverUploadInput)
+	if update.CoverCandidates != nil && next.CoverSource != "none" {
+		selectedID := next.CoverVariantID
+		if update.CoverVariantID.Set {
+			selectedID = optionalValue(update.CoverVariantID)
+		}
+		selected, found := SelectCoverCandidate(next, selectedID)
+		if !found {
+			return Settings{}, updateChanges{}, ErrInvalidSettings
+		}
+		next = selected
+		changes.coverSelection = false
+	}
 	return next, changes, nil
 }
 

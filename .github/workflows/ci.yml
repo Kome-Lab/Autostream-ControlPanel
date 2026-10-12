@@ -90,7 +90,7 @@ jobs:
       ST_PORT_UPDATER_SHA: 9a9af039795adbbe9db786da4980d17ef195e525
       # Legacy ST-PORT Contracts source is retained for the fixed Updater application.
       ST_PORT_CONTRACTS_SHA: 1550fab9220f3a5d706543e5caad3ec57d078531
-      CONTROL_PANEL_CONTRACTS_SHA: 7edb888d585ec7001d2dc1feee9256db620f8cfd
+      CONTROL_PANEL_CONTRACTS_SHA: f62ddfaf1144d502966b2a58e3a93133cfbfded0
       ST_PORT_WORKER_SHA: feb5b8f2705bc6feb4c4b7599e2f302a73a36f54
       GOMAXPROCS: "2"
     outputs:
@@ -263,6 +263,15 @@ jobs:
           jq -e \
             'select(.Action == "pass" and .Package == "github.com/example/autostream-control-panel/internal/store" and ((.Test // "") == ""))' \
             "${result}" > /dev/null
+      - name: Verify UI188 atomic roles, cover snapshots, stop ownership, and safe deletion with MariaDB
+        shell: bash
+        env:
+          AUTOSTREAM_MARIADB_TEST_DSN: autostream_ci:autostream-ci-password@tcp(127.0.0.1:3306)/autostream_ci?parseTime=true
+        run: |
+          set -euo pipefail
+          result="${RUNNER_TEMP}/ui188-stream-operations.json"
+          go test -mod=readonly -p 1 ./internal/httpapi -run '^TestUI188MariaDBAtomicCreateCoverSnapshotsPreviewAndStopReceipt$' -count=1 -json | tee "${result}"
+          jq -s -e '([.[] | select(.Action=="skip" or .Action=="fail")]|length)==0 and ([.[]|select(.Action=="pass" and .Test=="TestUI188MariaDBAtomicCreateCoverSnapshotsPreviewAndStopReceipt")]|length)==1' "${result}" >/dev/null
       - name: Test MariaDB OAuth and Configure Token migrations
         shell: bash
         env:
@@ -756,6 +765,7 @@ jobs:
         run: npm run test:ui-foundation-operations
       - run: npm run test:system-updates
       - run: npm run test:stream-regressions
+      - run: npm run test:ui188-stream-operations
       - run: npm run lint
       - run: npm run build
       - name: Test current UI components

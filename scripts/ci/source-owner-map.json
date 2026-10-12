@@ -224,7 +224,7 @@
           "waitForChildExit",
           "waitForMapCount"
         ],
-        "physical_lines": 784
+        "physical_lines": 796
       },
       {
         "path": "web/tests/helpers/browser-lifecycle-source-paths.mts",
@@ -1346,7 +1346,7 @@
           "waitForChildExit",
           "waitForMapCount"
         ],
-        "physical_lines": 784
+        "physical_lines": 796
       },
       {
         "path": "web/tests/helpers/browser-next-server.mts",
@@ -1377,7 +1377,7 @@
           "settlement",
           "waitForPreferenceSettlement"
         ],
-        "physical_lines": 299
+        "physical_lines": 319
       },
       {
         "path": "web/tests/ui-browser-fixture.mts",
@@ -1700,7 +1700,7 @@
       },
       {
         "path": "internal/httpapi/server_stream_lifecycle_test.go",
-        "sha256": "96e1956b79214b384adbada9c9f855de56ece519c4fe58095c882b6e53862ee3",
+        "sha256": "cdfd1bd2e74de904769d1e46f5878b1db453e8d3f013e841828ff580c4595868",
         "symbols": [
           "TestApplyEncoderVideoProfileRejectsUnsupportedWorkerSceneGeometry",
           "TestStartStreamCompensatesPartialDispatchFailure",
@@ -1708,7 +1708,7 @@
           "TestStreamStartPersistsNegotiatedWorkerVideoOverlayBurnIn",
           "TestStreamStartStopDispatchesAssignedServices"
         ],
-        "physical_lines": 353
+        "physical_lines": 371
       },
       {
         "path": "internal/httpapi/server_stream_media_proxy_test.go",
@@ -2531,7 +2531,7 @@
       },
       {
         "path": "internal/httpapi/server_node_registration_test.go",
-        "sha256": "ef67b5320a97ec9336f8d002e46033f84eacc87cea2c34449a9bbfd306b3dad6",
+        "sha256": "1101aefd56de07dd1d75bdfe0722bbb2eab7d4b1ff9aec04428f88ff5b52c89d",
         "symbols": [
           "TestCreateServiceTokenCanPrecreateService",
           "TestCreateStreamRejectsPrimaryNodeAssignmentWithoutPermission",
@@ -2826,7 +2826,7 @@
           "workerVideoIngestRoute",
           "workerVideoIngestRoute.secret"
         ],
-        "physical_lines": 232
+        "physical_lines": 233
       },
       {
         "path": "internal/servicecall/client_archive_transfer.go",
@@ -2938,7 +2938,7 @@
           "startServiceRank",
           "stopServiceRank"
         ],
-        "physical_lines": 360
+        "physical_lines": 369
       },
       {
         "path": "internal/servicecall/client_start_payload.go",
@@ -3333,7 +3333,7 @@
           "TestWorkerVideoCapabilitiesRequireExactReportedBooleans",
           "hasFailedDispatchResult"
         ],
-        "physical_lines": 220
+        "physical_lines": 93
       }
     ]
   },
@@ -3474,7 +3474,7 @@
       },
       {
         "path": "internal/httpapi/server_lifecycle_barrier_fixture_test.go",
-        "sha256": "ba9b5c844c3d612b1c74ea6704feac73939eaee04f5e066e57343d0301334473",
+        "sha256": "953bbd58207b41bcddc12dc2513c815ebd4d1a01c40e7c5f2079d96fca90bcc4",
         "symbols": [
           "*cancelingRequestStopDispatcher.Stop",
           "*gatedLifecycleTransitionStore.ClaimStreamStart",
@@ -3491,7 +3491,7 @@
           "synchronizedServiceDispatcher",
           "waitForLifecycleTransitionAttempts"
         ],
-        "physical_lines": 145
+        "physical_lines": 190
       },
       {
         "path": "internal/httpapi/server_oauth_fixture_test.go",
@@ -3618,7 +3618,7 @@
     "destinations": [
       {
         "path": "internal/store/memory_service_assignments_events.go",
-        "sha256": "cf8fba5931d5569e5bf3e4654d9ff5c77c262758c5df9cb6ba7416d594cf91d1",
+        "sha256": "3892535837821d03a95ea95721966d97dace2c09284e774a022ec8a9d818ec7f",
         "symbols": [
           "*MemoryAuthStore.AssignServiceToStream",
           "*MemoryAuthStore.AssignServiceToStreamGuarded",
@@ -4144,13 +4144,13 @@
       },
       {
         "path": "web/tests/confirmation-policy-cases.mts",
-        "sha256": "a80eca49bf1eaa13513286909fc78938659771379dfba0d183ee167d4488c883",
+        "sha256": "67dcb5e2cf65dd7e58f3a91a24d44cf7c016f9ded561740cfd4246191df933e4",
         "symbols": [],
         "physical_lines": 327
       },
       {
         "path": "web/tests/confirmation-renderer-cases.mts",
-        "sha256": "3dfe469e38dcd98f305a6f5387bf0bfba0a69b73d823eada6ee4039bd7636da7",
+        "sha256": "bcf17480395102861dca0c84f1008c5e60946ac621e10100d8966b500fbc8281",
         "symbols": [],
         "physical_lines": 182
       },
@@ -4522,7 +4522,7 @@
           "primaryServiceID",
           "supersededStartRequiresCompensatingStop"
         ],
-        "physical_lines": 214
+        "physical_lines": 241
       },
       {
         "path": "internal/httpapi/server_stream_start_orchestration.go",
@@ -4531,7 +4531,7 @@
           "*Server.startStream",
           "*Server.startStreamWithMaterialization"
         ],
-        "physical_lines": 460
+        "physical_lines": 475
       },
       {
         "path": "internal/httpapi/server_stream_start_youtube.go",
@@ -4680,7 +4680,7 @@
     "destinations": [
       {
         "path": "internal/store/memory.go",
-        "sha256": "e25aa996f064de1330690b6a1433a809a5684223487648f4a596ba893176d3bc",
+        "sha256": "f3c2ccb768ae0fa7103f7b8bf51e958466e138a68fb2c2b594dcafeb1e4d8300",
         "symbols": [
           "*MemoryStreamStore.AssignmentGuardMemoryStore",
           "*MemoryStreamStore.CreateStream",
@@ -4694,7 +4694,7 @@
           "MemoryStreamStore",
           "NewMemoryStreamStore"
         ],
-        "physical_lines": 276
+        "physical_lines": 278
       },
       {
         "path": "internal/store/memory_stream_artifact_catalog.go",
@@ -4734,7 +4734,7 @@
       },
       {
         "path": "internal/store/memory_stream_settings.go",
-        "sha256": "357fbe0e14a0d3a026ef6c5e229b4fea81874d839946e63be333fb4951091b7c",
+        "sha256": "9eae7ccad568ae943d4ebdbf734c1badc86c653d8b60a0f17050cbe794cbd582",
         "symbols": [
           "*MemoryStreamStore.GetStreamMediaRuntime",
           "*MemoryStreamStore.SetStreamVideoOverlayBurnIn",
@@ -4742,11 +4742,11 @@
           "*MemoryStreamStore.UpdateStreamSettings",
           "cloneTimePtr"
         ],
-        "physical_lines": 101
+        "physical_lines": 106
       },
       {
         "path": "internal/store/memory_stream_start_claim.go",
-        "sha256": "9b227a0b7c72f5919bb9ce226f14f774f7c12c12756bc9da994b3cf6f3dd9265",
+        "sha256": "85a89465639996ecfe548799c3db7426134b1c8676752de814dbd0b0d187dc3e",
         "symbols": [
           "*MemoryStreamStore.ClaimStreamStart",
           "*MemoryStreamStore.PrepareStreamArchiveRun",
@@ -4759,7 +4759,7 @@
           "startAssignmentClaimsEqual",
           "streamStartClaimStatus"
         ],
-        "physical_lines": 326
+        "physical_lines": 332
       },
       {
         "path": "internal/store/memory_stream_youtube_runtime.go",
@@ -4856,7 +4856,7 @@
     "destinations": [
       {
         "path": "internal/store/service_assignment_guard_locks_mariadb.go",
-        "sha256": "1351b792e9bea6c0cedbdc06fa307d38003b06f0a0bb8aa93bfe000154bd548d",
+        "sha256": "e35b69712ae7ac4ea37d5e5654eca9b0a4e890d7766352bc9e4cd06f08cbceab",
         "symbols": [
           "consistentMariaDBServiceAssignment",
           "lockMariaDBService",
@@ -4877,7 +4877,7 @@
       },
       {
         "path": "internal/store/service_assignment_guard_order_mariadb.go",
-        "sha256": "fd8aaede4f0ab7502ff57f6130e8f87cd9f927d3c27c9c8c7712dc00443d2809",
+        "sha256": "3157180cd70e0106177ecc61c7570e149923fb95fac0fccf3268cd9c2dd77000",
         "symbols": [
           "closeMariaDBStreamLogGuard",
           "equalSortedStrings",
@@ -4915,7 +4915,7 @@
           "MariaDBStreamStore.ClaimStreamStart",
           "MariaDBStreamStore.TransitionClaimedStreamStart"
         ],
-        "physical_lines": 322
+        "physical_lines": 328
       }
     ]
   },
@@ -5148,7 +5148,7 @@
           "waitForRequestHandlersIdle",
           "waitForResponseCount"
         ],
-        "physical_lines": 784
+        "physical_lines": 796
       },
       {
         "path": "web/tests/helpers/browser-next-server.mts",
@@ -5293,7 +5293,7 @@
           "waitForChildExit",
           "waitForMapCount"
         ],
-        "physical_lines": 784
+        "physical_lines": 796
       },
       {
         "path": "web/tests/helpers/browser-next-server.mts",

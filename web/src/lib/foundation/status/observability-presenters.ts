@@ -28,6 +28,7 @@ const remediationMapping = freezeStatusMapping({
 });
 
 const auditResultMapping = freezeStatusMapping({
+  request: { labelKey: "statusAuditRequest", tone: "warning", icon: "clock-3" },
   success: { labelKey: "statusAuditSuccess", tone: "success", icon: "circle-check" },
   failure: { labelKey: "statusAuditFailure", tone: "critical", icon: "circle-alert" },
 });

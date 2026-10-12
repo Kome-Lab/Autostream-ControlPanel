@@ -127,7 +127,7 @@ test("preset option refresh keeps missing references and displays the selected s
 test("changing only cover start visibility retains the saved image even without preset access", () => {
   const draft = { ...defaultStreamVisualDraft(), coverSource: "preset" as const, coverPresetID: "retired-preset", coverAssetID: "saved-asset", coverVariantID: "saved-variant", coverStartActive: true };
   assert.deepEqual(buildStreamVisualSaveFields(draft, new Set(["cover"]), true), { cover_start_active: true });
-  assert.deepEqual(buildStreamVisualSaveFields(draft, new Set(["cover"]), false), { cover_source: "preset", cover_preset_id: "retired-preset", cover_start_active: true });
+  assert.deepEqual(buildStreamVisualSaveFields(draft, new Set(["cover"]), false), { cover_source: "preset", cover_preset_id: "retired-preset", cover_variant_id: "saved-variant", cover_start_active: true, cover_candidates: [] });
   const required = actualCallback(visualSource, "coverPresetRequired", { editing: true, coverSelectionDirty: false, dirtySections: new Set(["cover"]), draft });
   assert.equal(required, false, "an unchanged preset must not require a new list read or selection");
   const selections: boolean[] = [];

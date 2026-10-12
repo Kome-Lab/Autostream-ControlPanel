@@ -10,6 +10,7 @@ export type DiscordTargetSelection = {
 };
 
 export type StreamVisualSettings = {
+  cover_candidates?: CoverCandidate[];
   stream_id: string;
   background_mode: "default" | "image";
   background_asset_id?: string;
@@ -33,6 +34,8 @@ export type StreamVisualSettings = {
   revision: number;
 };
 
+export type CoverCandidate = { name: string; source: "preset" | "upload"; preset_id?: string; preset_revision?: number; asset_id: string; variant_id: string };
+
 export type VideoCoverState = {
   stream_id: string;
   job_generation: number;
@@ -41,6 +44,7 @@ export type VideoCoverState = {
   applied_active: boolean | null;
   applied_revision: number | null;
   asset_variant_id?: string;
+  applied_asset_variant_id?: string;
   last_error_code?: string;
   status: "idle" | "confirming" | "applied" | "failed";
   pipeline_order: readonly string[];
@@ -134,7 +138,7 @@ export function buildVideoCoverAction(active: boolean, state: VideoCoverState, i
   };
 }
 
-export type VideoCoverActionRequest = ReturnType<typeof buildVideoCoverAction>;
+export type VideoCoverActionRequest = ReturnType<typeof buildVideoCoverAction> & { candidate_variant_id?: string; expected_visual_revision?: number };
 
 export function newVideoCoverIdempotencyKey(random: Pick<Crypto, "getRandomValues" | "randomUUID"> = globalThis.crypto) {
   if (typeof random?.randomUUID === "function") return random.randomUUID();

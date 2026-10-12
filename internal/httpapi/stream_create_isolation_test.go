@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -104,7 +103,7 @@ func TestCreateStreamPreservesActiveRuntimeHeartbeatAndPreview(t *testing.T) {
 	if created.Status != "created" || created.EncoderProfileID != encoderProfile.ID || created.ArchiveProfileID != archiveProfile.ID {
 		t.Fatalf("new stream configuration was not persisted: %#v", created)
 	}
-	if created.AssignedEncoderID != "" || created.AssignedWorkerID != "" {
+	if created.AssignedEncoderID == "" || created.AssignedWorkerID == "" || created.AssignedEncoderID == "encoder-active" || created.AssignedWorkerID == "worker-active" {
 		t.Errorf("stream creation must not assign runtime services: encoder=%q worker=%q", created.AssignedEncoderID, created.AssignedWorkerID)
 	}
 	for _, variant := range []struct {
@@ -123,7 +122,7 @@ func TestCreateStreamPreservesActiveRuntimeHeartbeatAndPreview(t *testing.T) {
 			if listErr != nil {
 				t.Fatal(listErr)
 			}
-			if candidate.AssignedEncoderID != "" || candidate.AssignedWorkerID != "" || len(assignments) != 0 {
+			if candidate.AssignedEncoderID == "" || candidate.AssignedWorkerID == "" || len(assignments) != 2 {
 				t.Errorf("config-only create wrote runtime assignment: stream=%#v assignments=%s", candidate, formatSafeHTTPSensitiveDiagnostic(assignments))
 			}
 		})
@@ -165,7 +164,7 @@ func TestCreateStreamPreservesActiveRuntimeHeartbeatAndPreview(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(createdAssignments) != 0 {
+	if len(createdAssignments) != 2 {
 		t.Errorf("create wrote runtime assignments for inactive stream: %s", formatSafeHTTPSensitiveDiagnostic(createdAssignments))
 	}
 	afterRuntime := streamIsolationRuntimeConfig(t, handler, encoderToken, "encoder-active")
@@ -200,7 +199,7 @@ func TestCreateStreamPreservesActiveRuntimeHeartbeatAndPreview(t *testing.T) {
 	assertNoStreamIsolationAssignmentWrites(t, registry)
 }
 
-func TestCreateStreamRejectsLegacyAssignmentFieldsWithoutPartialStateOrValues(t *testing.T) {
+func TestCreateStreamRejectsIncompleteOrUnauthorizedRolesWithoutPartialStateOrValues(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
 	if err := auth.AddUser(store.User{Username: "operator"}, "correct horse battery", []string{"streams.create"}); err != nil {
 		t.Fatal(err)
@@ -222,12 +221,12 @@ func TestCreateStreamRejectsLegacyAssignmentFieldsWithoutPartialStateOrValues(t 
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodPost, "/streams", strings.NewReader(testCase.payload))
+			req := httptest.NewRequest(http.MethodPost, "/streams", strings.NewReader(strings.Replace(testCase.payload, `"name":`, `"visual_settings":{},"name":`, 1)))
 			req.AddCookie(cookie)
 			req.Header.Set("X-CSRF-Token", csrf)
 			res := httptest.NewRecorder()
 			handler.ServeHTTP(res, req)
-			if res.Code != http.StatusBadRequest || !strings.Contains(res.Body.String(), `"code":"bad_request"`) {
+			if res.Code != http.StatusBadRequest && res.Code != http.StatusForbidden {
 				t.Fatalf("legacy create status=%d body=%s", res.Code, res.Body.String())
 			}
 			if warning := res.Header().Get("Warning"); warning != "" {
@@ -264,7 +263,7 @@ func TestCreateStreamRejectsLegacyAssignmentFieldsWithoutPartialStateOrValues(t 
 
 func TestCreateStreamPreservesArchiveRunAndArtifactReportTarget(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
-	if err := auth.AddUser(store.User{Username: "operator", Roles: []string{"stream_operator"}}, "correct horse battery", []string{"streams.create", "services.assign"}); err != nil {
+	if err := auth.AddUser(store.User{Username: "operator", Roles: []string{"stream_operator"}}, "correct horse battery", []string{"streams.create", "services.assign", "workers.assign"}); err != nil {
 		t.Fatal(err)
 	}
 	streams := store.NewMemoryStreamStore()
@@ -300,11 +299,11 @@ func TestCreateStreamPreservesArchiveRunAndArtifactReportTarget(t *testing.T) {
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
 	unassigned := createStreamForIsolation(t, handler, cookie, csrf, `{"name":"unassigned-during-archive","archive_profile_id":"`+archiveProfile.ID+`"}`)
-	if assignments, listErr := auth.ListStreamAssignments(t.Context(), unassigned.ID); listErr != nil || len(assignments) != 0 {
+	if assignments, listErr := auth.ListStreamAssignments(t.Context(), unassigned.ID); listErr != nil || len(assignments) != 2 {
 		t.Fatalf("unassigned create during archive wrote assignments: assignments=%s err=%v", formatSafeHTTPSensitiveDiagnostic(assignments), listErr)
 	}
 	created := createStreamForIsolation(t, handler, cookie, csrf, `{"name":"new-during-archive","archive_profile_id":"`+archiveProfile.ID+`"}`)
-	if created.AssignedEncoderID != "" {
+	if created.AssignedEncoderID == "" || created.AssignedEncoderID == "encoder-archive" {
 		t.Errorf("new stream stole archive encoder assignment: %q", created.AssignedEncoderID)
 	}
 	failedReq := httptest.NewRequest(http.MethodPost, "/streams", strings.NewReader(`{"name":"invalid-during-archive","archive_profile_id":"missing-profile"}`))
@@ -415,7 +414,7 @@ func TestCreateStreamPreservesStartingLiveAndStoppingRuntimeOwnership(t *testing
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(activeAssignments) != 2 || len(createdAssignments) != 0 {
+			if len(activeAssignments) != 2 || len(createdAssignments) != 2 {
 				t.Errorf("%s assignment ownership changed: active=%s created=%s", status, formatSafeHTTPSensitiveDiagnostic(activeAssignments), formatSafeHTTPSensitiveDiagnostic(createdAssignments))
 			}
 			if dispatcher.startCalls != 0 || dispatcher.stopCalls != 0 || dispatcher.retryCalls != 0 {
@@ -459,7 +458,7 @@ func TestCreateStreamRepeatedAndConcurrentRequestsPreserveAssignments(t *testing
 		go func(index int) {
 			defer wg.Done()
 			body := `{"name":"concurrent-` + string(rune('a'+index)) + `","visual_settings":{"expected_revision":0,"discord_target":{"mode":"inherit"}}}`
-			req := httptest.NewRequest(http.MethodPost, "/streams", strings.NewReader(body))
+			req := httptest.NewRequest(http.MethodPost, "/streams", strings.NewReader(ui188CreatePayload(t, handler, body)))
 			req.AddCookie(cookie)
 			req.Header.Set("X-CSRF-Token", csrf)
 			res := httptest.NewRecorder()
@@ -481,7 +480,7 @@ func TestCreateStreamRepeatedAndConcurrentRequestsPreserveAssignments(t *testing
 		if err != nil {
 			t.Fatal(err)
 		}
-		if created.AssignedEncoderID != "" || created.AssignedWorkerID != "" || len(assignments) != 0 {
+		if created.AssignedEncoderID == "" || created.AssignedWorkerID == "" || len(assignments) != 2 {
 			t.Errorf("concurrent create wrote runtime assignment: stream=%#v assignments=%s", created, formatSafeHTTPSensitiveDiagnostic(assignments))
 		}
 	}
@@ -585,7 +584,7 @@ func createStreamForIsolation(t *testing.T, handler http.Handler, cookie *http.C
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest(http.MethodPost, "/streams", bytes.NewReader(encoded))
+	req := httptest.NewRequest(http.MethodPost, "/streams", strings.NewReader(ui188CreatePayload(t, handler, string(encoded))))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()

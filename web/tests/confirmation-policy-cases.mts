@@ -27,7 +27,7 @@ test("canonical risk defaults are frozen and malformed runtime risks fail closed
       ambiguousRetry: "never",
     },
     critical: {
-      minimumMode: "typed-target",
+      minimumMode: "consequence",
       submitRevalidation: "required",
       ambiguousRetry: "server-idempotent-only",
     },
@@ -93,7 +93,7 @@ test("confirmation plan validation enforces strength, revalidation, retry, and h
     ["high lookup only", descriptor({ retry: { kind: "lookup-only" } }), "consequence"],
     ["high stronger typed", descriptor({ confirmation: typed({ kind: "public-stable-id" }) }), "typed-target"],
     ["critical typed label", descriptor({ risk: "critical", confirmation: typed({ kind: "target-label" }) }), "typed-target"],
-    ["critical consequence", descriptor({ risk: "critical" }), "invalid", "risk-policy-mismatch"],
+    ["critical consequence", descriptor({ risk: "critical" }), "consequence"],
     ["critical manual retry", descriptor({
       risk: "critical",
       confirmation: typed({ kind: "target-label" }),

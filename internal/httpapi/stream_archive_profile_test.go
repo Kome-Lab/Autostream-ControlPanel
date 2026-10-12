@@ -12,7 +12,7 @@ import (
 
 func TestCreateStreamKeepsSelectedArchiveProfile(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
-	if err := auth.AddUser(store.User{Username: "operator"}, "correct horse battery", []string{"streams.create"}); err != nil {
+	if err := auth.AddUser(store.User{Username: "operator"}, "correct horse battery", []string{"services.assign", "workers.assign", "streams.create"}); err != nil {
 		t.Fatal(err)
 	}
 	streams := store.NewMemoryStreamStore()
@@ -24,7 +24,7 @@ func TestCreateStreamKeepsSelectedArchiveProfile(t *testing.T) {
 	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithProfileStore(profiles))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
-	req := httptest.NewRequest(http.MethodPost, "/streams", bytes.NewBufferString(`{"name":"profile-backed stream","archive_profile_id":"`+archiveProfile.ID+`","visual_settings":{"expected_revision":0,"discord_target":{"mode":"inherit"}}}`))
+	req := httptest.NewRequest(http.MethodPost, "/streams", bytes.NewBufferString(ui188CreatePayload(t, handler, `{"name":"profile-backed stream","archive_profile_id":"`+archiveProfile.ID+`","visual_settings":{"expected_revision":0,"discord_target":{"mode":"inherit"}}}`)))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()

@@ -147,7 +147,7 @@ export function observabilityActionPlans(
       path: `/observability/remediation-actions/${encodeURIComponent(id)}/execute`,
       permission: "remediation.execute",
       risk: "critical",
-      confirmation: "typed-target",
+      confirmation: "consequence",
       targetLabel,
       authorityFingerprint: fingerprint,
       auditAction: "remediation.execute",

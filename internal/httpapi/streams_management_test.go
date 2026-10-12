@@ -112,7 +112,7 @@ func TestArchiveProcessingStreamsExposeOnlyUnreportedCompletedRecordings(t *test
 	}
 }
 
-func TestStreamManagementCreateRejectsRequestedPrimaryNodes(t *testing.T) {
+func TestStreamManagementCreateAtomicallyReservesRequiredPrimaryNodes(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
 	if err := auth.AddUser(store.User{Username: "operator", Roles: []string{"stream_operator"}}, "correct horse battery", []string{"streams.create", "services.assign", "workers.assign"}); err != nil {
 		t.Fatal(err)
@@ -123,16 +123,16 @@ func TestStreamManagementCreateRejectsRequestedPrimaryNodes(t *testing.T) {
 	handler := NewServer(streams, WithAuthStore(auth), WithServiceRegistryStore(auth))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
-	req := httptest.NewRequest(http.MethodPost, "/streams", strings.NewReader(`{"name":"created with nodes","encoder_service_id":"encoder_recorder-01","worker_service_id":"worker-01"}`))
+	req := httptest.NewRequest(http.MethodPost, "/streams", strings.NewReader(`{"visual_settings":{},"name":"created with nodes","encoder_service_id":"encoder_recorder-01","worker_service_id":"worker-01"}`))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
 	handler.ServeHTTP(res, req)
-	if res.Code != http.StatusBadRequest || !strings.Contains(res.Body.String(), `"code":"bad_request"`) {
+	if res.Code != http.StatusCreated {
 		t.Fatalf("create stream status = %d body = %s", res.Code, res.Body.String())
 	}
 	items, err := streams.ListStreams(t.Context())
-	if err != nil || len(items) != 0 {
+	if err != nil || len(items) != 1 || items[0].AssignedEncoderID == "" || items[0].AssignedWorkerID == "" {
 		t.Fatalf("rejected create persisted stream: streams=%#v err=%v", items, err)
 	}
 }

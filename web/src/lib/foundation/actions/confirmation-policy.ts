@@ -35,7 +35,7 @@ export const confirmationRiskDefaults: Readonly<Record<ActionRisk, ConfirmationR
     ambiguousRetry: "never",
   }),
   critical: Object.freeze({
-    minimumMode: "typed-target",
+    minimumMode: "consequence",
     submitRevalidation: "required",
     ambiguousRetry: "server-idempotent-only",
   }),

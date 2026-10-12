@@ -50,6 +50,12 @@ func (s *MemoryStreamStore) UpdateStreamSettings(ctx context.Context, id string,
 			return Stream{}, ErrYouTubeRelayBindingClaimActive
 		}
 	}
+	stream = applyMemoryStreamSettings(stream, settings)
+	s.streams[id] = stream
+	return stream, nil
+}
+
+func applyMemoryStreamSettings(stream Stream, settings StreamSettings) Stream {
 	if name := strings.TrimSpace(settings.Name); name != "" {
 		stream.Name = name
 	}
@@ -71,8 +77,7 @@ func (s *MemoryStreamStore) UpdateStreamSettings(ctx context.Context, id string,
 	stream.YouTubeOutputID = strings.TrimSpace(settings.YouTubeOutputID)
 	stream.EncoderInputURL = strings.TrimSpace(settings.EncoderInputURL)
 	stream.UpdatedAt = time.Now().UTC()
-	s.streams[id] = stream
-	return stream, nil
+	return stream
 }
 
 func (s *MemoryStreamStore) UpdateStreamEncoderRuntimeSettings(ctx context.Context, id string, audioGainDB float64, overlayProfileID string) (Stream, error) {

@@ -1,4 +1,5 @@
 "use client";
+import NextImage from "next/image";
 
 import { useEffect, useId, useRef, useState } from "react";
 import { ImageUp, LoaderCircle } from "lucide-react";
@@ -27,6 +28,7 @@ export function VideoCoverPresetForm({ disabled, submit, initial, submitLabel }:
   // Keep the form's original revision with its original fields. A list refresh
   // must never attach a newer revision to an older draft.
   const [baseline] = useState(() => ({
+    presetID: rowString(initial || {}, ["id"]),
     name: rowString(initial || {}, ["name"]),
     enabled: initial?.enabled !== false,
     revision: Number(initial?.revision || 0),
@@ -39,7 +41,8 @@ export function VideoCoverPresetForm({ disabled, submit, initial, submitLabel }:
   const [name, setName] = useState(baseline.name);
   const [enabled, setEnabled] = useState(baseline.enabled);
   const [image, setImage] = useState(baseline.image);
-  const [preview, setPreview] = useState("");
+  const savedPreview = baseline.presetID && baseline.image.variantID ? `/video-cover-presets/${encodeURIComponent(baseline.presetID)}/media-assets/${encodeURIComponent(baseline.image.variantID)}` : "";
+  const [preview, setPreview] = useState(savedPreview);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState("");
   const [sessionID, setSessionID] = useState("");
@@ -88,7 +91,7 @@ export function VideoCoverPresetForm({ disabled, submit, initial, submitLabel }:
   const restoreSavedImage = () => {
     if (previewURL.current) URL.revokeObjectURL(previewURL.current);
     previewURL.current = "";
-    setPreview("");
+    setPreview(savedPreview);
     setImage(baseline.image);
     setError("");
   };
@@ -119,7 +122,7 @@ export function VideoCoverPresetForm({ disabled, submit, initial, submitLabel }:
               void upload(file);
             }} />
           </label>
-          {preview ? <div className="aspect-video rounded-md border bg-muted bg-cover bg-center" role="img" aria-label={locale === "ja" ? "選択した蓋画像のプレビュー" : "Selected video cover preview"} style={{ backgroundImage: `url(${JSON.stringify(preview)})` }} /> : null}
+          {preview ? <NextImage unoptimized loading="eager" width={1920} height={1080} src={preview} className="aspect-video w-full rounded-md border bg-muted object-contain" alt={locale === "ja" ? "選択したフタ画像のプレビュー" : "Selected video cover preview"} onError={() => setError(locale === "ja" ? "保存済み画像を読み込めませんでした。権限と画像の状態を確認してください。" : "The saved image could not be loaded. Check permission and image status.")} /> : null}
           <p role="status" className="break-words text-sm text-muted-foreground">{uploading
             ? locale === "ja" ? "画像をアップロードして処理しています。" : "Uploading and processing the image."
             : image.name

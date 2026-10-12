@@ -18,7 +18,7 @@ func (s *MemoryStreamStore) UpdateStreamStatus(ctx context.Context, id, status s
 		return Stream{}, ErrNotFound
 	}
 	stream.Status = status
-	stream.UpdatedAt = time.Now().UTC()
+	stream.UpdatedAt = streamMutationTime(stream.UpdatedAt)
 	s.streams[id] = stream
 	return stream, nil
 }
@@ -37,7 +37,7 @@ func (s *MemoryStreamStore) TransitionStreamStatus(ctx context.Context, id, expe
 		return stream, false, nil
 	}
 	stream.Status = status
-	stream.UpdatedAt = time.Now().UTC()
+	stream.UpdatedAt = streamMutationTime(stream.UpdatedAt)
 	s.streams[id] = stream
 	return stream, true, nil
 }
@@ -60,7 +60,7 @@ func (s *MemoryStreamStore) PrepareStreamArchiveRun(ctx context.Context, id, arc
 	value := startedAt.UTC()
 	stream.ArchiveStartedAt = &value
 	stream.ArchiveReportedAt = nil
-	stream.UpdatedAt = time.Now().UTC()
+	stream.UpdatedAt = streamMutationTime(stream.UpdatedAt)
 	s.streams[id] = stream
 	s.artifactReports[id] = false
 	return stream, nil

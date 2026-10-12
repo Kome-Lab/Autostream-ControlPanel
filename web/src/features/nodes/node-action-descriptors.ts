@@ -81,7 +81,6 @@ export function buildNodeActionDescriptor(intent: NodeActionIntent): ActionDescr
   const template = templateByID.get(intent.id);
   const target = nodeActionTarget(intent);
   if (!template || !target) return undefined;
-  const critical = template.risk === "critical";
   const revalidation = template.projectionAction
     ? Object.freeze({ kind: "revision" as const })
     : Object.freeze({
@@ -101,16 +100,7 @@ export function buildNodeActionDescriptor(intent: NodeActionIntent): ActionDescr
       ruleIds: Object.freeze([`node-${intent.id.toLowerCase()}-target`]),
       requiredSections: Object.freeze(["nodes"]),
     }),
-    confirmation: critical
-      ? Object.freeze({
-          mode: "typed-target" as const,
-          consequenceKey: "dangerousNotice",
-          typedToken: Object.freeze({
-            kind: intent.id === "NOD-01" ? "public-stable-id" as const : "target-label" as const,
-          }),
-          requireSubmitRevalidation: true as const,
-        })
-      : Object.freeze({
+    confirmation: Object.freeze({
           mode: "consequence" as const,
           consequenceKey: "dangerousNotice",
           requireSubmitRevalidation: true,

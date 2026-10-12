@@ -33,11 +33,12 @@ export function clearCSRFToken() {
   window.sessionStorage.removeItem(csrfStorageKey);
 }
 
-export async function apiGet<T>(path: string): Promise<T> {
+export async function apiGet<T>(path: string, signal?: AbortSignal): Promise<T> {
   if (forceMock()) return mockGet(path) as T;
   try {
     const response = await fetch(path, {
       method: "GET",
+      signal,
       credentials: "same-origin",
       headers: { Accept: "application/json" },
     });

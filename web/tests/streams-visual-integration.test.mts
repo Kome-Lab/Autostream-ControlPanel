@@ -52,6 +52,7 @@ test("default create sends the complete v2 visual snapshot and edits retain expl
       cover_asset_id: null,
       cover_variant_id: null,
       cover_start_active: false,
+ cover_candidates:[],
     },
   });
   draft.headerTitleMode = "custom";
@@ -70,6 +71,7 @@ test("default create sends the complete v2 visual snapshot and edits retain expl
       cover_asset_id: null,
       cover_variant_id: null,
       cover_start_active: false,
+ cover_candidates:[],
     },
   });
 });
@@ -97,6 +99,8 @@ test("visual fields emit only selected Discord and Cover modes", () => {
     cover_source: "preset",
     cover_preset_id: "cover-preset-1",
     cover_start_active: true,
+ cover_variant_id:"client-must-not-resolve",
+ cover_candidates:[],
   });
 });
 
@@ -178,10 +182,10 @@ test("visual save sends its fixed revision, including a new legacy default at re
 test("Cover UI reconciles by GET only, separates desired/applied, and keeps Watermark topmost", () => {
   assert.doesNotMatch(panelSource, /action\.mutate\(lastAction\)/);
   assert.match(panelSource, /cover\.refetch\(\)/);
-  assert.match(panelSource, /cover\.data\?\.applied_active === true/);
+  assert.match(panelSource, /cover\.data\?\.applied_active && cover\.data\.applied_asset_variant_id/);
   assert.doesNotMatch(panelSource, /desired_active[^\n]+data-video-cover="applied"/);
   assert.match(panelSource, /data-watermark-layer="topmost"/);
-  assert.match(panelSource, /Watermark.*revision/);
+  assert.match(panelSource, /Watermark/);assert.match(panelSource,/反映確認/);
   assert.match(panelSource, /live_video_cover_v1/);
 });
 

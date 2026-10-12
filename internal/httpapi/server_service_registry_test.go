@@ -215,7 +215,7 @@ func TestAssignServiceEndpointReplacesSameTypeAndMovesService(t *testing.T) {
 
 func TestServiceAssignmentRoleAllowsStandbyWithoutDispatch(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
-	if err := auth.AddUser(store.User{Username: "admin"}, "correct horse battery", []string{"services.assign", "streams.start", "service_health.read"}); err != nil {
+	if err := auth.AddUser(store.User{Username: "admin"}, "correct horse battery", []string{"services.assign", "workers.assign", "streams.start", "service_health.read"}); err != nil {
 		t.Fatal(err)
 	}
 	streams := store.NewMemoryStreamStore()

@@ -197,7 +197,7 @@ test("unknown, future, case, whitespace, and hostile inputs fail closed without 
   assert.equal(presentRecordingLifecycleStatus("recording_future").known, false, "future recording status must not become waiting");
   assert.equal(presentNodeHealthStatus("assigned").known, false, "assigned is ownership, not health");
   for (const removed of ["draft", "scheduled", "ready", "stopped", "error"]) {
-    assert.equal(presentStreamLifecycleStatus(removed).known, false, `stream ${removed} is not in Contracts`);
+    assert.equal(presentStreamLifecycleStatus(removed).known, true, `CP runtime compatibility state ${removed} must be recognized independently of the Contracts six-state fixture`);
   }
   assert.equal(presentIncidentStatus("closed").known, false);
   for (const removed of ["acknowledged", "resolved", "pass", "ok", "success", "failed"]) {

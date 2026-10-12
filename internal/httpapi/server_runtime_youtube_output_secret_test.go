@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/tls"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/example/autostream-control-panel/internal/security"
 	"github.com/example/autostream-control-panel/internal/store"
+	"github.com/example/autostream-control-panel/internal/streamvisual"
 )
 
 type outputSecretStores struct {
@@ -24,6 +26,7 @@ type outputSecretStores struct {
 	profiles store.ProfileStore
 	secrets  store.SecretStore
 	leases   store.RuntimeSecretLeaseStore
+	db       *sql.DB
 }
 
 type outputSecretFixture struct {
@@ -41,7 +44,7 @@ type outputSecretFixture struct {
 func TestSelectedYouTubeOutputSecretMemory(t *testing.T) {
 	runSelectedYouTubeOutputSecretCases(t, func(t *testing.T) outputSecretStores {
 		auth := store.NewMemoryAuthStore()
-		return outputSecretStores{auth, auth, auth, store.NewMemoryStreamStore(), store.NewMemoryProfileStore(), store.NewMemorySecretStore(), store.NewMemoryRuntimeSecretLeaseStore()}
+		return outputSecretStores{auth, auth, auth, store.NewMemoryStreamStore(), store.NewMemoryProfileStore(), store.NewMemorySecretStore(), store.NewMemoryRuntimeSecretLeaseStore(), nil}
 	})
 }
 
@@ -78,7 +81,11 @@ func newOutputSecretFixture(t *testing.T, st outputSecretStores) *outputSecretFi
 }
 
 func newOutputSecretServer(st outputSecretStores) *Server {
-	return NewServer(st.streams, WithAuthStore(st.auth), WithServiceRegistryStore(st.services), WithAuditStore(st.audit), WithProfileStore(st.profiles), WithSecretStore(st.secrets), WithRuntimeSecretLeaseStore(st.leases))
+	options := []ServerOption{WithAuthStore(st.auth), WithServiceRegistryStore(st.services), WithAuditStore(st.audit), WithProfileStore(st.profiles), WithSecretStore(st.secrets), WithRuntimeSecretLeaseStore(st.leases)}
+	if st.db != nil {
+		options = append(options, WithStreamVisualRepository(streamvisual.NewMariaDBRepository(st.db, nil)))
+	}
+	return NewServer(st.streams, options...)
 }
 
 func outputSecretRandom(t *testing.T) string {
@@ -137,7 +144,11 @@ func (f *outputSecretFixture) createOutput(t *testing.T, name, value string) sto
 
 func (f *outputSecretFixture) createStream(t *testing.T, name, outputID string) store.Stream {
 	t.Helper()
-	res := f.request(t, http.MethodPost, "/streams", map[string]any{"name": name, "youtube_output_id": outputID, "visual_settings": map[string]any{"background_mode": "default", "header_title_mode": "custom", "header_title_value": "Output authorization regression", "cover_source": "none", "cover_start_active": false}})
+	body := map[string]any{"name": name, "youtube_output_id": outputID, "visual_settings": map[string]any{"background_mode": "default", "header_title_mode": "custom", "header_title_value": "Output authorization regression", "cover_source": "none", "cover_start_active": false}}
+	raw, _ := json.Marshal(body)
+	prepared := ui188CreatePayload(t, f.handler, string(raw))
+	_ = json.Unmarshal([]byte(prepared), &body)
+	res := f.request(t, http.MethodPost, "/streams", body)
 	outputSecretStatus(t, res, http.StatusCreated)
 	var stream store.Stream
 	if err := json.Unmarshal(res.Body.Bytes(), &stream); err != nil {

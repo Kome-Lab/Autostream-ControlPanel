@@ -52,13 +52,9 @@ test("UPD denominator is exact 10/10 with frozen routes, risk, confirmation, and
     "high", "critical", "critical", "high", "critical", "critical", "critical", "critical", "critical", "critical",
   ]);
   assert.deepEqual(updaterActionDefinitions.map((entry) => entry.confirmation), [
-    "consequence", "typed-target", "fixed-phrase", "consequence", "typed-target", "typed-target", "fixed-phrase", "typed-target", "typed-target", "fixed-phrase",
+    "consequence", "consequence", "consequence", "consequence", "consequence", "consequence", "consequence", "consequence", "consequence", "consequence",
   ]);
-  assert.deepEqual(updaterActionDefinitions.filter((entry) => entry.fixedPhrase).map((entry) => [entry.id, entry.fixedPhrase]), [
-    ["UPD-03", "UPDATE BATCH"],
-    ["UPD-07", "BRIDGE ROLLBACK"],
-    ["UPD-10", "BOOTSTRAP HOSTS"],
-  ]);
+  assert.deepEqual(updaterActionDefinitions.filter((entry)=>entry.fixedPhrase),[]);
   assert.deepEqual(updaterActionDefinitions.map((entry) => entry.auditAction), [
     "system_updates.create",
     "system_updates.create",
@@ -98,15 +94,15 @@ test("Updater descriptors encode exact typed targets, fixed phrases, permission,
   assert.equal(buildUpdaterActionDescriptor({ id: "UPD-09", resourceId: "host-main", publicLabel: "operator@example.invalid", authorityFingerprint: "fp" }), undefined);
 });
 
-test("Updater controller rejects stale authority and typed mismatch before mutation", async () => {
+test("Updater controller rejects stale authority and missing button confirmation before mutation", async () => {
   const controller = createUpdaterActionController();
   const intent = { id: "UPD-08" as const, resourceId: "updater-main", publicLabel: "Updater Main", authorityFingerprint: "revision-7" };
   let refreshes = 0;
   let mutations = 0;
-  assert.deepEqual(await controller.execute(intent, { confirmed: true, typedValue: "wrong" }, async () => {
+  assert.deepEqual(await controller.execute(intent, { confirmed: false }, async () => {
     refreshes += 1;
     return fresh("revision-7");
-  }, async () => { mutations += 1; }), { kind: "blocked", reason: "typed-target-mismatch" });
+  }, async () => { mutations += 1; }), { kind: "blocked", reason: "confirmation-required" });
   assert.equal(refreshes, 0);
   assert.equal(mutations, 0);
 

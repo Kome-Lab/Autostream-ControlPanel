@@ -5,6 +5,37 @@ import type { PermissionSnapshot } from "@/lib/foundation/permissions/evaluator"
 import type { CurrentUser, Stream } from "@/types/domain";
 import type { StreamActionStateSnapshot } from "@/features/streams/stream-action-controller";
 import type { StreamActionIntent, StreamActionRequest } from "@/features/streams/stream-action-descriptors";
+import { streamActionResponseStream, isConfirmedStreamStopOutcome } from "@/features/streams/stream-action-response";
+
+export function cacheStreamActionResponse(queryClient: QueryClient, intent: StreamActionIntent, value: unknown) {
+  if (intent.id === "STR-10" && intent.stream) {
+    queryClient.setQueryData<Stream[]>(["streams"], (rows) => rows?.filter((row) => row.id !== intent.stream?.id));
+    return;
+  }
+  const stream = streamActionResponseStream(value, intent.stream?.id);
+  if (!stream) return;
+  const waiting = value && typeof value === "object" && "waiting_stream" in value
+    ? streamActionResponseStream(value.waiting_stream) : undefined;
+  queryClient.setQueryData<Stream[]>(["streams"], (rows) => {
+    const next = (rows || []).filter((row) => row.id !== stream.id && row.id !== waiting?.id);
+    return [...next, ...(waiting?.id === stream.id ? [waiting] : [stream, ...(waiting ? [waiting] : [])])];
+  });
+}
+
+export async function readStreamStopOutcome(queryClient: QueryClient, intent: StreamActionIntent) {
+  if (intent.id !== "STR-05" || !intent.stream?.id || !intent.stream.updated_at) return undefined;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt) await new Promise((resolve) => setTimeout(resolve, attempt * 250));
+    const value = await apiGet<unknown>(`/streams/${encodeURIComponent(intent.stream.id)}/stop-outcome?expected_updated_at=${encodeURIComponent(intent.stream.updated_at)}`, AbortSignal.timeout(5000));
+    const stream = streamActionResponseStream(value, intent.stream.id);
+    if (isConfirmedStreamStopOutcome(value, intent)) {
+      cacheStreamActionResponse(queryClient, intent, value);
+      return value;
+    }
+    if (!stream || stream.status !== "stopping") return undefined;
+  }
+  return undefined;
+}
 
 export function streamPermissionSnapshot(queryClient: QueryClient): PermissionSnapshot {
   const state = queryClient.getQueryState<CurrentUser>(["auth", "me"]);

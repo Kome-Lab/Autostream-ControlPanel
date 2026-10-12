@@ -101,6 +101,7 @@ var (
 type streamAssignmentProtection struct {
 	Stream
 	ArchiveRetryPending  bool
+	NormalStopPending    bool
 	HasArchiveReport     bool
 	HasRecordingArtifact bool
 }
@@ -134,7 +135,7 @@ func (state streamAssignmentProtection) protected() bool {
 	case "starting", "live", "stopping":
 		return true
 	}
-	if state.ArchiveRetryPending {
+	if state.ArchiveRetryPending || state.NormalStopPending {
 		return true
 	}
 	if strings.TrimSpace(state.ArchiveProfileID) == "" {

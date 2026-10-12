@@ -10,7 +10,7 @@
       "sourceSha256": "ff499e7d7f8435af84744a6d9df827fc14d1b3aa965c3e0a882d61afbcf4cf26",
       "currentSource": {
         "objectKind": "commit",
-        "revision": "1550fab9220f3a5d706543e5caad3ec57d078531",
+        "revision": "f62ddfaf1144d502966b2a58e3a93133cfbfded0",
         "locators": [
           {
             "path": "pkg/contracts/types.go",
@@ -123,7 +123,10 @@
       "excerptSha256": "4a5d1b420c8884a9acca2e02d94a8933ce3a5339f461c1be8cd47d59db3771ba",
       "excerpt": "type StreamStatus string\n\nconst (\n\tStreamCreated   StreamStatus = \"created\"\n\tStreamStarting  StreamStatus = \"starting\"\n\tStreamLive      StreamStatus = \"live\"\n\tStreamStopping  StreamStatus = \"stopping\"\n\tStreamCompleted StreamStatus = \"completed\"\n\tStreamFailed    StreamStatus = \"failed\"\n)",
       "domains": [
-        { "name": "stream-lifecycle", "include": "all" }
+        {
+          "name": "stream-lifecycle",
+          "include": "all"
+        }
       ],
       "sentinelSymbols": []
     },
@@ -154,7 +157,9 @@
           ]
         }
       ],
-      "sentinelSymbols": ["ServiceStatusUnknown"]
+      "sentinelSymbols": [
+        "ServiceStatusUnknown"
+      ]
     },
     {
       "id": "contracts-system-update-reachability",
@@ -166,10 +171,15 @@
       "domains": [
         {
           "name": "system-update-target",
-          "symbols": ["SystemUpdateReachable", "SystemUpdateUnreachable"]
+          "symbols": [
+            "SystemUpdateReachable",
+            "SystemUpdateUnreachable"
+          ]
         }
       ],
-      "sentinelSymbols": ["SystemUpdateUnknown"]
+      "sentinelSymbols": [
+        "SystemUpdateUnknown"
+      ]
     },
     {
       "id": "contracts-system-update-status",
@@ -179,7 +189,10 @@
       "excerptSha256": "57cfccfe433d3ad6c8021bdb2fe9a0a626de8c98b2a69904102d71899c71766c",
       "excerpt": "type SystemUpdateStatus string\n\nconst (\n\tSystemUpdateQueued         SystemUpdateStatus = \"queued\"\n\tSystemUpdateClaimed        SystemUpdateStatus = \"claimed\"\n\tSystemUpdateDownloading    SystemUpdateStatus = \"downloading\"\n\tSystemUpdateVerifying      SystemUpdateStatus = \"verifying\"\n\tSystemUpdateStaging        SystemUpdateStatus = \"staging\"\n\tSystemUpdateStopping       SystemUpdateStatus = \"stopping\"\n\tSystemUpdateInstalling     SystemUpdateStatus = \"installing\"\n\tSystemUpdateStarting       SystemUpdateStatus = \"starting\"\n\tSystemUpdateHealthChecking SystemUpdateStatus = \"health_checking\"\n\tSystemUpdateReconciling    SystemUpdateStatus = \"reconciling\"\n\tSystemUpdateRollingBack    SystemUpdateStatus = \"rolling_back\"\n\tSystemUpdateSucceeded      SystemUpdateStatus = \"succeeded\"\n\tSystemUpdateRolledBack     SystemUpdateStatus = \"rolled_back\"\n\tSystemUpdateFailed         SystemUpdateStatus = \"failed\"\n\tSystemUpdateCanceled       SystemUpdateStatus = \"canceled\"\n)",
       "domains": [
-        { "name": "system-update-job", "include": "all" }
+        {
+          "name": "system-update-job",
+          "include": "all"
+        }
       ],
       "sentinelSymbols": []
     },
@@ -191,7 +204,10 @@
       "excerptSha256": "e671475f08a776f4c57faad1d6e6d65e95b65a582265a1dedd4cc4b2b65f0d35",
       "excerpt": "type IncidentStatus string\n\nconst (\n\tIncidentOpen          IncidentStatus = \"open\"\n\tIncidentAcknowledged  IncidentStatus = \"acknowledged\"\n\tIncidentInvestigating IncidentStatus = \"investigating\"\n\tIncidentMitigated     IncidentStatus = \"mitigated\"\n\tIncidentResolved      IncidentStatus = \"resolved\"\n\tIncidentIgnored       IncidentStatus = \"ignored\"\n)",
       "domains": [
-        { "name": "incident", "include": "all" }
+        {
+          "name": "incident",
+          "include": "all"
+        }
       ],
       "sentinelSymbols": []
     },
@@ -203,7 +219,10 @@
       "excerptSha256": "1cd59128c791a37f66d9211eb92020b22826b78408e6952c4dc9597cbadd3336",
       "excerpt": "type DiagnosticRerunOutcome string\n\nconst (\n\tDiagnosticRerunOutcomeEvaluated    DiagnosticRerunOutcome = \"evaluated\"\n\tDiagnosticRerunOutcomeInconclusive DiagnosticRerunOutcome = \"inconclusive\"\n)",
       "domains": [
-        { "name": "diagnostic", "include": "all" }
+        {
+          "name": "diagnostic",
+          "include": "all"
+        }
       ],
       "sentinelSymbols": []
     },
@@ -215,7 +234,10 @@
       "excerptSha256": "b9faeeb7dbae746ca67a24ee9801ba64fccb27c11b1262a4e92adf46fb734513",
       "excerpt": "CREATE TABLE IF NOT EXISTS remediation_actions (\n  id VARCHAR(64) PRIMARY KEY,\n  incident_id VARCHAR(64) NOT NULL,\n  action VARCHAR(128) NOT NULL,\n  mode ENUM('disabled','suggest_only','safe_auto','manual_approval') NOT NULL,\n  status ENUM('disabled','suggested','pending_approval','approved','executed','blocked') NOT NULL,\n  safe_auto BOOLEAN NOT NULL,\n  requires_approval BOOLEAN NOT NULL,\n  result TEXT NULL,\n  created_at DATETIME NOT NULL,\n  updated_at DATETIME NOT NULL,\n  executed_at DATETIME NULL,\n  INDEX idx_remediation_incident (incident_id),\n  INDEX idx_remediation_status_updated (status, updated_at)\n);",
       "domains": [
-        { "name": "remediation", "include": "all" }
+        {
+          "name": "remediation",
+          "include": "all"
+        }
       ],
       "sentinelSymbols": []
     },
@@ -227,7 +249,10 @@
       "excerptSha256": "d5c93e9c7de1e950a71aa6cb144db6d0f8d4c3d3f12918cacc8a87aafda89d0c",
       "excerpt": "export type StreamStatus =\n  | \"draft\"\n  | \"scheduled\"\n  | \"ready\"\n  | \"starting\"\n  | \"live\"\n  | \"stopping\"\n  | \"stopped\"\n  | \"completed\"\n  | \"failed\"\n  | \"error\";",
       "domains": [
-        { "name": "recording-lifecycle", "include": "all" }
+        {
+          "name": "recording-lifecycle",
+          "include": "all"
+        }
       ],
       "sentinelSymbols": []
     },
@@ -239,7 +264,10 @@
       "excerptSha256": "9edf15df5bc70584f9f784520ef93b82d4b6b9d40ec96c839bb424258db3c2e7",
       "excerpt": "func serviceHealthFields(service store.RegisteredService, now time.Time) (string, bool, *int64) {\n\tif service.Status == \"offline\" {\n\t\treturn \"offline\", true, heartbeatAge(service.LastHeartbeatAt, now)\n\t}\n\tif service.LastHeartbeatAt == nil {\n\t\treturn \"unconfigured\", true, nil\n\t}\n\tage := heartbeatAge(service.LastHeartbeatAt, now)\n\tif age != nil && time.Duration(*age)*time.Second > heartbeatOfflineAfter() {\n\t\treturn \"offline\", true, age\n\t}\n\tif age != nil && time.Duration(*age)*time.Second > heartbeatWarningAfter() {\n\t\treturn \"warning\", true, age\n\t}\n\treturn \"healthy\", false, age\n}",
       "domains": [
-        { "name": "node-health", "include": "all" }
+        {
+          "name": "node-health",
+          "include": "all"
+        }
       ],
       "sentinelSymbols": []
     },
@@ -251,7 +279,10 @@
       "excerptSha256": "b54e48c3d7203dc134c0405535ae8982b0f3fd4128976f63618fd4637d9fa85d",
       "excerpt": "const (\n\tPolicyStatusApplied = \"applied\"\n\tPolicyStatusPending = \"pending\"\n\tPolicyStatusFailed  = \"failed\"",
       "domains": [
-        { "name": "system-update-policy", "include": "all" }
+        {
+          "name": "system-update-policy",
+          "include": "all"
+        }
       ],
       "sentinelSymbols": []
     },
@@ -263,7 +294,10 @@
       "excerptSha256": "64a493f27109449fef832043fed3b6fc788318497ba18a674457869753ca73e7",
       "excerpt": "func (s MariaDBStreamStore) ListArchiveProcessingStreams(ctx context.Context) ([]Stream, error) {\n\trows, err := s.db.QueryContext(ctx, streamListQuery(`s.deleted_at IS NULL\n  AND (\n\t`+streamLogGuardPendingCondition+`\n    OR (\n      COALESCE(TRIM(ss.archive_profile_id), '') <> ''\n      AND s.archive_started_at IS NOT NULL\n      AND s.archive_reported_at IS NULL\n      AND LOWER(TRIM(s.status)) IN ('stopping', 'completed', 'ready')\n    )\n  )`),",
       "domains": [
-        { "name": "archive-processing", "include": "all" }
+        {
+          "name": "archive-processing",
+          "include": "all"
+        }
       ],
       "sentinelSymbols": []
     },
@@ -275,7 +309,10 @@
       "excerptSha256": "c557489b6fa709399059e83b2e63544956fc521356a348bfb6277947eef3fe7d",
       "excerpt": "func publicArchiveShareAdmin(share store.StreamArtifactShare) map[string]any {\n\tstatus := \"active\"\n\tif share.RevokedAt != nil {\n\t\tstatus = \"revoked\"\n\t} else if !share.ExpiresAt.After(time.Now().UTC()) {\n\t\tstatus = \"expired\"\n\t}",
       "domains": [
-        { "name": "archive-share", "include": "all" }
+        {
+          "name": "archive-share",
+          "include": "all"
+        }
       ],
       "sentinelSymbols": []
     },
@@ -287,7 +324,10 @@
       "excerptSha256": "17b1cdec7d1685e9f56644fc26fa5b238ecc7f5c06427d0db9b72ccd8f294830",
       "excerpt": "func normalizeAuditFilter(filter AuditFilter) AuditFilter {\n\tif filter.Limit <= 0 || filter.Limit > 500 {\n\t\tfilter.Limit = 100\n\t}\n\tfilter.Result = strings.TrimSpace(filter.Result)\n\tif filter.Result != \"success\" && filter.Result != \"failure\" {\n\t\tfilter.Result = \"\"\n\t}",
       "domains": [
-        { "name": "audit-result", "include": "all" }
+        {
+          "name": "audit-result",
+          "include": "all"
+        }
       ],
       "sentinelSymbols": []
     }

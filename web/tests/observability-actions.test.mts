@@ -73,9 +73,9 @@ test("observability action policy preserves all five exact authorities and state
     "remediation.approve",
     "remediation.execute",
   ]);
-  assert.equal(execution[0]?.confirmation, "typed-target");
+  assert.equal(execution[0]?.confirmation, "consequence");
   assert.equal(execution[0]?.targetLabel, "restart encoder");
-  assert.equal(buildObservabilityActionDescriptor(execution[0]!).confirmation.mode, "typed-target");
+  assert.equal(buildObservabilityActionDescriptor(execution[0]!).confirmation.mode, "consequence");
   assert.deepEqual(observabilityActionPlans("/observability/incidents", { id: "incident-1", status: "resolved" }), []);
   assert.deepEqual(observabilityActionPlans("/observability/remediation-actions", {
     id: "remediation-1",

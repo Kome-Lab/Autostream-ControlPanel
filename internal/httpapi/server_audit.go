@@ -261,7 +261,7 @@ func (s *Server) appendStreamAuditLog(ctx context.Context, event store.AuditEven
 		return
 	}
 	level := "info"
-	if result := strings.ToLower(strings.TrimSpace(redacted.Result)); result != "" && result != "success" && result != "ok" {
+	if result := strings.ToLower(strings.TrimSpace(redacted.Result)); result != "" && result != "success" && result != "ok" && result != "request" {
 		level = "error"
 	}
 	fields := map[string]any{
@@ -405,7 +405,7 @@ func adminAuditEventNotificationAllowed(event store.AuditEvent) bool {
 
 func adminAuditNotificationSeverity(event store.AuditEvent) string {
 	result := strings.ToLower(strings.TrimSpace(event.Result))
-	if result != "" && result != "success" && result != "ok" {
+	if result != "" && result != "success" && result != "ok" && result != "request" {
 		return "warning"
 	}
 	action := strings.ToLower(strings.TrimSpace(event.Action))
@@ -423,6 +423,13 @@ func adminAuditNotificationSummary(event store.AuditEvent) string {
 	result := strings.TrimSpace(event.Result)
 	if result == "" {
 		result = "recorded"
+	}
+	labels := map[string]string{"streams.video_cover.show": "フタ画像の表示・切替", "streams.video_cover.hide": "フタ画像の非表示", "streams.visual_settings.update": "配信ビジュアル設定を保存", "streams.create": "配信枠を作成", "streams.stop": "配信を停止", "streams.delete": "配信枠を削除", "streams.rearm": "次の入室を待つ状態へ変更", "video_cover_presets.create": "フタ画像プリセットを作成", "video_cover_presets.update": "フタ画像プリセットを更新", "video_cover_presets.delete": "フタ画像プリセットを削除"}
+	if label, ok := labels[action]; ok {
+		action = label
+	}
+	if label, ok := map[string]string{"success": "成功", "failure": "失敗", "request": "要求済み・反映未確認"}[result]; ok {
+		result = label
 	}
 	return "管理イベント: " + action + " / " + result
 }

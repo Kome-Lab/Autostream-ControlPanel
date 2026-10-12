@@ -43,6 +43,29 @@ func loadRouteCharacterizationFixture(t *testing.T) routeCharacterizationFixture
 	if fixture.SchemaVersion != 1 || fixture.BaselineCommit != "792c6c56506c26ffd81b18c1793211e8e78be44d" || len(fixture.Registrations) == 0 {
 		t.Fatal("route fixture must retain the accepted, nonempty Bundle 8B baseline")
 	}
+	// UI188 adds read-only outcome/media routes; retain every baseline wrapper.
+	for _, addition := range []struct{ pattern, before, permission, handler string }{
+		{"GET /streams/{id}/stop-outcome", "GET /streams/{id}/visual-settings", "streams.read", "getStreamStopOutcome"},
+		{"GET /streams/{id}/media-assets/{variant_id}", "PUT /streams/{id}/visual-settings", "streams.read", "streamMediaPreview"},
+		{"GET /video-cover-presets/{id}/media-assets/{variant_id}", "PUT /video-cover-presets/{id}", "video_cover_presets.read", "presetMediaPreview"},
+	} {
+		index := -1
+		for i, registration := range fixture.Registrations {
+			if registration.Pattern == addition.before {
+				index = i
+				break
+			}
+		}
+		if index < 0 {
+			t.Fatal("UI188 baseline route anchor missing", addition.before)
+		}
+		registration := fixture.Registrations[0]
+		registration.Pattern = addition.pattern
+		registration.Statement = fmt.Sprintf("s.mux.HandleFunc(%q, s.requirePermission(%q, s.%s))", addition.pattern, addition.permission, addition.handler)
+		fixture.Registrations = append(fixture.Registrations, registration)
+		copy(fixture.Registrations[index+1:], fixture.Registrations[index:len(fixture.Registrations)-1])
+		fixture.Registrations[index] = registration
+	}
 	return fixture
 }
 

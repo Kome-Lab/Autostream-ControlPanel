@@ -96,13 +96,13 @@ func TestCreateStreamJSONFramingPreservesValidationAndMiddleware(t *testing.T) {
 		code        string
 		createCalls int
 	}{
-		{name: "legacy encoder in first object", replace: `"name":`, with: `"encoder_service_id":null,"name":`},
-		{name: "legacy worker in first object", replace: `"name":`, with: `"worker_service_id":"","name":`},
+		{name: "null required encoder", replace: `"encoder_service_id":"framing-encoder"`, with: `"encoder_service_id":null`, code: "encoder_service_required"},
+		{name: "empty required worker", replace: `"worker_service_id":"framing-worker"`, with: `"worker_service_id":""`, code: "worker_service_required"},
 		{name: "legacy discord in first object", replace: `"name":`, with: `"discord_guild_id":"` + streamJSONFramingSentinel + `","name":`},
 		{name: "unknown visual field", replace: `"expected_revision":0`, with: `"expected_revision":0,"unknown":true`},
 		{name: "unknown nested discord field", replace: `"mode":"inherit"`, with: `"mode":"inherit","unknown":true`},
 		{name: "missing visual settings", body: `{"name":"framing stream"}`, code: "visual_settings_required"},
-		{name: "null visual settings", body: `{"name":"framing stream","visual_settings":null}`, code: "visual_settings_required"},
+		{name: "null visual settings", body: `{"encoder_service_id":"framing-encoder","worker_service_id":"framing-worker","name":"framing stream","visual_settings":null}`, code: "visual_settings_required"},
 		{name: "nonzero create revision", replace: `"expected_revision":0`, with: `"expected_revision":1`, code: "invalid_visual_settings", createCalls: 1},
 		{name: "oversized first object", replace: `"name":"framing stream"`, with: `"name":"` + strings.Repeat("x", maxControlRequestBytes) + `"`},
 		{name: "unauthenticated before framing", auth: "none", status: http.StatusUnauthorized, code: "unauthorized"},
@@ -195,7 +195,7 @@ type streamJSONFramingFixture struct {
 func newStreamJSONFramingFixture(t *testing.T, draft bool, permission string) *streamJSONFramingFixture {
 	t.Helper()
 	f := &streamJSONFramingFixture{auth: store.NewMemoryAuthStore(), streams: store.NewMemoryStreamStore(), dispatcher: &fakeServiceDispatcher{}}
-	if err := f.auth.AddUser(store.User{ID: "framing-user", Username: "framing-user"}, "correct horse battery", []string{permission}); err != nil {
+	if err := f.auth.AddUser(store.User{ID: "framing-user", Username: "framing-user"}, "correct horse battery", framingPermissions(permission)); err != nil {
 		t.Fatal(err)
 	}
 	existing, err := f.streams.CreateStream(t.Context(), "existing stream")
@@ -204,6 +204,8 @@ func newStreamJSONFramingFixture(t *testing.T, draft bool, permission string) *s
 	}
 	f.existingID = existing.ID
 	registerAssignedServices(t, f.auth, existing.ID, "encoder_recorder", "worker")
+	registerServiceInstance(t, f.auth, "framing-encoder", "encoder_recorder")
+	registerServiceInstance(t, f.auth, "framing-worker", "worker")
 	f.registry = &streamIsolationServiceRegistry{ServiceRegistryStore: f.auth}
 	f.media, err = mediaassets.NewMemoryRepository(t.TempDir())
 	if err != nil {
@@ -225,9 +227,9 @@ func newStreamJSONFramingFixture(t *testing.T, draft bool, permission string) *s
 	f.handler = NewServer(f.streams, WithAuthStore(f.auth), WithAuditStore(f.auth), WithServiceRegistryStore(f.registry), WithServiceDispatcher(f.dispatcher), WithStreamVisualRepository(f.visual), WithMediaAssetRepository(f.media))
 	f.cookie, f.csrf = loginForTest(t, f.handler, "framing-user", "correct horse battery")
 	visual := `"expected_revision":0,"discord_target":{"mode":"inherit"},"header_title_mode":"custom","header_title_value":"Framing title"`
-	f.payload = `{"name":"framing stream","visual_settings":{` + visual + `}}`
+	f.payload = `{"encoder_service_id":"framing-encoder","worker_service_id":"framing-worker","name":"framing stream","visual_settings":{` + visual + `}}`
 	if draft {
-		f.payload = `{"name":"framing stream","upload_session_id":"` + f.session.ID + `","visual_settings":{` + visual + `,"background_mode":"image","background_asset_id":"` + f.asset.ID + `","background_variant_id":"` + f.variant.ID + `"}}`
+		f.payload = `{"encoder_service_id":"framing-encoder","worker_service_id":"framing-worker","name":"framing stream","upload_session_id":"` + f.session.ID + `","visual_settings":{` + visual + `,"background_mode":"image","background_asset_id":"` + f.asset.ID + `","background_variant_id":"` + f.variant.ID + `"}}`
 	}
 	return f
 }
@@ -279,7 +281,16 @@ func (f *streamJSONFramingFixture) snapshot(t *testing.T) streamJSONFramingState
 
 func (f *streamJSONFramingFixture) assertNoRuntimeChanges(t *testing.T, before, after streamJSONFramingState) {
 	t.Helper()
-	if !reflect.DeepEqual(before.services, after.services) || !reflect.DeepEqual(before.assignments[f.existingID], after.assignments[f.existingID]) {
+	existingServices := func(rows []store.RegisteredService) []store.RegisteredService {
+		var out []store.RegisteredService
+		for _, row := range rows {
+			if row.ServiceID != "framing-encoder" && row.ServiceID != "framing-worker" {
+				out = append(out, row)
+			}
+		}
+		return out
+	}
+	if !reflect.DeepEqual(existingServices(before.services), existingServices(after.services)) || !reflect.DeepEqual(before.assignments[f.existingID], after.assignments[f.existingID]) {
 		t.Error("existing Node assignment state changed")
 	}
 	assertNoStreamIsolationAssignmentWrites(t, f.registry)
@@ -352,7 +363,7 @@ func (f *streamJSONFramingFixture) assertCreatedOnce(t *testing.T, before stream
 			t.Error("valid create changed the existing stream")
 		}
 	}
-	if created.AssignedEncoderID != "" || created.AssignedWorkerID != "" || len(after.assignments[created.ID]) != 0 {
+	if created.AssignedEncoderID != "framing-encoder" || created.AssignedWorkerID != "framing-worker" || len(after.assignments[created.ID]) != 2 {
 		t.Error("valid create assigned a Node")
 	}
 	f.assertNoRuntimeChanges(t, before, after)
@@ -371,4 +382,11 @@ func (f *streamJSONFramingFixture) assertCreatedOnce(t *testing.T, before stream
 	} else if !reflect.DeepEqual(before.asset, after.asset) {
 		t.Error("ordinary create changed an unrelated media draft")
 	}
+}
+
+func framingPermissions(permission string) []string {
+	if permission == "streams.create" {
+		return []string{permission, "services.assign", "workers.assign"}
+	}
+	return []string{permission}
 }

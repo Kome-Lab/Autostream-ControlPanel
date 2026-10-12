@@ -17,15 +17,15 @@ export type UpdaterActionDefinition = Readonly<{
 const define = (value: UpdaterActionDefinition) => Object.freeze(value);
 export const updaterActionDefinitions: readonly UpdaterActionDefinition[] = Object.freeze([
   define({ id: "UPD-01", method: "POST", route: "/system-updates", risk: "high", confirmation: "consequence", auditAction: "system_updates.create" }),
-  define({ id: "UPD-02", method: "POST", route: "/system-updates", risk: "critical", confirmation: "typed-target", auditAction: "system_updates.create" }),
-  define({ id: "UPD-03", method: "SEQUENTIAL_POST", route: "/system-updates", risk: "critical", confirmation: "fixed-phrase", fixedPhrase: "UPDATE BATCH", auditAction: "system_updates.create" }),
+  define({ id: "UPD-02", method: "POST", route: "/system-updates", risk: "critical", confirmation: "consequence", auditAction: "system_updates.create" }),
+  define({ id: "UPD-03", method: "SEQUENTIAL_POST", route: "/system-updates", risk: "critical", confirmation: "consequence", auditAction: "system_updates.create" }),
   define({ id: "UPD-04", method: "POST", route: "/system-updates/{id}/cancel", risk: "high", confirmation: "consequence", auditAction: "system_updates.cancel" }),
-  define({ id: "UPD-05", method: "POST", route: "/system-updates", risk: "critical", confirmation: "typed-target", auditAction: "system_updates.create" }),
-  define({ id: "UPD-06", method: "POST", route: "/system-updates/updaters/{id}/pull-ownership/activate", risk: "critical", confirmation: "typed-target", auditAction: "system_updates.pull_ownership.activate" }),
-  define({ id: "UPD-07", method: "POST", route: "/system-updates/updaters/{id}/pull-ownership/deactivate", risk: "critical", confirmation: "fixed-phrase", fixedPhrase: "BRIDGE ROLLBACK", auditAction: "system_updates.pull_ownership.deactivate" }),
-  define({ id: "UPD-08", method: "PUT", route: "/system-updates/updaters/{id}/settings", risk: "critical", confirmation: "typed-target", auditAction: "system_updates.updater_policy.save" }),
-  define({ id: "UPD-09", method: "POST", route: "/system-updates/updaters/{id}/bootstrap-jobs", risk: "critical", confirmation: "typed-target", auditAction: "system_updates.bootstrap.create" }),
-  define({ id: "UPD-10", method: "POST", route: "/system-updates/updaters/{id}/bootstrap-jobs", risk: "critical", confirmation: "fixed-phrase", fixedPhrase: "BOOTSTRAP HOSTS", auditAction: "system_updates.bootstrap.create" }),
+  define({ id: "UPD-05", method: "POST", route: "/system-updates", risk: "critical", confirmation: "consequence", auditAction: "system_updates.create" }),
+  define({ id: "UPD-06", method: "POST", route: "/system-updates/updaters/{id}/pull-ownership/activate", risk: "critical", confirmation: "consequence", auditAction: "system_updates.pull_ownership.activate" }),
+  define({ id: "UPD-07", method: "POST", route: "/system-updates/updaters/{id}/pull-ownership/deactivate", risk: "critical", confirmation: "consequence", auditAction: "system_updates.pull_ownership.deactivate" }),
+  define({ id: "UPD-08", method: "PUT", route: "/system-updates/updaters/{id}/settings", risk: "critical", confirmation: "consequence", auditAction: "system_updates.updater_policy.save" }),
+  define({ id: "UPD-09", method: "POST", route: "/system-updates/updaters/{id}/bootstrap-jobs", risk: "critical", confirmation: "consequence", auditAction: "system_updates.bootstrap.create" }),
+  define({ id: "UPD-10", method: "POST", route: "/system-updates/updaters/{id}/bootstrap-jobs", risk: "critical", confirmation: "consequence", auditAction: "system_updates.bootstrap.create" }),
 ]);
 
 const definitions = new Map(updaterActionDefinitions.map((entry) => [entry.id, entry]));
@@ -56,7 +56,7 @@ export function buildUpdaterActionDescriptor(intent: UpdaterActionIntent): Actio
   if (!entry || !safeIdentity(intent.resourceId) || !safeFingerprint(intent.authorityFingerprint)) return undefined;
   const fixed = entry.confirmation === "fixed-phrase";
   const typed = entry.confirmation === "typed-target";
-  if (typed && !safePublicLabel(intent.publicLabel)) return undefined;
+  if (intent.publicLabel!==undefined && !safePublicLabel(intent.publicLabel)) return undefined;
   return Object.freeze({
     id: entry.id,
     labelKey: "action",

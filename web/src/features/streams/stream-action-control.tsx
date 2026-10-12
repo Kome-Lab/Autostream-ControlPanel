@@ -104,7 +104,7 @@ export const StreamActionControl = forwardRef<StreamActionControlHandle, Props>(
 
   if (!descriptor) return null;
   return (
-    <ActionAvailabilityBoundary evaluation={evaluation} translate={t} reasonPresentation="sr-only">
+    <><ActionAvailabilityBoundary evaluation={evaluation} translate={t} reasonPresentation="sr-only">
       {(availabilityProps) => descriptor.confirmation.mode === "none" ? (
         <Button
           type="button"
@@ -149,6 +149,15 @@ export const StreamActionControl = forwardRef<StreamActionControlHandle, Props>(
         />
       )}
     </ActionAvailabilityBoundary>
+    {opened?.intent.id === "STR-05" && dialogState.kind === "outcome-unknown" ? <Button type="button" variant="outline" onClick={() => {
+      const allowed=opened;
+      setDialogState({kind:"revalidating"});
+      void controller.reconcileStop(allowed.intent).then(async(result)=>{
+        await onResult(result,allowed.intent);
+        if(result.kind==="succeeded"){setOpened(null);setDialogState({kind:"ready"});}
+        else setDialogState(dialogStateForResult(result));
+      });
+    }}>最新の停止状態を確認</Button> : null}</>
   );
 });
 

@@ -19,12 +19,14 @@ export type StatusMappingDefinition = Readonly<Record<string, KnownStatusDefinit
 const diagnosticCodePattern = /^[a-z][a-z0-9_]{0,63}$/;
 
 const canonicalKnownLabelKeys = Object.freeze([
+ "statusStreamDraft","statusStreamScheduled","statusStreamReady","statusStreamStopped",
   "statusArchiveAwaitingReport",
   "statusArchiveShareActive",
   "statusArchiveShareExpired",
   "statusArchiveShareRevoked",
   "statusArchiveStopping",
   "statusAuditFailure",
+  "statusAuditRequest",
   "statusAuditSuccess",
   "statusDiagnosticEvaluated",
   "statusDiagnosticInconclusive",

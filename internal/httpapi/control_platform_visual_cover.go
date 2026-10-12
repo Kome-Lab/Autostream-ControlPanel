@@ -63,7 +63,7 @@ func visualChangedFields(update streamvisual.Update) []string {
 	if update.DiscordTarget.Set {
 		fields = append(fields, "discord_target")
 	}
-	if update.CoverSource.Set || update.CoverPresetID.Set || update.CoverAssetID.Set || update.CoverVariantID.Set || update.CoverStartActive != nil {
+	if update.CoverCandidates != nil || update.CoverSource.Set || update.CoverPresetID.Set || update.CoverAssetID.Set || update.CoverVariantID.Set || update.CoverStartActive != nil {
 		fields = append(fields, "video_cover")
 	}
 	return fields
@@ -368,6 +368,39 @@ func (s *Server) getVideoCoverState(w http.ResponseWriter, r *http.Request) {
 		writeVideoCoverError(w, err)
 		return
 	}
+	if state.Status == "confirming" && state.LastIdempotencyKey != "" {
+		if reconciler, ok := s.videoCoverDispatcher.(servicecall.VideoCoverReconciler); ok {
+			assignments, lookupErr := s.streamAssignments(r.Context(), state.StreamID)
+			encoder, found := primaryVideoCoverEncoder(assignments)
+			if lookupErr == nil && found && reportedBool(encoder, servicecall.CapabilityLiveVideoCoverV1) {
+				requested := state
+				result := reconciler.ReconcileVideoCover(r.Context(), encoder, servicecall.VideoCoverReconcileRequest{StreamID: state.StreamID, JobGeneration: state.JobGeneration, Revision: state.DesiredRevision, Active: state.DesiredActive, AssetVariantID: state.AssetVariantID})
+				if result.Applied {
+					if confirmed, recordErr := s.videoCovers.RecordApplied(r.Context(), state.StreamID, state.JobGeneration, state.LastIdempotencyKey, state.DesiredActive, state.DesiredRevision); recordErr == nil {
+						state = confirmed
+						action := "streams.video_cover.show"
+						if !requested.DesiredActive {
+							action = "streams.video_cover.hide"
+						}
+						if confirmed.RecordedAction != nil {
+							s.writeSystemAudit(r.Context(), store.AuditEvent{Action: action, ResourceType: "stream", ResourceID: requested.StreamID, Result: "success", Metadata: map[string]any{"status": "applied", "reconciled": true, "desired_revision": requested.DesiredRevision, "job_generation": requested.JobGeneration}})
+						}
+					}
+				} else if !result.Ambiguous && result.SafeErrorCode != "" {
+					if failed, recordErr := s.videoCovers.RecordFailed(r.Context(), requested.StreamID, requested.JobGeneration, requested.LastIdempotencyKey, result.SafeErrorCode); recordErr == nil {
+						state = failed
+						if failed.RecordedAction != nil {
+							action := "streams.video_cover.show"
+							if !requested.DesiredActive {
+								action = "streams.video_cover.hide"
+							}
+							s.writeSystemAudit(r.Context(), store.AuditEvent{Action: action, ResourceType: "stream", ResourceID: requested.StreamID, Result: "failure", Metadata: map[string]any{"status": "failed", "reconciled": true, "desired_revision": requested.DesiredRevision, "job_generation": requested.JobGeneration, "error_code": failed.RecordedAction.SafeErrorCode}})
+						}
+					}
+				}
+			}
+		}
+	}
 	writeJSON(w, http.StatusOK, state)
 }
 
@@ -430,7 +463,21 @@ func (s *Server) updateVideoCoverState(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]string{"code": "video_cover_variant_unavailable"})
 		return
 	}
-	if settings.CoverSource == "none" || strings.TrimSpace(settings.CoverVariantID) == "" || settings.CoverVariantID != coverState.AssetVariantID {
+	variantID := coverState.AssetVariantID
+	if request.CandidateVariantID != "" {
+		if settings.Revision != request.ExpectedVisualRevision {
+			writeVideoCoverError(w, videocover.ErrRevisionConflict)
+			return
+		}
+		variantID = request.CandidateVariantID
+	}
+	if selected, found := streamvisual.SelectCoverCandidate(settings, variantID); found {
+		settings = selected
+	} else if settings.CoverVariantID != variantID || request.CandidateVariantID != "" {
+		writeJSON(w, http.StatusConflict, map[string]string{"code": "video_cover_variant_unavailable"})
+		return
+	}
+	if settings.CoverSource == "none" || strings.TrimSpace(settings.CoverVariantID) == "" {
 		writeJSON(w, http.StatusConflict, map[string]string{"code": "video_cover_variant_unavailable"})
 		return
 	}
@@ -458,44 +505,57 @@ func (s *Server) updateVideoCoverState(w http.ResponseWriter, r *http.Request) {
 	}
 	var coverAsset *servicecall.MediaAssetDescriptor
 	if request.Active {
-		coverAsset, err = s.visualAssetDescriptor(r.Context(), r.PathValue("id"), settings.CoverAssetID, settings.CoverVariantID, "video_cover")
+		assetID := settings.CoverAssetID
+		for _, candidate := range settings.CoverCandidates {
+			if candidate.VariantID == prepared.RequestedAssetVariantID {
+				assetID = candidate.AssetID
+				break
+			}
+		}
+		coverAsset, err = s.visualAssetDescriptor(r.Context(), r.PathValue("id"), assetID, prepared.RequestedAssetVariantID, "video_cover")
 		if err != nil {
-			if _, err = s.videoCovers.RecordFailed(r.Context(), r.PathValue("id"), request.ExpectedJobGeneration, request.IdempotencyKey, "media_asset_integrity"); err != nil {
-				writeVideoCoverError(w, err)
+			failed, recordErr := s.videoCovers.RecordFailed(r.Context(), r.PathValue("id"), request.ExpectedJobGeneration, request.IdempotencyKey, "media_asset_integrity")
+			if recordErr != nil {
+				writeVideoCoverError(w, recordErr)
 				return
 			}
-			recorded, status, resultText, outcomeOK := s.recordedVideoCoverOutcome(r.Context(), r.PathValue("id"), request)
+			if failed.RecordedAction != nil {
+				s.writeVideoCoverActionAudit(r, action, request, *failed.RecordedAction, videoCoverAuditResult(failed.RecordedAction.Outcome), false)
+			}
+			recorded, status, _, outcomeOK := s.recordedVideoCoverOutcome(r.Context(), r.PathValue("id"), request)
 			if !outcomeOK {
 				writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "video_cover_action_outcome_unavailable"})
 				return
 			}
-			s.writeVideoCoverActionAudit(r, action, request, recorded, resultText, false)
 			writeJSON(w, status, recorded.State)
 			return
 		}
 	}
 	result := s.videoCoverDispatcher.DispatchVideoCover(r.Context(), encoder, servicecall.VideoCoverDispatchRequest{
 		StreamID: r.PathValue("id"), JobGeneration: request.ExpectedJobGeneration, Revision: prepared.RequestedRevision,
-		Active: request.Active, AssetVariantID: prepared.State.AssetVariantID, IdempotencyKey: request.IdempotencyKey,
+		Active: request.Active, AssetVariantID: prepared.RequestedAssetVariantID, IdempotencyKey: request.IdempotencyKey,
 		CoverAsset: coverAsset, HideConfirmed: request.HideConfirmed,
 	})
+	var resolved videocover.State
 	if result.Ambiguous {
-		_, err = s.videoCovers.RecordAmbiguous(r.Context(), r.PathValue("id"), request.ExpectedJobGeneration, request.IdempotencyKey)
+		resolved, err = s.videoCovers.RecordAmbiguous(r.Context(), r.PathValue("id"), request.ExpectedJobGeneration, request.IdempotencyKey)
 	} else if result.Applied {
-		_, err = s.videoCovers.RecordApplied(r.Context(), r.PathValue("id"), request.ExpectedJobGeneration, request.IdempotencyKey, request.Active, prepared.RequestedRevision)
+		resolved, err = s.videoCovers.RecordApplied(r.Context(), r.PathValue("id"), request.ExpectedJobGeneration, request.IdempotencyKey, request.Active, prepared.RequestedRevision)
 	} else {
-		_, err = s.videoCovers.RecordFailed(r.Context(), r.PathValue("id"), request.ExpectedJobGeneration, request.IdempotencyKey, result.SafeErrorCode)
+		resolved, err = s.videoCovers.RecordFailed(r.Context(), r.PathValue("id"), request.ExpectedJobGeneration, request.IdempotencyKey, result.SafeErrorCode)
 	}
 	if err != nil {
 		writeVideoCoverError(w, err)
 		return
 	}
-	recorded, status, resultText, outcomeOK := s.recordedVideoCoverOutcome(r.Context(), r.PathValue("id"), request)
+	if resolved.RecordedAction != nil {
+		s.writeVideoCoverActionAudit(r, action, request, *resolved.RecordedAction, videoCoverAuditResult(resolved.RecordedAction.Outcome), false)
+	}
+	recorded, status, _, outcomeOK := s.recordedVideoCoverOutcome(r.Context(), r.PathValue("id"), request)
 	if !outcomeOK {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "video_cover_action_outcome_unavailable"})
 		return
 	}
-	s.writeVideoCoverActionAudit(r, action, request, recorded, resultText, false)
 	writeJSON(w, status, recorded.State)
 }
 
@@ -526,26 +586,29 @@ func (s *Server) serveVideoCoverReplay(w http.ResponseWriter, r *http.Request, a
 	result := reconciler.ReconcileVideoCover(r.Context(), encoder, servicecall.VideoCoverReconcileRequest{
 		StreamID: r.PathValue("id"), JobGeneration: request.ExpectedJobGeneration,
 		Revision: prepared.RequestedRevision, Active: request.Active,
-		AssetVariantID: prepared.State.AssetVariantID,
+		AssetVariantID: prepared.RequestedAssetVariantID,
 	})
+	var resolved videocover.State
 	switch {
 	case result.Applied:
-		_, err = s.videoCovers.RecordApplied(r.Context(), r.PathValue("id"), request.ExpectedJobGeneration, request.IdempotencyKey, request.Active, prepared.RequestedRevision)
+		resolved, err = s.videoCovers.RecordApplied(r.Context(), r.PathValue("id"), request.ExpectedJobGeneration, request.IdempotencyKey, request.Active, prepared.RequestedRevision)
 	case result.Ambiguous:
 		_, err = s.videoCovers.RecordAmbiguous(r.Context(), r.PathValue("id"), request.ExpectedJobGeneration, request.IdempotencyKey)
 	case result.SafeErrorCode != "":
-		_, err = s.videoCovers.RecordFailed(r.Context(), r.PathValue("id"), request.ExpectedJobGeneration, request.IdempotencyKey, result.SafeErrorCode)
+		resolved, err = s.videoCovers.RecordFailed(r.Context(), r.PathValue("id"), request.ExpectedJobGeneration, request.IdempotencyKey, result.SafeErrorCode)
 	}
 	if err != nil {
 		writeVideoCoverError(w, err)
 		return
 	}
-	recorded, status, resultText, outcomeOK := s.recordedVideoCoverOutcome(r.Context(), r.PathValue("id"), request)
+	if resolved.RecordedAction != nil {
+		s.writeVideoCoverActionAudit(r, action, request, *resolved.RecordedAction, videoCoverAuditResult(resolved.RecordedAction.Outcome), true)
+	}
+	recorded, status, _, outcomeOK := s.recordedVideoCoverOutcome(r.Context(), r.PathValue("id"), request)
 	if !outcomeOK {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "video_cover_action_outcome_unavailable"})
 		return
 	}
-	s.writeVideoCoverActionAudit(r, action, request, recorded, resultText, true)
 	writeJSON(w, status, recorded.State)
 }
 
@@ -558,11 +621,22 @@ func (s *Server) recordedVideoCoverOutcome(ctx context.Context, streamID string,
 	case "applied":
 		return recorded, http.StatusOK, "success", true
 	case "confirming":
-		return recorded, http.StatusAccepted, "failure", true
+		return recorded, http.StatusAccepted, "request", true
 	case "failed":
 		return recorded, http.StatusBadGateway, "failure", true
 	default:
 		return videocover.PreparedAction{}, 0, "", false
+	}
+}
+
+func videoCoverAuditResult(outcome string) string {
+	switch outcome {
+	case "applied":
+		return "success"
+	case "failed":
+		return "failure"
+	default:
+		return "request"
 	}
 }
 

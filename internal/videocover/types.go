@@ -42,28 +42,32 @@ type Preset struct {
 }
 
 type State struct {
-	StreamID                  string    `json:"stream_id"`
-	JobGeneration             uint64    `json:"job_generation"`
-	DesiredActive             bool      `json:"desired_active"`
-	DesiredRevision           uint64    `json:"desired_revision"`
-	AppliedActive             *bool     `json:"applied_active"`
-	AppliedRevision           *uint64   `json:"applied_revision"`
-	AssetVariantID            string    `json:"asset_variant_id,omitempty"`
-	LastErrorCode             string    `json:"last_error_code,omitempty"`
-	Status                    string    `json:"status"`
-	LastIdempotencyKey        string    `json:"-"`
-	CreatedAt                 time.Time `json:"created_at"`
-	UpdatedAt                 time.Time `json:"updated_at"`
-	PipelineOrder             []string  `json:"pipeline_order"`
-	CoverWatermarkIndependent bool      `json:"cover_watermark_independent"`
+	RecordedAction            *PreparedAction `json:"-"`
+	StreamID                  string          `json:"stream_id"`
+	JobGeneration             uint64          `json:"job_generation"`
+	DesiredActive             bool            `json:"desired_active"`
+	DesiredRevision           uint64          `json:"desired_revision"`
+	AppliedActive             *bool           `json:"applied_active"`
+	AppliedRevision           *uint64         `json:"applied_revision"`
+	AssetVariantID            string          `json:"asset_variant_id,omitempty"`
+	AppliedAssetVariantID     string          `json:"applied_asset_variant_id,omitempty"`
+	LastErrorCode             string          `json:"last_error_code,omitempty"`
+	Status                    string          `json:"status"`
+	LastIdempotencyKey        string          `json:"-"`
+	CreatedAt                 time.Time       `json:"created_at"`
+	UpdatedAt                 time.Time       `json:"updated_at"`
+	PipelineOrder             []string        `json:"pipeline_order"`
+	CoverWatermarkIndependent bool            `json:"cover_watermark_independent"`
 }
 
 type ActionRequest struct {
-	Active                bool   `json:"active"`
-	ExpectedJobGeneration uint64 `json:"expected_job_generation"`
-	ExpectedRevision      uint64 `json:"expected_revision"`
-	IdempotencyKey        string `json:"idempotency_key"`
-	HideConfirmed         bool   `json:"hide_confirmed,omitempty"`
+	CandidateVariantID     string `json:"candidate_variant_id,omitempty"`
+	ExpectedVisualRevision uint64 `json:"expected_visual_revision,omitempty"`
+	Active                 bool   `json:"active"`
+	ExpectedJobGeneration  uint64 `json:"expected_job_generation"`
+	ExpectedRevision       uint64 `json:"expected_revision"`
+	IdempotencyKey         string `json:"idempotency_key"`
+	HideConfirmed          bool   `json:"hide_confirmed,omitempty"`
 }
 
 func (request *ActionRequest) UnmarshalJSON(body []byte) error {
@@ -94,6 +98,14 @@ func (request *ActionRequest) UnmarshalJSON(body []byte) error {
 	if value.Active && hidePresent || !value.Active && (!hidePresent || !value.HideConfirmed) {
 		return ErrInvalidRequest
 	}
+	if raw, present := fields["candidate_variant_id"]; present {
+		visualRaw, visualPresent := fields["expected_visual_revision"]
+		if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) || !visualPresent || bytes.Equal(bytes.TrimSpace(visualRaw), []byte("null")) || value.CandidateVariantID == "" {
+			return ErrInvalidRequest
+		}
+	} else if _, present := fields["expected_visual_revision"]; present {
+		return ErrInvalidRequest
+	}
 	candidate := ActionRequest(value)
 	if err := ValidateRequest(candidate); err != nil {
 		return err
@@ -103,12 +115,13 @@ func (request *ActionRequest) UnmarshalJSON(body []byte) error {
 }
 
 type PreparedAction struct {
-	State             State
-	Replay            bool
-	Dispatch          bool
-	RequestedRevision uint64
-	Outcome           string
-	SafeErrorCode     string
+	RequestedAssetVariantID string
+	State                   State
+	Replay                  bool
+	Dispatch                bool
+	RequestedRevision       uint64
+	Outcome                 string
+	SafeErrorCode           string
 }
 
 type Repository interface {
@@ -140,10 +153,17 @@ func ValidateRequest(request ActionRequest) error {
 	if request.Active && request.HideConfirmed || !request.Active && !request.HideConfirmed {
 		return ErrInvalidRequest
 	}
+	if request.CandidateVariantID != "" && (!request.Active || request.ExpectedVisualRevision == 0 || !validActionIdempotencyKey(request.CandidateVariantID)) || request.CandidateVariantID == "" && request.ExpectedVisualRevision != 0 {
+		return ErrInvalidRequest
+	}
 	return nil
 }
 func RequestFingerprint(request ActionRequest) string {
 	raw := fmt.Sprintf("active=%t\ngeneration=%d\nrevision=%d\nidempotency=%s", request.Active, request.ExpectedJobGeneration, request.ExpectedRevision, request.IdempotencyKey)
+	// Preserve fingerprints of legacy show/hide actions for exact replay.
+	if request.CandidateVariantID != "" {
+		raw += fmt.Sprintf("\ncandidate=%s\nvisual=%d", request.CandidateVariantID, request.ExpectedVisualRevision)
+	}
 	sum := sha256.Sum256([]byte(raw))
 	return hex.EncodeToString(sum[:])
 }

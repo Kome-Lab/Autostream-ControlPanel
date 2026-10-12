@@ -26,11 +26,11 @@ test("stream creation sends the selected recording profile", () => {
   assert.equal(payload.encoder_audio_gain_db, 3.5);
 });
 
-test("stream creation never changes runtime Node assignments", () => {
+test("stream creation explicitly selects both required primary Nodes", () => {
   const payload = buildStreamCreatePayload(baseValues);
 
-  assert.equal("encoder_service_id" in payload, false);
-  assert.equal("worker_service_id" in payload, false);
+  assert.equal(payload.encoder_service_id,"encoder-node-01");
+  assert.equal(payload.worker_service_id,"worker-node-01");
 });
 
 test("stream creation no longer sends direct archive settings or an external input URL", () => {
@@ -110,7 +110,7 @@ test("stream editing distinguishes an explicit Node clear from an omitted assign
 
   assert.equal("encoder_service_id" in payload, true);
   assert.equal(payload.encoder_service_id, "");
-  assert.equal("worker_service_id" in payload, false);
+  assert.equal("worker_service_id" in payload,false);
 });
 
 test("stream editing marks a Node owned by another stream busy and keeps the current owner selectable", () => {

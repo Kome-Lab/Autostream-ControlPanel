@@ -10,6 +10,7 @@ import type { ActionEvaluation } from "@/lib/foundation/actions/contracts";
 import { adaptAPIError } from "@/lib/foundation/api-errors/adapter";
 import type { AdaptedAPIError } from "@/lib/foundation/api-errors/contracts";
 import { evaluateActionPermission, type PermissionSnapshot } from "@/lib/foundation/permissions/evaluator";
+import { isStreamValue, isConfirmedStreamStopOutcome } from "@/features/streams/stream-action-response";
 
 export type StreamActionStateSnapshot = Readonly<{
   kind: "ready" | "missing" | "unknown";
@@ -40,6 +41,7 @@ export type StreamActionController = Readonly<{
   submit: (opened: AllowedStreamActionOpen, confirmation: Readonly<{ confirmed: boolean; typedValue?: string }>) => Promise<StreamActionExecutionResult>;
   cancel: (intent?: StreamActionIntent) => void;
   reconcile: (intent: StreamActionIntent) => void;
+  reconcileStop: (intent: StreamActionIntent) => Promise<StreamActionExecutionResult>;
   isPending: (intent: StreamActionIntent) => boolean;
 }>;
 
@@ -47,6 +49,7 @@ export type StreamActionControllerDependencies = Readonly<{
   getPermissions: () => PermissionSnapshot;
   getState: (intent: StreamActionIntent) => StreamActionStateSnapshot;
   mutate: (request: StreamActionRequest & Readonly<{ signal: AbortSignal }>) => Promise<unknown>;
+  readStopOutcome?: (intent: StreamActionIntent) => Promise<unknown>;
 }>;
 
 type ActiveOperation = { generation: number; abort: AbortController; released: boolean };
@@ -134,12 +137,31 @@ export function createStreamActionController(dependencies: StreamActionControlle
       try {
         const value = await dependencies.mutate(Object.freeze({ ...requestValue, signal: operation.abort.signal }));
         if (!current(scope, operation)) return blocked("cancelled");
+        if (opened.intent.id === "STR-05") {
+          const stream = value && typeof value === "object" && "stream" in value ? value.stream : value;
+          if (!isStreamValue(stream) || stream.id !== opened.intent.stream?.id || stream.status !== "completed") {
+            throw new Error("Stop result requires state reconciliation");
+          }
+        }
         return Object.freeze({ kind: "succeeded", value });
       } catch (error) {
         if (!current(scope, operation)) return blocked("cancelled");
         const adapted = adaptAPIError(error);
         unresolved.add(scope);
         if (["network", "timeout", "unavailable", "protocol", "unknown"].includes(adapted.kind)) {
+          // A lost Stop response is reconciled by reads only. A completed row
+          // is written by the server after the assigned services acknowledge
+          // Stop; a stale/live/failed row is not a successful Stop receipt.
+          if (opened.intent.id === "STR-05" && dependencies.readStopOutcome) {
+            try {
+              const value = await dependencies.readStopOutcome(opened.intent);
+              if (!current(scope, operation)) return blocked("cancelled");
+              if (isConfirmedStreamStopOutcome(value, opened.intent)) {
+                unresolved.delete(scope);
+                return Object.freeze({ kind: "succeeded", value });
+              }
+            } catch { /* Keep the unresolved latch when the read is unavailable. */ }
+          }
           return Object.freeze({ kind: "outcome_unknown", nextAction: "inspect-audit" });
         }
         return Object.freeze({ kind: "failed", error: adapted });
@@ -183,9 +205,25 @@ export function createStreamActionController(dependencies: StreamActionControlle
     },
     reconcile: (intent) => {
       const scope = streamActionScope(intent);
-      if (scope) {
+      if (scope && intent.id !== "STR-05") {
         unresolved.delete(scope);
       }
+    },
+    reconcileStop: async (intent) => {
+      const scope = streamActionScope(intent);
+      if (!scope || intent.id !== "STR-05" || !dependencies.readStopOutcome) return blocked("invalid-intent");
+      const operation = acquire(scope);
+      if (!operation) return blocked("duplicate");
+      try {
+        const value = await dependencies.readStopOutcome(intent);
+        if (!current(scope, operation)) return blocked("cancelled");
+        if (isConfirmedStreamStopOutcome(value, intent)) {
+          unresolved.delete(scope);
+          return Object.freeze({ kind: "succeeded", value });
+        }
+        return Object.freeze({ kind: "outcome_unknown", nextAction: "refresh-resource" });
+      } catch { return Object.freeze({ kind: "outcome_unknown", nextAction: "refresh-resource" }); }
+      finally { release(scope, operation); }
     },
     isPending: (intent) => {
       const scope = streamActionScope(intent);

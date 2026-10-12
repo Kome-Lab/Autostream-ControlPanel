@@ -24,7 +24,7 @@ export type AccountActionDefinition = Readonly<{
 
 const definition = (value: AccountActionDefinition) => Object.freeze(value);
 export const accountActionDefinitions: readonly AccountActionDefinition[] = Object.freeze([
-  definition({ id: "AUTH-01", method: "POST", route: "/setup/first-admin", risk: "critical", confirmation: "typed-target", authority: "setup", auditAction: "setup.first_admin", inputSecret: true }),
+  definition({ id: "AUTH-01", method: "POST", route: "/setup/first-admin", risk: "critical", confirmation: "consequence", authority: "setup", auditAction: "setup.first_admin", inputSecret: true }),
   definition({ id: "AUTH-02", method: "POST", route: "/auth/login", risk: "routine", confirmation: "none", authority: "anonymous", auditAction: "auth.login", inputSecret: true }),
   definition({ id: "AUTH-03", method: "POST", route: "/auth/mfa/verify", risk: "routine", confirmation: "flow-continuation", authority: "challenge", auditAction: "mfa.verify", inputSecret: true, flowContinuationOf: "AUTH-02" }),
   definition({ id: "AUTH-04", method: "POST", route: "/auth/oauth/{provider}/start", risk: "routine", confirmation: "none", authority: "anonymous", auditAction: "auth.oauth.start", redirectCapability: true }),
@@ -38,10 +38,10 @@ export const accountActionDefinitions: readonly AccountActionDefinition[] = Obje
   definition({ id: "AUTH-12", method: "PUT", route: "/auth/email", risk: "high", confirmation: "consequence", authority: "authenticated", auditAction: "auth.email.change_request" }),
   definition({ id: "AUTH-13", method: "POST", route: "/auth/oauth-links/{provider}/start", risk: "high", confirmation: "consequence", authority: "authenticated", auditAction: "auth.oauth_link.create", redirectCapability: true }),
   definition({ id: "AUTH-14", method: "DELETE", route: "/auth/oauth-links/{link}", risk: "high", confirmation: "consequence", authority: "authenticated", auditAction: "auth.oauth_link.delete" }),
-  definition({ id: "AUTH-15", method: "POST", route: "/auth/mfa/enroll", risk: "critical", confirmation: "typed-target", authority: "authenticated", auditAction: "mfa.enroll", oneTimeOutput: true }),
+  definition({ id: "AUTH-15", method: "POST", route: "/auth/mfa/enroll", risk: "critical", confirmation: "consequence", authority: "authenticated", auditAction: "mfa.enroll", oneTimeOutput: true }),
   definition({ id: "AUTH-16", method: "POST", route: "/auth/mfa/verify", risk: "high", confirmation: "flow-continuation", authority: "authenticated", auditAction: "mfa.verify", inputSecret: true, flowContinuationOf: "AUTH-15" }),
-  definition({ id: "AUTH-17", method: "POST", route: "/auth/mfa/disable", risk: "critical", confirmation: "typed-target", authority: "authenticated", auditAction: "mfa.disable", inputSecret: true }),
-  definition({ id: "AUTH-18", method: "POST", route: "/auth/recovery-codes/regenerate", risk: "critical", confirmation: "typed-target", authority: "authenticated", auditAction: "mfa.recovery_codes.regenerate", inputSecret: true, oneTimeOutput: true }),
+  definition({ id: "AUTH-17", method: "POST", route: "/auth/mfa/disable", risk: "critical", confirmation: "consequence", authority: "authenticated", auditAction: "mfa.disable", inputSecret: true }),
+  definition({ id: "AUTH-18", method: "POST", route: "/auth/recovery-codes/regenerate", risk: "critical", confirmation: "consequence", authority: "authenticated", auditAction: "mfa.recovery_codes.regenerate", inputSecret: true, oneTimeOutput: true }),
   definition({ id: "AUTH-19", method: "POST", route: "/auth/passkeys/register/start", risk: "guarded", confirmation: "consequence", authority: "authenticated", auditAction: "passkeys.registration.start", webAuthnCapability: true }),
   definition({ id: "AUTH-20", method: "POST", route: "/auth/passkeys/register/finish", risk: "high", confirmation: "flow-continuation", authority: "authenticated", auditAction: "passkeys.registration.finish", inputSecret: true, flowContinuationOf: "AUTH-19" }),
   definition({ id: "AUTH-21", method: "DELETE", route: "/auth/passkeys/{id}", risk: "high", confirmation: "consequence", authority: "authenticated", auditAction: "passkeys.delete" }),
@@ -72,7 +72,7 @@ export function buildAccountActionDescriptor(intent: AccountActionIntent): Actio
   const entry = definitions.get(intent.id);
   if (!entry || !safeResourceID(intent.resourceId)) return undefined;
   const typed = entry.confirmation === "typed-target";
-  if (typed && !safePublicUsername(intent.publicUsername)) return undefined;
+  if (intent.publicUsername!==undefined && !safePublicUsername(intent.publicUsername)) return undefined;
   const confirmation = typed
     ? Object.freeze({
         mode: "typed-target" as const,
@@ -93,7 +93,7 @@ export function buildAccountActionDescriptor(intent: AccountActionIntent): Actio
     target: Object.freeze({
       resourceType: "account",
       resourceId: intent.resourceId,
-      ...(typed ? { publicLabel: intent.publicUsername } : {}),
+      ...(intent.publicUsername ? { publicLabel: intent.publicUsername } : {}),
     }),
     applicability: Object.freeze({ ruleIds: Object.freeze([`account-${entry.id.toLowerCase()}-flow`]), requiredSections: Object.freeze(["session"]) }),
     confirmation,

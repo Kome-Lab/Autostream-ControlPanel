@@ -39,7 +39,7 @@ export type ResourceActionTemplate = Readonly<{
   method: ResourceActionRequest["method"];
   basePermission: string;
   risk: ActionRisk;
-  confirmation: "consequence" | "typed-label" | "typed-fixed";
+  confirmation: "none" | "consequence" | "typed-label" | "typed-fixed";
   fixedToken?: string;
   duplicateScope: "resource-action" | "resource-target" | "session-flow";
   auditAction: string;
@@ -62,7 +62,7 @@ const row = (
   fixedToken?: string,
 ): ResourceActionTemplate => Object.freeze({
   id, wave, operation, route, sourcePath, method, basePermission, risk,
-  confirmation, duplicateScope, auditAction, secretInput, ...(fixedToken ? { fixedToken } : {}),
+  confirmation: ["create", "update"].includes(operation) && !secretInput ? "none" : confirmation, duplicateScope, auditAction, secretInput, ...(fixedToken ? { fixedToken } : {}),
 });
 
 export const resourceActionDescriptors: readonly ResourceActionTemplate[] = Object.freeze([
@@ -78,7 +78,7 @@ export const resourceActionDescriptors: readonly ResourceActionTemplate[] = Obje
   row("RES-10", "3A", "create", "/profiles/caption", "/profiles/caption", "POST", "caption_profiles.create", "guarded", "consequence", "resource-action", "caption_profiles.create"),
   row("RES-11", "3A", "update", "/profiles/caption/{id}", "/profiles/caption", "PUT", "caption_profiles.update", "high", "consequence", "resource-target", "caption_profiles.update"),
   row("RES-12", "3A", "delete", "/profiles/caption/{id}", "/profiles/caption", "DELETE", "caption_profiles.delete", "high", "consequence", "resource-target", "caption_profiles.delete"),
-  row("RES-13", "3A", "secret", "/secrets/deepgram_api_key", "/secrets/status", "PUT", "secrets.update", "critical", "typed-fixed", "resource-action", "secrets.update", true, "deepgram_api_key"),
+  row("RES-13", "3A", "secret", "/secrets/deepgram_api_key", "/secrets/status", "PUT", "secrets.update", "critical", "consequence", "resource-action", "secrets.update", true, "deepgram_api_key"),
   row("RES-14", "3A", "create", "/profiles/overlay", "/profiles/overlay", "POST", "overlay_profiles.create", "guarded", "consequence", "resource-action", "overlay_profiles.create"),
   row("RES-15", "3A", "update", "/profiles/overlay/{id}", "/profiles/overlay", "PUT", "overlay_profiles.update", "high", "consequence", "resource-target", "overlay_profiles.update", true),
   row("RES-16", "3A", "delete", "/profiles/overlay/{id}", "/profiles/overlay", "DELETE", "overlay_profiles.delete", "high", "consequence", "resource-target", "overlay_profiles.delete"),
@@ -89,23 +89,23 @@ export const resourceActionDescriptors: readonly ResourceActionTemplate[] = Obje
   row("RES-21", "3A", "update", "/archive/destinations/{id}", "/archive/destinations", "PUT", "integrations.update", "high", "consequence", "resource-target", "integrations.drive_destination.update", true),
   row("RES-22", "3A", "delete", "/archive/destinations/{id}", "/archive/destinations", "DELETE", "integrations.delete", "high", "consequence", "resource-target", "integrations.drive_destination.delete"),
   row("RES-23", "3B", "create", "/integrations/oauth-providers", "/integrations/oauth-providers", "POST", "integrations.create", "high", "consequence", "resource-action", "integrations.oauth_provider.create", true),
-  row("RES-24", "3B", "update", "/integrations/oauth-providers/{id}", "/integrations/oauth-providers", "PUT", "integrations.update", "critical", "typed-label", "resource-target", "integrations.oauth_provider.update", true),
-  row("RES-25", "3B", "delete", "/integrations/oauth-providers/{id}", "/integrations/oauth-providers", "DELETE", "integrations.delete", "critical", "typed-label", "resource-target", "integrations.oauth_provider.delete"),
+  row("RES-24", "3B", "update", "/integrations/oauth-providers/{id}", "/integrations/oauth-providers", "PUT", "integrations.update", "critical", "consequence", "resource-target", "integrations.oauth_provider.update", true),
+  row("RES-25", "3B", "delete", "/integrations/oauth-providers/{id}", "/integrations/oauth-providers", "DELETE", "integrations.delete", "critical", "consequence", "resource-target", "integrations.oauth_provider.delete"),
   row("RES-26", "3B", "connect", "/integrations/oauth-accounts/start", "/integrations/oauth-accounts", "POST", "integrations.create", "high", "consequence", "session-flow", "integrations.oauth_account.connect", true),
   row("RES-27", "3B", "relink", "/integrations/oauth-accounts/start", "/integrations/oauth-accounts", "POST", "integrations.update", "high", "consequence", "resource-target", "integrations.oauth_account.relink", true),
   row("RES-28", "3B", "update", "/integrations/oauth-accounts/{id}", "/integrations/oauth-accounts", "PUT", "integrations.update", "guarded", "consequence", "resource-target", "integrations.oauth_account.update"),
   row("RES-29", "3B", "delete", "/integrations/oauth-accounts/{id}", "/integrations/oauth-accounts", "DELETE", "integrations.delete", "high", "consequence", "resource-target", "integrations.oauth_account.delete"),
   row("RES-30", "3A", "create", "/users", "/users", "POST", "users.create", "high", "consequence", "resource-action", "users.create", true),
   row("RES-31", "3A", "update", "/users/{id}", "/users", "PUT", "users.update", "high", "consequence", "resource-target", "users.update", true),
-  row("RES-32", "3A", "delete", "/users/{id}", "/users", "DELETE", "users.delete", "critical", "typed-label", "resource-target", "users.delete"),
+  row("RES-32", "3A", "delete", "/users/{id}", "/users", "DELETE", "users.delete", "critical", "consequence", "resource-target", "users.delete"),
   row("RES-33", "3A", "create", "/roles", "/roles", "POST", "roles.create", "high", "consequence", "resource-action", "roles.create"),
-  row("RES-34", "3A", "update", "/roles/{id}", "/roles", "PUT", "roles.update", "critical", "typed-label", "resource-target", "roles.update"),
-  row("RES-35", "3A", "delete", "/roles/{id}", "/roles", "DELETE", "roles.delete", "critical", "typed-label", "resource-target", "roles.delete"),
+  row("RES-34", "3A", "update", "/roles/{id}", "/roles", "PUT", "roles.update", "critical", "consequence", "resource-target", "roles.update"),
+  row("RES-35", "3A", "delete", "/roles/{id}", "/roles", "DELETE", "roles.delete", "critical", "consequence", "resource-target", "roles.delete"),
   row("RES-36", "3A", "create", "/observability/notification-channels", "/observability/notification-channels", "POST", "notification_channels.create", "guarded", "consequence", "resource-action", "notification_channels.create", true),
   row("RES-37", "3A", "update", "/observability/notification-channels/{id}", "/observability/notification-channels", "PUT", "notification_channels.update", "high", "consequence", "resource-target", "notification_channels.update", true),
   row("RES-38", "3A", "delete", "/observability/notification-channels/{id}", "/observability/notification-channels", "DELETE", "notification_channels.delete", "high", "consequence", "resource-target", "notification_channels.delete"),
   row("RES-39", "3A", "test", "/observability/notification-channels/{id}/test", "/observability/notification-channels", "POST", "notification_channels.test", "guarded", "consequence", "resource-target", "notification_channels.test"),
-  row("RES-40", "3B", "update", "/security/settings", "/security/settings", "PUT", "system_settings.update", "critical", "typed-fixed", "resource-action", "security.settings.update", false, "SECURITY POLICY"),
+  row("RES-40", "3B", "update", "/security/settings", "/security/settings", "PUT", "system_settings.update", "critical", "consequence", "resource-action", "security.settings.update", false, "SECURITY POLICY"),
   row("RES-41", "v2", "create", "/discord/target-presets", "/discord/target-presets", "POST", "discord_target_presets.create", "guarded", "consequence", "resource-action", "discord_target_presets.create"),
   row("RES-42", "v2", "update", "/discord/target-presets/{id}", "/discord/target-presets", "PUT", "discord_target_presets.update", "high", "consequence", "resource-target", "discord_target_presets.update"),
   row("RES-43", "v2", "delete", "/discord/target-presets/{id}", "/discord/target-presets", "DELETE", "discord_target_presets.delete", "high", "consequence", "resource-target", "discord_target_presets.delete"),
@@ -153,21 +153,7 @@ export function buildResourceActionDescriptor(intent: ResourceActionIntent): Act
       ruleIds: Object.freeze([`resource-${intent.id.toLowerCase()}-state`]),
       requiredSections: Object.freeze(["auth", template.sourcePath]),
     }),
-    confirmation: template.confirmation === "typed-fixed"
-      ? Object.freeze({
-          mode: "typed-target" as const,
-          consequenceKey: "dangerousNotice" as const,
-          typedToken: Object.freeze({ kind: "fixed-ascii" as const, value: template.fixedToken || "" }),
-          requireSubmitRevalidation: true as const,
-        })
-      : template.confirmation === "typed-label"
-        ? Object.freeze({
-            mode: "typed-target" as const,
-            consequenceKey: "dangerousNotice" as const,
-            typedToken: Object.freeze({ kind: "target-label" as const }),
-            requireSubmitRevalidation: true as const,
-          })
-        : Object.freeze({
+    confirmation: template.confirmation === "none" ? Object.freeze({mode:"none" as const, requireSubmitRevalidation: true}) : Object.freeze({
             mode: "consequence" as const,
             consequenceKey: "dangerousNotice" as const,
             requireSubmitRevalidation: true,

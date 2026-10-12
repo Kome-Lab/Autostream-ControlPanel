@@ -28,6 +28,7 @@ register(`data:text/javascript,${encodeURIComponent(resolverSource)}`, {
 const {
   NODE_FOUNDATION_SOURCE_ENABLED,
   nodeActionDescriptors,
+ buildNodeActionDescriptor,
 } = await import("../src/features/nodes/node-action-descriptors.ts");
 const { createNodeActionController } = await import("../src/features/nodes/node-action-controller.ts");
 const {
@@ -182,7 +183,7 @@ test("handler 403 and ambiguous results issue once and require explicit reconcil
   }
 });
 
-test("all five actions preserve exact paths, methods, and typed public targets", async () => {
+test("all five actions preserve exact paths, methods, and button confirmations", async () => {
   const cases = [
     { id: "NOD-01", registration: { nodeType: "worker", nodeId: "node-public-1", allowRuntimeSecrets: true, allowRemediation: false }, path: "/nodes/registration-tokens", method: "POST", typed: "node-public-1" },
     { id: "NOD-02", node: node(), path: "/nodes/node-a/configure-token", method: "POST", typed: "Node A" },
@@ -203,7 +204,7 @@ test("all five actions preserve exact paths, methods, and typed public targets",
     const opened = await harness.controller.open(intent);
     assert.equal(opened.kind, "allowed", scenario.id);
     if (opened.kind !== "allowed") continue;
-    assert.equal(opened.typedToken, scenario.typed, scenario.id);
+    assert.equal(opened.kind,"allowed",scenario.id);assert.equal(buildNodeActionDescriptor(intent)?.confirmation.mode,"consequence",scenario.id);
     const result = await harness.controller.submit(opened, { confirmed: true, typedValue: scenario.typed });
     assert.equal(result.kind, "succeeded", scenario.id);
     assert.deepEqual(requests.map(({ path, method }) => ({ path, method })), [{ path: scenario.path, method: scenario.method }]);

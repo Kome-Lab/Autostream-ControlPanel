@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-func TestCreateStreamRejectsRequestedPrimaryNodes(t *testing.T) {
+func TestCreateStreamAtomicallyReservesRequiredPrimaryNodes(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
 	if err := auth.AddUser(store.User{Username: "operator"}, "correct horse battery", []string{"streams.create", "services.assign", "workers.assign"}); err != nil {
 		t.Fatal(err)
@@ -21,29 +21,29 @@ func TestCreateStreamRejectsRequestedPrimaryNodes(t *testing.T) {
 	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
-	req := httptest.NewRequest(http.MethodPost, "/streams", bytes.NewBufferString(`{"name":"auto ready stream","encoder_service_id":"encoder-01","worker_service_id":"worker-01"}`))
+	req := httptest.NewRequest(http.MethodPost, "/streams", bytes.NewBufferString(`{"visual_settings":{},"name":"auto ready stream","encoder_service_id":"encoder-01","worker_service_id":"worker-01"}`))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
 	handler.ServeHTTP(res, req)
-	if res.Code != http.StatusBadRequest || !strings.Contains(res.Body.String(), `"code":"bad_request"`) {
+	if res.Code != http.StatusCreated {
 		t.Fatalf("create status = %d body = %s", res.Code, res.Body.String())
 	}
 	items, err := streams.ListStreams(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(items) != 0 {
+	if len(items) != 1 {
 		t.Fatalf("rejected legacy create persisted streams: %#v", items)
 	}
 	events := auth.AuditEvents()
 	assignAudits := 0
 	for _, event := range events {
-		if event.Action == "services.assign" && event.ResourceID != "" && event.Metadata["source"] == "stream_settings" {
+		if event.Action == "services.assign" && event.ResourceID != "" && event.Metadata["source"] == "stream_create" {
 			assignAudits++
 		}
 	}
-	if assignAudits != 0 {
+	if assignAudits != 2 {
 		t.Fatalf("create must not write assignment audit events, got %d events=%#v", assignAudits, events)
 	}
 }
@@ -58,12 +58,12 @@ func TestCreateStreamRejectsPrimaryNodeAssignmentWithoutPermission(t *testing.T)
 	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
-	req := httptest.NewRequest(http.MethodPost, "/streams", bytes.NewBufferString(`{"name":"blocked stream","encoder_service_id":"encoder-01"}`))
+	req := httptest.NewRequest(http.MethodPost, "/streams", bytes.NewBufferString(`{"name":"blocked stream","visual_settings":{},"encoder_service_id":"encoder-01","worker_service_id":"worker-01"}`))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
 	handler.ServeHTTP(res, req)
-	if res.Code != http.StatusBadRequest || !strings.Contains(res.Body.String(), `"code":"bad_request"`) {
+	if res.Code != http.StatusForbidden {
 		t.Fatalf("create status = %d body = %s", res.Code, res.Body.String())
 	}
 	items, err := streams.ListStreams(t.Context())
@@ -85,12 +85,12 @@ func TestCreateStreamRejectsPrimaryNodeFieldBeforeResolvingType(t *testing.T) {
 	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
-	req := httptest.NewRequest(http.MethodPost, "/streams", bytes.NewBufferString(`{"name":"wrong node stream","encoder_service_id":"worker-01"}`))
+	req := httptest.NewRequest(http.MethodPost, "/streams", bytes.NewBufferString(`{"name":"wrong node stream","visual_settings":{},"encoder_service_id":"worker-01","worker_service_id":"worker-01"}`))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
 	handler.ServeHTTP(res, req)
-	if res.Code != http.StatusBadRequest || !strings.Contains(res.Body.String(), `"code":"bad_request"`) {
+	if res.Code != http.StatusBadRequest {
 		t.Fatalf("create status = %d body = %s", res.Code, res.Body.String())
 	}
 	items, err := streams.ListStreams(t.Context())

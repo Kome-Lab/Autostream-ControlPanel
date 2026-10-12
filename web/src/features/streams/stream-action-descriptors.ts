@@ -56,10 +56,10 @@ export function buildStreamActionPermissionRequirement(intent: StreamActionInten
   const base = streamActionTemplate(intent.id)?.basePermission;
   if (!base) return Object.freeze({ kind: "all", permissions: Object.freeze(["__invalid_stream_action__"] as const) });
   const permissions = [base];
-  if (intent.id === "STR-02") {
+  if (intent.id === "STR-01" || intent.id === "STR-02") {
     const payload = intent.payload;
-    if (hasOwn(payload, "encoder_service_id")) permissions.push("services.assign");
-    if (hasOwn(payload, "worker_service_id")) permissions.push("workers.assign");
+    if (intent.id === "STR-01" || hasOwn(payload, "encoder_service_id")) permissions.push("services.assign");
+    if (intent.id === "STR-01" || hasOwn(payload, "worker_service_id")) permissions.push("workers.assign");
   }
   return Object.freeze({
     kind: "all" as const,
@@ -71,8 +71,7 @@ export function buildStreamActionDescriptor(intent: StreamActionIntent): ActionD
   const templateValue = streamActionTemplate(intent.id);
   const target = streamActionTarget(intent);
   if (!templateValue || !target || !streamActionRequest(intent)) return undefined;
-  const typed = templateValue.risk === "critical";
-  const none = intent.id === "STR-11";
+  const none = ["STR-01", "STR-02", "STR-03", "STR-08", "STR-09", "STR-11"].includes(intent.id);
   return Object.freeze({
     id: intent.id,
     labelKey: labelKey(intent.id),
@@ -85,14 +84,7 @@ export function buildStreamActionDescriptor(intent: StreamActionIntent): ActionD
     }),
     confirmation: none
       ? Object.freeze({ mode: "none" as const, requireSubmitRevalidation: true })
-      : typed
-        ? Object.freeze({
-            mode: "typed-target" as const,
-            consequenceKey: "dangerousNotice" as const,
-            typedToken: Object.freeze({ kind: "target-label" as const }),
-            requireSubmitRevalidation: true as const,
-          })
-        : Object.freeze({
+      : Object.freeze({
             mode: "consequence" as const,
             consequenceKey: "dangerousNotice" as const,
             requireSubmitRevalidation: true,
@@ -126,7 +118,7 @@ export function streamActionRequest(intent: StreamActionIntent): StreamActionReq
     case "STR-03":
       return encoded && intent.payload ? request(intent.id, "PUT", `/streams/${encoded}/runtime-settings`, intent.payload) : undefined;
     case "STR-04": return encoded ? request(intent.id, "POST", `/streams/${encoded}/start`) : undefined;
-    case "STR-05": return encoded ? request(intent.id, "POST", `/streams/${encoded}/stop`) : undefined;
+    case "STR-05": return encoded ? request(intent.id, "POST", `/streams/${encoded}/stop`, intent.stream?.updated_at ? { expected_updated_at: intent.stream.updated_at } : undefined) : undefined;
     case "STR-06": return encoded ? request(intent.id, "POST", `/streams/${encoded}/force-stop`) : undefined;
     case "STR-07": return encoded ? request(intent.id, "POST", `/streams/${encoded}/youtube/relay-static/recovery/resolve`, { confirm_external_cleanup: true }) : undefined;
     case "STR-08": return encoded ? request(intent.id, "POST", `/streams/${encoded}/start-readiness`) : undefined;

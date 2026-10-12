@@ -31,14 +31,14 @@ func TestCreateStreamRejectsBlankName(t *testing.T) {
 
 func TestCreateStreamPersistsSchedule(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
-	if err := auth.AddUser(store.User{Username: "operator"}, "correct horse battery", []string{"streams.create", "streams.read"}); err != nil {
+	if err := auth.AddUser(store.User{Username: "operator"}, "correct horse battery", []string{"services.assign", "workers.assign", "streams.create", "streams.read"}); err != nil {
 		t.Fatal(err)
 	}
 	streams := store.NewMemoryStreamStore()
 	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
-	req := httptest.NewRequest(http.MethodPost, "/streams", bytes.NewBufferString(`{"name":"scheduled stream","scheduled_start_at":"2026-07-10T01:00:00Z","scheduled_end_at":"2026-07-10T02:00:00Z","visual_settings":{"expected_revision":0,"discord_target":{"mode":"inherit"}}}`))
+	req := httptest.NewRequest(http.MethodPost, "/streams", bytes.NewBufferString(ui188CreatePayload(t, handler, `{"name":"scheduled stream","scheduled_start_at":"2026-07-10T01:00:00Z","scheduled_end_at":"2026-07-10T02:00:00Z","visual_settings":{"expected_revision":0,"discord_target":{"mode":"inherit"}}}`)))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
@@ -75,14 +75,14 @@ func TestCreateStreamPersistsSchedule(t *testing.T) {
 
 func TestStreamScheduledStartIsOptionalClearableAndHonored(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
-	if err := auth.AddUser(store.User{Username: "operator"}, "correct horse battery", []string{"streams.create", "streams.update"}); err != nil {
+	if err := auth.AddUser(store.User{Username: "operator"}, "correct horse battery", []string{"services.assign", "workers.assign", "streams.create", "streams.update"}); err != nil {
 		t.Fatal(err)
 	}
 	streams := store.NewMemoryStreamStore()
 	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
-	createReq := httptest.NewRequest(http.MethodPost, "/streams", bytes.NewBufferString(`{"name":"immediate stream","visual_settings":{"expected_revision":0,"discord_target":{"mode":"inherit"}}}`))
+	createReq := httptest.NewRequest(http.MethodPost, "/streams", bytes.NewBufferString(ui188CreatePayload(t, handler, `{"name":"immediate stream","visual_settings":{"expected_revision":0,"discord_target":{"mode":"inherit"}}}`)))
 	createReq.AddCookie(cookie)
 	createReq.Header.Set("X-CSRF-Token", csrf)
 	createRes := httptest.NewRecorder()
@@ -192,7 +192,7 @@ func TestCreateStreamRejectsInvalidSchedule(t *testing.T) {
 
 func TestStreamSettingsCanBeSavedAndReturned(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
-	if err := auth.AddUser(store.User{Username: "operator"}, "correct horse battery", []string{"streams.create", "streams.update", "streams.read"}); err != nil {
+	if err := auth.AddUser(store.User{Username: "operator"}, "correct horse battery", []string{"services.assign", "workers.assign", "streams.create", "streams.update", "streams.read"}); err != nil {
 		t.Fatal(err)
 	}
 	streams := store.NewMemoryStreamStore()
@@ -215,7 +215,7 @@ func TestStreamSettingsCanBeSavedAndReturned(t *testing.T) {
 	}
 	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithProfileStore(profiles))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
-	createReq := httptest.NewRequest(http.MethodPost, "/streams", bytes.NewBufferString(`{"name":"configured stream","discord_config_id":"`+discordOne.ID+`","auto_start_trigger":"discord_voice_join","youtube_output_id":"`+youtubeOutput.ID+`","visual_settings":{"expected_revision":0,"discord_target":{"mode":"manual","guild_id":"1001","voice_channel_id":"1002","text_channel_id":"1003"}}}`))
+	createReq := httptest.NewRequest(http.MethodPost, "/streams", bytes.NewBufferString(ui188CreatePayload(t, handler, `{"name":"configured stream","discord_config_id":"`+discordOne.ID+`","auto_start_trigger":"discord_voice_join","youtube_output_id":"`+youtubeOutput.ID+`","visual_settings":{"expected_revision":0,"discord_target":{"mode":"manual","guild_id":"1001","voice_channel_id":"1002","text_channel_id":"1003"}}}`)))
 	createReq.AddCookie(cookie)
 	createReq.Header.Set("X-CSRF-Token", csrf)
 	createRes := httptest.NewRecorder()
@@ -336,7 +336,7 @@ func TestUpdateStreamSettingsAllowsInactiveStatusesAndRejectsActiveStatuses(t *t
 
 func TestCreateStreamRejectsInvalidAutoStartSettings(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
-	if err := auth.AddUser(store.User{Username: "operator"}, "correct horse battery", []string{"streams.create"}); err != nil {
+	if err := auth.AddUser(store.User{Username: "operator"}, "correct horse battery", []string{"streams.create", "services.assign", "workers.assign"}); err != nil {
 		t.Fatal(err)
 	}
 	streams := store.NewMemoryStreamStore()
@@ -364,7 +364,7 @@ func TestCreateStreamRejectsInvalidAutoStartSettings(t *testing.T) {
 			code: "invalid_visual_settings",
 		},
 	} {
-		req := httptest.NewRequest(http.MethodPost, "/streams", bytes.NewBufferString(tc.body))
+		req := httptest.NewRequest(http.MethodPost, "/streams", bytes.NewBufferString(ui188CreatePayload(t, handler, tc.body)))
 		req.AddCookie(cookie)
 		req.Header.Set("X-CSRF-Token", csrf)
 		res := httptest.NewRecorder()
@@ -375,9 +375,9 @@ func TestCreateStreamRejectsInvalidAutoStartSettings(t *testing.T) {
 	}
 }
 
-func TestCreateStreamMaterializesDirectArchiveSettings(t *testing.T) {
+func TestCreateStreamRejectsDirectArchiveBeforeAnyPersistence(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
-	if err := auth.AddUser(store.User{Username: "operator"}, "correct horse battery", []string{"streams.create"}); err != nil {
+	if err := auth.AddUser(store.User{Username: "operator"}, "correct horse battery", []string{"services.assign", "workers.assign", "streams.create"}); err != nil {
 		t.Fatal(err)
 	}
 	streams := store.NewMemoryStreamStore()
@@ -408,40 +408,26 @@ func TestCreateStreamMaterializesDirectArchiveSettings(t *testing.T) {
 	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithProfileStore(profiles), WithIntegrationStore(integrations))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
-	req := httptest.NewRequest(http.MethodPost, "/streams", bytes.NewBufferString(`{"name":"direct archive stream","archive_oauth_account_id":"`+account.ID+`","archive_folder_id":"raw-drive-folder-id","archive_shared_drive":true,"archive_shared_drive_id":"shared-drive-01","archive_retention_days":45,"visual_settings":{"expected_revision":0,"discord_target":{"mode":"inherit"}}}`))
+	req := httptest.NewRequest(http.MethodPost, "/streams", bytes.NewBufferString(ui188CreatePayload(t, handler, `{"name":"direct archive stream","archive_oauth_account_id":"`+account.ID+`","archive_folder_id":"raw-drive-folder-id","archive_shared_drive":true,"archive_shared_drive_id":"shared-drive-01","archive_retention_days":45,"visual_settings":{"expected_revision":0,"discord_target":{"mode":"inherit"}}}`)))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
 	handler.ServeHTTP(res, req)
-	if res.Code != http.StatusCreated {
-		t.Fatalf("create status = %d body = %s", res.Code, res.Body.String())
+	if res.Code != http.StatusConflict || !strings.Contains(res.Body.String(), "stream_draft_archive_create_unsupported") {
+		t.Fatalf("legacy direct create status=%d", res.Code)
 	}
-	if strings.Contains(res.Body.String(), "raw-drive-folder-id") || strings.Contains(res.Body.String(), "raw-google-refresh-token") || strings.Contains(res.Body.String(), "raw-google-client-secret") {
-		t.Fatalf("direct archive response leaked raw secret: %s", res.Body.String())
+	rows, err := streams.ListStreams(t.Context())
+	if err != nil || len(rows) != 0 {
+		t.Fatal("rejected direct archive create persisted stream")
 	}
-	var created store.Stream
-	if err := json.NewDecoder(res.Body).Decode(&created); err != nil {
-		t.Fatal(err)
+	profilesAfter, err := profiles.ListProfiles(t.Context(), store.ProfileArchive)
+	if err != nil || len(profilesAfter) != 0 {
+		t.Fatal("rejected direct archive create materialized profile")
 	}
-	if created.ArchiveProfileID == "" || created.ArchiveDriveDestinationID == "" || created.ArchiveOAuthAccountID != account.ID || !created.ArchiveFolderIDConfigured || !created.ArchiveSharedDrive || created.ArchiveSharedDriveID != "shared-drive-01" {
-		t.Fatalf("direct archive settings were not persisted on stream: %#v", created)
-	}
-	if !strings.HasPrefix(created.ArchiveFileName, "direct archive stream-") || !strings.HasSuffix(created.ArchiveFileName, ".mp4") {
-		t.Fatalf("default archive file name was not generated from stream name/date: %#v", created)
-	}
-	destination, err := integrations.GetDriveDestinationForDispatch(t.Context(), created.ArchiveDriveDestinationID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if destination.AuthMode != "oauth2" || destination.OAuthAccountID != account.ID || destination.FolderID != "raw-drive-folder-id" || !destination.SharedDrive {
-		t.Fatalf("drive destination was not materialized for dispatch: %#v", destination)
-	}
-	profile, err := profiles.GetProfile(t.Context(), store.ProfileArchive, created.ArchiveProfileID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if profile.Config["drive_destination_id"] != destination.ID || profile.Config["stream_archive_direct"] != true || profile.Config["archive_file_name"] != created.ArchiveFileName || profile.Config["shared_drive_id"] != "shared-drive-01" || profile.Config["retention_days"] != 45 {
-		t.Fatalf("archive profile was not materialized from stream settings: %#v", profile.Config)
+	for _, secret := range []string{"raw-drive-folder-id", "raw-google-refresh-token", "raw-google-client-secret"} {
+		if strings.Contains(res.Body.String(), secret) {
+			t.Fatal("rejection exposed secret")
+		}
 	}
 }
 
@@ -615,9 +601,9 @@ func TestUpdateStreamSettingsExplicitEmptyServiceIDClearsOnlyRequestedAssignment
 	}
 }
 
-func TestCreateStreamMaterializesLocalRetentionArchiveProfileWithoutDrive(t *testing.T) {
+func TestCreateStreamRejectsLegacyRetentionBeforeAnyPersistence(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
-	if err := auth.AddUser(store.User{Username: "operator"}, "correct horse battery", []string{"streams.create"}); err != nil {
+	if err := auth.AddUser(store.User{Username: "operator"}, "correct horse battery", []string{"services.assign", "workers.assign", "streams.create"}); err != nil {
 		t.Fatal(err)
 	}
 	streams := store.NewMemoryStreamStore()
@@ -625,30 +611,26 @@ func TestCreateStreamMaterializesLocalRetentionArchiveProfileWithoutDrive(t *tes
 	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithProfileStore(profiles))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
-	req := httptest.NewRequest(http.MethodPost, "/streams", bytes.NewBufferString(`{"name":"local retained stream","archive_retention_days":7,"visual_settings":{"expected_revision":0,"discord_target":{"mode":"inherit"}}}`))
+	req := httptest.NewRequest(http.MethodPost, "/streams", bytes.NewBufferString(ui188CreatePayload(t, handler, `{"name":"local retained stream","archive_retention_days":7,"visual_settings":{"expected_revision":0,"discord_target":{"mode":"inherit"}}}`)))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
 	handler.ServeHTTP(res, req)
-	if res.Code != http.StatusCreated {
-		t.Fatalf("create status = %d body = %s", res.Code, res.Body.String())
+	if res.Code != http.StatusConflict || !strings.Contains(res.Body.String(), "stream_draft_archive_create_unsupported") {
+		t.Fatalf("legacy direct create status=%d", res.Code)
 	}
-	var created store.Stream
-	if err := json.NewDecoder(res.Body).Decode(&created); err != nil {
-		t.Fatal(err)
+	rows, err := streams.ListStreams(t.Context())
+	if err != nil || len(rows) != 0 {
+		t.Fatal("rejected direct archive create persisted stream")
 	}
-	if created.ArchiveProfileID == "" || created.ArchiveDriveDestinationID != "" || created.ArchiveOAuthAccountID != "" || created.ArchiveFolderIDConfigured {
-		t.Fatalf("local retention archive settings were not persisted as expected: %#v", created)
+	profilesAfter, err := profiles.ListProfiles(t.Context(), store.ProfileArchive)
+	if err != nil || len(profilesAfter) != 0 {
+		t.Fatal("rejected direct archive create materialized profile")
 	}
-	profile, err := profiles.GetProfile(t.Context(), store.ProfileArchive, created.ArchiveProfileID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if profile.Config["stream_archive_direct"] != true || profile.Config["retention_days"] != 7 {
-		t.Fatalf("local retention archive profile was not materialized: %#v", profile.Config)
-	}
-	if _, ok := profile.Config["drive_destination_id"]; ok {
-		t.Fatalf("local retention profile should not include Drive destination: %#v", profile.Config)
+	for _, secret := range []string{"raw-drive-folder-id", "raw-google-refresh-token", "raw-google-client-secret"} {
+		if strings.Contains(res.Body.String(), secret) {
+			t.Fatal("rejection exposed secret")
+		}
 	}
 }
 

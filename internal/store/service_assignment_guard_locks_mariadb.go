@@ -64,11 +64,11 @@ FOR UPDATE`
 	if err := tx.QueryRowContext(ctx, `SELECT
 EXISTS(SELECT 1 FROM service_stream_events WHERE stream_id = s.id AND event_type = 'archive.artifacts.reported'),
 	`+archiveRecordingArtifactExistsCondition+`,
-	`+streamLogGuardPendingCondition+`
+	`+streamLogGuardPendingCondition+`, EXISTS(SELECT 1 FROM stream_normal_stop_pending pending_stop WHERE pending_stop.stream_id=s.id)
 FROM streams s WHERE s.id = ?`,
 		archiveRetryAssignmentGuardLogMessage, archiveRetryAssignmentGuardClosedLogMessage,
 		streamID,
-	).Scan(&state.HasArchiveReport, &state.HasRecordingArtifact, &state.ArchiveRetryPending); err != nil {
+	).Scan(&state.HasArchiveReport, &state.HasRecordingArtifact, &state.ArchiveRetryPending, &state.NormalStopPending); err != nil {
 		return streamAssignmentProtection{}, err
 	}
 	return state, nil

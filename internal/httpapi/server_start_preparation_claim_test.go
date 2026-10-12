@@ -18,7 +18,7 @@ func preparationClaimStores(t *testing.T, maria bool) outputSecretStores {
 	t.Helper()
 	if !maria {
 		a := store.NewMemoryAuthStore()
-		return outputSecretStores{a, a, a, store.NewMemoryStreamStore(), store.NewMemoryProfileStore(), store.NewMemorySecretStore(), store.NewMemoryRuntimeSecretLeaseStore()}
+		return outputSecretStores{a, a, a, store.NewMemoryStreamStore(), store.NewMemoryProfileStore(), store.NewMemorySecretStore(), store.NewMemoryRuntimeSecretLeaseStore(), nil}
 	}
 	dsn := os.Getenv("AUTOSTREAM_MARIADB_TEST_DSN")
 	if dsn == "" {
@@ -55,7 +55,7 @@ func preparationClaimStores(t *testing.T, maria bool) outputSecretStores {
 	}
 	key := outputSecretRandom(t)
 	a := store.NewMariaDBAuthStoreWithSecretKey(db, key)
-	return outputSecretStores{a, a, store.NewMariaDBAuditStore(db), store.NewMariaDBStreamStore(db), store.NewMariaDBProfileStore(db), store.NewMariaDBSecretStore(db, key), store.NewMariaDBRuntimeSecretLeaseStore(db)}
+	return outputSecretStores{a, a, store.NewMariaDBAuditStore(db), store.NewMariaDBStreamStore(db), store.NewMariaDBProfileStore(db), store.NewMariaDBSecretStore(db, key), store.NewMariaDBRuntimeSecretLeaseStore(db), db}
 }
 func preparationClaimFixture(t *testing.T, maria bool) (*outputSecretFixture, store.ClaimedStreamStart) {
 	t.Helper()

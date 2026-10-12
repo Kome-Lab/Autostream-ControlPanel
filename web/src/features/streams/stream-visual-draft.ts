@@ -2,9 +2,11 @@ import {
   buildDiscordTargetPayload,
   type DiscordTargetMode,
   type StreamVisualSettings,
+  type CoverCandidate,
 } from "@/features/streams/control-platform";
 
 export type StreamVisualDraft = {
+  coverCandidates: CoverCandidate[];
   backgroundMode: "default" | "image";
   backgroundAssetID: string;
   backgroundVariantID: string;
@@ -52,6 +54,7 @@ export function createStreamVisualPreviewOwner(revoke: (url: string) => void) {
 
 export function defaultStreamVisualDraft(): StreamVisualDraft {
   return {
+    coverCandidates: [],
     backgroundMode: "default",
     backgroundAssetID: "",
     backgroundVariantID: "",
@@ -74,6 +77,7 @@ export function defaultStreamVisualDraft(): StreamVisualDraft {
 
 export function streamVisualDraftFromSettings(settings: StreamVisualSettings): StreamVisualDraft {
   return {
+    coverCandidates: settings.cover_candidates ? settings.cover_candidates.map((candidate) => ({ ...candidate })) : settings.cover_variant_id && settings.cover_asset_id && settings.cover_source !== "none" ? [{ name: "フタ画像", source: settings.cover_source, preset_id: settings.cover_preset_id, preset_revision: settings.cover_preset_revision, asset_id: settings.cover_asset_id, variant_id: settings.cover_variant_id }] : [],
     backgroundMode: settings.background_mode,
     backgroundAssetID: settings.background_asset_id || "",
     backgroundVariantID: settings.background_variant_id || "",
@@ -128,6 +132,7 @@ export function buildStreamVisualFields(
       ? {
           cover_source: "preset",
           cover_preset_id: draft.coverPresetID.trim(),
+          cover_variant_id: draft.coverVariantID.trim(),
           cover_start_active: draft.coverStartActive,
         }
       : {
@@ -140,7 +145,7 @@ export function buildStreamVisualFields(
     ...(sections.has("background") ? background : {}),
     ...(sections.has("title") ? title : {}),
     ...(sections.has("discord") ? discord : {}),
-    ...(sections.has("cover") ? cover : {}),
+    ...(sections.has("cover") ? { ...cover, cover_candidates: draft.coverCandidates } : {}),
   };
 }
 

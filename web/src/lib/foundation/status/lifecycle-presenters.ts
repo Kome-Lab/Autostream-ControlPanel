@@ -5,6 +5,11 @@ import {
 } from "@/lib/foundation/status/presenter-core";
 
 const streamLifecycleMapping = freezeStatusMapping({
+ draft: {labelKey:"statusStreamDraft",tone:"neutral",icon:"file-pen-line"},
+ scheduled: {labelKey:"statusStreamScheduled",tone:"info",icon:"calendar-clock"},
+ ready: {labelKey:"statusStreamReady",tone:"neutral",icon:"clock-3"},
+ stopped: {labelKey:"statusStreamStopped",tone:"neutral",icon:"circle-stop"},
+ error: {labelKey:"statusFailed",tone:"critical",icon:"circle-alert"},
   created: { labelKey: "statusStreamCreated", tone: "neutral", icon: "file-pen-line" },
   starting: { labelKey: "statusStreamStarting", tone: "info", icon: "loader-circle" },
   live: { labelKey: "statusStreamLive", tone: "success", icon: "radio" },

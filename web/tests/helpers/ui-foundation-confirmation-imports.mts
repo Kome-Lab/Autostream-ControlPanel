@@ -149,8 +149,7 @@ export function assertConfirmationFoundationBoundaries(
       "src/features/application/deferred-updater-host-confirmation.tsx",
       "src/features/nodes/deferred-node-confirmation.tsx",
       "src/features/streams/stream-control-platform-panel.tsx",
-      "src/features/streams/stream-visual-settings-section.tsx",
-    ].sort(),
+        ].sort(),
     "ConfirmationDialogFrame has exactly the reviewed owners",
   );
 

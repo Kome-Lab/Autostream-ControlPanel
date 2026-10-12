@@ -72,7 +72,7 @@ test("six preset actions extend the existing forty actions with exact API and pe
       assert.ok(descriptor);
       assert.equal(descriptor.risk, operation === "create" ? "guarded" : "high");
       assert.equal(descriptor.audit.action, `${preset.permission}.${operation}`);
-      assert.equal(descriptor.confirmation.mode, "consequence");
+      assert.equal(descriptor.confirmation.mode, operation==="delete"?"consequence":"none");
       assert.equal(descriptor.confirmation.requireSubmitRevalidation, true);
       assert.deepEqual(descriptor.retry, { kind: "never" });
       assert.equal(descriptor.duplicate.scope, operation === "create" ? "resource-action" : "resource-target");

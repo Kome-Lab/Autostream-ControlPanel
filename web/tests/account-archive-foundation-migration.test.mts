@@ -71,7 +71,7 @@ test("AUTH denominator is exact 21/21 with preserved routes and risk split", () 
 test("critical Account descriptors use only a safe public username", () => {
   for (const id of ["AUTH-01", "AUTH-15", "AUTH-17", "AUTH-18"]) {
     const descriptor = buildAccountActionDescriptor({ id, resourceId: "account-1", publicUsername: "operator" });
-    assert.equal(descriptor?.confirmation.mode, "typed-target", id);
+    assert.equal(descriptor?.confirmation.mode, "consequence", id);
     assert.equal(descriptor?.target.publicLabel, "operator", id);
   }
   assert.equal(buildAccountActionDescriptor({ id: "AUTH-17", resourceId: "account-1", publicUsername: "operator@example.invalid" }), undefined);
@@ -107,7 +107,7 @@ test("ARC denominator is exact 5/5 including authenticated download handoff", ()
   assert.deepEqual(archiveActionDefinitions.map((entry) => entry.id), ["ARC-01", "ARC-02", "ARC-03", "ARC-04", "ARC-05"]);
   assert.deepEqual(archiveActionDefinitions.map((entry) => [entry.method, entry.route, entry.risk, entry.confirmation]), [
     ["PUT", "/streams/{sid}/artifacts/{aid}", "guarded", "consequence"],
-    ["DELETE", "/streams/{sid}/artifacts/{aid}", "critical", "typed-target"],
+    ["DELETE", "/streams/{sid}/artifacts/{aid}", "critical", "consequence"],
     ["POST", "/streams/{sid}/artifacts/{aid}/shares", "high", "consequence"],
     ["DELETE", "/streams/{sid}/artifacts/{aid}/shares/{share}", "high", "consequence"],
     ["GET_HANDOFF", "/streams/{sid}/artifacts/{aid}/download", "routine", "none"],

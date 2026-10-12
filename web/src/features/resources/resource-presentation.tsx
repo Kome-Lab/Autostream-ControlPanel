@@ -17,6 +17,7 @@ import { rowString, rowValue, isRecord } from "./resource-values";
 import { permissionGroupForValue, permissionDescription, permissionLabel } from "./resource-permissions";
 
 export function enrichResourceRow(resource: ResourceDefinition, row: ResourceRow, uiText: UICopy = japaneseCopy): ResourceRow {
+  if(resource.path==="/stream-logs" && isRecord(row.fields) && typeof row.fields.action==="string") {return {...row,message:fixedPresentationText(auditActionLabel(row.fields.action),uiText),result:row.fields.result};}
   if (resource.path === "/permissions") {
     const value = rowString(row, ["id", "name", "value"]);
     return {
@@ -143,7 +144,7 @@ function resourcePreferredColumns(resource: ResourceDefinition) {
   if (resource.path === "/roles") return ["name", "permissions", "updated_at"];
   if (resource.path === "/permissions") return ["name", "group", "description"];
   if (resource.path === "/streams") return ["name", "status", "auto_start_trigger", "discord_config_id", "updated_at"];
-  if (resource.path === "/stream-logs") return ["stream_name", "level", "message", "created_at", "stream_deleted_at"];
+  if (resource.path === "/stream-logs") return ["stream_name", "level", "message", "result", "created_at", "stream_deleted_at"];
   if (resource.path === "/audit-logs") return ["timestamp", "actor_username", "action", "result", "resource_type"];
   if (resource.path === "/service-health") return ["service_name", "service_type", "status", "health_status", "last_heartbeat_at"];
   if (resource.path === "/observability/incidents") return ["title", "severity", "status", "updated_at"];
@@ -286,6 +287,7 @@ function formatNestedValue(key: string, value: unknown, uiText: UICopy = japanes
 function formatScalarValue(key: string, value: string | number, timezone?: string, uiText: UICopy = japaneseCopy) {
   const raw = String(value);
   if (key === "action") return fixedPresentationText(auditActionLabel(raw), uiText);
+  if (key === "result" && raw === "request") return uiText("要求済み・反映未確認");
   if (key === "event_name") return valueLabels(uiText)[raw] || valueLabels(uiText)[raw.toLowerCase()] || fixedPresentationText(auditActionLabel(raw), uiText);
   if (key === "permissions") return permissionLabel(raw, uiText);
   if (key === "account_purpose") return fixedPresentationText(oauthAccountPurposeLabel({ account_purpose: raw }), uiText);

@@ -1,5 +1,15 @@
 // Fixed UI copy. Interpolated values retain their original meaning.
 export const messages = {
+  "フタ画像の表示・切替": "Show or switch cover image",
+  "フタ画像の非表示": "Hide cover image",
+  "配信ビジュアル設定を保存": "Save stream visual settings",
+  "配信枠を削除": "Delete stream slot",
+  "次の入室を待つ状態へ変更": "Wait for the next voice join",
+  "フタ画像プリセットを作成": "Create cover image preset",
+  "フタ画像プリセットを更新": "Update cover image preset",
+  "フタ画像プリセットを削除": "Delete cover image preset",
+  "要求済み・反映未確認": "Requested; result unconfirmed",
+
   "対象IDをコピー": "Copy target ID",
   "操作履歴": "Operation history",
   "Node報告・通信": "Node reports and communication",

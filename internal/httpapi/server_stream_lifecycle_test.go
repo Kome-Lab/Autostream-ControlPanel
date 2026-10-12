@@ -17,7 +17,7 @@ import (
 
 func TestStreamLifecycleEndpoints(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
-	if err := auth.AddUser(store.User{Username: "operator", Roles: []string{"stream_operator"}}, "correct horse battery", []string{"streams.read", "streams.create", "streams.start", "streams.stop", "streams.update", "streams.retry_upload", "logs.read", "archives.read"}); err != nil {
+	if err := auth.AddUser(store.User{Username: "operator", Roles: []string{"stream_operator"}}, "correct horse battery", []string{"services.assign", "workers.assign", "streams.read", "streams.create", "streams.start", "streams.stop", "streams.update", "streams.retry_upload", "logs.read", "archives.read"}); err != nil {
 		t.Fatal(err)
 	}
 	streams := store.NewMemoryStreamStore()
@@ -27,7 +27,7 @@ func TestStreamLifecycleEndpoints(t *testing.T) {
 	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithServiceDispatcher(dispatcher))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
-	createBody := bytes.NewBufferString(`{"name":"morning stream","discord_config_id":"` + config.ID + `","visual_settings":{"expected_revision":0,"discord_target":{"mode":"manual","guild_id":"1001","text_channel_id":"1002","voice_channel_id":"1003"}}}`)
+	createBody := bytes.NewBufferString(ui188CreatePayload(t, handler, `{"name":"morning stream","discord_config_id":"`+config.ID+`","visual_settings":{"expected_revision":0,"discord_target":{"mode":"manual","guild_id":"1001","text_channel_id":"1002","voice_channel_id":"1003"}}}`))
 	createReq := httptest.NewRequest(http.MethodPost, "/streams", createBody)
 	createReq.AddCookie(cookie)
 	createReq.Header.Set("X-CSRF-Token", csrf)

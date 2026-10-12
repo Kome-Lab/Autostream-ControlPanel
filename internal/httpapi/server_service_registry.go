@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/example/autostream-control-panel/internal/security"
 	"github.com/example/autostream-control-panel/internal/store"
 )
 
@@ -168,6 +169,10 @@ func (s *Server) assignService(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	current := currentFromContext(r.Context())
+	if existing.ServiceType == "worker" && !security.HasPermission(current.Permissions, "workers.assign") {
+		writeJSON(w, http.StatusForbidden, map[string]string{"code": "worker_assignment_permission_denied"})
+		return
+	}
 	service, err := s.services.AssignServiceToStreamGuarded(r.Context(), store.ServiceAssignmentMutation{ServiceID: existing.ServiceID, StreamID: body.StreamID, ActorUserID: current.User.ID, AssignmentRole: body.AssignmentRole})
 	if err != nil {
 		if errors.Is(err, store.ErrInvalidServiceAssignment) {
@@ -197,6 +202,10 @@ func (s *Server) unassignService(w http.ResponseWriter, r *http.Request) {
 	}
 	previousStreamID := existing.CurrentStreamID
 	current := currentFromContext(r.Context())
+	if existing.ServiceType == "worker" && !security.HasPermission(current.Permissions, "workers.unassign") {
+		writeJSON(w, http.StatusForbidden, map[string]string{"code": "worker_unassignment_permission_denied"})
+		return
+	}
 	service, err := s.services.UnassignServiceFromStreamGuarded(r.Context(), store.ServiceUnassignmentMutation{ServiceID: existing.ServiceID, ActorUserID: current.User.ID})
 	if err != nil {
 		if code, status, handled := serviceAssignmentHTTPError(err, true); handled {
