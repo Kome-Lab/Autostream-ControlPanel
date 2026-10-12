@@ -4,7 +4,7 @@ import test from "node:test";
 import type { BrowserHarness } from "./helpers/browser-harness.mts";
 import { nativeConfirmationClick, waitForConfirmationClosed, waitForConfirmationIntent, withConfirmationBrowserFixture } from "./helpers/ui-foundation-confirmation-browser-harness.mts";
 
-test("high-risk and compatibility confirmations preserve browser focus, literal input, state, and intent boundaries", async (t) => {
+test("operation confirmations preserve browser focus, button-only confirmation, state, and intent boundaries", async (t) => {
   await withConfirmationBrowserFixture(async ({ baseUrl, browser }) => {
     await browser.setViewport(1100, 800);
     browser.clearConsoleErrors();
@@ -37,36 +37,10 @@ test("high-risk and compatibility confirmations preserve browser focus, literal 
 
     await browser.navigate(`${baseUrl}/?scenario=typed&locale=en`);
     await nativeConfirmationClick(browser, "#typed-trigger");
-    await browser.waitFor("document.querySelector('[data-confirmation-token-input]') !== null", Boolean, "typed input visible");
-    assert.equal(await browser.evaluate("document.activeElement?.hasAttribute('data-confirmation-token-input')"), true);
-    await browser.fillSelector("[data-confirmation-token-input]", "worker alpha");
-    assert.equal(await browser.evaluate("document.querySelector('[data-confirm-action]')?.hasAttribute('disabled')"), true);
-    const mismatch = await browser.evaluate<{ describedBy: string | null; visible: boolean }>(`(() => {
-      const input = document.querySelector('[data-confirmation-token-input]');
-      const describedBy = input?.getAttribute('aria-describedby') || null;
-      return { describedBy, visible: Boolean(describedBy && document.getElementById(describedBy)?.textContent) };
-    })()`);
-    assert.ok(mismatch.describedBy);
-    assert.equal(mismatch.visible, true);
-    await browser.fillSelector("[data-confirmation-token-input]", "Worker Alpha ");
-    assert.equal(await browser.evaluate("document.querySelector('[data-confirm-action]')?.hasAttribute('disabled')"), true);
-    const paste = await browser.evaluate<{ allowed: boolean; defaultPrevented: boolean }>(`(() => {
-      const input = document.querySelector('[data-confirmation-token-input]');
-      if (!(input instanceof HTMLInputElement)) return { allowed: false, defaultPrevented: true };
-      const pasteEvent = new InputEvent('beforeinput', {
-        bubbles: true,
-        cancelable: true,
-        inputType: 'insertFromPaste',
-        data: 'Worker Alpha',
-      });
-      const allowed = input.dispatchEvent(pasteEvent);
-      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
-      setter?.call(input, 'Worker Alpha');
-      input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertFromPaste', data: 'Worker Alpha' }));
-      return { allowed, defaultPrevented: pasteEvent.defaultPrevented };
-    })()`);
-    assert.deepEqual(paste, { allowed: true, defaultPrevented: false });
-    await browser.waitFor("!document.querySelector('[data-confirm-action]')?.hasAttribute('disabled')", Boolean, "exact pasted token enables confirm");
+    await browser.waitFor("document.querySelectorAll('[role=alertdialog]').length", (value: number) => value === 1, "compatibility operation dialog visible");
+    assert.equal(await browser.evaluate("document.querySelectorAll('[data-confirmation-token-input]').length"), 0, "UI188 removes operational text entry");
+    assert.equal(await browser.evaluate("document.activeElement?.getAttribute('data-slot')"), "alert-dialog-cancel");
+    await browser.waitFor("!document.querySelector('[data-confirm-action]')?.hasAttribute('disabled')", Boolean, "button confirmation ready");
     await nativeConfirmationClick(browser, "[data-confirm-action]");
     await browser.pressKey("Enter");
     await browser.pressKey("Enter");

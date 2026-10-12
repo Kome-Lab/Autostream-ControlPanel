@@ -240,7 +240,22 @@ func TestMariaDBControlPlatformFeatureMigrationAndPersistence(t *testing.T) {
 		t.Fatal(err)
 	}
 	visuals := streamvisual.NewMariaDBRepository(db, media)
-	if _, _, err := visuals.CreateStream(ctx, userID, streamvisual.Create{Name: "unselected draft claim", UploadSessionID: session.ID}); !errors.Is(err, streamvisual.ErrInvalidSettings) {
+	services := store.NewMariaDBAuthStore(db)
+	assignments := store.StreamCreateAssignments{EncoderServiceID: "encoder-" + userID, WorkerServiceID: "worker-" + userID}
+	for _, role := range []struct{ id, kind string }{{assignments.EncoderServiceID, "encoder_recorder"}, {assignments.WorkerServiceID, "worker"}} {
+		token, err := services.CreateServiceToken(ctx, role.kind, []string{"service.register"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		registration := store.ServiceRegistration{ServiceID: role.id, ServiceType: role.kind, ServiceName: role.id, PublicURL: "https://" + role.id + ".example.com", Version: "ui188", Capabilities: map[string]any{"output_relay_mode": "direct"}}
+		if _, err = services.PrecreateService(ctx, token, registration); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = services.RegisterService(ctx, token, registration); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, _, err := visuals.CreateStream(ctx, userID, streamvisual.Create{Name: "unselected draft claim", UploadSessionID: session.ID, Assignments: assignments}); !errors.Is(err, streamvisual.ErrInvalidSettings) {
 		t.Fatalf("unselected draft was claimable: %v", err)
 	}
 	unselectedAsset, err := media.GetAsset(ctx, userID, background.ID)
@@ -248,7 +263,7 @@ func TestMariaDBControlPlatformFeatureMigrationAndPersistence(t *testing.T) {
 		t.Fatalf("unselected draft claim rollback=%#v err=%v", unselectedAsset, err)
 	}
 	invalid := streamvisual.Update{ExpectedRevision: 0, BackgroundMode: setVisualString("image"), BackgroundAssetID: setVisualString(background.ID), BackgroundVariantID: setVisualString(backgroundVariant.ID), HeaderTitleMode: setVisualString("custom"), HeaderTitleValue: setVisualString("unsafe\u202etitle")}
-	if _, _, err := visuals.CreateStream(ctx, userID, streamvisual.Create{Name: "invalid draft claim", UploadSessionID: session.ID, Settings: invalid}); !errors.Is(err, streamvisual.ErrInvalidSettings) {
+	if _, _, err := visuals.CreateStream(ctx, userID, streamvisual.Create{Name: "invalid draft claim", UploadSessionID: session.ID, Settings: invalid, Assignments: assignments}); !errors.Is(err, streamvisual.ErrInvalidSettings) {
 		t.Fatalf("invalid create=%v", err)
 	}
 	assetAfterRollback, err := media.GetAsset(ctx, userID, background.ID)
@@ -260,6 +275,7 @@ func TestMariaDBControlPlatformFeatureMigrationAndPersistence(t *testing.T) {
 	// DATETIME(6). Derive the oracle from that schema authority.
 	scheduledStart := now.Add(2 * time.Hour).Truncate(time.Second)
 	createdStream, createdSettings, err := visuals.CreateStream(ctx, userID, streamvisual.Create{
+		Assignments:     assignments,
 		Name:            "Bundle 4 visual stream",
 		UploadSessionID: session.ID,
 		Settings: streamvisual.Update{ExpectedRevision: 0, BackgroundMode: setVisualString("image"), BackgroundAssetID: setVisualString(background.ID), BackgroundVariantID: setVisualString(backgroundVariant.ID), HeaderTitleMode: setVisualString("custom"), HeaderTitleValue: setVisualString("Program title"), DiscordTarget: setDiscordTarget(streamvisual.DiscordTarget{

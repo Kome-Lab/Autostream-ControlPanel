@@ -267,8 +267,14 @@ jobs:
         shell: bash
         env:
           AUTOSTREAM_MARIADB_TEST_DSN: autostream_ci:autostream-ci-password@tcp(127.0.0.1:3306)/autostream_ci?parseTime=true
+          AUTOSTREAM_MARIADB_CI_CONTAINER: ${{ job.services.mariadb.id }}
+          AUTOSTREAM_MARIADB_CI_ROOT_PASSWORD: autostream-ci-root-password
         run: |
           set -euo pipefail
+          # The existing helper creates a random isolated schema; keep application
+          # credentials for the test and grant only that disposable schema prefix.
+          docker exec -e MYSQL_PWD="${AUTOSTREAM_MARIADB_CI_ROOT_PASSWORD}" "${AUTOSTREAM_MARIADB_CI_CONTAINER}" \
+            mariadb -uroot -e 'GRANT ALL ON `autostream077\_claim\_%`.* TO '\''autostream_ci'\''@'\''%'\'';'
           result="${RUNNER_TEMP}/ui188-stream-operations.json"
           go test -mod=readonly -p 1 ./internal/httpapi -run '^TestUI188MariaDBAtomicCreateCoverSnapshotsPreviewAndStopReceipt$' -count=1 -json | tee "${result}"
           jq -s -e '([.[] | select(.Action=="skip" or .Action=="fail")]|length)==0 and ([.[]|select(.Action=="pass" and .Test=="TestUI188MariaDBAtomicCreateCoverSnapshotsPreviewAndStopReceipt")]|length)==1' "${result}" >/dev/null
@@ -646,7 +652,7 @@ jobs:
             -timeout=15m \
             > "${targeted_log}" 2>&1
           targeted_status=$?
-          go test -race -mod=readonly -p 1 ./internal/httpapi \
+          go test -json -race -mod=readonly -p 1 ./internal/httpapi \
             -count=1 \
             -timeout=20m \
             > "${full_race_log}" 2>&1
@@ -665,6 +671,8 @@ jobs:
           targeted_log_bytes="$(wc -c < "${targeted_log}")"
           full_race_log_bytes="$(wc -c < "${full_race_log}")"
           normal_log_bytes="$(wc -c < "${normal_log}")"
+          failed_tests="$(jq -Rr 'fromjson? | select(.Action == "fail" and ((.Test // "") != "")) | .Test | split("/")[0] | select(test("^Test[A-Za-z0-9_]+$"))' "${full_race_log}" | sort -u)"
+          failed_test_count="$(printf '%s\n' "${failed_tests}" | awk 'NF {count++} END {print count+0}')"
           {
             printf 'status=current_source_checks_completed\n'
             printf 'current_sha=%s\n' "${current_sha}"
@@ -676,6 +684,12 @@ jobs:
             printf 'full_package_race_exit=%s\n' "${full_race_status}"
             printf 'full_package_race_warning_count=%s\n' "${full_race_warning_count}"
             printf 'full_package_race_raw_log_bytes=%s\n' "${full_race_log_bytes}"
+            printf 'full_package_failed_test_count=%s\n' "${failed_test_count}"
+            printf '%s\n' "${failed_tests}" | head -n 20 | while IFS= read -r test_name; do
+              [[ -z "${test_name}" ]] || printf 'full_package_failed_test=%s\n' "${test_name}"
+            done
+            printf 'failed_test_names_truncated=%s\n' "$([[ "${failed_test_count}" -gt 20 ]] && echo true || echo false)"
+            printf 'failure_without_test_event=%s\n' "$([[ "${full_race_status}" -ne 0 && "${failed_test_count}" -eq 0 ]] && echo true || echo false)"
             printf 'normal_package_exit=%s\n' "${normal_status}"
             printf 'normal_package_raw_log_bytes=%s\n' "${normal_log_bytes}"
             printf 'raw_logs_retained=false\n'

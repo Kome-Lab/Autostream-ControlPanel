@@ -214,7 +214,7 @@
       },
       {
         "path": "web/tests/helpers/browser-harness.mts",
-        "sha256": "6f86a5babb7189b89a7f183ab647e5f13cbae5d9d0297ba4edebccd07edf0cdb",
+        "sha256": "10c4eb5bdbd96ae23a53b3aceacae8861ef060314dce72f1fe6a1aa0770ba2a5",
         "symbols": [
           "BrowserHarness",
           "createCommandSender",
@@ -224,7 +224,7 @@
           "waitForChildExit",
           "waitForMapCount"
         ],
-        "physical_lines": 796
+        "physical_lines": 798
       },
       {
         "path": "web/tests/helpers/browser-lifecycle-source-paths.mts",
@@ -1336,7 +1336,7 @@
     "destinations": [
       {
         "path": "web/tests/helpers/browser-harness.mts",
-        "sha256": "6f86a5babb7189b89a7f183ab647e5f13cbae5d9d0297ba4edebccd07edf0cdb",
+        "sha256": "10c4eb5bdbd96ae23a53b3aceacae8861ef060314dce72f1fe6a1aa0770ba2a5",
         "symbols": [
           "BrowserHarness",
           "createCommandSender",
@@ -1346,7 +1346,7 @@
           "waitForChildExit",
           "waitForMapCount"
         ],
-        "physical_lines": 796
+        "physical_lines": 798
       },
       {
         "path": "web/tests/helpers/browser-next-server.mts",
@@ -5097,7 +5097,7 @@
     "destinations": [
       {
         "path": "web/tests/helpers/browser-harness.mts",
-        "sha256": "6f86a5babb7189b89a7f183ab647e5f13cbae5d9d0297ba4edebccd07edf0cdb",
+        "sha256": "10c4eb5bdbd96ae23a53b3aceacae8861ef060314dce72f1fe6a1aa0770ba2a5",
         "symbols": [
           "BrowserHarness",
           "assertNoFatalError",
@@ -5148,7 +5148,7 @@
           "waitForRequestHandlersIdle",
           "waitForResponseCount"
         ],
-        "physical_lines": 796
+        "physical_lines": 798
       },
       {
         "path": "web/tests/helpers/browser-next-server.mts",
@@ -5283,7 +5283,7 @@
       },
       {
         "path": "web/tests/helpers/browser-harness.mts",
-        "sha256": "6f86a5babb7189b89a7f183ab647e5f13cbae5d9d0297ba4edebccd07edf0cdb",
+        "sha256": "10c4eb5bdbd96ae23a53b3aceacae8861ef060314dce72f1fe6a1aa0770ba2a5",
         "symbols": [
           "BrowserHarness",
           "createCommandSender",
@@ -5293,7 +5293,7 @@
           "waitForChildExit",
           "waitForMapCount"
         ],
-        "physical_lines": 796
+        "physical_lines": 798
       },
       {
         "path": "web/tests/helpers/browser-next-server.mts",

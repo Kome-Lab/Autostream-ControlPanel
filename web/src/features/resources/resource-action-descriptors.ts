@@ -62,7 +62,7 @@ const row = (
   fixedToken?: string,
 ): ResourceActionTemplate => Object.freeze({
   id, wave, operation, route, sourcePath, method, basePermission, risk,
-  confirmation: ["create", "update"].includes(operation) && !secretInput ? "none" : confirmation, duplicateScope, auditAction, secretInput, ...(fixedToken ? { fixedToken } : {}),
+  confirmation, duplicateScope, auditAction, secretInput, ...(fixedToken ? { fixedToken } : {}),
 });
 
 export const resourceActionDescriptors: readonly ResourceActionTemplate[] = Object.freeze([

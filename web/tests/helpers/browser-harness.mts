@@ -13,6 +13,8 @@ import { asError, delay, withTimeout } from "./browser-process-timing.mts";
 export type StubResponse = {
   status?: number;
   body?: unknown;
+  bodyBase64?: string;
+  contentType?: string;
   delayMs?: number;
   waitUntil?: Promise<void>;
   requiredResponse?: boolean;
@@ -641,8 +643,8 @@ export class BrowserHarness {
     const settled = await this.settleFetchRequest(requestId, "Fetch.fulfillRequest", {
       requestId,
       responseCode: responseStatus,
-      responseHeaders: [{ name: "content-type", value: "application/json; charset=utf-8" }],
-      body: Buffer.from(body).toString("base64"),
+      responseHeaders: [{ name: "content-type", value: response.contentType ?? "application/json; charset=utf-8" }],
+      body: response.bodyBase64 ?? Buffer.from(body).toString("base64"),
     });
     if (!settled) return;
     this.responses.set(pathname, (this.responses.get(pathname) || 0) + 1);

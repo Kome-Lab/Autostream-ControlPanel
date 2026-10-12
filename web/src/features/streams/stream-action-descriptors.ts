@@ -71,7 +71,7 @@ export function buildStreamActionDescriptor(intent: StreamActionIntent): ActionD
   const templateValue = streamActionTemplate(intent.id);
   const target = streamActionTarget(intent);
   if (!templateValue || !target || !streamActionRequest(intent)) return undefined;
-  const none = ["STR-01", "STR-02", "STR-03", "STR-08", "STR-09", "STR-11"].includes(intent.id);
+  const none = ["STR-01", "STR-02", "STR-03", "STR-09", "STR-11"].includes(intent.id);
   return Object.freeze({
     id: intent.id,
     labelKey: labelKey(intent.id),

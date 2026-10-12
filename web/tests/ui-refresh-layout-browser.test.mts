@@ -355,6 +355,9 @@ test("v2 preset screens enforce permissions, distinguish failed and empty reads,
     if (property !== "setRouteResolver") return Reflect.get(target, property, receiver);
     return (fallback: RouteResolver) => target.setRouteResolver(request => {
       const path = new URL(request.url).pathname.replace(/\/$/, "");
+      if (request.method === "GET" && path === `/video-cover-presets/${preset.id}/media-assets/${preset.asset_variant_id}`) {
+        return { contentType: "image/png", bodyBase64: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==" };
+      }
       if (request.method === "PUT" && path === `/video-cover-presets/${preset.id}`) {
         writes.push({ method: request.method, path, body: JSON.parse(request.postData || "null") });
         // A concurrent update occurs after the final authority read, at dispatch.
@@ -443,6 +446,7 @@ test("v2 preset screens enforce permissions, distinguish failed and empty reads,
   await navigate("/admin/overlay/#video-cover-presets");
   await clickVisible(browser, 'main button', /^Edit Browser cover preset$/);
   await browser.waitFor(`document.querySelector('[role="dialog"] input[type="text"]')?.value === 'Browser cover preset'`, Boolean, "preset editor opens with its saved baseline", 5_000);
+  await browser.waitFor(`(() => { const image = document.querySelector('[role="dialog"] img'); return image instanceof HTMLImageElement && image.complete && image.naturalWidth > 0; })()`, Boolean, "saved preview is decoded before update", 5_000);
   assert.equal(await browser.evaluate(`document.querySelector('[role="dialog"] h2')?.textContent.trim()`), "Edit Video cover presets", "the editor title must have a readable action and resource name");
   assert.equal(await browser.evaluate(`document.querySelector('[role="dialog"] button[type="submit"]')?.textContent.trim()`), "Update", "the submit button describes an action, not a successful outcome");
   assert.equal(await browser.evaluate(`document.querySelector('[role="dialog"] input[type="file"]')?.disabled`), true, "preset-only update permission cannot upload stream media");
@@ -450,7 +454,8 @@ test("v2 preset screens enforce permissions, distinguish failed and empty reads,
   await clickVisible(browser, editInput);
   await browser.fillSelector(editInput, "Unsaved conflict draft");
   await clickVisible(browser, '[role="dialog"] button[type="submit"]', /^Update$/);
-  await browser.waitFor(`document.querySelector('[role="alertdialog"]') !== null`, Boolean, "update requires confirmation", 5_000);
+  await browser.waitFor(`document.querySelector('[role="alertdialog"]') !== null`, Boolean, "update requires button confirmation", 5_000);
+  assert.equal(await browser.evaluate(`document.querySelectorAll('[data-confirmation-token-input]').length`), 0, "preset update does not request operational text entry");
   await clickVisible(browser, '[role="alertdialog"] button[data-confirm-action]', /^Run$/);
   await browser.waitForResponseCount(`/video-cover-presets/${preset.id}`, 1, 5_000);
   await browser.waitFor(`document.querySelector('[role="dialog"]')?.textContent.includes('The resource has changed.')`, Boolean, "revision conflict is disclosed in the retained editor", 5_000);

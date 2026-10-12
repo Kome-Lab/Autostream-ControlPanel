@@ -295,6 +295,7 @@ function fixtureComponentSource() {
     const invalidDescriptor: ActionDescriptor = {
       ...base,
       risk: "critical",
+      revalidation: { kind: "none" },
       confirmation: {
         mode: "consequence",
         consequenceKey: "dangerousNotice",
