@@ -35,13 +35,40 @@ function readInventory(name: string): readonly ActionInventoryRow[] {
   return Object.freeze(rows);
 }
 
-// Keep historical provenance separate; every current gate uses the full union.
+// Historical snapshots remain immutable; current confirmation changes are an
+// independent, finite specification, never derived from implementation rows.
 export const frozenActionInventory = readInventory("ui-foundation-action-inventory.jsonl");
 export const v2ActionInventory = readInventory("ui-foundation-action-inventory-v2.jsonl");
-export const currentActionInventory = Object.freeze(
-  [...frozenActionInventory, ...v2ActionInventory].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
-);
-assert.equal(new Set(currentActionInventory.map(({ id }) => id)).size, currentActionInventory.length, "current inventory: duplicate action ID");
+const currentConfirmationChanges: Readonly<Record<string, string>> = Object.freeze({
+  "RES-13": "T(deepgram_api_key)",
+  "RES-24": "T(provider label)",
+  "RES-25": "T(provider label)",
+  "RES-32": "T(public username)",
+  "RES-34": "T(role label)",
+  "RES-35": "T(role label)",
+  "RES-40": "T(SECURITY POLICY)",
+});
+
+export function buildCurrentActionInventory(
+  frozen: readonly ActionInventoryRow[],
+  v2: readonly ActionInventoryRow[],
+): readonly ActionInventoryRow[] {
+  const historical = [...frozen, ...v2];
+  for (const [id, confirmation] of Object.entries(currentConfirmationChanges)) {
+    const matches = historical.filter((row) => row.id === id);
+    assert.equal(matches.length, 1, `${id} current confirmation source must be unique`);
+    assert.equal(matches[0].confirmation, confirmation, `${id} frozen confirmation before current change`);
+  }
+  assert.equal(frozen.length, 100, "frozen inventory: 100 actions");
+  assert.equal(v2.length, 6, "v2 inventory: six actions");
+  const current = historical.map((row) => Object.hasOwn(currentConfirmationChanges, row.id)
+    ? Object.freeze({ ...row, confirmation: "C" }) : row)
+    .sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+  assert.equal(new Set(current.map(({ id }) => id)).size, current.length, "current inventory: duplicate action ID");
+  return Object.freeze(current);
+}
+
+export const currentActionInventory = buildCurrentActionInventory(frozenActionInventory, v2ActionInventory);
 
 export function assertResourceActionInventory(
   rows: readonly ActionInventoryRow[],

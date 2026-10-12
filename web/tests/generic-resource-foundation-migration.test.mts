@@ -6,6 +6,7 @@ import { assertResourceActionInventory, currentActionInventory } from "./helpers
 
 import type { ResourceActionIntent, ResourceActionTemplate } from "../src/features/resources/resource-action-descriptors.ts";
 import type { ResourceActionStateSnapshot } from "../src/features/resources/resource-action-controller.ts";
+import type { ActionDescriptor } from "../src/lib/foundation/actions/contracts.ts";
 
 const resolverSource = [
   "let webRootURL;",
@@ -89,15 +90,47 @@ test("payload-aware OAuth and User permission builders distinguish omitted, empt
 test("critical confirmations use only public labels or the two frozen fixed phrases", () => {
   const critical = resourceActionDescriptors.filter(({ risk }) => risk === "critical");
   assert.deepEqual(critical.map(({ id }) => id), ["RES-13", "RES-24", "RES-25", "RES-32", "RES-34", "RES-35", "RES-40"]);
+  const expectedPermissions: Readonly<Record<string, string>> = {
+    "RES-13": "secrets.update", "RES-24": "integrations.update", "RES-25": "integrations.delete",
+    "RES-32": "users.delete", "RES-34": "roles.update", "RES-35": "roles.delete", "RES-40": "system_settings.update",
+  };
   for (const template of critical) {
     const descriptor = buildResourceActionDescriptor(intentFor(template));
-    assert.equal(descriptor?.confirmation.mode, "typed-target", template.id);
-    assert.notEqual(descriptor?.target.publicLabel, "row/a", template.id);
-    assert.doesNotMatch(descriptor?.target.publicLabel || "", /secret|token|password/i, template.id);
+    const permission = expectedPermissions[template.id];
+    assertCriticalButtonDescriptor(descriptor, permission);
+    assert.ok(descriptor);
+    for (const confirmation of [undefined, { mode: "none", requireSubmitRevalidation: true }, {
+      mode: "typed-target", consequenceKey: "dangerousNotice", typedToken: { kind: "fixed-ascii", value: "CONFIRM" }, requireSubmitRevalidation: true,
+    }]) {
+      assert.throws(() => assertCriticalButtonDescriptor({ ...descriptor, confirmation } as ActionDescriptor, permission), new RegExp(`${template.id} confirmation`));
+    }
+    assert.throws(() => assertCriticalButtonDescriptor({ ...descriptor, risk: "high" }, permission), new RegExp(`${template.id} critical risk`));
+    assert.throws(() => assertCriticalButtonDescriptor({ ...descriptor, permissions: { kind: "none" } }, permission), new RegExp(`${template.id} permission`));
+    assert.throws(() => assertCriticalButtonDescriptor({ ...descriptor, confirmation: { mode: "consequence", consequenceKey: "dangerousNotice", requireSubmitRevalidation: false } }, permission), new RegExp(`${template.id} submit revalidation`));
+    assert.throws(() => assertCriticalButtonDescriptor({ ...descriptor, target: { ...descriptor.target, publicLabel: "row/a" } }, permission), new RegExp(`${template.id} safe public label`));
+    for (const confirmation of [undefined, "none", "typed-label", "typed-fixed"] as const) {
+      const mutated = resourceActionDescriptors.map((row) => row.id === template.id ? { ...row, confirmation } : row);
+      assert.throws(() => assertResourceActionInventory(inventory, mutated as readonly ResourceActionTemplate[]), new RegExp(`${template.id} confirmation`));
+    }
   }
+  // Frozen phrases remain historical metadata; no current descriptor requests input.
   assert.equal(resourceActionDescriptors.find(({ id }) => id === "RES-13")?.fixedToken, "deepgram_api_key");
   assert.equal(resourceActionDescriptors.find(({ id }) => id === "RES-40")?.fixedToken, "SECURITY POLICY");
 });
+
+function assertCriticalButtonDescriptor(descriptor: ActionDescriptor | undefined, permission: string) {
+  assert.ok(descriptor);
+  const id = descriptor.id;
+  assert.equal(descriptor.risk, "critical", `${id} critical risk`);
+  assert.equal(descriptor.confirmation?.mode, "consequence", `${id} confirmation`);
+  assert.equal(Object.hasOwn(descriptor.confirmation, "typedToken"), false, `${id} no typed token`);
+  assert.equal(descriptor.confirmation.requireSubmitRevalidation, true, `${id} submit revalidation`);
+  assert.deepEqual(descriptor.permissions, { kind: "all", permissions: [permission] }, `${id} permission`);
+  const expectedLabel = id === "RES-13" ? "Deepgram API key" : id === "RES-40" ? "Security policy" : "Public Resource";
+  assert.equal(descriptor.target.publicLabel, expectedLabel, `${id} safe public label`);
+  assert.doesNotMatch(JSON.stringify(descriptor.confirmation), /row\/a|deepgram_api_key|SECURITY POLICY/, `${id} no secret or internal reference`);
+  assert.doesNotMatch(descriptor.target.publicLabel || "", /secret|token|password/i, `${id} safe label`);
+}
 
 test("wildcard permits actions while permission refresh and stale rows fail closed", () => {
   let permissions: readonly string[] | undefined = ["*"];

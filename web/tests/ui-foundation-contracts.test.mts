@@ -250,7 +250,19 @@ test("the v2 extension uses the same typed schema and current acceptance include
   assert.equal(currentActionInventory.length, 106);
   assert.equal(new Set(currentActionInventory.map(({ id }) => id)).size, 106);
   assert.deepEqual(currentActionInventory.map(({ id }) => id), currentActionInventory.map(({ id }) => id).sort());
-  assert.deepEqual(currentActionInventory.filter(({ migrationWave }) => migrationWave !== "v2"), frozenActionInventory);
+  const buttonConfirmations = new Map([
+    ["RES-13", "T(deepgram_api_key)"], ["RES-24", "T(provider label)"],
+    ["RES-25", "T(provider label)"], ["RES-32", "T(public username)"],
+    ["RES-34", "T(role label)"], ["RES-35", "T(role label)"], ["RES-40", "T(SECURITY POLICY)"],
+  ]);
+  const currentHistoricalRows = currentActionInventory.filter(({ migrationWave }) => migrationWave !== "v2");
+  assert.deepEqual(currentHistoricalRows, frozenActionInventory.map((row) => {
+    const before = buttonConfirmations.get(row.id);
+    if (before === undefined) return row;
+    assert.equal(row.confirmation, before, `${row.id} frozen confirmation`);
+    return { ...row, confirmation: "C" };
+  }));
+  assert.deepEqual(currentHistoricalRows.filter((row, index) => row.confirmation !== frozenActionInventory[index].confirmation).map(({ id }) => id), [...buttonConfirmations.keys()]);
   assert.deepEqual(currentActionInventory.filter(({ migrationWave }) => migrationWave === "v2"), v2ActionInventory);
   assert.equal(currentActionInventory.filter(({ userTriggered }) => userTriggered === "yes").length, 105);
   assert.deepEqual(currentActionInventory.filter(({ userTriggered }) => userTriggered !== "yes").map(({ id }) => id), ["STR-11"]);

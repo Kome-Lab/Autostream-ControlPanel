@@ -6,6 +6,7 @@ import { resourceActionDescriptors } from "../src/features/resources/resource-ac
 import { requiredOperationSuiteFiles } from "./helpers/run-ui-foundation-operations.mts";
 import {
   assertResourceActionInventory,
+  buildCurrentActionInventory,
   currentActionInventory as inventory,
   frozenActionInventory,
   v2ActionInventory,
@@ -48,6 +49,28 @@ test("final UI Foundation denominator is the frozen 100 plus six v2 actions, exa
   assert.equal(inventory.filter(({ migrationWave, id }) => migrationWave === "3B" && id.startsWith("APP-")).length, 2, "APP 2/2");
   assert.deepEqual(inventory.filter(({ migrationWave }) => migrationWave === "v2"), v2ActionInventory);
   assert.deepEqual(v2ActionInventory.map(({ id }) => id), ["RES-41", "RES-42", "RES-43", "RES-44", "RES-45", "RES-46"]);
+
+  const historical = [...frozenActionInventory, ...v2ActionInventory].sort((a, b) => a.id.localeCompare(b.id));
+  const expectedChanges = [
+    ["RES-13", "T(deepgram_api_key)"], ["RES-24", "T(provider label)"],
+    ["RES-25", "T(provider label)"], ["RES-32", "T(public username)"],
+    ["RES-34", "T(role label)"], ["RES-35", "T(role label)"], ["RES-40", "T(SECURITY POLICY)"],
+  ] as const;
+  const changed = historical.filter((row, index) => row !== inventory[index]);
+  assert.deepEqual(changed.map(({ id, confirmation }) => [id, confirmation]), expectedChanges);
+  for (const [index, before] of historical.entries()) {
+    const after = inventory[index];
+    assert.equal(Object.isFrozen(before), true, `${before.id} historical row frozen`);
+    assert.equal(Object.isFrozen(after), true, `${before.id} current row frozen`);
+    assert.deepEqual(after, changed.includes(before) ? { ...before, confirmation: "C" } : before, `${before.id} only confirmation may change`);
+  }
+  for (const rows of [frozenActionInventory, v2ActionInventory, inventory]) assert.equal(Object.isFrozen(rows), true);
+  for (const [id] of expectedChanges) {
+    const changedOldValue = frozenActionInventory.map((row) => row.id === id ? { ...row, confirmation: "C" } : row);
+    assert.throws(() => buildCurrentActionInventory(changedOldValue, v2ActionInventory), new RegExp(`${id} frozen confirmation before current change`));
+    assert.throws(() => buildCurrentActionInventory(frozenActionInventory.filter((row) => row.id !== id), v2ActionInventory), new RegExp(`${id} current confirmation source must be unique`));
+    assert.throws(() => buildCurrentActionInventory([...frozenActionInventory, frozenActionInventory.find((row) => row.id === id)!], v2ActionInventory), new RegExp(`${id} current confirmation source must be unique`));
+  }
 });
 
 test("typed implementation authorities own every canonical action ID exactly once", () => {
