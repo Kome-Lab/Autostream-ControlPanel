@@ -58,6 +58,7 @@ export function controlPlatformCoverState(
     applied_active: appliedActive,
     applied_revision: appliedRevision,
     asset_variant_id: "variant-cover",
+    applied_asset_variant_id: appliedActive ? "variant-cover" : undefined,
     last_error_code: status === "confirming" ? "transport_outcome_unknown" : "",
     status,
     pipeline_order: controlPlatformPipeline,
@@ -179,6 +180,8 @@ export function createBrowserRouteFixture(browser: BrowserHarness): BrowserRoute
     discord_snapshot_revision: 5,
     discord_preset_deleted: true,
     cover_source: "upload",
+    cover_variant_id: "variant-cover",
+    cover_candidates: [{ name: "保存済みフタ", source: "upload", asset_id: "asset-cover", variant_id: "variant-cover" }],
     cover_start_active: false,
     revision: 2,
   } },
@@ -209,6 +212,11 @@ export function createBrowserRouteFixture(browser: BrowserHarness): BrowserRoute
     if (pathname === "/auth/logout" && method === "POST") return fixture.logoutResponse;
     if (pathname === "/streams" && method === "GET") return { ...fixture.streamsResponse, requiredResponse: fixture.streamsResponse.requiredResponse ?? false };
     if (pathname === controlPlatformVisualPath && method === "GET") return { ...fixture.controlPlatformVisualResponse, requiredResponse: fixture.controlPlatformVisualResponse.requiredResponse ?? false };
+		if (pathname === `/streams/${controlPlatformStream.id}/media-assets/variant-cover` && method === "GET") return {
+      contentType: "image/png",
+      bodyBase64: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==",
+      requiredResponse: false,
+    };
 		if (pathname === controlPlatformCoverPath) {
 			fixture.controlPlatformCoverMethods.push(method);
 			if (method === "GET") return { ...fixture.controlPlatformCoverResponse, requiredResponse: fixture.controlPlatformCoverResponse.requiredResponse ?? false };

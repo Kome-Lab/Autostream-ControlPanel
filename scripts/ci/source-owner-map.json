@@ -1381,7 +1381,7 @@
       },
       {
         "path": "web/tests/ui-browser-fixture.mts",
-        "sha256": "a7e7ada0a5063101f9fee5ee6d23a744ad7f2883b0892b946485a27acf7c8dfd",
+        "sha256": "d662ffb7b1cedc4f3cc7997778c08dfc948249dff2f6798816ad55ddcbd9f20e",
         "symbols": [
           "controlPlatformCoverState",
           "createBrowserRouteFixture",
@@ -1392,7 +1392,7 @@
           "versionResponse",
           "workerConfiguration"
         ],
-        "physical_lines": 245
+        "physical_lines": 253
       },
       {
         "path": "web/tests/ui-browser-navigation-helpers.mts",
@@ -1453,9 +1453,9 @@
       },
       {
         "path": "web/tests/ui-browser-visual-settings-scenarios.mts",
-        "sha256": "9103e854bbd10aa218b78c226ec3f5b64f745bf8741a51075773050e663b680a",
+        "sha256": "d788653f69fea8398cf3c9f934c9033e45d5181527ad098d9a93500b596f41bd",
         "symbols": [],
-        "physical_lines": 143
+        "physical_lines": 170
       },
       {
         "path": "web/tests/ui-browser-worker-configuration-scenarios.mts",

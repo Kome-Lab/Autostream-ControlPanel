@@ -22,6 +22,8 @@ export async function runVisualSettingsScenario(t: TestContext, browser: Browser
       discord_snapshot_revision: 5,
       discord_preset_deleted: true,
       cover_source: "upload",
+      cover_variant_id: "variant-cover",
+      cover_candidates: [{ name: "保存済みフタ", source: "upload", asset_id: "asset-cover", variant_id: "variant-cover" }],
       cover_start_active: false,
       revision: 2,
     } };
@@ -41,11 +43,18 @@ export async function runVisualSettingsScenario(t: TestContext, browser: Browser
     );
     const visualSnapshot = await browser.evaluate<{ title: boolean; layers: boolean; warning: boolean; showDisabled: boolean }>(`(() => ({
       title: document.body.textContent?.includes('配信ビジュアル見出し') === true,
-      layers: document.body.textContent?.includes('Base / Worker scene → Video Cover → Watermark → Encode → tee') === true,
+      layers: document.body.textContent?.includes('背景・参加者 → フタ画像 → ウォーターマーク → 配信・録画・プレビュー') === true
+        && document.querySelector('[data-watermark-layer="topmost"]') !== null,
       warning: document.body.textContent?.includes('保存済みsnapshotを継続します') === true,
       showDisabled: document.querySelector('button[aria-label="Video Coverを表示"]')?.hasAttribute('disabled') === true,
     }))()`);
     assert.deepEqual(visualSnapshot, { title: true, layers: true, warning: true, showDisabled: true });
+    await browser.waitFor(`(() => {
+      const image = document.querySelector('img[alt="選択したフタ画像の設定プレビュー"]');
+      return image instanceof HTMLImageElement && image.complete && image.naturalWidth > 0
+        && document.body.textContent?.includes('設定プレビュー（実映像は配信プレビューで確認）') === true
+        && document.querySelector('img[alt="Encoderで反映確認済みのフタ画像"]') === null;
+    })()`, Boolean, "saved settings image must decode without claiming Encoder application");
     await scrollSelectorIntoView(browser, 'button[aria-label="Video Coverを表示"]');
     await browser.clickSelector('button[aria-label="Video Coverを表示"]');
     await waitForAnimationFrames(browser);
@@ -96,7 +105,16 @@ export async function runVisualSettingsScenario(t: TestContext, browser: Browser
     await waitForAnimationFrames(browser);
     assert.equal(fixture.controlPlatformCoverMethods.filter((method) => method === "PUT").length, 1, "duplicate pending show must send zero additional requests");
     showRelease.resolve();
-    await browser.waitFor(`document.querySelector('[data-video-cover="applied"]') !== null`, Boolean, "applied cover did not render after authoritative result");
+    await browser.waitFor(`(() => {
+      const image = document.querySelector('img[alt="Encoderで反映確認済みのフタ画像"]');
+      const state = [...document.querySelectorAll('dt')].find((element) => element.textContent === 'Encoderの反映確認')?.nextElementSibling;
+      return image instanceof HTMLImageElement && image.complete && image.naturalWidth > 0 && state?.textContent === 'ON r2';
+    })()`, Boolean, "confirmed cover image must decode with authoritative Encoder revision");
+    const requestBody = fixture.controlPlatformCoverBodies[0];
+    assert.ok(requestBody !== null && typeof requestBody === "object");
+    const coverRequest = requestBody as Record<string, unknown>;
+    assert.equal(coverRequest.candidate_variant_id, "variant-cover");
+    assert.equal(coverRequest.expected_visual_revision, 2);
 
     fixture.controlPlatformCoverWriteResponse = { body: controlPlatformCoverState(false, 3, true, 2, "confirming") };
     await scrollSelectorIntoView(browser, 'button[aria-label="Video Coverを非表示"]');
@@ -112,7 +130,12 @@ export async function runVisualSettingsScenario(t: TestContext, browser: Browser
     })()`);
     assert.equal(confirmed, true, "hide confirmation action missing");
     await browser.waitForRequestCount(controlPlatformCoverPath, 2);
-    await browser.waitFor(`document.body.textContent?.includes('DesiredとAppliedは未一致です') === true`, Boolean, "ambiguous hide falsely appeared applied");
+    await browser.waitFor(`(() => {
+      const image = document.querySelector('img[alt="Encoderで反映確認済みのフタ画像"]');
+      const state = [...document.querySelectorAll('dt')].find((element) => element.textContent === 'Encoderの反映確認')?.nextElementSibling;
+      return document.body.textContent?.includes('要求した状態の反映は未確認です') === true
+        && image instanceof HTMLImageElement && image.complete && image.naturalWidth > 0 && state?.textContent === 'ON r2';
+    })()`, Boolean, "ambiguous hide must retain the last confirmed image and revision");
     assert.equal(fixture.controlPlatformCoverMethods.filter((method) => method === "PUT").length, 2);
 
     fixture.controlPlatformCoverResponse = { body: controlPlatformCoverState(false, 3, false, 3, "applied") };
@@ -127,6 +150,10 @@ export async function runVisualSettingsScenario(t: TestContext, browser: Browser
 		await browser.waitForRequestCount(controlPlatformCoverPath, 3);
 		assert.equal(fixture.controlPlatformCoverMethods.filter((method) => method === "PUT").length, 2, "reconciliation must refresh state without resending the mutation");
 		assert.equal(fixture.controlPlatformCoverMethods.filter((method) => method === "GET").length, 1, "reconciliation must perform one read-only state request");
+    await browser.waitFor(`(() => {
+      const state = [...document.querySelectorAll('dt')].find((element) => element.textContent === 'Encoderの反映確認')?.nextElementSibling;
+      return document.querySelector('img[alt="Encoderで反映確認済みのフタ画像"]') === null && state?.textContent === 'OFF r3';
+    })()`, Boolean, "confirmed hidden state must retire the applied image at the authoritative revision");
 
     fixture.controlPlatformCoverWriteResponse = { status: 403, body: { code: "permission_denied" } };
 		await browser.waitFor(
