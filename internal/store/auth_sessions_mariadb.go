@@ -47,11 +47,14 @@ func (s MariaDBAuthStore) GetSession(ctx context.Context, rawToken string) (Sess
 }
 
 func (s MariaDBAuthStore) RefreshSession(ctx context.Context, rawToken string, idleTTL time.Duration) (Session, error) {
+	return s.refreshSessionAt(ctx, rawToken, idleTTL, time.Now().UTC())
+}
+
+func (s MariaDBAuthStore) refreshSessionAt(ctx context.Context, rawToken string, idleTTL time.Duration, now time.Time) (Session, error) {
 	session, err := s.GetSession(ctx, rawToken)
 	if err != nil {
 		return Session{}, err
 	}
-	now := time.Now().UTC()
 	nextIdleExpiry := now.Add(idleTTL)
 	if nextIdleExpiry.After(session.AbsoluteExpiresAt) {
 		nextIdleExpiry = session.AbsoluteExpiresAt
@@ -65,7 +68,17 @@ func (s MariaDBAuthStore) RefreshSession(ctx context.Context, rawToken string, i
 		return Session{}, err
 	}
 	if affected == 0 {
-		return Session{}, ErrNotFound
+		// MariaDB reports changed rows. A same-second refresh can be valid
+		// without changing the precision-zero expiry. Re-read the same token,
+		// retaining the UPDATE's strict expiry predicates and revocation fence.
+		current, readErr := s.GetSession(ctx, rawToken)
+		if readErr != nil {
+			return Session{}, readErr
+		}
+		if !current.IdleExpiresAt.After(now) || !current.AbsoluteExpiresAt.After(now) {
+			return Session{}, ErrNotFound
+		}
+		return current, nil
 	}
 	session.IdleExpiresAt = nextIdleExpiry
 	return session, nil

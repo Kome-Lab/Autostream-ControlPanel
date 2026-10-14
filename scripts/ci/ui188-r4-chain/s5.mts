@@ -1,0 +1,68 @@
+import assert from "node:assert/strict";
+import {readFileSync,writeFileSync} from "node:fs";
+import {resolve} from "node:path";
+import {RealBrowser} from "./real_browser.mts";
+import {configureNativeZoom} from "./native_zoom.mts";
+import {fileURLToPath} from "node:url";
+const root=resolve(process.env.UI188_EVIDENCE_DIRECTORY!),caseID=process.env.UI188_PROBE_ATTEMPT!,attempt=process.env.UI188_S5_ATTEMPT||"1";
+const credentials=JSON.parse(readFileSync(process.env.UI188_TEST_CREDENTIALS!,"utf8"));
+const live=JSON.parse(readFileSync(resolve(root,"acceptance-live-"+caseID+".json"),"utf8"));
+const browser=await RealBrowser.launch(), base="http://127.0.0.1:18841";
+const result:Record<string,unknown>={},dialogMessages:string[]=[];
+const save=(name:string,value:unknown)=>writeFileSync(resolve(root,name),JSON.stringify(value,null,2)+"\n");
+const image='[role="dialog"] img[alt="選択したフタ画像のプレビュー"]';
+const draftImage=fileURLToPath(new URL("./preset-draft.png",import.meta.url));
+try {
+  result.nativeSetting=await configureNativeZoom(browser,2);
+  await browser.navigate(base+"/login");
+  const metrics=await browser.evaluate<{dpr:number;width:number;scroll:number;zoom:string;scale:number}>("({dpr:devicePixelRatio,width:innerWidth,scroll:document.documentElement.scrollWidth,zoom:getComputedStyle(document.documentElement).zoom,scale:visualViewport.scale})");
+  assert.equal(metrics.dpr,2);assert.equal(metrics.zoom,"1");assert.equal(metrics.scale,1);assert.ok(metrics.width<=750);result.native200=metrics;
+  await browser.waitFor('!!document.querySelector("input[autocomplete=username]")',v=>v===true,"login");
+  await browser.fillSelector('input[autocomplete=username]',"ui188-r4");await browser.fillSelector('input[type=password]',credentials.admin_password);await browser.clickSelector('button[type=submit]');
+  await browser.waitFor<string>("location.pathname",v=>!v.startsWith('/login'),"authenticated native200",20000);
+  await browser.navigate(base+"/admin/overlay/#video-cover-presets");
+  const edit='button[aria-label="UI188 R4 acceptance A を編集"]';
+	await browser.evaluate(`(()=>{const create=URL.createObjectURL.bind(URL),revoke=URL.revokeObjectURL.bind(URL);window.__ui188URLs={created:[],revoked:[]};URL.createObjectURL=(object)=>{const url=create(object);window.__ui188URLs.created.push(url);return url};URL.revokeObjectURL=(url)=>{window.__ui188URLs.revoked.push(url);return revoke(url)}})()`);
+  const cancelPutStart=browser.network.filter(r=>r.method==='PUT'&&r.path.startsWith('/video-cover-presets/')).length;
+  await browser.waitFor(`!!document.querySelector(${JSON.stringify(edit)})`,v=>v===true,"saved preset edit action",20000);await browser.clickSelector(edit);
+  const saved=await browser.waitFor<{src:string;base:string;href:string;width:number;height:number}>(`(()=>{const i=document.querySelector(${JSON.stringify(image)});return i?{src:i.getAttribute('src'),base:document.baseURI,href:new URL(i.getAttribute('src'),document.baseURI).href,width:i.naturalWidth,height:i.naturalHeight}:null})()`,v=>!!v&&v.width>0&&v.height>0,"saved image decoded on opening",20000);
+  assert.ok(saved.src.includes(live.visual.presets[0].asset_variant_id));const savedURL=new URL(saved.src,saved.base);assert.equal(savedURL.origin,new URL(base).origin);result.savedImage=saved;
+  writeFileSync(resolve(root,"s5-native200-saved-"+caseID+'-'+attempt+".png"),await browser.captureScreenshot());
+  await browser.chooseFile('[role="dialog"] input[type=file]',draftImage);
+  const draft=await browser.waitFor<string>(`document.querySelector(${JSON.stringify(image)})?.getAttribute('src')`,v=>!!v&&v.startsWith('blob:'),"real managed upload unsaved preview",25000);result.unsavedImage={blobPreview:true};
+  await browser.evaluate(`(()=>{const b=[...document.querySelectorAll('[role=dialog] button')].find(b=>b.innerText==='保存済み画像を使用');if(!b)throw Error('restore unavailable');b.setAttribute('data-ui188-restore','true')})()`);
+  await browser.clickSelector('button[data-ui188-restore=true]');
+  await browser.waitFor<{href:string;width:number;height:number}>(`(()=>{const i=document.querySelector(${JSON.stringify(image)});return i?{href:new URL(i.getAttribute('src'),document.baseURI).href,width:i.naturalWidth,height:i.naturalHeight}:null})()`,v=>!!v&&v.href===savedURL.href&&v.width>0&&v.height>0,"same-origin/path/query saved resource restored and decoded");
+  await browser.chooseFile('[role="dialog"] input[type=file]',draftImage);
+  await browser.waitFor<string>(`document.querySelector(${JSON.stringify(image)})?.getAttribute('src')`,v=>!!v&&v.startsWith('blob:'),"unsaved image before explicit cancellation",25000);
+  const stopListening=browser.onDialog(message=>{dialogMessages.push(message);void browser.confirmDialog(true)});
+  await browser.evaluate(`(()=>{const b=[...document.querySelectorAll('[role=dialog] button')].find(b=>b.innerText==='閉じる');if(!b)throw Error('close unavailable');b.setAttribute('data-ui188-close','true')})()`);
+  await browser.clickSelector('button[data-ui188-close=true]');await browser.waitFor(`!document.querySelector(${JSON.stringify(image)})`,v=>v===true,"cancel closes edit");stopListening();
+  assert.equal(dialogMessages.length,1,"explicit unsaved cancellation confirmation");
+  await browser.clickSelector(edit);await browser.waitFor<{href:string;width:number}>(`(()=>{const i=document.querySelector(${JSON.stringify(image)});return i?{href:new URL(i.getAttribute('src'),document.baseURI).href,width:i.naturalWidth}:null})()`,v=>!!v&&v.href===savedURL.href&&v.width>0,"cancel reopens exact original saved resource");
+  const urls=await browser.evaluate<{created:string[];revoked:string[]}>('window.__ui188URLs');assert.ok(urls.created.length>=2);assert.ok(urls.created.every(url=>urls.revoked.includes(url)),"draft blob URLs released after restore/cancel");result.blobURLs=urls;
+  const cancelPuts=browser.network.filter(r=>r.method==='PUT'&&r.path.startsWith('/video-cover-presets/')).length-cancelPutStart;assert.equal(cancelPuts,0,"restore and explicit cancellation perform no preset PUT");result.cancelPUTs=cancelPuts;
+  result.cancelRestoresSaved=true;result.dialogMessages=dialogMessages;
+  const preset=await browser.evaluate(`(async()=>{const r=await fetch('/video-cover-presets/${live.visual.presets[0].id}');if(r.status!==200)throw Error('preset reread '+r.status);return r.json()})()`);
+  assert.deepEqual(preset,live.visual.presets[0]);
+  save('s5-preset-checkpoint-'+caseID+'-'+attempt+'.json',{...result,scope:'checkpoint only; full S5 not yet completed'});
+  const unbound=await browser.evaluate<{status:number;code:string}>(`(async()=>{const r=await fetch('/video-cover-presets/${live.visual.presets[0].id}/media-assets/00000000-0000-0000-0000-000000000000');return {status:r.status,...await r.json()}})()`);assert.deepEqual(unbound,{status:403,code:'media_asset_forbidden'});result.realUnboundImage=unbound;
+  const nonexistent=await browser.evaluate<{status:number;code:string}>(`(async()=>{const r=await fetch('/video-cover-presets/00000000-0000-0000-0000-000000000000/media-assets/${live.visual.presets[0].asset_variant_id}');return {status:r.status,...await r.json()}})()`);assert.deepEqual(nonexistent,{status:404,code:'not_found'});result.realMissingPreset=nonexistent;
+  const previewOnly=process.env.UI188_S5_PREVIEW_ONLY==='1';
+  if(!previewOnly){
+  await browser.navigate(base+'/admin/streams/');
+  const trigger=`button[data-slot="stream-primary-trigger"][data-stream-id="${live.stream_id}"]`;
+  await browser.waitFor(`!!document.querySelector(${JSON.stringify(trigger)})`,v=>v===true,"same execution row native200",20000);await browser.clickSelector(trigger);
+  const text=await browser.waitFor<string>('document.body.innerText',v=>v.includes('設定プレビュー（実映像は配信プレビューで確認）')&&v.includes('Encoderで反映確認済み'),"settings preview/actual confirmation Japanese distinction",20000);
+  assert.ok(!text.includes('Desired')&&!text.includes('Applied')&&!text.includes('Readiness'));result.japaneseState=text;
+  const layout=await browser.evaluate<{width:number;scroll:number;cssZoom:string;scale:number;missing:number}>("({width:innerWidth,scroll:document.documentElement.scrollWidth,cssZoom:getComputedStyle(document.documentElement).zoom,scale:visualViewport.scale,missing:[...document.images].filter(i=>i.getClientRects().length&&(!i.complete||i.naturalWidth===0)).length})");
+  assert.ok(layout.scroll<=layout.width+1);await browser.waitFor<number>("[...document.images].filter(i=>i.getClientRects().length&&(!i.complete||i.naturalWidth===0)).length",v=>v===0,"all visible images decode",20000);result.nativeLayout=layout;
+  writeFileSync(resolve(root,"s5-native200-detail-"+caseID+'-'+attempt+".png"),await browser.captureScreenshot());
+  }
+  await browser.navigate(base+'/admin/audit-logs/?q='+live.stream_id);
+  const audit=await browser.waitFor<string>('document.body.innerText',v=>v.includes('フタ')||v.includes('Cover'),"real translated stream cover audit",20000);
+  assert.ok(!audit.includes('streams.video_cover.show'));result.auditText=audit;
+  result.consoleErrors=browser.consoleErrorCount;assert.equal(browser.consoleErrorCount,0);
+  save((previewOnly?'s5-preset-only-success-':'s5-success-')+caseID+'-'+attempt+'.json',{...result,scope:previewOnly?'independent preset/UI only; full S5 and Gate B remain NOT_MET':'full S5',network:browser.network});console.log(previewOnly?'INDEPENDENT_PRESET_UI_PASS_FULL_ACCEPTANCE_NOT_MET':'REAL_NATIVE200_PRESET_JAPANESE_PASS');
+}catch(error){save('s5-failure-'+caseID+'-'+attempt+'.json',{...result,network:browser.network,error:error instanceof Error?error.message:String(error),dom:await browser.evaluate('document.body.innerText').catch(()=>undefined)});writeFileSync(resolve(root,'s5-failure-'+caseID+'-'+attempt+'.png'),await browser.captureScreenshot());throw error}
+finally{await browser.close()}

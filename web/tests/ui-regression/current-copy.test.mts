@@ -14,6 +14,7 @@ const { StreamSummary } = await import("../../src/features/streams/stream-summar
 const { ResourcePage } = await import("../../src/features/resources/resource-page.tsx");
 const { StreamDetailOperations } = await import("../../src/features/streams/stream-detail-operations.tsx");
 const { createStreamActionController } = await import("../../src/features/streams/stream-action-controller.ts");
+const { streamTableColumns } = await import("../../src/features/streams/stream-table-cells.tsx");
 
 test("UI-MONITORING-COPY-034: actual legacy badges translate labels and detail without changing classification or unknown safety", async () => {
   const { StatusBadge, statusDescriptor } = await import("../../src/components/admin/status-badge.tsx");
@@ -107,7 +108,15 @@ test("UI-COPY-stream-detail: actual Readiness surface, state and accessible name
   for(const locale of ["ja","en"] as const) {
     const html=renderUI(createElement(StreamDetailOperations,{stream:{id:"s",name:"日本語の利用者名",status:"ready"},controller,onResult(){},notice:null}),locale);
     assert.match(html,locale==="ja"?/配信の主要操作/:/Stream actions/);
-    assert.match(html,locale==="ja"?/Readinessは未確認/:/Readiness has not been checked/);
+    assert.match(html,locale==="ja"?/開始準備は未確認/:/Readiness has not been checked/);
+    if(locale==="ja")assert.ok(!html.includes("Readiness"));
+    const columns=streamTableColumns({ja:locale==="ja",uiText:createUICopy(locale),discordLabels:new Map(),t:((key)=>String(key)) as Parameters<typeof streamTableColumns>[0]["t"]});
+    assert.equal(columns.find(c=>c.id==="readiness")?.header,locale==="ja"?"開始準備":"Readiness");
+    for(const [ready,version,expected] of [[true,"","ready"],[false,"","not-ready"],[true,"old","stale"]] as const){
+      const state=renderUI(createElement(StreamDetailOperations,{stream:{id:"s",name:"日本語の利用者名",status:"ready"},controller,onResult(){},notice:{tone:"success",message:"safe",streamID:"s",readiness:{ready,missing:ready?0:1,issues:0,version}}}),locale);
+      assert.match(state,new RegExp('data-readiness="'+expected+'"'));
+      if(locale==="ja"){assert.ok(!state.includes("Readiness"));if(expected==="stale")assert.match(state,/古い状態.*再確認/)}
+    }
   }
 });
 test("UI-COPY-login: actual login form labels and help use locale",async()=>{

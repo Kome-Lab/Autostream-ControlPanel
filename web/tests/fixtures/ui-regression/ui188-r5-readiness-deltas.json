@@ -1,0 +1,99 @@
+{
+  "schemaVersion": 1,
+  "records": [
+    {
+      "path": "web/src/features/streams/stream-table-cells.tsx",
+      "beforeCommit": "de8ef12171e069c5dc93610df9d2b58dd3481b8b",
+      "beforeSha256": "439bf1e0027603534686785f4d9c464a6251806e02c3262b6157b2562210d918",
+      "afterSha256": "2211bb27fa2f07c240ae9f984d7fb2fca482fca87a936610d673bd988263f485",
+      "specifications": [
+        "UI188-R5 section 3.7",
+        "F10"
+      ],
+      "allowedReplacements": [
+        {
+          "before": "header: \"Readiness\"",
+          "after": "header: ja ? \"開始準備\" : \"Readiness\"",
+          "count": 1
+        }
+      ],
+      "behaviorTests": [
+        "web/tests/ui-regression/current-copy.test.mts",
+        "scripts/ci/ui188-r4-chain/s5.mts"
+      ]
+    },
+    {
+      "path": "web/src/features/streams/stream-detail-operations.tsx",
+      "beforeCommit": "de8ef12171e069c5dc93610df9d2b58dd3481b8b",
+      "beforeSha256": "953c74877187c47b4c5198ebbe8d275bfc2a2882b18a72ad9a5f73dd5f2c5ada",
+      "afterSha256": "460098112815755b290c72da9c36d0de4caa4918e2c26ca44ae22c5369edc8e3",
+      "specifications": [
+        "UI188-R5 section 3.7",
+        "F10"
+      ],
+      "allowedReplacements": [
+        {
+          "before": "前回のReadinessは古い状態です。再確認してください。",
+          "after": "前回の開始準備の確認結果は古い状態です。再確認してください。",
+          "count": 1
+        },
+        {
+          "before": "Readinessは未確認または不明です。",
+          "after": "開始準備は未確認または不明です。",
+          "count": 1
+        }
+      ],
+      "behaviorTests": [
+        "web/tests/ui-regression/current-copy.test.mts",
+        "scripts/ci/ui188-r4-chain/s5.mts"
+      ]
+    },
+    {
+      "path": "web/src/features/streams/stream-details-dialog.tsx",
+      "beforeCommit": "de8ef12171e069c5dc93610df9d2b58dd3481b8b",
+      "beforeSha256": "e6fa97ed3b56d00b6fd25c9215b912d0b8f3a4ae502d6b92dcd5aec8ebb31675",
+      "afterSha256": "3dcd5315d32de28c0c97c770f5e065e786eb397cb6af56a53681322ae005d775",
+      "specifications": [
+        "UI188-R5 section 3.7",
+        "F10"
+      ],
+      "allowedReplacements": [
+        {
+          "before": "最新Readinessを確認してください。",
+          "after": "最新の確認結果を確認してください。",
+          "count": 1
+        }
+      ],
+      "behaviorTests": [
+        "web/tests/ui-regression/current-copy.test.mts",
+        "scripts/ci/ui188-r4-chain/s5.mts"
+      ]
+    },
+    {
+      "path": "web/src/features/streams/stream-visual-draft.ts",
+      "beforeCommit": "de8ef12171e069c5dc93610df9d2b58dd3481b8b",
+      "beforeSha256": "8e66851461b014ff1101572cb323a9879138305d0c97c80cce244ff1759617f8",
+      "afterSha256": "4bdd35be4dd028da875da3e8bd42d1a968279322b34b331fdefe4599157dd562",
+      "specifications": [
+        "UI188-R5 section 3.7",
+        "F10"
+      ],
+      "allowedReplacements": [
+        {
+          "before": "開始ReadinessはBLOCKされ",
+          "after": "開始準備は未完了となり",
+          "count": 1
+        },
+        {
+          "before": "開始ReadinessとCover操作はBLOCKされ、Cover runtime payloadは送信されません。",
+          "after": "開始準備は未完了となり、Cover操作とCover runtime payloadの送信はできません。",
+          "count": 1
+        }
+      ],
+      "behaviorTests": [
+        "web/tests/ui-regression/current-copy.test.mts",
+        "scripts/ci/ui188-r4-chain/s5.mts"
+      ]
+    }
+  ]
+}

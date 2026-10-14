@@ -4,6 +4,8 @@ import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { historicalR4DeleteCopySource } from "./ui188-r4-delete-delta.mts";
+import { historicalR5ReadinessSource } from "./ui188-r5-readiness-delta.mts";
 import { assertUI188ContractRegistration, assertUI188CurrentContract, historicalUI188Source, inverseUI188CurrentSource, ui188CurrentContract } from "./ui188-current-source-deltas.mts";
 
 const root = fileURLToPath(new URL("../../..", import.meta.url));
@@ -12,7 +14,7 @@ const raw = (path: string) => readFileSync(resolve(root, path));
 
 test("UI188-CONTRACT-001: every finite path binds immutable historical source and actual current bytes to existing behavior tests", () => {
   for (const row of ui188CurrentContract.records) {
-    const before = object(row.beforeCommit, row.path), current = raw(row.path);
+    const before = object(row.beforeCommit, row.path), current = historicalR4DeleteCopySource(row.path, historicalR5ReadinessSource(row.path, raw(row.path), object), object);
     assert.deepEqual(current, object(row.afterCommit, row.path), "current source remains the specified fixed product input");
     assert.deepEqual(inverseUI188CurrentSource(row.path, before, current), before);
     for (const witness of row.behaviorTests) assert.ok(existsSync(resolve(root, witness)), "registered behavior test source exists: " + witness);
@@ -21,7 +23,7 @@ test("UI188-CONTRACT-001: every finite path binds immutable historical source an
 
 test("UI188-CONTRACT-002: missing, reverted, truncated, extra, unauthorized and wrong-original bytes cannot fall back to history", () => {
   for (const row of ui188CurrentContract.records) {
-    const before = object(row.beforeCommit, row.path), current = raw(row.path);
+    const before = object(row.beforeCommit, row.path), current = historicalR4DeleteCopySource(row.path, historicalR5ReadinessSource(row.path, raw(row.path), object), object);
     for (const mutant of [Buffer.alloc(0), before, current.subarray(0, current.length - 1), Buffer.concat([current, Buffer.from("\n")])]) assert.throws(() => inverseUI188CurrentSource(row.path, before, mutant), /reviewed finite UI188 source bytes/);
     assert.throws(() => inverseUI188CurrentSource(row.path, Buffer.concat([before, Buffer.from("wrong")]), current), /fixed original hash/);
     assert.throws(() => inverseUI188CurrentSource("../unapproved", before, current), /unknown UI188 current source path/);

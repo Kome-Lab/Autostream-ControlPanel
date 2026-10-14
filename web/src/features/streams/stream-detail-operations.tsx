@@ -43,10 +43,10 @@ export function StreamDetailOperations({ stream, controller, onResult, notice }:
   ] as const;
   return <section aria-label={ja ? "配信の主要操作" : "Stream actions"} className="space-y-3" data-stream-operations>
     <p role="status" data-readiness={stale ? "stale" : readiness?.ready === true ? "ready" : readiness?.ready === false ? "not-ready" : "unknown"}>
-      {stale ? (ja ? "前回のReadinessは古い状態です。再確認してください。" : "The previous Readiness result is stale. Check again.")
+      {stale ? (ja ? "前回の開始準備の確認結果は古い状態です。再確認してください。" : "The previous Readiness result is stale. Check again.")
         : readiness?.ready === true ? (ja ? "前回の確認では開始可能です。開始時にも再検証します。" : "The last check was ready. Starting revalidates it.")
         : readiness?.ready === false ? (ja ? `開始できません。未割当 ${readiness.missing}件、確認事項 ${readiness.issues}件。` : `Not ready: ${readiness.missing} missing assignments, ${readiness.issues} issues.`)
-        : (ja ? "Readinessは未確認または不明です。" : "Readiness has not been checked or is unknown.")}
+        : (ja ? "開始準備は未確認または不明です。" : "Readiness has not been checked or is unknown.")}
     </p>
     <div className="flex flex-wrap gap-3">
       {controls.map(({ id, label }) => {

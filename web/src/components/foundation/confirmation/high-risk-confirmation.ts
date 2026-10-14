@@ -26,6 +26,7 @@ export type ConfirmationMessage = Readonly<{
 }>;
 
 export type HighRiskConfirmationContext = Readonly<{
+  operationTitle?: ConfirmationMessage;
   currentState?: ConfirmationMessage;
   impact?: ConfirmationMessage;
   rollback?: ConfirmationMessage;
@@ -144,7 +145,7 @@ export function HighRiskConfirmation({
         }
       },
       trigger: renderedTrigger,
-      title: translate(presentation.labelKey),
+      title: context?.operationTitle ? translate(context.operationTitle.key, context.operationTitle.values) : translate(presentation.labelKey),
       description: translate(presentation.consequenceKey),
       cancelLabel: translate("cancel"),
       actionLabel: translate("execute"),

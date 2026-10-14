@@ -66,7 +66,7 @@ export function StreamDetailsDialog({ returnFocus, stream, actionController, onA
         <StreamDetailOperations stream={stream} controller={actionController} onResult={onActionResult} notice={actionNotice} />
         <SectionNavigation label={ja ? "配信詳細のセクション" : "Stream detail sections"} items={sections} />
         <DetailSection id="stream-overview" title={sections[0].label}
-          description={ja ? "開始操作の前に「開始準備を再確認」で最新Readinessを確認してください。作成成功は開始可能を意味しません。" : "Use the readiness check before starting. Successful creation does not guarantee readiness."}>
+          description={ja ? "開始操作の前に「開始準備を再確認」で最新の確認結果を確認してください。作成成功は開始可能を意味しません。" : "Use the readiness check before starting. Successful creation does not guarantee readiness."}>
           <DefinitionList items={[
             { label: ja ? "開始条件" : "Trigger", value: stream.auto_start_trigger === "discord_voice_join" ? (ja ? "Discord VC参加" : "Discord voice participation") : (ja ? "手動" : "Manual") },
             { label: "Discord BOT", value: optionLabel(discordLabels, stream.discord_config_id) || unset },

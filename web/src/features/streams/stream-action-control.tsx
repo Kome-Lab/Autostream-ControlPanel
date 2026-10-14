@@ -123,7 +123,11 @@ export const StreamActionControl = forwardRef<StreamActionControlHandle, Props>(
           open={opened !== null}
           evaluation={evaluation}
           state={dialogState}
-          context={context}
+          context={intent.id === "STR-10" ? {
+            ...context,
+            operationTitle: { key: "streamDeleteTitle" },
+            impact: { key: "streamDeleteImpact" },
+          } : context}
           translate={t}
           trigger={(confirmationProps) => (
             <Button

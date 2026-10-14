@@ -269,6 +269,10 @@ func (s MariaDBProfileStore) GetProfile(ctx context.Context, kind ProfileKind, i
 }
 
 func (s MariaDBProfileStore) UpdateProfile(ctx context.Context, kind ProfileKind, id, name string, config map[string]any) (Profile, error) {
+	return s.updateProfileAt(ctx, kind, id, name, config, time.Now().UTC())
+}
+
+func (s MariaDBProfileStore) updateProfileAt(ctx context.Context, kind ProfileKind, id, name string, config map[string]any, now time.Time) (Profile, error) {
 	if err := validateProfileInput(kind, name, config); err != nil {
 		return Profile{}, err
 	}
@@ -282,20 +286,19 @@ func (s MariaDBProfileStore) UpdateProfile(ctx context.Context, kind ProfileKind
 SET name = ?, config = ?, updated_at = ?, youtube_relay_binding_revision = youtube_relay_binding_revision + 1
 WHERE id = ? AND kind = ?`
 	}
-	result, err := s.db.ExecContext(ctx, query, strings.TrimSpace(name), string(body), time.Now().UTC(), id, string(kind))
+	result, err := s.db.ExecContext(ctx, query, strings.TrimSpace(name), string(body), now, id, string(kind))
 	if err != nil {
 		if isYouTubeRelayBindingClaimProfileConstraintError(err) {
 			return Profile{}, ErrYouTubeRelayBindingClaimActive
 		}
 		return Profile{}, err
 	}
-	affected, err := result.RowsAffected()
+	_, err = result.RowsAffected()
 	if err != nil {
 		return Profile{}, err
 	}
-	if affected == 0 {
-		return Profile{}, ErrNotFound
-	}
+	// MariaDB reports changed rows. An unchanged row still needs the same
+	// id/kind read, which also preserves missing rows and read failures.
 	return s.GetProfile(ctx, kind, id)
 }
 

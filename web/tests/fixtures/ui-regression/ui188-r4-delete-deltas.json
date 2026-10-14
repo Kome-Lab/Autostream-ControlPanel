@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "records": [
+    {
+      "path": "web/src/components/foundation/confirmation/high-risk-confirmation.ts",
+      "beforeCommit": "de8ef12171e069c5dc93610df9d2b58dd3481b8b",
+      "beforeSha256": "ca842c99b409bdd6d999b6dc8094839c3b1984723ef68814e2948b8e7df20442",
+      "afterSha256": "bc290f9f1ca50b31368e6a24f5d1c6b4cc8aa043f30d6e2e6085fd42941b7cd6",
+      "specifications": [
+        "F03",
+        "F05"
+      ],
+      "allowedChanges": "delete-only localized operation title and retention impact; no descriptor, permission, endpoint, audit, owner, retry or confirmation-mode change",
+      "behaviorTests": [
+        "web/tests/ui-regression/ui188-r4-delete-delta.test.mts",
+        "scripts/ci/ui188-r4-chain/s4_delete.mts"
+      ]
+    },
+    {
+      "path": "web/src/features/streams/stream-action-control.tsx",
+      "beforeCommit": "de8ef12171e069c5dc93610df9d2b58dd3481b8b",
+      "beforeSha256": "4a44df8173d4a97e1759fccd985be89fa4a4aeffd6217206939f53da50723168",
+      "afterSha256": "e16fa799e7825a9b681c295e58254b5aa1f981fbeef378100ec9c05101a0e272",
+      "specifications": [
+        "F03",
+        "F05"
+      ],
+      "allowedChanges": "delete-only localized operation title and retention impact; no descriptor, permission, endpoint, audit, owner, retry or confirmation-mode change",
+      "behaviorTests": [
+        "web/tests/ui-regression/ui188-r4-delete-delta.test.mts",
+        "scripts/ci/ui188-r4-chain/s4_delete.mts"
+      ]
+    },
+    {
+      "path": "web/src/lib/i18n.ts",
+      "beforeCommit": "de8ef12171e069c5dc93610df9d2b58dd3481b8b",
+      "beforeSha256": "1514990b097ea44ef714b1e2f89d11799409abd8412562ae505b204a0cfc1bfc",
+      "afterSha256": "fb5ee4a11b6b0e57b187e9d9f07a6862eeb85d20bdcd7dadb263933129aacf49",
+      "specifications": [
+        "F03",
+        "F05"
+      ],
+      "allowedChanges": "delete-only localized operation title and retention impact; no descriptor, permission, endpoint, audit, owner, retry or confirmation-mode change",
+      "behaviorTests": [
+        "web/tests/ui-regression/ui188-r4-delete-delta.test.mts",
+        "scripts/ci/ui188-r4-chain/s4_delete.mts"
+      ]
+    }
+  ]
+}

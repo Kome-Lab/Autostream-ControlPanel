@@ -44,7 +44,7 @@ export function streamTableColumns({ t, ja, uiText, discordLabels }: Pick<Stream
       cell: StreamNameCell,
     },
     { accessorKey: "status", header: t("status"), meta: { className: "min-w-56 max-w-72" }, cell: StreamStatusCell },
-    { id: "readiness", header: "Readiness", meta: { priority: 0, required: true, className: "min-w-40" }, cell: StreamReadinessCell },
+    { id: "readiness", header: ja ? "開始準備" : "Readiness", meta: { priority: 0, required: true, className: "min-w-40" }, cell: StreamReadinessCell },
     {
       id: "actions",
       header: t("actions"),

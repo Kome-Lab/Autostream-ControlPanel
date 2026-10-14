@@ -190,10 +190,10 @@ export function visualCapabilityWarnings(
   if (!capabilities) return [] as string[];
   const warnings: string[] = [];
   if ((draft.backgroundMode === "image" || draft.headerTitleMode === "custom") && !capabilities.sceneAppearance) {
-    warnings.push("割当済みWorkerが scene_appearance_v1 を報告するまで開始ReadinessはBLOCKされ、scene payloadは送信されません。");
+    warnings.push("割当済みWorkerが scene_appearance_v1 を報告するまで開始準備は未完了となり、scene payloadは送信されません。");
   }
   if (draft.coverSource !== "none" && !capabilities.videoCover) {
-    warnings.push("割当済みEncoderが live_video_cover_v1 を報告するまで開始ReadinessとCover操作はBLOCKされ、Cover runtime payloadは送信されません。");
+    warnings.push("割当済みEncoderが live_video_cover_v1 を報告するまで開始準備は未完了となり、Cover操作とCover runtime payloadの送信はできません。");
   }
   return warnings;
 }

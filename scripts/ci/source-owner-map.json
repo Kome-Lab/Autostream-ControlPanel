@@ -4279,7 +4279,7 @@
       },
       {
         "path": "internal/store/auth_sessions_mariadb.go",
-        "sha256": "152c7ddc29d073df7bc90d849affcd36e9bb49370074134855e1bc09bea237d3",
+        "sha256": "9f38933fccd635d515c65638e0892df013dd598a790c31f8b0ef2bfca1c7e3c1",
         "symbols": [
           "MariaDBAuthStore.CreateSession",
           "MariaDBAuthStore.DeleteSession",
@@ -4291,9 +4291,10 @@
           "MariaDBAuthStore.RecordLoginFailure",
           "MariaDBAuthStore.RecordLoginSuccess",
           "MariaDBAuthStore.RefreshSession",
+          "MariaDBAuthStore.refreshSessionAt",
           "MariaDBAuthStore.UpsertUserAvatar"
         ],
-        "physical_lines": 137
+        "physical_lines": 150
       },
       {
         "path": "internal/store/auth_user_credentials_mariadb.go",
