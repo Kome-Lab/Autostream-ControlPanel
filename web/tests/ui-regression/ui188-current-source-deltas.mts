@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import ts from "typescript";
+import { historicalR9FinalizationSource } from "./ui188-r9-finalization-deltas.mts";
 
 type CurrentDelta = Readonly<{
   path: string; beforeCommit: string; beforeSha256: string;
@@ -54,6 +55,7 @@ export function inverseUI188CurrentSource(path: string, before: Buffer, current:
 }
 
 export function historicalUI188Source(path: string, current: Buffer, object: (commit: string, path: string) => Buffer): Buffer {
+  if (path !== "web/src/lib/i18n.ts") current = historicalR9FinalizationSource(path, current, object);
   const row = ui188CurrentContract.records.find(item => item.path === path);
   return row ? inverseUI188CurrentSource(path, object(row.beforeCommit, path), current) : current;
 }

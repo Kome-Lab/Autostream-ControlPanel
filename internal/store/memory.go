@@ -100,7 +100,6 @@ func (s *MemoryStreamStore) ListArchiveProcessingStreams(ctx context.Context) ([
 	defer s.mu.Unlock()
 	items := make([]Stream, 0, len(s.streams))
 	for _, stream := range s.streams {
-		status := strings.ToLower(strings.TrimSpace(stream.Status))
 		if stream.DeletedAt != nil {
 			continue
 		}
@@ -108,14 +107,8 @@ func (s *MemoryStreamStore) ListArchiveProcessingStreams(ctx context.Context) ([
 			items = append(items, stream)
 			continue
 		}
-		if strings.TrimSpace(stream.ArchiveProfileID) == "" {
-			continue
-		}
-		if stream.ArchiveStartedAt != nil {
-			if stream.ArchiveReportedAt == nil && (status == "stopping" || status == "completed" || status == "ready") {
-				items = append(items, stream)
-			}
-			continue
+		if (streamAssignmentProtection{Stream: stream}).pendingArchiveRun() {
+			items = append(items, stream)
 		}
 	}
 	return items, nil

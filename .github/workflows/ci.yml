@@ -278,6 +278,8 @@ jobs:
           result="${RUNNER_TEMP}/ui188-stream-operations.json"
           go test -mod=readonly -p 1 ./internal/httpapi -run '^TestUI188MariaDBAtomicCreateCoverSnapshotsPreviewAndStopReceipt$' -count=1 -json | tee "${result}"
           jq -s -e '([.[] | select(.Action=="skip" or .Action=="fail")]|length)==0 and ([.[]|select(.Action=="pass" and .Test=="TestUI188MariaDBAtomicCreateCoverSnapshotsPreviewAndStopReceipt")]|length)==1' "${result}" >/dev/null
+          python3 -B scripts/ci/ui188-r4-chain/test_artifact_transport.py
+          python3 -B scripts/ci/ui188-r4-chain/test_archive_oracle.py
       - name: Test MariaDB OAuth and Configure Token migrations
         shell: bash
         env:

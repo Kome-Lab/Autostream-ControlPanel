@@ -211,3 +211,26 @@ function streamHarness(options: {
   });
   return { controller, calls: () => mutations };
 }
+
+test("UI188-R9: only the exact protected DELETE conflict explains finalization and retains the one-send latch", async () => {
+  for (const [id, status, code, expected] of [
+    ["STR-10", 409, "service_unassign_protected_stream", "streamDeleteFinalizationPending"],
+    ["STR-10", 403, "service_unassign_protected_stream", "apiErrorForbidden"],
+    ["STR-10", 409, "future_conflict", "apiErrorConflict"],
+    ["STR-10", 400, "service_unassign_protected_stream", "apiErrorValidation"],
+    ["STR-04", 409, "service_unassign_protected_stream", "apiErrorConflict"],
+  ] as const) {
+    const harness = streamHarness({ mutation: async () => { throw Object.assign(new Error("PRIVATE RAW"), { name: "APIError", status, code }); } });
+    const intent = { id, stream: stream(id === "STR-10" ? "completed" : "ready") };
+    const opened = await harness.controller.open(intent);
+    assert.equal(opened.kind, "allowed");
+    if (opened.kind !== "allowed") throw Error("required allowed action");
+    const result = await harness.controller.submit(opened, { confirmed: true });
+    assert.equal(result.kind, "failed");
+    if (result.kind !== "failed") throw Error("required API refusal");
+    assert.equal(result.error.messageKey, expected);
+    assert.equal(JSON.stringify(result).includes("PRIVATE RAW"), false);
+    assert.deepEqual(await harness.controller.submit(opened, { confirmed: true }), { kind: "blocked", reason: "reconciliation-required" });
+    assert.equal(harness.calls(), 1);
+  }
+});

@@ -4,6 +4,7 @@ import {resolve} from "node:path";
 import {RealBrowser} from "./real_browser.mts";
 import {configureNativeZoom} from "./native_zoom.mts";
 import {fileURLToPath} from "node:url";
+import {verifyAuditPending} from "./audit_pending.mts";
 const root=resolve(process.env.UI188_EVIDENCE_DIRECTORY!),caseID=process.env.UI188_PROBE_ATTEMPT!,attempt=process.env.UI188_S5_ATTEMPT||"1";
 const credentials=JSON.parse(readFileSync(process.env.UI188_TEST_CREDENTIALS!,"utf8"));
 const live=JSON.parse(readFileSync(resolve(root,"acceptance-live-"+caseID+".json"),"utf8"));
@@ -62,6 +63,7 @@ try {
   await browser.navigate(base+'/admin/audit-logs/?q='+live.stream_id);
   const audit=await browser.waitFor<string>('document.body.innerText',v=>v.includes('フタ')||v.includes('Cover'),"real translated stream cover audit",20000);
   assert.ok(!audit.includes('streams.video_cover.show'));result.auditText=audit;
+  result.auditPending=await verifyAuditPending(browser,root,caseID,live.stream_id);
   result.consoleErrors=browser.consoleErrorCount;assert.equal(browser.consoleErrorCount,0);
   save((previewOnly?'s5-preset-only-success-':'s5-success-')+caseID+'-'+attempt+'.json',{...result,scope:previewOnly?'independent preset/UI only; full S5 and Gate B remain NOT_MET':'full S5',network:browser.network});console.log(previewOnly?'INDEPENDENT_PRESET_UI_PASS_FULL_ACCEPTANCE_NOT_MET':'REAL_NATIVE200_PRESET_JAPANESE_PASS');
 }catch(error){save('s5-failure-'+caseID+'-'+attempt+'.json',{...result,network:browser.network,error:error instanceof Error?error.message:String(error),dom:await browser.evaluate('document.body.innerText').catch(()=>undefined)});writeFileSync(resolve(root,'s5-failure-'+caseID+'-'+attempt+'.png'),await browser.captureScreenshot());throw error}

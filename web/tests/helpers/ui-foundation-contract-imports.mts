@@ -247,6 +247,7 @@ function assertAPIErrorAdapterBoundaries(webRoot: string, parsed: Map<string, ts
     "src/features/resources/resource-video-cover-form.tsx",
     "src/features/settings/app-settings-action-policy.ts",
     "src/features/streams/stream-action-controller.ts",
+    "src/features/streams/stream-action-controller.ts", // R9: exact DELETE registry beside the adapter.
     "src/features/streams/stream-control-platform-panel.tsx",
     "src/features/streams/stream-visual-action-controller.ts",
     "src/features/streams/stream-visual-settings-section.tsx",

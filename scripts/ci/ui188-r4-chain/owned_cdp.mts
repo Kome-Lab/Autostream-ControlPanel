@@ -48,27 +48,53 @@ export class OwnedCDP {
     const targetId=await this.target(url);
     const attached=ownedSessionID?undefined:await this.send("Target.attachToTarget",{targetId,flatten:true});
     const sessionId=ownedSessionID||String(attached!.sessionId);
-    const observed:Array<{at:string;status:number;path:string}>=[];
+    const observed:Array<{at:string;status:number;path:string;networkRequestID:string;fetchRequestID:string}>=[];
     const errors:string[]=[];
     const path="/streams/"+streamID+"/stop";
     let complete!:()=>void;
-    const completed=new Promise<void>(resolve=>{complete=resolve});
+    let rejectComplete!:(error:Error)=>void;
+    const completed=new Promise<void>((resolve,reject)=>{complete=resolve;rejectComplete=reject});
+    void completed.catch(()=>undefined);
+    const requests=new Set<string>();
+    const loadingFailed:Array<{at:string;requestID:string;errorText:string}>=[];
+    const trace:Array<{at:string;event:string;requestID?:string}>=[];
+    let failACK=false,settled=false,timer:ReturnType<typeof setTimeout>|undefined;
+    const fail=(message:string)=>{errors.push(message);if(!settled){settled=true;if(timer)clearTimeout(timer);rejectComplete(new Error(message))}};
+    const settle=()=>{if(failACK&&loadingFailed.length===1&&!settled){settled=true;if(timer)clearTimeout(timer);complete()}};
     const listener=(message:Message)=>{
-      if(message.sessionId!==sessionId||message.method!=="Fetch.requestPaused")return;
+      if(message.sessionId!==sessionId)return;
+      if(message.method==="Network.requestWillBeSent"){
+        const p=message.params!,r=p.request as {url:string;method:string};
+        if(r.method==="POST"&&new URL(r.url).pathname===path)requests.add(String(p.requestId));
+        return;
+      }
+      if(message.method==="Network.loadingFailed"){
+        const p=message.params!,requestID=String(p.requestId);
+        if(!observed.length||requestID!==observed[0].networkRequestID)return;
+        if(loadingFailed.length||p.errorText!=="net::ERR_CONNECTION_CLOSED"){fail("duplicate or incorrect owned stop loadingFailed");return}
+        loadingFailed.push({at:new Date().toISOString(),requestID,errorText:String(p.errorText)});
+        trace.push({at:new Date().toISOString(),event:"Network.loadingFailed",requestID});settle();return;
+      }
+      if(message.method!=="Fetch.requestPaused")return;
       const p=message.params!,request=p.request as {url:string;method:string};
       const apply=async()=>{
-        if(new URL(request.url).pathname===path&&request.method==="POST"&&observed.length===0){
-          observed.push({at:new Date().toISOString(),status:Number(p.responseStatusCode),path});
+        if(new URL(request.url).pathname===path&&request.method==="POST"){
+          if(observed.length){fail("duplicate stop response");await this.send("Fetch.continueResponse",{requestId:p.requestId},sessionId);return}
+          const networkRequestID=String(p.networkId||"");
+          if(Number(p.responseStatusCode)!==200||!networkRequestID||!requests.has(networkRequestID)){fail("owned stop requires actual status200 and matching Network request ID");await this.send("Fetch.continueResponse",{requestId:p.requestId},sessionId);return}
+          observed.push({at:new Date().toISOString(),status:Number(p.responseStatusCode),path,networkRequestID,fetchRequestID:String(p.requestId)});
+          trace.push({at:new Date().toISOString(),event:"actual CP response200",requestID:networkRequestID});
+          timer=setTimeout(()=>fail("bounded exact stop loadingFailed/Fetch.failRequest ACK wait expired"),5000);
           // Abort only after the real CP has produced its response/receipt.
           await this.send("Fetch.failRequest",{requestId:p.requestId,errorReason:"ConnectionClosed"},sessionId);
-          complete();
+          failACK=true;trace.push({at:new Date().toISOString(),event:"Fetch.failRequest ACK",requestID:networkRequestID});settle();
         }else await this.send("Fetch.continueResponse",{requestId:p.requestId},sessionId);
       };
-      void apply().catch(e=>errors.push(e instanceof Error?e.message:String(e)));
+      void apply().catch(e=>fail(e instanceof Error?e.message:String(e)));
     };
     this.listeners.add(listener);
     await this.send("Fetch.enable",{patterns:[{urlPattern:new URL(url).origin+path+"*",requestStage:"Response"}]},sessionId);
-    return {observed,errors,completed,close:async()=>{await this.send("Fetch.disable",{},sessionId);if(!ownedSessionID)await this.send("Target.detachFromTarget",{sessionId});this.listeners.delete(listener)}};
+    return {observed,errors,completed,loadingFailed,trace,close:async()=>{if(timer)clearTimeout(timer);await this.send("Fetch.disable",{},sessionId);if(!ownedSessionID)await this.send("Target.detachFromTarget",{sessionId});this.listeners.delete(listener)}};
   }
   close(){this.socket.close()}
 }

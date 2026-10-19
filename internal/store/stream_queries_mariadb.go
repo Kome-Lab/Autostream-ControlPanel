@@ -60,7 +60,9 @@ func (s MariaDBStreamStore) ListArchiveProcessingStreams(ctx context.Context) ([
   AND (
 	`+streamLogGuardPendingCondition+`
     OR (
-      COALESCE(TRIM(ss.archive_profile_id), '') <> ''
+      (COALESCE(TRIM(ss.archive_profile_id), '') <> ''
+        OR (COALESCE(TRIM(s.archive_run_id), '') <> ''
+          AND s.archive_started_at > '0001-01-01 00:00:00'))
       AND s.archive_started_at IS NOT NULL
       AND s.archive_reported_at IS NULL
       AND LOWER(TRIM(s.status)) IN ('stopping', 'completed', 'ready')

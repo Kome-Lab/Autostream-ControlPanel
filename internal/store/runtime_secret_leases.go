@@ -95,6 +95,24 @@ func NewMariaDBRuntimeSecretLeaseStore(db *sql.DB) MariaDBRuntimeSecretLeaseStor
 }
 
 func (s MariaDBRuntimeSecretLeaseStore) ClaimRuntimeSecretLease(ctx context.Context, lease RuntimeSecretLease, ttl time.Duration) (RuntimeSecretLease, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return RuntimeSecretLease{}, err
+	}
+	defer tx.Rollback()
+	lease, err = claimRuntimeSecretLeaseTx(ctx, tx, lease, ttl)
+	if err != nil {
+		return RuntimeSecretLease{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return RuntimeSecretLease{}, err
+	}
+	return lease, nil
+}
+
+// Shared by the existing resolver and the current-binding resolver so the
+// lease guard, key and expiry semantics are identical in either transaction.
+func claimRuntimeSecretLeaseTx(ctx context.Context, tx *sql.Tx, lease RuntimeSecretLease, ttl time.Duration) (RuntimeSecretLease, error) {
 	lease = normalizeRuntimeSecretLease(lease)
 	if lease.ServiceID == "" || lease.TokenID == "" || lease.SecretName == "" {
 		return RuntimeSecretLease{}, ErrInvalidRuntimeSecretLease
@@ -106,14 +124,9 @@ func (s MariaDBRuntimeSecretLeaseStore) ClaimRuntimeSecretLease(ctx context.Cont
 	lease.ID = newUUID()
 	lease.CreatedAt = now
 	lease.ExpiresAt = now.Add(ttl)
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return RuntimeSecretLease{}, err
-	}
-	defer tx.Rollback()
 	_, _ = tx.ExecContext(ctx, `DELETE FROM runtime_secret_leases WHERE expires_at <= ?`, now)
 	var existingExpiresAt time.Time
-	err = tx.QueryRowContext(ctx, `SELECT expires_at FROM runtime_secret_leases WHERE service_id = ? AND stream_id = ? AND archive_profile_id = ? AND secret_name = ? FOR UPDATE`, lease.ServiceID, lease.StreamID, lease.ArchiveProfileID, lease.SecretName).Scan(&existingExpiresAt)
+	err := tx.QueryRowContext(ctx, `SELECT expires_at FROM runtime_secret_leases WHERE service_id = ? AND stream_id = ? AND archive_profile_id = ? AND secret_name = ? FOR UPDATE`, lease.ServiceID, lease.StreamID, lease.ArchiveProfileID, lease.SecretName).Scan(&existingExpiresAt)
 	if err == nil && now.Before(existingExpiresAt) {
 		return RuntimeSecretLease{}, ErrRuntimeSecretLeaseActive
 	}
@@ -126,9 +139,6 @@ func (s MariaDBRuntimeSecretLeaseStore) ClaimRuntimeSecretLease(ctx context.Cont
 		_, err = tx.ExecContext(ctx, `UPDATE runtime_secret_leases SET id = ?, token_id = ?, created_at = ?, expires_at = ? WHERE service_id = ? AND stream_id = ? AND archive_profile_id = ? AND secret_name = ?`, lease.ID, lease.TokenID, lease.CreatedAt, lease.ExpiresAt, lease.ServiceID, lease.StreamID, lease.ArchiveProfileID, lease.SecretName)
 	}
 	if err != nil {
-		return RuntimeSecretLease{}, err
-	}
-	if err := tx.Commit(); err != nil {
 		return RuntimeSecretLease{}, err
 	}
 	return lease, nil

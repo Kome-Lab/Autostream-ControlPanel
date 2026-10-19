@@ -9,6 +9,7 @@ import {
 import type { ActionEvaluation } from "@/lib/foundation/actions/contracts";
 import { adaptAPIError } from "@/lib/foundation/api-errors/adapter";
 import type { AdaptedAPIError } from "@/lib/foundation/api-errors/contracts";
+import { defaultAPIErrorRegistry, defineAPIErrorRegistry } from "@/lib/foundation/api-errors/registry";
 import { evaluateActionPermission, type PermissionSnapshot } from "@/lib/foundation/permissions/evaluator";
 import { isStreamValue, isConfirmedStreamStopOutcome } from "@/features/streams/stream-action-response";
 
@@ -53,6 +54,17 @@ export type StreamActionControllerDependencies = Readonly<{
 }>;
 
 type ActiveOperation = { generation: number; abort: AbortController; released: boolean };
+
+const deleteErrorRegistry = defineAPIErrorRegistry({
+  codes: {
+    ...defaultAPIErrorRegistry.codes,
+    service_unassign_protected_stream: {
+      kind: "protected_state",
+      messageKey: "streamDeleteFinalizationPending",
+      statuses: [409],
+    },
+  },
+});
 
 export function createStreamActionController(dependencies: StreamActionControllerDependencies): StreamActionController {
   const active = new Map<string, ActiveOperation>();
@@ -146,7 +158,7 @@ export function createStreamActionController(dependencies: StreamActionControlle
         return Object.freeze({ kind: "succeeded", value });
       } catch (error) {
         if (!current(scope, operation)) return blocked("cancelled");
-        const adapted = adaptAPIError(error);
+        const adapted = adaptAPIError(error, opened.intent.id === "STR-10" ? { registry: deleteErrorRegistry } : undefined);
         unresolved.add(scope);
         if (["network", "timeout", "unavailable", "protocol", "unknown"].includes(adapted.kind)) {
           // A lost Stop response is reconciled by reads only. A completed row

@@ -138,11 +138,20 @@ func (state streamAssignmentProtection) protected() bool {
 	if state.ArchiveRetryPending || state.NormalStopPending {
 		return true
 	}
-	if strings.TrimSpace(state.ArchiveProfileID) == "" {
+	return state.pendingArchiveRun()
+}
+
+// pendingArchiveRun also covers Worker-video local archives without a delivery
+// profile. Stop acknowledges process exit before packaging/reporting completes;
+// the exact run retains assignment authority until its report is committed.
+func (state streamAssignmentProtection) pendingArchiveRun() bool {
+	if state.ArchiveStartedAt == nil || state.ArchiveReportedAt != nil {
 		return false
 	}
-	if state.ArchiveStartedAt != nil {
-		return state.ArchiveReportedAt == nil && (status == "completed" || status == "ready")
+	modern := strings.TrimSpace(state.ArchiveRunID) != "" && state.ArchiveStartedAt.After(time.Time{})
+	if strings.TrimSpace(state.ArchiveProfileID) == "" && !modern {
+		return false
 	}
-	return false
+	status := strings.ToLower(strings.TrimSpace(state.Status))
+	return status == "stopping" || status == "completed" || status == "ready"
 }

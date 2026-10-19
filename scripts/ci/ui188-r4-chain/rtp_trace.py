@@ -1,5 +1,6 @@
 """Observe metadata on one owned internal RTP UDP port; never record payloads."""
 import argparse,ctypes,datetime,json,os,pathlib,re,signal,socket,struct,time
+from packet_capture import open_rtp_header_tap
 parser=argparse.ArgumentParser();parser.add_argument('stream_id');parser.add_argument('archive_root');parser.add_argument('evidence_root');parser.add_argument('case');args=parser.parse_args()
 assert re.fullmatch('[0-9a-f-]{36}',args.stream_id)
 archive=pathlib.Path(args.archive_root);evidence=pathlib.Path(args.evidence_root)
@@ -11,13 +12,9 @@ while time.monotonic()<end:
  if port:break
  time.sleep(.02)
 assert port and 0<port<65536,'owned actual audio bridge SDP not found'
-class Filter(ctypes.Structure):_fields_=[('code',ctypes.c_ushort),('jt',ctypes.c_ubyte),('jf',ctypes.c_ubyte),('k',ctypes.c_uint)]
-class Program(ctypes.Structure):_fields_=[('length',ctypes.c_ushort),('filters',ctypes.POINTER(Filter))]
 # Kernel filter: IPv4 UDP, exact destination port, RTP v2. Return a short
 # header-only prefix. HTTP/credential traffic never enters the Python reader.
-instructions=[(0x30,0,0,9),(0x15,0,7,17),(0xb1,0,0,0),(0x48,0,0,2),(0x15,0,4,port),(0x50,0,0,8),(0x54,0,0,0xc0),(0x15,0,1,0x80),(0x06,0,0,64),(0x06,0,0,0)]
-filters=(Filter*len(instructions))(*(Filter(*i) for i in instructions));program=Program(len(instructions),filters)
-sock=socket.socket(socket.AF_PACKET,socket.SOCK_DGRAM,socket.htons(0x0800));sock.bind(('lo',0));sock.setsockopt(socket.SOL_SOCKET,26,bytes(program));sock.settimeout(1)
+sock=open_rtp_header_tap(port)
 seen=set();count=0;rejected_headers=0;unexpected_target_packets=0
 stop=[False];signal.signal(signal.SIGTERM,lambda *_:stop.__setitem__(0,True));tap_packets=0;tap_drops=0
 finish_case=os.environ.get('UI188_RTP_FINISH_CASE',args.case)

@@ -3147,7 +3147,7 @@
       },
       {
         "path": "internal/store/stream_queries_mariadb.go",
-        "sha256": "56bbe63fde2fe30b8f2c23e257c7c95542bf9fab55d8c72fcd683d8db76c2eae",
+        "sha256": "abb4193851ead7c7eb8f3299dcc1ffae76ca1c4708cddb87570c82e22b9ee36f",
         "symbols": [
           "MariaDBStreamStore.CreateStream",
           "MariaDBStreamStore.HasActiveStream",
@@ -3161,7 +3161,7 @@
           "streamRowScanner",
           "streamSelectFields"
         ],
-        "physical_lines": 167
+        "physical_lines": 169
       },
       {
         "path": "internal/store/stream_youtube_runtime_mariadb.go",
@@ -4681,7 +4681,7 @@
     "destinations": [
       {
         "path": "internal/store/memory.go",
-        "sha256": "f3c2ccb768ae0fa7103f7b8bf51e958466e138a68fb2c2b594dcafeb1e4d8300",
+        "sha256": "0874fabad6898f2c5c16d6447a23ab1fbd6344d73e031fda5d4ac5caf3bcf6ed",
         "symbols": [
           "*MemoryStreamStore.AssignmentGuardMemoryStore",
           "*MemoryStreamStore.CreateStream",
@@ -4695,7 +4695,7 @@
           "MemoryStreamStore",
           "NewMemoryStreamStore"
         ],
-        "physical_lines": 278
+        "physical_lines": 271
       },
       {
         "path": "internal/store/memory_stream_artifact_catalog.go",

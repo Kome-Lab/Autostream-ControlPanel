@@ -11,6 +11,8 @@ export class RealBrowser {
   private observer:(request:Request)=>void=()=>{};
   consoleErrorCount=0;
   readonly network:Array<{method?:string;path:string;status?:number;failed?:string}>=[];
+  readonly serviceHealthNetwork:Array<{at:string;event:string;requestID:string;path:string;method?:string;status?:number;errorText?:string;inflight:number}>=[];
+  private healthInflight=new Set<string>();
   private requestPaths=new Map<string,string>();
   private constructor(launch:BrowserLaunchSession,cdp:OwnedCDP,sessionID:string) {
     this.launch=launch;this.cdp=cdp;this.sessionID=sessionID;
@@ -20,11 +22,17 @@ export class RealBrowser {
       if(message.method==="Network.requestWillBeSent"){
         const request=p.request as Request;const path=new URL(request.url).pathname;
         this.requestPaths.set(String(p.requestId),path);
-        if(path.startsWith("/streams/")||path.startsWith("/auth/")||path.startsWith("/video-cover-presets")||path.startsWith("/media-assets")){this.network.push({method:request.method,path});this.observer(request)}
+        if(path.startsWith("/service-health")){this.healthInflight.add(String(p.requestId));this.serviceHealthNetwork.push({at:new Date().toISOString(),event:"request",requestID:String(p.requestId),path,method:request.method,inflight:this.healthInflight.size})}
+        if(path.startsWith("/streams/")||path.startsWith("/auth/")||path.startsWith("/service-health")||path.startsWith("/video-cover-presets")||path.startsWith("/media-assets")){this.network.push({method:request.method,path});this.observer(request)}
       }
       if(message.method==="Network.responseReceived"){
         const response=p.response as {url:string;status:number};const path=new URL(response.url).pathname;
-        if(path.startsWith("/streams/")||path.startsWith("/auth/")||path.startsWith("/video-cover-presets")||path.startsWith("/media-assets"))this.network.push({path,status:response.status});
+        if(path.startsWith("/service-health"))this.serviceHealthNetwork.push({at:new Date().toISOString(),event:"response",requestID:String(p.requestId),path,status:response.status,inflight:this.healthInflight.size});
+        if(path.startsWith("/streams/")||path.startsWith("/auth/")||path.startsWith("/service-health")||path.startsWith("/video-cover-presets")||path.startsWith("/media-assets"))this.network.push({path,status:response.status});
+      }
+      if(message.method==="Network.loadingFinished"||message.method==="Network.loadingFailed"){
+        const requestID=String(p.requestId),path=this.requestPaths.get(requestID);
+        if(path?.startsWith("/service-health")){this.healthInflight.delete(requestID);this.serviceHealthNetwork.push({at:new Date().toISOString(),event:message.method,requestID,path,...(p.errorText?{errorText:String(p.errorText)}:{}),inflight:this.healthInflight.size})}
       }
       if(message.method==="Network.loadingFailed"){
         const path=this.requestPaths.get(String(p.requestId));if(path?.startsWith("/streams/"))this.network.push({path,failed:String(p.errorText)});

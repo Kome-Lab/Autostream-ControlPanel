@@ -62,7 +62,7 @@ test("UI-RELEASE-ASSEMBLY-003: the reader cannot replace missing or changed curr
     const absent = createNormalizedReader(root, { ...io, raw: p => { if (p === path) throw missing; return raw(p); } });
     assert.throws(() => absent.read(path), error => error === missing);
     const changed = createNormalizedReader(root, { ...io, raw: p => p === path ? Buffer.concat([raw(p), Buffer.from("drift")]) : raw(p) });
-    assert.throws(() => changed.read(path), /exact specified name edits/);
+    assert.throws(() => changed.read(path), path === ".github/workflows/ci.yml" ? /R9 unreviewed current finalization bytes/ : /exact specified name edits/);
   }
   const badOriginal = createNormalizedReader(root, { ...io, object: (commit, path) => path === "go.mod" ? Buffer.alloc(0) : object(commit, path) });
   assert.throws(() => badOriginal.read("go.mod"), /fixed original hash/);

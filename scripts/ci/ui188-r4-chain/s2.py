@@ -18,7 +18,7 @@ before_a=observations('a');assert not before_a['stream_id']
 api.call('POST','/input',{'user_id':'1006','channel_id':'1005','is_bot':False,'existing':True},202,base='http://127.0.0.1:19083')
 configs=[c for c in api.call('GET','/discord/configs') if c['name']=='UI188 R4 existing presence '+case];assert len(configs)<=1
 config=configs[0] if configs else api.call('POST','/discord/configs',{'name':'UI188 R4 existing presence '+case,'service_id':'bot-a','guild_id':'1001','voice_channel_id':'1005','text_channel_id':'1002','bot_token':'UI188-ONLY-EXTERNAL-TEST-TOKEN-a','caption_enabled':False,'audio_forward_enabled':True},201)
-private=pathlib.Path('/r6/private-'+os.environ.get('UI188_DB_SCHEMA','ui188_r7_acceptance'));cert=next(private.glob('sink-'+os.environ['UI188_PROBE_ATTEMPT']+'.crt'));key=cert.with_suffix('.key');processes=[]
+private=pathlib.Path('/r6/private-'+os.environ.get('UI188_DB_SCHEMA','ui188_closure_acceptance'));cert=next(private.glob('sink-'+os.environ['UI188_PROBE_ATTEMPT']+'.crt'));key=cert.with_suffix('.key');processes=[]
 def start(name,args,env={}):
  log=(api.evidence/(name+'-'+case+'-'+trial+'.log')).open('xb');p=subprocess.Popen(args,env={**os.environ,**env},stdout=log,stderr=subprocess.STDOUT);processes.append(p)
 try:

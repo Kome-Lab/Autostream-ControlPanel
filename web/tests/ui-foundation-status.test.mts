@@ -64,6 +64,24 @@ const {
 const { DomainStatusBadge } = await import("../src/components/foundation/status/domain-status-badge.ts");
 const { translate } = await import("../src/lib/i18n.ts");
 
+test("UI188-R9: pending is an unconfirmed request in both locales without changing the raw audit result", () => {
+  const row = Object.freeze({ result: "pending" });
+  const pending = presentAuditResultStatus(row.result);
+  assert.deepEqual(pending, { known: true, tone: "warning", labelKey: "statusAuditRequest", icon: "clock-3" });
+  assert.ok(Object.isFrozen(pending));
+  assert.equal(row.result, "pending");
+  for (const [locale, text] of [["ja", "要求済み・反映未確認"], ["en", "Requested; result unconfirmed"]] as const) {
+    assert.equal(translate(locale, pending.labelKey), text);
+    const markup = renderToStaticMarkup(createElement(DomainStatusBadge, { presentation: pending, translate: (key) => translate(locale, key) }));
+    assert.ok(markup.includes(text));
+    assert.match(markup, /data-status-known="true"/);
+  }
+  assert.deepEqual(presentAuditResultStatus("request"), pending);
+  assert.equal(presentAuditResultStatus("success").tone, "success");
+  assert.equal(presentAuditResultStatus("failure").tone, "critical");
+  for (const value of ["PENDING", " pending ", "future_pending"]) assert.equal(presentAuditResultStatus(value).known, false);
+});
+
 const webRoot = fileURLToPath(new URL("..", import.meta.url));
 const fixture: unknown = JSON.parse(readFileSync(join(webRoot, "tests", "fixtures", "ui-foundation-status-mappings.json"), "utf8"));
 function assertMappingFixture(value: unknown): asserts value is StatusMappingFixture {

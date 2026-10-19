@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { RealBrowser } from "./real_browser.mts";
+import {observeCover,observationExpression,type CoverObservation} from './cover_observation.mts';
 import type { VideoCoverState } from "../../../web/src/features/streams/control-platform.ts";
 
 type VideoSnapshot = {w:number;h:number;time:number;ready:number};
@@ -22,6 +23,7 @@ const browser = await RealBrowser.launch();
 const phases: unknown[] = [];
 const playbackSamples: unknown[] = [];
 const lateCheckpoints: unknown[] = [];
+const offObservations:unknown[]=[];
 let protectedEnd: number | undefined;
 let offIntervalHLS: {start:number;end:number} | undefined;
 const save = (name: string, value: unknown) => writeFileSync(resolve(evidence, name), JSON.stringify(value, null, 2) + "\n");
@@ -50,6 +52,7 @@ try {
     await browser.clickSelector(showSelector);
   }
   const initial = await browser.waitFor<VideoCoverState>(stateExpression, v => v.status === "applied" && !!v.applied_active && v.applied_asset_variant_id === live.visual.candidates[0].variant_id, "real start cover A", 30_000);
+  const detail=await browser.evaluate<{assigned_encoder_id:string}>(`(async()=>{const r=await fetch('/streams/${sid}');if(r.status!==200)throw Error('actual stream detail');return r.json()})()`);
   assert.equal(initial.job_generation, 1);
   await browser.evaluate(`document.querySelector('#stream-preview')?.scrollIntoView({block:'start'})`);
   const video = await browser.waitFor<VideoSnapshot>(`(()=>{const v=document.querySelector('video');return v?{w:v.videoWidth,h:v.videoHeight,time:v.currentTime,ready:v.readyState}:null})()`, v => !!v && v.w === 854 && v.h === 480 && v.ready >= 2, "real HLS decode", 60_000);
@@ -102,14 +105,40 @@ try {
     if(sample.time>=protectedStart+longAudioSeconds)break;
     await new Promise(resolve=>setTimeout(resolve,1000));
   }
-  await browser.clickSelector('button[aria-label="Video Coverを非表示"]');
-  const confirmation = await browser.waitFor<Confirmation>(`(()=>{const d=[...document.querySelectorAll('[role=alertdialog]')].at(-1);return d?{text:d.innerText,inputs:d.querySelectorAll('input').length}:null})()`, v => !!v && v.text.includes("背後の映像"), "button-only cover consequence");
-  assert.equal(confirmation.inputs, 0);
-  protectedEnd = await browser.evaluate<number>("document.querySelector('video').currentTime");
-  await browser.evaluate("window.ui188Protected=false");
-  const confirm = '[role="alertdialog"] button';
-  await browser.evaluate(`(()=>{const b=[...document.querySelectorAll(${JSON.stringify(confirm)})].find(b=>b.innerText==='Coverを非表示');if(!b)throw Error('confirmation action missing');b.setAttribute('data-ui188-confirm','true')})()`);
-  await browser.clickSelector('button[data-ui188-confirm="true"]');
+  const offPUTs=()=>requests.filter(r=>r.method==='PUT'&&(r.body as {active?:boolean})?.active===false);
+  const beforeOFF=await browser.evaluate<VideoCoverState>(stateExpression);
+  let confirmation:Confirmation|undefined;
+  for(let explicitConfirmation=1;explicitConfirmation<=2;explicitConfirmation++){
+    assert.equal(offPUTs().length,0,'never retry an issued OFF request');
+    const beforeRefresh=await observeCover(browser,sid,detail.assigned_encoder_id);
+    offObservations.push({phase:'before normal UI refresh',explicitConfirmation,snapshot:beforeRefresh});
+    await browser.evaluate(`(()=>{const s=document.querySelector('section[aria-label="配信ビジュアルとVideo Cover"]');const b=[...s.querySelectorAll('button')].find(b=>b.innerText==='更新');if(!b)throw Error('normal visual refresh missing');b.setAttribute('data-ui188-health-refresh','true')})()`);
+    await browser.waitFor(`!document.querySelector('[data-ui188-health-refresh]').disabled`,v=>v===true,'normal refresh enabled',15000);
+    const refreshAt=Date.now();await browser.clickSelector('[data-ui188-health-refresh]');
+    const fresh=await browser.waitFor<CoverObservation>(observationExpression(sid,detail.assigned_encoder_id),v=>v.ready===true&&v.health!.dataUpdatedAt>=refreshAt,'actual fresh idle permission and Encoder capability',20000);
+    assert.equal(fresh.cover?.job_generation,initial.job_generation);assert.equal(fresh.cover?.desired_revision,beforeOFF.desired_revision);
+    offObservations.push({phase:'after normal UI refresh',explicitConfirmation,snapshot:fresh});
+    await browser.clickSelector('button[aria-label="Video Coverを非表示"]');
+    confirmation=await browser.waitFor<Confirmation>(`(()=>{const d=[...document.querySelectorAll('[role=alertdialog]')].at(-1);return d?{text:d.innerText,inputs:d.querySelectorAll('input').length}:null})()`,v=>!!v&&v.text.includes('背後の映像'),'button-only cover consequence');assert.equal(confirmation.inputs,0);
+    offObservations.push({phase:'OFF dialog shown',explicitConfirmation,snapshot:await observeCover(browser,sid,detail.assigned_encoder_id)});
+    await browser.evaluate(`(()=>{const d=[...document.querySelectorAll('[role=alertdialog]')].at(-1);const b=[...d.querySelectorAll('button')].find(b=>b.innerText==='Coverを非表示');if(!b)throw Error('confirmation action missing');b.setAttribute('data-ui188-confirm','true')})()`);
+    offObservations.push({phase:'immediately before explicit confirm',explicitConfirmation,snapshot:await observeCover(browser,sid,detail.assigned_encoder_id)});
+    const intendedEnd=await browser.evaluate<number>("document.querySelector('video').currentTime");
+    await browser.clickSelector('button[data-ui188-confirm="true"]');
+    const settleDeadline=Date.now()+5000;let rejection='';
+    while(Date.now()<settleDeadline&&offPUTs().length===0){
+      rejection=(await observeCover(browser,sid,detail.assigned_encoder_id)).notice||'';
+      if(rejection.includes('capabilityを確認できるまで')||rejection.includes('権限'))break;
+      await new Promise(r=>setTimeout(r,50));
+    }
+    offObservations.push({phase:'after explicit confirm',explicitConfirmation,OFF_PUTs:offPUTs().length,snapshot:await observeCover(browser,sid,detail.assigned_encoder_id)});
+    save('browser-OFF-observation-'+attempt+'.json',{sid,offObservations,serviceHealthNetwork:browser.serviceHealthNetwork,requests});
+    if(offPUTs().length===1){protectedEnd=intendedEnd;await browser.evaluate('window.ui188Protected=false');break}
+    assert.equal(offPUTs().length,0);assert.ok(rejection.includes('capabilityを確認できるまで')||rejection.includes('権限'),'unsent OFF must have an explicit guard rejection');
+    const unchanged=await browser.evaluate<VideoCoverState>(stateExpression);assert.equal(unchanged.desired_revision,beforeOFF.desired_revision);assert.equal(unchanged.applied_active,true);
+    assert.ok(explicitConfirmation<2,'freshness unresolved after two distinct explicit confirmations');
+  }
+  assert.equal(offPUTs().length,1,'exactly one real OFF PUT');
   const off = await browser.waitFor<VideoCoverState>(stateExpression, v => v.status === "applied" && v.applied_active === false && v.applied_revision === v.desired_revision, "real Encoder explicit OFF", 30_000);
   phases.push({phase: "OFF", at: new Date().toISOString(), state: off, confirmation});
   const offFrame = await browser.waitFor<Frame>("window.ui188Frames?.at(-1)", f => !!f && ![[255,0,0],[0,0,255],[0,128,0]].some(color=>color.every((c,i)=>Math.abs(f.center[i]-c)<40)) && f.watermark.slice(0,3).every(v=>v>220), "same HLS explicit OFF decoded with Watermark", 30_000);
@@ -128,7 +157,7 @@ try {
   assert.ok(narrow.scroll <= narrow.width + 1);
   writeFileSync(resolve(evidence, "browser-cover-" + attempt + "-narrow.png"), await browser.captureScreenshot());
   if(longAudioSeconds>=900)assert.equal(completedLate.size,2,"580 and 900 second decode checkpoints required");
-  save("browser-chain-cover-success-" + attempt + ".json", {sid, normalSandbox: true, viewport100: {width:1440,height:1000}, native200: "NOT_RUN", phases, requests, playbackSamples, lateCheckpoints, protectedIntervalHLS: {start:protectedStart,end:protectedEnd,selection:"playback interval before the explicit OFF confirmation, independent of frame contents"}, offIntervalHLS, frameCount: frames.length, protectedFrameCount: protectedFrames.length, narrow, consoleErrors: browser.consoleErrorCount});
+  save("browser-chain-cover-success-" + attempt + ".json", {sid, normalSandbox: true, viewport100: {width:1440,height:1000}, native200: "NOT_RUN", phases, requests, offObservations,serviceHealthNetwork:browser.serviceHealthNetwork,playbackSamples, lateCheckpoints, protectedIntervalHLS: {start:protectedStart,end:protectedEnd,selection:"playback interval before the issued explicit OFF confirmation, including any earlier rejected PUT0 attempt"}, offIntervalHLS, frameCount: frames.length, protectedFrameCount: protectedFrames.length, narrow, consoleErrors: browser.consoleErrorCount});
   save("browser-chain-frames-" + attempt + ".json", frames);
   console.log("REAL_BROWSER_COVER_HLS_PASS " + sid);
 } catch (error) {
@@ -136,7 +165,7 @@ try {
   if (frames) save("browser-chain-frames-failure-" + attempt + ".json", frames);
   const dom = await browser.evaluate("({path:location.pathname,text:document.body.innerText})").catch(() => undefined);
   const video = await browser.evaluate("(()=>{const v=document.querySelector('video');return v?{time:v.currentTime,ready:v.readyState,paused:v.paused,width:v.videoWidth,height:v.videoHeight,error:v.error?.code}:null})()").catch(()=>undefined);
-  save("browser-chain-cover-failure-" + attempt + ".json", {sid, phases, requests, protectedEnd, offIntervalHLS, video, dom, network:browser.network,error: error instanceof Error ? error.message : String(error)});
+  save("browser-chain-cover-failure-" + attempt + ".json", {sid, phases, requests, offObservations,serviceHealthNetwork:browser.serviceHealthNetwork,protectedEnd, offIntervalHLS, video, dom, network:browser.network,error: error instanceof Error ? error.message : String(error)});
   throw error;
 } finally {
   await browser.close();

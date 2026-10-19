@@ -102,12 +102,13 @@ func (s *Server) serviceRegister(w http.ResponseWriter, r *http.Request) {
 }
 
 type serviceRuntimeConfigResponse struct {
-	Service              serviceRuntimeConfigService         `json:"service"`
-	Assignments          []store.StreamServiceAssignment     `json:"assignments"`
-	Profiles             map[string][]store.Profile          `json:"profiles"`
-	StreamDiscordConfigs []serviceRuntimeDiscordStreamConfig `json:"stream_discord_configs,omitempty"`
-	StreamArchiveConfigs []serviceRuntimeArchiveStreamConfig `json:"stream_archive_configs,omitempty"`
-	StreamYouTubeConfigs []serviceRuntimeYouTubeStreamConfig `json:"stream_youtube_configs,omitempty"`
+	Service                serviceRuntimeConfigService           `json:"service"`
+	Assignments            []store.StreamServiceAssignment       `json:"assignments"`
+	Profiles               map[string][]store.Profile            `json:"profiles"`
+	StreamDiscordConfigs   []serviceRuntimeDiscordStreamConfig   `json:"stream_discord_configs,omitempty"`
+	StreamArchiveConfigs   []serviceRuntimeArchiveStreamConfig   `json:"stream_archive_configs,omitempty"`
+	StreamYouTubeConfigs   []serviceRuntimeYouTubeStreamConfig   `json:"stream_youtube_configs,omitempty"`
+	CurrentDiscordBindings *serviceRuntimeCurrentDiscordBindings `json:"current_discord_bindings,omitempty"`
 }
 
 type serviceRuntimeConfigService struct {
@@ -176,10 +177,12 @@ func serviceRuntimeConfigServiceFromStore(service store.RegisteredService) servi
 }
 
 type serviceRuntimeSecretResolveRequest struct {
-	ServiceID        string `json:"service_id"`
-	StreamID         string `json:"stream_id,omitempty"`
-	ArchiveProfileID string `json:"archive_profile_id,omitempty"`
-	SecretName       string `json:"secret_name"`
+	ServiceID                    string          `json:"service_id"`
+	StreamID                     string          `json:"stream_id,omitempty"`
+	ArchiveProfileID             string          `json:"archive_profile_id,omitempty"`
+	SecretName                   string          `json:"secret_name"`
+	CurrentDiscordBindingVersion int             `json:"current_discord_binding_version,omitempty"`
+	CurrentDiscordBinding        json.RawMessage `json:"current_discord_binding,omitempty"`
 }
 
 type serviceRuntimeSecretResolveResponse struct {
@@ -237,7 +240,7 @@ func (s *Server) adminServiceRuntimeConfig(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_service_failed"})
 		return
 	}
-	payload, code, err := s.runtimeConfigForService(r.Context(), service)
+	payload, code, err := s.runtimeConfigForServiceWithCurrent(r.Context(), service, true)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": code})
 		return
@@ -249,13 +252,51 @@ func (s *Server) adminServiceRuntimeConfig(w http.ResponseWriter, r *http.Reques
 }
 
 func (s *Server) runtimeConfigForService(ctx context.Context, service store.RegisteredService) (serviceRuntimeConfigResponse, string, error) {
+	return s.runtimeConfigForServiceWithCurrent(ctx, service, false)
+}
+
+func (s *Server) runtimeConfigForServiceWithCurrent(ctx context.Context, service store.RegisteredService, preview bool) (serviceRuntimeConfigResponse, string, error) {
 	assignments, err := s.services.ListServiceAssignmentsForService(ctx, service.ServiceID)
 	if err != nil {
 		return serviceRuntimeConfigResponse{}, "list_service_assignments_failed", err
 	}
+	var current *serviceRuntimeCurrentDiscordBindings
+	var currentProfiles []store.Profile
+	if service.ServiceType == "discord_bot" {
+		snapshot, snapshotErr := s.currentDiscordCredentialStores().Snapshot(ctx, service.ServiceID, service.TokenID)
+		if snapshotErr != nil {
+			if !preview || !errors.Is(snapshotErr, store.ErrForbidden) {
+				if errors.Is(snapshotErr, store.ErrServiceAssignmentConflict) {
+					return serviceRuntimeConfigResponse{}, "current_discord_binding_assignment_conflict", snapshotErr
+				}
+				return serviceRuntimeConfigResponse{}, "current_discord_binding_unavailable", snapshotErr
+			}
+			// A revoked Bot must not authorize a Gateway. An authenticated admin
+			// can still inspect the existing sanitized diagnostic projection. This
+			// fallback is explicitly not an atomic current credential snapshot.
+			current = &serviceRuntimeCurrentDiscordBindings{Version: 1, Bindings: []store.CurrentDiscordCredentialBinding{}, AvailabilityCode: "service_token_unavailable"}
+		} else {
+			// Only the explicit current subset comes from the shared store boundary.
+			// Waiting/other runtime projections remain independent reads below.
+			service, assignments = snapshot.Service, snapshot.Assignments
+			current = &serviceRuntimeCurrentDiscordBindings{Version: 1, Bindings: snapshot.Bindings}
+			currentProfiles = snapshot.Profiles
+		}
+	}
 	profiles, err := s.runtimeProfilesForService(ctx, service, assignments)
 	if err != nil {
 		return serviceRuntimeConfigResponse{}, "list_runtime_profiles_failed", err
+	}
+	for _, authoritative := range currentProfiles {
+		items := profiles[string(store.ProfileDiscordConfig)]
+		kept := make([]store.Profile, 0, len(items)+1)
+		for _, item := range items {
+			if item.ID != authoritative.ID {
+				kept = append(kept, item)
+			}
+		}
+		authoritative.Config = sanitizeRuntimeProfileConfigForKind(store.ProfileDiscordConfig, authoritative.Config)
+		profiles[string(store.ProfileDiscordConfig)] = append(kept, authoritative)
 	}
 	discordConfigs, err := s.runtimeDiscordStreamConfigs(ctx, service, assignments)
 	if err != nil {
@@ -269,7 +310,7 @@ func (s *Server) runtimeConfigForService(ctx context.Context, service store.Regi
 	if err != nil {
 		return serviceRuntimeConfigResponse{}, "list_runtime_youtube_configs_failed", err
 	}
-	return serviceRuntimeConfigResponse{Service: serviceRuntimeConfigServiceFromStore(service), Assignments: assignments, Profiles: profiles, StreamDiscordConfigs: discordConfigs, StreamArchiveConfigs: archiveConfigs, StreamYouTubeConfigs: youtubeConfigs}, "", nil
+	return serviceRuntimeConfigResponse{Service: serviceRuntimeConfigServiceFromStore(service), Assignments: assignments, Profiles: profiles, StreamDiscordConfigs: discordConfigs, StreamArchiveConfigs: archiveConfigs, StreamYouTubeConfigs: youtubeConfigs, CurrentDiscordBindings: current}, "", nil
 }
 
 func (s *Server) serviceRuntimeSecretResolve(w http.ResponseWriter, r *http.Request) {
@@ -309,6 +350,10 @@ func (s *Server) serviceRuntimeSecretResolve(w http.ResponseWriter, r *http.Requ
 	if service.TokenID != token.ID || service.ServiceType != token.ServiceType {
 		s.writeServiceAudit(r, token, "services.runtime_secret.resolve", "service", serviceID, "failure", map[string]any{"reason": "service_not_assigned_to_token", "secret_name": secretName})
 		writeJSON(w, http.StatusForbidden, map[string]string{"code": "service_not_assigned_to_token"})
+		return
+	}
+	if len(body.CurrentDiscordBinding) != 0 || body.CurrentDiscordBindingVersion != 0 {
+		s.resolveCurrentDiscordBindingSecret(w, r, token, body)
 		return
 	}
 	allowed, err := s.runtimeSecretAllowedForService(r.Context(), service, secretName, strings.TrimSpace(body.StreamID), strings.TrimSpace(body.ArchiveProfileID))

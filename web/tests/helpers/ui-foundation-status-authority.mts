@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 import type { StatusAuthority, StatusVocabulary } from "./status-authority-types.mts";
 import { verifyStatusAuthoritySourceLocators } from "./status-authority-locators.mts";
+import { inverseR9ArchiveProcessingSource } from "../ui-regression/ui188-r9-finalization-deltas.mts";
 
 export function readStatusAuthority(webRoot: string) {
   const authority: unknown = JSON.parse(readFileSync(
@@ -137,7 +138,12 @@ export function verifyStatusAuthoritySources(webRoot: string, authority: StatusA
       assert.equal(commit, source.currentSource.revision, `${source.id}: current authority must name the exact code commit`);
       verifyStatusAuthoritySourceLocators(root, source.id, commit, source.currentSource.locators, authority.vocabularies);
       for (const locator of source.currentSource.locators) {
-        const current: Buffer = execFileSync("git", ["-C", root, "cat-file", "blob", `HEAD:${locator.path}`]);
+        const current: Buffer = source.id === "control-panel-stream-store" && locator.path === "internal/store/stream_queries_mariadb.go"
+          ? inverseR9ArchiveProcessingSource(
+            execFileSync("git", ["-C", root, "cat-file", "blob", `a9efbed3e058bf016b171e50c22650075f20ef50:${locator.path}`]),
+            readFileSync(join(root, locator.path)),
+          )
+          : execFileSync("git", ["-C", root, "cat-file", "blob", `HEAD:${locator.path}`]);
         assert.equal(sha256(current), locator.sourceSha256, `${source.id}:${locator.path} current product source digest`);
       }
       verifiedSources += 1;

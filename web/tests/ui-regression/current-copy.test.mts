@@ -16,6 +16,26 @@ const { StreamDetailOperations } = await import("../../src/features/streams/stre
 const { createStreamActionController } = await import("../../src/features/streams/stream-action-controller.ts");
 const { streamTableColumns } = await import("../../src/features/streams/stream-table-cells.tsx");
 
+test("UI188-R9-AUDIT: real audit table keeps pending and successful records separate in both locales", async () => {
+  const { AuditLogsView } = await import("../../src/features/audit/audit-logs-view.tsx");
+  const rows = [
+    { id: "r9-pending", timestamp: "2026-09-01T00:00:00Z", action: "streams.discord_youtube_notify", result: "pending", resource_id: "r9-stream", actor_username: "r9-operator" },
+    { id: "r9-success", timestamp: "2026-09-01T00:00:01Z", action: "streams.discord_youtube_notify", result: "success", resource_id: "r9-stream", actor_username: "r9-operator" },
+  ];
+  const original = structuredClone(rows);
+  for (const locale of ["ja", "en"] as const) {
+    const html = renderUI(createElement(AuditLogsView), locale, "/admin/audit-logs", client => {
+      client.setQueryData(["audit-logs", { from: "", to: "", result: "all", q: "", excludeActionGroup: "node_activity" }], rows);
+    });
+    assert.match(html, locale === "ja" ? /要求済み・反映未確認/ : /Requested; result unconfirmed/);
+    assert.match(html, locale === "ja" ? />成功</ : />Success</);
+    assert.match(html, /data-status-tone="warning"/);
+    assert.match(html, /data-status-tone="success"/);
+    assert.doesNotMatch(html, />pending</);
+  }
+  assert.deepEqual(rows, original);
+});
+
 test("UI-MONITORING-COPY-034: actual legacy badges translate labels and detail without changing classification or unknown safety", async () => {
   const { StatusBadge, statusDescriptor } = await import("../../src/components/admin/status-badge.tsx");
   const statuses = ["live", "starting", "scheduled", "ready", "created", "draft", "stopped", "completed", "failed", "error", "recording", "recording_started", "recording_completed", "online", "assigned", "pass", "ok", "healthy", "resolved", "closed", "acknowledged", "open", "offline", "unconfigured", "stopping", "degraded", "warning", "pending", "success", "executed", "retrying", "pending_approval", "failure", "UNRECOGNIZED-秘密値"];

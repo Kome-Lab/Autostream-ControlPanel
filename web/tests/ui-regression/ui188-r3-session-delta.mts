@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {createHash} from "node:crypto";
+import {historicalR9OwnerMap} from "./ui188-r9-finalization-deltas.mts";
 
 // Independent finite extension. It does not amend the frozen 48-path table.
 export const sessionRefreshDelta = Object.freeze({
@@ -21,5 +22,6 @@ export function inverseSessionRefresh(path:string,before:Buffer,current:Buffer):
   return before;
 }
 export function historicalSessionRefreshSource(path:string,current:Buffer,object:(commit:string,path:string)=>Buffer):Buffer {
+  current=historicalR9OwnerMap(path,current,object);
   return sessionRefreshDelta.paths.some(row=>row.path===path)?inverseSessionRefresh(path,object(sessionRefreshDelta.beforeCommit,path),current):current;
 }
