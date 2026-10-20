@@ -1,0 +1,1263 @@
+{
+  "schema_version": 1,
+  "product_transitions": [
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "HEAD-to-R9",
+      "path": ".github/workflows/ci.yml",
+      "owner": "CP",
+      "disposition": "existing CI; preserve original denominator",
+      "before": {
+        "path": ".github/workflows/ci.yml",
+        "mode": "100644",
+        "oid": "5d5136ed040b805f2ce5f4563da54dfd02a5dfa3"
+      },
+      "after": {
+        "path": ".github/workflows/ci.yml",
+        "mode": "100644",
+        "oid": "9f36c6ae3cac7f0b9a5b5d70479b9c60f56e8856"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "HEAD-to-R9",
+      "path": "internal/httpapi/ui188_r9_archive_finalization_test.go",
+      "owner": "CP",
+      "disposition": "test-only source; public-safe synthetic fixtures",
+      "before": null,
+      "after": {
+        "path": "internal/httpapi/ui188_r9_archive_finalization_test.go",
+        "mode": "100644",
+        "oid": "14861e8ae091b089a22afd002018918e9ad39889"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "HEAD-to-R9",
+      "path": "internal/store/memory.go",
+      "owner": "CP",
+      "disposition": "product source",
+      "before": {
+        "path": "internal/store/memory.go",
+        "mode": "100644",
+        "oid": "d34e6559ec9210a49d614aecd5d86019c7022dc7"
+      },
+      "after": {
+        "path": "internal/store/memory.go",
+        "mode": "100644",
+        "oid": "5f65e72f91a41af8437cdc11d1b6bc9f0ec3a733"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "HEAD-to-R9",
+      "path": "internal/store/service_assignment_guard.go",
+      "owner": "CP",
+      "disposition": "product source",
+      "before": {
+        "path": "internal/store/service_assignment_guard.go",
+        "mode": "100644",
+        "oid": "b3c7244acf874eca15c33c858c3650bae4cc7904"
+      },
+      "after": {
+        "path": "internal/store/service_assignment_guard.go",
+        "mode": "100644",
+        "oid": "81502cb0b6c248b4ae0d9107c93a0ff2e5ae0539"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "HEAD-to-R9",
+      "path": "internal/store/stream_queries_mariadb.go",
+      "owner": "CP",
+      "disposition": "product source",
+      "before": {
+        "path": "internal/store/stream_queries_mariadb.go",
+        "mode": "100644",
+        "oid": "86c6fa985d2ec15ea1caa18bf3a4606e49352f96"
+      },
+      "after": {
+        "path": "internal/store/stream_queries_mariadb.go",
+        "mode": "100644",
+        "oid": "2857f722c48acb0a81f958fc7bf43c8347ac3971"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "HEAD-to-R9",
+      "path": "internal/store/ui188_r9_archive_finalization_mariadb_test.go",
+      "owner": "CP",
+      "disposition": "test-only source; public-safe synthetic fixtures",
+      "before": null,
+      "after": {
+        "path": "internal/store/ui188_r9_archive_finalization_mariadb_test.go",
+        "mode": "100644",
+        "oid": "c5d7e50ac5a19b22f0dc75d9a848828830125469"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "HEAD-to-R9",
+      "path": "internal/store/ui188_r9_archive_finalization_test.go",
+      "owner": "CP",
+      "disposition": "test-only source; public-safe synthetic fixtures",
+      "before": null,
+      "after": {
+        "path": "internal/store/ui188_r9_archive_finalization_test.go",
+        "mode": "100644",
+        "oid": "4435f1732040e4766a55fa659e7fc8fe0db73d02"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "HEAD-to-R9",
+      "path": "scripts/ci/source-owner-map.json",
+      "owner": "CP",
+      "disposition": "source integrity metadata",
+      "before": {
+        "path": "scripts/ci/source-owner-map.json",
+        "mode": "100644",
+        "oid": "89a73b977fc41c671a5185d75d4ec90c4658de1a"
+      },
+      "after": {
+        "path": "scripts/ci/source-owner-map.json",
+        "mode": "100644",
+        "oid": "f4da0b7cdb88288b3d9619e7bc76c5e2f448050a"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "HEAD-to-R9",
+      "path": "scripts/ci/ui188-r4-chain/archive_barrier.py",
+      "owner": "CP",
+      "disposition": "test-only source; public-safe synthetic fixtures",
+      "before": null,
+      "after": {
+        "path": "scripts/ci/ui188-r4-chain/archive_barrier.py",
+        "mode": "100644",
+        "oid": "ae1e5c01eee1b2c6b5eef503a0e08599747fd845"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "HEAD-to-R9",
+      "path": "scripts/ci/ui188-r4-chain/artifact_transport.py",
+      "owner": "CP",
+      "disposition": "test-only source; public-safe synthetic fixtures",
+      "before": null,
+      "after": {
+        "path": "scripts/ci/ui188-r4-chain/artifact_transport.py",
+        "mode": "100644",
+        "oid": "eccbcec788c25c6a7abfb85236a74221ff67a3ff"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "HEAD-to-R9",
+      "path": "scripts/ci/ui188-r4-chain/audit_pending.mts",
+      "owner": "CP",
+      "disposition": "test-only source; public-safe synthetic fixtures",
+      "before": null,
+      "after": {
+        "path": "scripts/ci/ui188-r4-chain/audit_pending.mts",
+        "mode": "100644",
+        "oid": "07b2492accb96ff6e63360beb4ff78bf7a6e7fd8"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "HEAD-to-R9",
+      "path": "scripts/ci/ui188-r4-chain/audit_preflight.mts",
+      "owner": "CP",
+      "disposition": "test-only source; public-safe synthetic fixtures",
+      "before": null,
+      "after": {
+        "path": "scripts/ci/ui188-r4-chain/audit_preflight.mts",
+        "mode": "100644",
+        "oid": "e68ed30a59a3ca5d25a9a810f95d4c5c8c10443d"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "HEAD-to-R9",
+      "path": "scripts/ci/ui188-r4-chain/browser.mts",
+      "owner": "CP",
+      "disposition": "test-only source; public-safe synthetic fixtures",
+      "before": {
+        "path": "scripts/ci/ui188-r4-chain/browser.mts",
+        "mode": "100644",
+        "oid": "7cff6c214a5e3e4075b6301208f209440d69b8cd"
+      },
+      "after": {
+        "path": "scripts/ci/ui188-r4-chain/browser.mts",
+        "mode": "100644",
+        "oid": "499db1e7c2a50f34f5235f2728ea90bb66deef26"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "HEAD-to-R9",
+      "path": "scripts/ci/ui188-r4-chain/capture-final-runtime-proof.py",
+      "owner": "CP",
+      "disposition": "test-only source; public-safe synthetic fixtures",
+      "before": null,
+      "after": {
+        "path": "scripts/ci/ui188-r4-chain/capture-final-runtime-proof.py",
+        "mode": "100644",
+        "oid": "a9e9bdb205b6f6b1e281035d7aef03674b3ce6d8"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "HEAD-to-R9",
+      "path": "scripts/ci/ui188-r4-chain/capture-live-authority.py",
+      "owner": "CP",
+      "disposition": "test-only source; public-safe synthetic fixtures",
+      "before": null,
+      "after": {
+        "path": "scripts/ci/ui188-r4-chain/capture-live-authority.py",
+        "mode": "100644",
+        "oid": "d292768d5373ca5c096fcda03389e88c468be2ce"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "HEAD-to-R9",
+      "path": "scripts/ci/ui188-r4-chain/cover_observation.mts",
+      "owner": "CP",
+      "disposition": "test-only source; public-safe synthetic fixtures",
+      "before": null,
+      "after": {
+        "path": "scripts/ci/ui188-r4-chain/cover_observation.mts",
+        "mode": "100644",
+        "oid": "40288b62d264a908af82d5f84bd1e0ee742e8d67"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "HEAD-to-R9",
+      "path": "scripts/ci/ui188-r4-chain/host_r9.py",
+      "owner": "CP",
+      "disposition": "legacy Windows test driver; retained, not invoked by Linux job",
+      "before": null,
+      "after": {
+        "path": "scripts/ci/ui188-r4-chain/host_r9.py",
+        "mode": "100644",
+        "oid": "b67d50b87b50ac65ed0f8859067b302208250ffc"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "HEAD-to-R9",
+      "path": "scripts/ci/ui188-r4-chain/owned_cdp.mts",
+      "owner": "CP",
+      "disposition": "test-only source; public-safe synthetic fixtures",
+      "before": {
+        "path": "scripts/ci/ui188-r4-chain/owned_cdp.mts",
+        "mode": "100644",
+        "oid": "08174c075e360249913ed6e215dd9b0cdc11a4f6"
+      },
+      "after": {
+        "path": "scripts/ci/ui188-r4-chain/owned_cdp.mts",
+        "mode": "100644",
+        "oid": "21d3f71bd3123eff06c2fbf0b864fec63f39bca2"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "HEAD-to-R9",
+      "path": "scripts/ci/ui188-r4-chain/packet_capture.py",
+      "owner": "CP",
+      "disposition": "test-only source; public-safe synthetic fixtures",
+      "before": null,
+      "after": {
+        "path": "scripts/ci/ui188-r4-chain/packet_capture.py",
+        "mode": "100644",
+        "oid": "ccef4409dc759b1a4032e5bca01b9daf8a2b8d26"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "HEAD-to-R9",
+      "path": "scripts/ci/ui188-r4-chain/probe_cover_cache.mts",
+      "owner": "CP",
+      "disposition": "test-only source; public-safe synthetic fixtures",
+      "before": null,
+      "after": {
+        "path": "scripts/ci/ui188-r4-chain/probe_cover_cache.mts",
+        "mode": "100644",
+        "oid": "dbbd79047fb8cbc08054404793a5106cde7ed2eb"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "HEAD-to-R9",
+      "path": "scripts/ci/ui188-r4-chain/real_browser.mts",
+      "owner": "CP",
+      "disposition": "test-only source; public-safe synthetic fixtures",
+      "before": {
+        "path": "scripts/ci/ui188-r4-chain/real_browser.mts",
+        "mode": "100644",
+        "oid": "8584102a10b50487c2281dbfeaf9559739c9e303"
+      },
+      "after": {
+        "path": "scripts/ci/ui188-r4-chain/real_browser.mts",
+        "mode": "100644",
+        "oid": "1737db8606bed221773a7a0900c89f3f23d827ac"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "HEAD-to-R9",
+      "path": "scripts/ci/ui188-r4-chain/receiver_observation.py",
+      "owner": "CP",
+      "disposition": "test-only source; public-safe synthetic fixtures",
+      "before": {
+        "path": "scripts/ci/ui188-r4-chain/receiver_observation.py",
+        "mode": "100644",
+        "oid": "2804f0c1c1d12587fc5bf784cdc3523c6d5d11f9"
+      },
+      "after": {
+        "path": "scripts/ci/ui188-r4-chain/receiver_observation.py",
+        "mode": "100644",
+        "oid": "82b2a4089be27216a9256236b51b4e28729babd4"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "HEAD-to-R9",
+      "path": "scripts/ci/ui188-r4-chain/rtp_trace.py",
+      "owner": "CP",
+      "disposition": "test-only source; public-safe synthetic fixtures",
+      "before": {
+        "path": "scripts/ci/ui188-r4-chain/rtp_trace.py",
+        "mode": "100644",
+        "oid": "e6f2d3843ebbeb24b901f8c2a40ec95cf9c79a3e"
+      },
+      "after": {
+        "path": "scripts/ci/ui188-r4-chain/rtp_trace.py",
+        "mode": "100644",
+        "oid": "e69f200eb636c6efeaaedd460a0930a587728437"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "HEAD-to-R9",
+      "path": "scripts/ci/ui188-r4-chain/run_r7_chain.py",
+      "owner": "CP",
+      "disposition": "legacy Windows test driver; retained, not invoked by Linux job",
+      "before": {
+        "path": "scripts/ci/ui188-r4-chain/run_r7_chain.py",
+        "mode": "100644",
+        "oid": "3d625259d61e5ec99266ad4f299f952093d20dcb"
+      },
+      "after": {
+        "path": "scripts/ci/ui188-r4-chain/run_r7_chain.py",
+        "mode": "100644",
+        "oid": "76fd45af2989a7cd3481c231f756a0770382a016"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "HEAD-to-R9",
+      "path": "scripts/ci/ui188-r4-chain/runtime.py",
+      "owner": "CP",
+      "disposition": "test-only source; public-safe synthetic fixtures",
+      "before": {
+        "path": "scripts/ci/ui188-r4-chain/runtime.py",
+        "mode": "100644",
+        "oid": "63c91253703f170f7cbb726d88042f3ab035dc89"
+      },
+      "after": {
+        "path": "scripts/ci/ui188-r4-chain/runtime.py",
+        "mode": "100644",
+        "oid": "0af46de09c43cc7922e21d06570c15a60bff1348"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "HEAD-to-R9",
+      "path": "scripts/ci/ui188-r4-chain/s0_negative.py",
+      "owner": "CP",
+      "disposition": "test-only source; public-safe synthetic fixtures",
+      "before": null,
+      "after": {
+        "path": "scripts/ci/ui188-r4-chain/s0_negative.py",
+        "mode": "100644",
+        "oid": "427740756ab48adaf3b1e65ca4c667b366c1dd1e"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "HEAD-to-R9",
+      "path": "scripts/ci/ui188-r4-chain/s2.py",
+      "owner": "CP",
+      "disposition": "test-only source; public-safe synthetic fixtures",
+      "before": {
+        "path": "scripts/ci/ui188-r4-chain/s2.py",
+        "mode": "100644",
+        "oid": "f63ec70470b52a8363c7845b70c3c1fe0fa52fca"
+      },
+      "after": {
+        "path": "scripts/ci/ui188-r4-chain/s2.py",
+        "mode": "100644",
+        "oid": "6a3e85afbded95a2aec6898fee99c1f7da28342f"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "HEAD-to-R9",
+      "path": "scripts/ci/ui188-r4-chain/s4.mts",
+      "owner": "CP",
+      "disposition": "test-only source; public-safe synthetic fixtures",
+      "before": {
+        "path": "scripts/ci/ui188-r4-chain/s4.mts",
+        "mode": "100644",
+        "oid": "8798122c13a68784c43c857c268dd2e70042ef32"
+      },
+      "after": {
+        "path": "scripts/ci/ui188-r4-chain/s4.mts",
+        "mode": "100644",
+        "oid": "93041284183fcb253eab0275a8a7a0c4bbb37f24"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "HEAD-to-R9",
+      "path": "scripts/ci/ui188-r4-chain/s4_state.py",
+      "owner": "CP",
+      "disposition": "test-only source; public-safe synthetic fixtures",
+      "before": {
+        "path": "scripts/ci/ui188-r4-chain/s4_state.py",
+        "mode": "100644",
+        "oid": "4390ab5f63bf81896e4f8130bbba35e59afd62b9"
+      },
+      "after": {
+        "path": "scripts/ci/ui188-r4-chain/s4_state.py",
+        "mode": "100644",
+        "oid": "994d5300ad8703bc76480bbe935c8acce62710a8"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "HEAD-to-R9",
+      "path": "scripts/ci/ui188-r4-chain/s5.mts",
+      "owner": "CP",
+      "disposition": "test-only source; public-safe synthetic fixtures",
+      "before": {
+        "path": "scripts/ci/ui188-r4-chain/s5.mts",
+        "mode": "100644",
+        "oid": "2515bef06124b2977da13211896a979428ad256f"
+      },
+      "after": {
+        "path": "scripts/ci/ui188-r4-chain/s5.mts",
+        "mode": "100644",
+        "oid": "d962d489cd1191c4e923e84b2e4f141227f06b1e"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "HEAD-to-R9",
+      "path": "scripts/ci/ui188-r4-chain/stale_authority.py",
+      "owner": "CP",
+      "disposition": "test-only source; public-safe synthetic fixtures",
+      "before": null,
+      "after": {
+        "path": "scripts/ci/ui188-r4-chain/stale_authority.py",
+        "mode": "100644",
+        "oid": "0bfb4f090d1cacfa3bb046f3146b6adba09dd7c4"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "HEAD-to-R9",
+      "path": "scripts/ci/ui188-r4-chain/test_archive_oracle.py",
+      "owner": "CP",
+      "disposition": "test-only source; public-safe synthetic fixtures",
+      "before": null,
+      "after": {
+        "path": "scripts/ci/ui188-r4-chain/test_archive_oracle.py",
+        "mode": "100644",
+        "oid": "57c87fc8dca8cb2018adbef8752d2cbb9413b478"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "HEAD-to-R9",
+      "path": "scripts/ci/ui188-r4-chain/test_artifact_transport.py",
+      "owner": "CP",
+      "disposition": "test-only source; public-safe synthetic fixtures",
+      "before": null,
+      "after": {
+        "path": "scripts/ci/ui188-r4-chain/test_artifact_transport.py",
+        "mode": "100644",
+        "oid": "3a96134be2aee3f6e3e1c997176c3490850adb04"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "HEAD-to-R9",
+      "path": "scripts/ci/ui188-r4-chain/test_packet_capture.py",
+      "owner": "CP",
+      "disposition": "test-only source; public-safe synthetic fixtures",
+      "before": null,
+      "after": {
+        "path": "scripts/ci/ui188-r4-chain/test_packet_capture.py",
+        "mode": "100644",
+        "oid": "c0579e4c1b83671f58549e7166a194327f5fa1c6"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "HEAD-to-R9",
+      "path": "scripts/ci/ui188-r4-chain/test_stop_event_order.mts",
+      "owner": "CP",
+      "disposition": "test-only source; public-safe synthetic fixtures",
+      "before": null,
+      "after": {
+        "path": "scripts/ci/ui188-r4-chain/test_stop_event_order.mts",
+        "mode": "100644",
+        "oid": "54c7633c224c22fc41a30596cc5bde6ca8fbe684"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "HEAD-to-R9",
+      "path": "web/src/features/streams/stream-action-controller.ts",
+      "owner": "CP",
+      "disposition": "product source",
+      "before": {
+        "path": "web/src/features/streams/stream-action-controller.ts",
+        "mode": "100644",
+        "oid": "fad308b9978bfdedfb8de005223f119e96110950"
+      },
+      "after": {
+        "path": "web/src/features/streams/stream-action-controller.ts",
+        "mode": "100644",
+        "oid": "a860a33b1c52dc22e49fbb491658b4288b452414"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "HEAD-to-R9",
+      "path": "web/src/lib/foundation/status/observability-presenters.ts",
+      "owner": "CP",
+      "disposition": "product source",
+      "before": {
+        "path": "web/src/lib/foundation/status/observability-presenters.ts",
+        "mode": "100644",
+        "oid": "cf747441d902d20a444110ea4298076f97d0ff18"
+      },
+      "after": {
+        "path": "web/src/lib/foundation/status/observability-presenters.ts",
+        "mode": "100644",
+        "oid": "e0da63d35d19c9e5b474208d571deec8f7599b0a"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "HEAD-to-R9",
+      "path": "web/src/lib/i18n.ts",
+      "owner": "CP",
+      "disposition": "product source",
+      "before": {
+        "path": "web/src/lib/i18n.ts",
+        "mode": "100644",
+        "oid": "bcfcd31bd21985857b777060ea14ee53e56385dc"
+      },
+      "after": {
+        "path": "web/src/lib/i18n.ts",
+        "mode": "100644",
+        "oid": "72a6306253762b6634eaf8400bb24339538349fc"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "HEAD-to-R9",
+      "path": "web/tests/helpers/ui-foundation-contract-imports.mts",
+      "owner": "CP",
+      "disposition": "test-only source; public-safe synthetic fixtures",
+      "before": {
+        "path": "web/tests/helpers/ui-foundation-contract-imports.mts",
+        "mode": "100644",
+        "oid": "372696877695944de83e7b03e28997ee889f4f44"
+      },
+      "after": {
+        "path": "web/tests/helpers/ui-foundation-contract-imports.mts",
+        "mode": "100644",
+        "oid": "251e4dcd6e92e94941bf56060f30a5337f3e799c"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "HEAD-to-R9",
+      "path": "web/tests/helpers/ui-foundation-status-authority.mts",
+      "owner": "CP",
+      "disposition": "test-only source; public-safe synthetic fixtures",
+      "before": {
+        "path": "web/tests/helpers/ui-foundation-status-authority.mts",
+        "mode": "100644",
+        "oid": "f55a9790635a2a0e916729a86d811eaf58380327"
+      },
+      "after": {
+        "path": "web/tests/helpers/ui-foundation-status-authority.mts",
+        "mode": "100644",
+        "oid": "f881979f55e8a7dd1f59f29d1108b1878f735a0b"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "HEAD-to-R9",
+      "path": "web/tests/streams-foundation-migration.test.mts",
+      "owner": "CP",
+      "disposition": "test-only source; public-safe synthetic fixtures",
+      "before": {
+        "path": "web/tests/streams-foundation-migration.test.mts",
+        "mode": "100644",
+        "oid": "b4d78f3a9d4681f3ef7c825237e39b356f86b76f"
+      },
+      "after": {
+        "path": "web/tests/streams-foundation-migration.test.mts",
+        "mode": "100644",
+        "oid": "09fff1d7e1ccbe4051c57689725021608d061966"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "HEAD-to-R9",
+      "path": "web/tests/ui-foundation-status.test.mts",
+      "owner": "CP",
+      "disposition": "test-only source; public-safe synthetic fixtures",
+      "before": {
+        "path": "web/tests/ui-foundation-status.test.mts",
+        "mode": "100644",
+        "oid": "0b9b4c1b86ce10bcd3e880508d67b0f26c661e89"
+      },
+      "after": {
+        "path": "web/tests/ui-foundation-status.test.mts",
+        "mode": "100644",
+        "oid": "b158f1b44893d9c97249d40b5ef47fd82150e797"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "HEAD-to-R9",
+      "path": "web/tests/ui-regression/cp174-source-deltas.test.mts",
+      "owner": "CP",
+      "disposition": "test-only source; public-safe synthetic fixtures",
+      "before": {
+        "path": "web/tests/ui-regression/cp174-source-deltas.test.mts",
+        "mode": "100644",
+        "oid": "d4eabdaba5eaf5c2ce99813bffe657547bd83397"
+      },
+      "after": {
+        "path": "web/tests/ui-regression/cp174-source-deltas.test.mts",
+        "mode": "100644",
+        "oid": "fa593a54282e3ed23bd40ccc2e8064077cd5c64c"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "HEAD-to-R9",
+      "path": "web/tests/ui-regression/current-copy.test.mts",
+      "owner": "CP",
+      "disposition": "test-only source; public-safe synthetic fixtures",
+      "before": {
+        "path": "web/tests/ui-regression/current-copy.test.mts",
+        "mode": "100644",
+        "oid": "a2f7ecaf81a21bbce1c58b690827afdce70e5987"
+      },
+      "after": {
+        "path": "web/tests/ui-regression/current-copy.test.mts",
+        "mode": "100644",
+        "oid": "44961ceb00cc7cc60f85aaa5d2ebee5ecdf200ea"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "HEAD-to-R9",
+      "path": "web/tests/ui-regression/release-assembly-deltas.test.mts",
+      "owner": "CP",
+      "disposition": "test-only source; public-safe synthetic fixtures",
+      "before": {
+        "path": "web/tests/ui-regression/release-assembly-deltas.test.mts",
+        "mode": "100644",
+        "oid": "e598bb2e4ad476d6771425c57f1e5bbb9b643b11"
+      },
+      "after": {
+        "path": "web/tests/ui-regression/release-assembly-deltas.test.mts",
+        "mode": "100644",
+        "oid": "a323c5240bbb24e1eb4e5a6fac75575865c319c7"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "HEAD-to-R9",
+      "path": "web/tests/ui-regression/ui188-current-source-deltas.mts",
+      "owner": "CP",
+      "disposition": "test-only source; public-safe synthetic fixtures",
+      "before": {
+        "path": "web/tests/ui-regression/ui188-current-source-deltas.mts",
+        "mode": "100644",
+        "oid": "5b4833cba6bb1b1bf7b105f555c64fe877e29bda"
+      },
+      "after": {
+        "path": "web/tests/ui-regression/ui188-current-source-deltas.mts",
+        "mode": "100644",
+        "oid": "98de497ee1933a9ea98b29da2b66cbc2bf96dca8"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "HEAD-to-R9",
+      "path": "web/tests/ui-regression/ui188-current-source-deltas.test.mts",
+      "owner": "CP",
+      "disposition": "test-only source; public-safe synthetic fixtures",
+      "before": {
+        "path": "web/tests/ui-regression/ui188-current-source-deltas.test.mts",
+        "mode": "100644",
+        "oid": "1a0cc84cdf9c22904a30e4a3ac29c37b18627fd6"
+      },
+      "after": {
+        "path": "web/tests/ui-regression/ui188-current-source-deltas.test.mts",
+        "mode": "100644",
+        "oid": "c30c3a2d385b3ce0ad4cc79aa0fb8e0d3377ffc4"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "HEAD-to-R9",
+      "path": "web/tests/ui-regression/ui188-r3-session-delta.mts",
+      "owner": "CP",
+      "disposition": "test-only source; public-safe synthetic fixtures",
+      "before": {
+        "path": "web/tests/ui-regression/ui188-r3-session-delta.mts",
+        "mode": "100644",
+        "oid": "174133a6442777fbad403f2db1beae0199c67dec"
+      },
+      "after": {
+        "path": "web/tests/ui-regression/ui188-r3-session-delta.mts",
+        "mode": "100644",
+        "oid": "7154f4004b0f3a6d8bbe9072d6287ee52dcda16f"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "HEAD-to-R9",
+      "path": "web/tests/ui-regression/ui188-r3-session-delta.test.mts",
+      "owner": "CP",
+      "disposition": "test-only source; public-safe synthetic fixtures",
+      "before": {
+        "path": "web/tests/ui-regression/ui188-r3-session-delta.test.mts",
+        "mode": "100644",
+        "oid": "0c47abff4558cf93b5745c86d5f022f05f57492f"
+      },
+      "after": {
+        "path": "web/tests/ui-regression/ui188-r3-session-delta.test.mts",
+        "mode": "100644",
+        "oid": "4ed52835ad48c1208a090003f9fef0aa353510b1"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "HEAD-to-R9",
+      "path": "web/tests/ui-regression/ui188-r4-delete-delta.mts",
+      "owner": "CP",
+      "disposition": "test-only source; public-safe synthetic fixtures",
+      "before": {
+        "path": "web/tests/ui-regression/ui188-r4-delete-delta.mts",
+        "mode": "100644",
+        "oid": "798814db44bad32e69558af4dcb26833e01f5b51"
+      },
+      "after": {
+        "path": "web/tests/ui-regression/ui188-r4-delete-delta.mts",
+        "mode": "100644",
+        "oid": "a607dfd872a62e8339f3090fedaf813a639c08bc"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "HEAD-to-R9",
+      "path": "web/tests/ui-regression/ui188-r4-delete-delta.test.mts",
+      "owner": "CP",
+      "disposition": "test-only source; public-safe synthetic fixtures",
+      "before": {
+        "path": "web/tests/ui-regression/ui188-r4-delete-delta.test.mts",
+        "mode": "100644",
+        "oid": "8a5a425a9bdaacbe63e86088b22e1b8758e887e0"
+      },
+      "after": {
+        "path": "web/tests/ui-regression/ui188-r4-delete-delta.test.mts",
+        "mode": "100644",
+        "oid": "df4b0df6909c73dafc62442feb43ad168d5e8f53"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "HEAD-to-R9",
+      "path": "web/tests/ui-regression/ui188-r9-finalization-deltas.mts",
+      "owner": "CP",
+      "disposition": "test-only source; public-safe synthetic fixtures",
+      "before": null,
+      "after": {
+        "path": "web/tests/ui-regression/ui188-r9-finalization-deltas.mts",
+        "mode": "100644",
+        "oid": "2516fcca6984c12922b5535c7e6a06af7a2a075a"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "R9-to-CB15",
+      "path": "internal/httpapi/server_current_discord_bindings.go",
+      "owner": "CP",
+      "disposition": "product source",
+      "before": null,
+      "after": {
+        "path": "internal/httpapi/server_current_discord_bindings.go",
+        "mode": "100644",
+        "oid": "3299be61416a4a4cc18afcb4b30a5b629eb5d6b9",
+        "sha256": "1897d69098179056347ec1ba7f23aa0bde567e6bbc10d62127543213f09fd636"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "R9-to-CB15",
+      "path": "internal/httpapi/server_runtime_config.go",
+      "owner": "CP",
+      "disposition": "product source",
+      "before": {
+        "path": "internal/httpapi/server_runtime_config.go",
+        "mode": "100644",
+        "oid": "083593dd0b7357cfc83647db06ac62b66c895e57"
+      },
+      "after": {
+        "path": "internal/httpapi/server_runtime_config.go",
+        "mode": "100644",
+        "oid": "4a2ffe2bca19f86b0d18246519d460db1d24d0da",
+        "sha256": "e4bc0219458fb7f6c844be34f7d9d3acd78ccaa3e67129412a081419e8e98b06"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "R9-to-CB15",
+      "path": "internal/httpapi/ui188_cb15_admin_preview_test.go",
+      "owner": "CP",
+      "disposition": "test-only source; public-safe synthetic fixtures",
+      "before": null,
+      "after": {
+        "path": "internal/httpapi/ui188_cb15_admin_preview_test.go",
+        "mode": "100644",
+        "oid": "5f6e49d8a7e6cfde53053c7f72c166ac21669e89",
+        "sha256": "ed47dbe7bc0800ee36aeca071d78e2e0aa54852c62e3c4be334ad5f7edcc1fef"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "R9-to-CB15",
+      "path": "internal/httpapi/ui188_cb15_current_binding_test.go",
+      "owner": "CP",
+      "disposition": "test-only source; public-safe synthetic fixtures",
+      "before": null,
+      "after": {
+        "path": "internal/httpapi/ui188_cb15_current_binding_test.go",
+        "mode": "100644",
+        "oid": "ca71b668ec55b594b5099f6df03dedf1280505c9",
+        "sha256": "b55d15b5707ed2415d7ab0b820f0d94d223845b94f167be6a5588dfaeab9dc36"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "R9-to-CB15",
+      "path": "internal/store/current_discord_credential_binding.go",
+      "owner": "CP",
+      "disposition": "product source",
+      "before": null,
+      "after": {
+        "path": "internal/store/current_discord_credential_binding.go",
+        "mode": "100644",
+        "oid": "1afcbb92ed195206ce5322dd508042b35cb7bab9",
+        "sha256": "123d3a1462b6ac971bee2fafab0c9869e342097d663404ce1afb66511931e2ff"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "R9-to-CB15",
+      "path": "internal/store/current_discord_credential_binding_mariadb.go",
+      "owner": "CP",
+      "disposition": "product source",
+      "before": null,
+      "after": {
+        "path": "internal/store/current_discord_credential_binding_mariadb.go",
+        "mode": "100644",
+        "oid": "40af18052f0f5b7d5e6940cfb27054a5601144f6",
+        "sha256": "d12aa43a39b5cda99056c4bffe0bd1d4f4ee78d44d57183efe77dcf9febb151f"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "R9-to-CB15",
+      "path": "internal/store/current_discord_credential_binding_test.go",
+      "owner": "CP",
+      "disposition": "test-only source; public-safe synthetic fixtures",
+      "before": null,
+      "after": {
+        "path": "internal/store/current_discord_credential_binding_test.go",
+        "mode": "100644",
+        "oid": "248b5708a99384d7f76fe1a5055b6fc888ccaea3",
+        "sha256": "f8ae6cb4867ac34ba70f4b1b101328e20264de44ed18d8bdc933eea09746311d"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "R9-to-CB15",
+      "path": "internal/store/current_discord_credential_lease_test.go",
+      "owner": "CP",
+      "disposition": "test-only source; public-safe synthetic fixtures",
+      "before": null,
+      "after": {
+        "path": "internal/store/current_discord_credential_lease_test.go",
+        "mode": "100644",
+        "oid": "9c1396bb33bfe0f60996e7382abb60a4be6af1f8",
+        "sha256": "fe930da4402b19432413f9c4f58203710c4453a78f58e42701e48e41b9e04952"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "R9-to-CB15",
+      "path": "internal/store/runtime_secret_leases.go",
+      "owner": "CP",
+      "disposition": "product source",
+      "before": {
+        "path": "internal/store/runtime_secret_leases.go",
+        "mode": "100644",
+        "oid": "66c397afade4c30a8fbb0abcfc445fd37fa5c909"
+      },
+      "after": {
+        "path": "internal/store/runtime_secret_leases.go",
+        "mode": "100644",
+        "oid": "31c81e926f14960be37944603784f09be4bcc6b2",
+        "sha256": "32a0d71bbb34da9b1c007188b338d637d47e7d35a3d03133e4f5297a2b5f7974"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "CB15-to-CB16",
+      "path": "internal/httpapi/server_runtime_config.go",
+      "owner": "CP",
+      "disposition": "product source",
+      "before": {
+        "path": "internal/httpapi/server_runtime_config.go",
+        "mode": "100644",
+        "oid": "4a2ffe2bca19f86b0d18246519d460db1d24d0da",
+        "sha256": "e4bc0219458fb7f6c844be34f7d9d3acd78ccaa3e67129412a081419e8e98b06"
+      },
+      "after": {
+        "path": "internal/httpapi/server_runtime_config.go",
+        "mode": "100644",
+        "oid": "87e6a43e7c0d367f2d1f214d5141a3b847d4c9d1",
+        "sha256": "0c77e6e3c33a464e3add5a25f4a5fed5d943264aa30bff771e62435007a0c730"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "CB15-to-CB16",
+      "path": "internal/httpapi/ui188_cb16_snapshot_retry_test.go",
+      "owner": "CP",
+      "disposition": "test-only source; public-safe synthetic fixtures",
+      "before": null,
+      "after": {
+        "path": "internal/httpapi/ui188_cb16_snapshot_retry_test.go",
+        "mode": "100644",
+        "oid": "1c4e3157d6891e839b79c661b5752504a55df134",
+        "sha256": "07ebbb8b90ef2cdafa33f6afd3bb275a5151d9b82a39765d2d7c01762c856606"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "CB15-to-CB16",
+      "path": "internal/store/current_discord_credential_binding.go",
+      "owner": "CP",
+      "disposition": "product source",
+      "before": {
+        "path": "internal/store/current_discord_credential_binding.go",
+        "mode": "100644",
+        "oid": "1afcbb92ed195206ce5322dd508042b35cb7bab9",
+        "sha256": "123d3a1462b6ac971bee2fafab0c9869e342097d663404ce1afb66511931e2ff"
+      },
+      "after": {
+        "path": "internal/store/current_discord_credential_binding.go",
+        "mode": "100644",
+        "oid": "4bfb8777aff4998cfa2fe9e3e2d7cab56a05db72",
+        "sha256": "9da3644ff464e792a2b9bf951a3e08c48e8c5b6032d0366f90bc00f317b9a878"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "CB15-to-CB16",
+      "path": "internal/store/ui188_cb16_snapshot_policy_test.go",
+      "owner": "CP",
+      "disposition": "test-only source; public-safe synthetic fixtures",
+      "before": null,
+      "after": {
+        "path": "internal/store/ui188_cb16_snapshot_policy_test.go",
+        "mode": "100644",
+        "oid": "c4eba4a41262150a0e0349e699452285a761e371",
+        "sha256": "fd7de8e4d646448303e6f511859aad91427173183b6f6ec207be7eb55ebedbc1"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "transition": "CB15-to-CB16",
+      "path": "internal/store/ui188_cb16_snapshot_retry_test.go",
+      "owner": "CP",
+      "disposition": "test-only source; public-safe synthetic fixtures",
+      "before": null,
+      "after": {
+        "path": "internal/store/ui188_cb16_snapshot_retry_test.go",
+        "mode": "100644",
+        "oid": "18505fba6d35be50ae66b05ca3f2bda4dd061273",
+        "sha256": "91879c2f1bfcbe64b3cf324799f596e76c9f3655c638f58527560b0bb74eeaa4"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-DiscordBot",
+      "transition": "HEAD-to-R9",
+      "path": ".github/workflows/ci.yml",
+      "owner": "BOT",
+      "disposition": "existing CI; preserve original denominator",
+      "before": {
+        "path": ".github/workflows/ci.yml",
+        "mode": "100644",
+        "oid": "8bfd5c253cf259b190d714251806c49ce498dd7a"
+      },
+      "after": {
+        "path": ".github/workflows/ci.yml",
+        "mode": "100644",
+        "oid": "f4950aacaf0e7f7cc2d4bd341ad6e41c1200ab7c",
+        "sha256": "e85f69829144c0ae6a3de70f8fee723c855a92ff5f5fa90d9d0cf5ed8dd2dac8"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-DiscordBot",
+      "transition": "HEAD-to-R9",
+      "path": "cmd/discord-bot/ui188_r4_chain_linux_test.go",
+      "owner": "BOT",
+      "disposition": "test-only source; public-safe synthetic fixtures",
+      "before": {
+        "path": "cmd/discord-bot/ui188_r4_chain_linux_test.go",
+        "mode": "100644",
+        "oid": "8e0900d9790e0a781637a7330e2231ff1a54efb1"
+      },
+      "after": {
+        "path": "cmd/discord-bot/ui188_r4_chain_linux_test.go",
+        "mode": "100644",
+        "oid": "a87385735d5daab7fe89028c9ed0921db97c8951",
+        "sha256": "9e616261eccb838015b0c2849aa02f991d3a24643245519166666ac380d899ee"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-DiscordBot",
+      "transition": "HEAD-to-R9",
+      "path": "cmd/discord-bot/ui188_r9_stale_authority_linux_test.go",
+      "owner": "BOT",
+      "disposition": "test-only source; public-safe synthetic fixtures",
+      "before": null,
+      "after": {
+        "path": "cmd/discord-bot/ui188_r9_stale_authority_linux_test.go",
+        "mode": "100644",
+        "oid": "bf3fffe90ed9f8ed39537212a55edea603f4f86b",
+        "sha256": "821158f2e044c142c3cb83a680b7eb84d50a03fafa3fc8c798e16c73aeae37c0"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-DiscordBot",
+      "transition": "HEAD-to-R9",
+      "path": "internal/discord/ui188_chain_voice_linux.go",
+      "owner": "BOT",
+      "disposition": "product source",
+      "before": {
+        "path": "internal/discord/ui188_chain_voice_linux.go",
+        "mode": "100644",
+        "oid": "cc720dff09f343761777c89a93f968fc9da6e9b1"
+      },
+      "after": {
+        "path": "internal/discord/ui188_chain_voice_linux.go",
+        "mode": "100644",
+        "oid": "a37eaedc855f95474c2928cedbef37a4b6eb6855",
+        "sha256": "491275574da8e5f58e87a8b96f73c71471e9f1611996a274c311ac6d38d17b4b"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-DiscordBot",
+      "transition": "R9-to-CB15",
+      "path": "cmd/discord-bot/current_discord_bindings.go",
+      "owner": "BOT",
+      "disposition": "product source",
+      "before": null,
+      "after": {
+        "path": "cmd/discord-bot/current_discord_bindings.go",
+        "mode": "100644",
+        "oid": "24f740892469df86dbf0f87e6c670555569cbd8d",
+        "sha256": "3ba447f23e07a578e19094bfbf584730d85d91ac8a9bd0a2576894a80b3a2091"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-DiscordBot",
+      "transition": "R9-to-CB15",
+      "path": "cmd/discord-bot/main.go",
+      "owner": "BOT",
+      "disposition": "product source",
+      "before": {
+        "path": "cmd/discord-bot/main.go",
+        "mode": "100644",
+        "oid": "e439b1e48496b5eded18386a356f7bddc5ebd5c0",
+        "sha256": "3904e0abff67c1ec16be5a668a11c2a066d515206149f292e45d184f8068a304"
+      },
+      "after": {
+        "path": "cmd/discord-bot/main.go",
+        "mode": "100644",
+        "oid": "79ba525ffcd06541166f5f971f3724b878ad3028",
+        "sha256": "08c964db639b4a4d2c91de12af9d758d519677ceec60d65f14af8c6eae4e1593"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-DiscordBot",
+      "transition": "R9-to-CB15",
+      "path": "cmd/discord-bot/ui188_cb15_current_binding_test.go",
+      "owner": "BOT",
+      "disposition": "test-only source; public-safe synthetic fixtures",
+      "before": null,
+      "after": {
+        "path": "cmd/discord-bot/ui188_cb15_current_binding_test.go",
+        "mode": "100644",
+        "oid": "0377776df4e0d21bd405e504ee69e7d3144c25a7",
+        "sha256": "60e41d142860cb8a1ca5d882f8344c49f0e883fe519787fa548086208a9e2655"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-DiscordBot",
+      "transition": "R9-to-CB15",
+      "path": "cmd/discord-bot/ui188_mc13_heartbeat_linux_test.go",
+      "owner": "BOT",
+      "disposition": "test-only source; public-safe synthetic fixtures",
+      "before": null,
+      "after": {
+        "path": "cmd/discord-bot/ui188_mc13_heartbeat_linux_test.go",
+        "mode": "100644",
+        "oid": "44e0582aa886ec48ce6b8916821604b7e08d4ad1",
+        "sha256": "07bbaf1513307735fbea0d6305467cc016cf9dd9ebbf7b8bff6c6e0682fd8c72"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-DiscordBot",
+      "transition": "R9-to-CB15",
+      "path": "cmd/discord-bot/ui188_mc13_heartbeat_policy_linux_test.go",
+      "owner": "BOT",
+      "disposition": "test-only source; public-safe synthetic fixtures",
+      "before": null,
+      "after": {
+        "path": "cmd/discord-bot/ui188_mc13_heartbeat_policy_linux_test.go",
+        "mode": "100644",
+        "oid": "a158c4cc12ae4a57e04aa0a1cfbf036f628a64d0",
+        "sha256": "6cfc1ecf72f49d5737cf1ef3acd7a4672cd7c4dd316fc06702452fc0fbd887e5"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-DiscordBot",
+      "transition": "R9-to-CB15",
+      "path": "cmd/discord-bot/ui188_r4_chain_linux_test.go",
+      "owner": "BOT",
+      "disposition": "test-only source; public-safe synthetic fixtures",
+      "before": {
+        "path": "cmd/discord-bot/ui188_r4_chain_linux_test.go",
+        "mode": "100644",
+        "oid": "a87385735d5daab7fe89028c9ed0921db97c8951",
+        "sha256": "9e616261eccb838015b0c2849aa02f991d3a24643245519166666ac380d899ee"
+      },
+      "after": {
+        "path": "cmd/discord-bot/ui188_r4_chain_linux_test.go",
+        "mode": "100644",
+        "oid": "fae4ef2dc0f083c8b65a9fb321ab34311dc754a6",
+        "sha256": "254cc15f7c6c2dec8174cdb64a00125c675c23ee64d57b401fd60601fbd57e05"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-DiscordBot",
+      "transition": "R9-to-CB15",
+      "path": "cmd/discord-bot/ui188_r5_gateway_lifecycle_test.go",
+      "owner": "BOT",
+      "disposition": "test-only source; public-safe synthetic fixtures",
+      "before": {
+        "path": "cmd/discord-bot/ui188_r5_gateway_lifecycle_test.go",
+        "mode": "100644",
+        "oid": "858d9b7c2890e8e68db54cbbd795967013d76a46",
+        "sha256": "71536e7caba218cf62a8f1fb4d76be1484b97f5522660d2276fbd9f6581a5d02"
+      },
+      "after": {
+        "path": "cmd/discord-bot/ui188_r5_gateway_lifecycle_test.go",
+        "mode": "100644",
+        "oid": "e437df90df4a74396e2c0deab914c3ff1795b4e7",
+        "sha256": "4915d5fe0999715a1385fec77e4201e415bc15348751689856af4f0a9316d61b"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-DiscordBot",
+      "transition": "R9-to-CB15",
+      "path": "internal/control/client.go",
+      "owner": "BOT",
+      "disposition": "product source",
+      "before": {
+        "path": "internal/control/client.go",
+        "mode": "100644",
+        "oid": "63843917741cb38db703591f48cdbce99009b554",
+        "sha256": "1d45c13a8c4471defeef6cc65e2339f1bf188a59fd3f041e0a037e556fde7b2c"
+      },
+      "after": {
+        "path": "internal/control/client.go",
+        "mode": "100644",
+        "oid": "aa56f3018665399be240963a52f004185882d5d7",
+        "sha256": "62af8ec20a1fd3bb438240af18bca71400f16c3506147a0ff18d54396a581ee7"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-DiscordBot",
+      "transition": "R9-to-CB15",
+      "path": "internal/control/current_discord_bindings.go",
+      "owner": "BOT",
+      "disposition": "product source",
+      "before": null,
+      "after": {
+        "path": "internal/control/current_discord_bindings.go",
+        "mode": "100644",
+        "oid": "8492e9f8fff90cb95e78dbc57be4da39f3089c6f",
+        "sha256": "59d7a2dcb7f29197c615ecf585e62bfcbd5b85a0419a4d559eea6a4b939d70da"
+      }
+    },
+    {
+      "repository": "Kome-Lab/Autostream-DiscordBot",
+      "transition": "R9-to-CB15",
+      "path": "internal/control/current_discord_bindings_test.go",
+      "owner": "BOT",
+      "disposition": "test-only source; public-safe synthetic fixtures",
+      "before": null,
+      "after": {
+        "path": "internal/control/current_discord_bindings_test.go",
+        "mode": "100644",
+        "oid": "3916aa8db561eba809e191dea9be5fda0e85b5ff",
+        "sha256": "9f284a20b1fd526af7fa30b58548be6912c225ae76766a49ad43c564e76de125"
+      }
+    }
+  ],
+  "integration_owner": {
+    "repository": "Kome-Lab/Autostream-ControlPanel",
+    "paths": [
+      ".github/workflows/ui188-full-e2e.yml",
+      ".github/workflows/ui188-integration.yml",
+      "scripts/ci/ui188-full-e2e/",
+      "docs/release/ui188-*"
+    ],
+    "responsibility": "release integration test infrastructure and RC review documents"
+  },
+  "private_evidence_disposition": "excluded from all public source and artifacts",
+  "legacy_test_driver_disposition": "retained as immutable source; excluded from Linux execution"
+}

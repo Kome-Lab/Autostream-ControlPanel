@@ -1,0 +1,108 @@
+{
+  "schema_version": 1,
+  "components": {
+    "cp": {
+      "repository": "Kome-Lab/Autostream-ControlPanel",
+      "base_commit": "a9efbed3e058bf016b171e50c22650075f20ef50",
+      "product_tree": "44ae3a676b6e9a462ea2a437bb8391f2198e7af4",
+      "dispatch_commit": "6419d0fb04386bb86dba4b8f2aeb05cc2c055bb7",
+      "contracts_version": "v1.2.12-0.20261012062538-f62ddfaf1144",
+      "toolchain": "1.26.5",
+      "GOWORK": "off"
+    },
+    "bot": {
+      "repository": "Kome-Lab/Autostream-DiscordBot",
+      "base_commit": "826f0b631f59a4672e54b9a5bdcc6acfe1f997ca",
+      "product_tree": "1141c416accf9fcb5d828f1174a7641863404972",
+      "dispatch_commit": "ea32df776c07119c6c4199d3db69971a1fd6686f",
+      "contracts_version": "v1.2.12-0.20260903202917-82716abd84f2",
+      "toolchain": "1.26.5",
+      "GOWORK": "off"
+    },
+    "encoder": {
+      "repository": "Kome-Lab/Autostream-Encoder-Recorder",
+      "base_commit": "c51339fbe3d05b7ad96620c5a1adb83d2e5fc145",
+      "product_tree": "99fa3b8e34f5cefb0dd1ed296dde6e172e137fbc",
+      "dispatch_commit": "c51339fbe3d05b7ad96620c5a1adb83d2e5fc145",
+      "contracts_version": "v1.2.12-0.20260929140016-7edb888d585e",
+      "toolchain": "1.26.5",
+      "GOWORK": "off"
+    },
+    "worker": {
+      "repository": "Kome-Lab/Autostream-Worker",
+      "base_commit": "381790940e0fed8532d9396f0a2a40c0bfd0a612",
+      "product_tree": "91f3f6846b319eb35d327f293b53660a12a71911",
+      "dispatch_commit": "381790940e0fed8532d9396f0a2a40c0bfd0a612",
+      "contracts_version": "v1.2.12-0.20260903202917-82716abd84f2",
+      "toolchain": "1.26.5",
+      "GOWORK": "off"
+    }
+  },
+  "contracts": {
+    "cp": "f62ddfaf1144d502966b2a58e3a93133cfbfded0",
+    "bot_worker": "82716abd84f2a048e0d530aa7e021d22f6b4d4ff",
+    "encoder": "7edb888d585ec7001d2dc1feee9256db620f8cfd"
+  },
+  "observability": "c2daf86c3ae621372dfde1c5afc3bfb54164ed62",
+  "dave_gitlink": "52cd56dc550f447fb354b3a06c9e2d2e2a4309c6",
+  "test_adapter": {
+    "tree": "dd01878049e1be89456b9bcfb3c67ba6e348b60a",
+    "product": false,
+    "patch_sha256": "a1e427570f52a5620ce6302b950f6b6c4b989b5eb3aef22919949824a07f5fd0",
+    "identity_contract": 2,
+    "build_identity": "generic source only; runtime manifest is bound after build"
+  },
+  "images": {
+    "base": {
+      "image": "debian:trixie@sha256:913f6706df59a68922d1dd08f78c2476560a8d367897200a6005b00e5f67c2d5",
+      "registry_manifest_sha256": "sha256:913f6706df59a68922d1dd08f78c2476560a8d367897200a6005b00e5f67c2d5",
+      "architecture": "linux/amd64 selected by build"
+    },
+    "go": {
+      "image": "golang:1.26.5-trixie@sha256:f1a132429b98724a904e9b3bdbaed399d8f923203c3e5170e6def66d0a7cc04c",
+      "registry_manifest_sha256": "sha256:f1a132429b98724a904e9b3bdbaed399d8f923203c3e5170e6def66d0a7cc04c",
+      "architecture": "linux/amd64 selected by build"
+    },
+    "node": {
+      "image": "node:26.5.0-bookworm-slim@sha256:2d49d876e96237d76de412761cf05dbfe5aee325cc4406a4d41d5824c5bb8beb",
+      "registry_manifest_sha256": "sha256:2d49d876e96237d76de412761cf05dbfe5aee325cc4406a4d41d5824c5bb8beb",
+      "architecture": "linux/amd64 selected by build"
+    }
+  },
+  "source_manifest_sha256": "7b049a4fe97f334fd7c3c76001810bad6b215b67021a1871c1b69a3cca705815",
+  "resource_gate": {
+    "runner_label": "ui188-linux-8core",
+    "minimum_vCPU": 8,
+    "minimum_MemTotal_GiB": 30,
+    "minimum_free_GiB": 180,
+    "max_minutes": 120,
+    "billing": "REQUIRES_EXPLICIT_APPROVAL"
+  },
+  "acceptance": {
+    "two_stream_overlap_seconds": 1000,
+    "HLS_checkpoints": [
+      580,
+      900
+    ],
+    "archive_per_stream": 3,
+    "socket_drops": 0,
+    "AAC_uncovered_over_50ms": 0,
+    "PCM_PTS_bands": [
+      [
+        250,
+        400
+      ],
+      [
+        580,
+        700
+      ],
+      [
+        800,
+        950
+      ]
+    ],
+    "S_denominator": 6,
+    "F_denominator": 11,
+    "group_denominator": 28
+  }
+}

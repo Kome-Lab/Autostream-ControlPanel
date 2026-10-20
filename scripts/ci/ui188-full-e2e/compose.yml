@@ -1,0 +1,115 @@
+services:
+  db:
+    image: mariadb:11.4.12@sha256:a794d9eb009e20de605858a11f32f63b4075cbd197c650436f0e3b457e4caed7
+    cpus: 0.7
+    mem_limit: 1g
+    pids_limit: 128
+    environment:
+      MARIADB_ROOT_PASSWORD_FILE: /run/secrets/db_root
+      MARIADB_PASSWORD_FILE: /run/secrets/db_app
+      MARIADB_USER: ui188_r9
+      MARIADB_DATABASE: ${UI188_DB_SCHEMA:?fresh schema required}
+    secrets: [db_root, db_app]
+    volumes: [db-data:/var/lib/mysql]
+    networks: [closed]
+    healthcheck:
+      test: ['CMD', 'healthcheck.sh', '--connect', '--innodb_initialized']
+      interval: 2s
+      timeout: 3s
+      retries: 50
+    labels:
+      autostream.ui188.run: ${UI188_RUN_UUID:?fresh run required}
+
+  runtime:
+    image: ${UI188_RUNTIME_IMAGE:?prepared local image ID required}
+    init: false
+    cpus: 4.0
+    mem_limit: 8g
+    memswap_limit: 8g
+    pids_limit: 1024
+    shm_size: 512m
+    cap_drop: [ALL]
+    cap_add: [NET_ADMIN, NET_RAW, SETUID, SETGID, SETPCAP, CHOWN, DAC_OVERRIDE]
+    security_opt: ['no-new-privileges:true']
+    entrypoint: ['bash', '/opt/ui188/entry.sh']
+    environment:
+      UI188_RUN_UUID: ${UI188_RUN_UUID}
+      UI188_DB_SCHEMA: ${UI188_DB_SCHEMA}
+      UI188_PROBE_ATTEMPT: ${UI188_CASE}
+      UI188_WAIT_CALLER_RUN_ID: ${UI188_RUN_UUID}
+      UI188_RUN_IDENTITY: /evidence/identity.json
+      UI188_IDENTITY_SHA256: ${UI188_IDENTITY_SHA256:?identity digest required}
+      UI188_SOURCE_LOCK_SHA256: ${UI188_SOURCE_LOCK_SHA256:?source lock required}
+      UI188_GITHUB_RUN_ID: ${UI188_GITHUB_RUN_ID:?GitHub run required}
+      UI188_GITHUB_RUN_ATTEMPT: ${UI188_GITHUB_RUN_ATTEMPT:?first attempt required}
+      UI188_IDENTITY_JOB: ${UI188_IDENTITY_JOB:?job required}
+      UI188_EVIDENCE_DIRECTORY: /evidence
+      UI188_TEST_CREDENTIALS: /run/ui188/credentials.json
+      UI188_CP_BINARY: /r6/bin/cp
+      UI188_BOT_BINARY: /r6/bin/bot-test
+      UI188_ENCODER_BINARY: /r6/bin/encoder
+      AUTOSTREAM_BROWSER_PATH: /usr/bin/chromium
+      GOWORK: 'off'
+      GOMAXPROCS: '2'
+      PYTHONDONTWRITEBYTECODE: '1'
+      HOME: /home/ui188
+    volumes:
+      - runtime-data:/r6
+      - worker-config:/worker-config
+      - ${UI188_PRIVATE_DIR}/evidence:/evidence
+      - ${UI188_PRIVATE_DIR}/setup-secret:/run/ui188:ro
+    networks: [closed]
+    depends_on:
+      db:
+        condition: service_healthy
+    labels:
+      autostream.ui188.run: ${UI188_RUN_UUID}
+
+  worker-b:
+    image: ${UI188_RUNTIME_IMAGE}
+    init: true
+    user: '1000:1000'
+    cpus: 0.9
+    mem_limit: 896m
+    memswap_limit: 896m
+    pids_limit: 128
+    cap_drop: [ALL]
+    security_opt: ['no-new-privileges:true']
+    network_mode: service:runtime
+    entrypoint: ['python3', '-B', '/opt/ui188/worker_b.py']
+    working_dir: /home/ui188
+    environment:
+      UI188_RUN_UUID: ${UI188_RUN_UUID}
+      UI188_DB_SCHEMA: ${UI188_DB_SCHEMA}
+      UI188_PROBE_ATTEMPT: ${UI188_CASE}
+      UI188_WAIT_CALLER_RUN_ID: ${UI188_RUN_UUID}
+      UI188_RUN_IDENTITY: /evidence/identity.json
+      UI188_IDENTITY_SHA256: ${UI188_IDENTITY_SHA256}
+      UI188_SOURCE_LOCK_SHA256: ${UI188_SOURCE_LOCK_SHA256}
+      UI188_GITHUB_RUN_ID: ${UI188_GITHUB_RUN_ID}
+      UI188_GITHUB_RUN_ATTEMPT: ${UI188_GITHUB_RUN_ATTEMPT}
+      UI188_IDENTITY_JOB: ${UI188_IDENTITY_JOB}
+      PYTHONPATH: /opt/ui188
+      GOMAXPROCS: '1'
+    volumes:
+      - worker-config:/worker-config:ro
+      - ${UI188_PRIVATE_DIR}/evidence:/evidence
+      - worker-state:/var/lib/autostream/worker
+    depends_on: [runtime]
+    labels:
+      autostream.ui188.run: ${UI188_RUN_UUID}
+
+networks:
+  closed:
+    internal: true
+    enable_ipv6: false
+volumes:
+  db-data:
+  runtime-data:
+  worker-state:
+  worker-config:
+secrets:
+  db_root:
+    file: ${UI188_PRIVATE_DIR}/secrets/db_root
+  db_app:
+    file: ${UI188_PRIVATE_DIR}/secrets/db_app

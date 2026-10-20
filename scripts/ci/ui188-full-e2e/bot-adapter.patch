@@ -1,0 +1,958 @@
+diff --git a/cmd/discord-bot/ui188_actions_identity_linux_test.go b/cmd/discord-bot/ui188_actions_identity_linux_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..905e190cc776b45c114a464e75218839e9fa9d29
+--- /dev/null
++++ b/cmd/discord-bot/ui188_actions_identity_linux_test.go
+@@ -0,0 +1,318 @@
++//go:build linux && ui188_chain
++
++package main
++
++// This file is part of the separate Actions test adapter, never the product BOT.
++import (
++	"bytes"
++	"crypto/rand"
++	"crypto/sha256"
++	"encoding/hex"
++	"encoding/json"
++	"fmt"
++	"io"
++	"net/http"
++	"os"
++	"path/filepath"
++	"regexp"
++	"strconv"
++	"strings"
++	"testing"
++	"time"
++)
++
++type ui188ActionsRun struct {
++	SchemaVersion int               `json:"schema_version"`
++	Scope         string            `json:"scope"`
++	UUID          string            `json:"run_uuid"`
++	Case          string            `json:"case"`
++	Schema        string            `json:"schema"`
++	Services      map[string]string `json:"services"`
++	LockSHA       string            `json:"source_lock_sha256"`
++	RunID         int64             `json:"github_run_id"`
++	Attempt       int               `json:"github_run_attempt"`
++	Job           string            `json:"job"`
++	StartedNS     int64             `json:"started_ns,string"`
++	Sources       map[string]string `json:"source_shas"`
++}
++
++// encoding/json otherwise silently accepts duplicate keys. Check every object.
++func ui188ActionsUniqueJSON(raw []byte) bool {
++	d := json.NewDecoder(bytes.NewReader(raw))
++	var value func(int) bool
++	value = func(depth int) bool {
++		if depth > 4 {
++			return false
++		}
++		token, err := d.Token()
++		if err != nil {
++			return false
++		}
++		delim, nested := token.(json.Delim)
++		if !nested {
++			return true
++		}
++		if delim != '{' {
++			return false
++		}
++		seen := map[string]bool{}
++		for d.More() {
++			key, err := d.Token()
++			name, valid := key.(string)
++			if err != nil || !valid || seen[name] {
++				return false
++			}
++			seen[name] = true
++			if !value(depth + 1) {
++				return false
++			}
++		}
++		last, err := d.Token()
++		return err == nil && last == json.Delim('}')
++	}
++	if !value(0) {
++		return false
++	}
++	_, err := d.Token()
++	return err == io.EOF
++}
++
++func ui188ActionsManifest(root, caseID, schema, runUUID string) (ui188ActionsRun, bool) {
++	var result ui188ActionsRun
++	path := filepath.Join(root, "identity.json")
++	if !filepath.IsAbs(root) || filepath.Clean(os.Getenv("UI188_RUN_IDENTITY")) != path {
++		return result, false
++	}
++	info, err := os.Lstat(path)
++	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() > 16384 {
++		return result, false
++	}
++	raw, err := os.ReadFile(path)
++	if err != nil || !ui188ActionsUniqueJSON(raw) {
++		return result, false
++	}
++	digest := sha256.Sum256(raw)
++	if hex.EncodeToString(digest[:]) != os.Getenv("UI188_IDENTITY_SHA256") {
++		return result, false
++	}
++	var fields map[string]json.RawMessage
++	names := []string{"schema_version", "scope", "run_uuid", "case", "schema", "services", "source_lock_sha256", "github_run_id", "github_run_attempt", "job", "started_ns", "source_shas"}
++	if json.Unmarshal(raw, &fields) != nil || len(fields) != len(names) {
++		return result, false
++	}
++	for _, name := range names {
++		if _, present := fields[name]; !present {
++			return result, false
++		}
++	}
++	d := json.NewDecoder(bytes.NewReader(raw))
++	d.DisallowUnknownFields()
++	if d.Decode(&result) != nil || d.Decode(new(any)) != io.EOF {
++		return result, false
++	}
++	uuidRE := regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
++	hexID := strings.ReplaceAll(result.UUID, "-", "")
++	if !uuidRE.MatchString(result.UUID) || result.UUID != runUUID || result.SchemaVersion != 2 || result.Scope != "UI188_ACTIONS_RUN" ||
++		result.Case != caseID || result.Case != "gha-"+hexID[:16] || result.Schema != schema || result.Schema != "ui188_gha_"+hexID ||
++		result.Attempt != 1 || result.RunID < 1 || result.RunID > 9007199254740991 || (result.Job != "full-e2e" && result.Job != "contract-smoke") || result.StartedNS < 1000000000000000000 || result.StartedNS > time.Now().UnixNano() {
++		return result, false
++	}
++	for key, expected := range map[string]string{
++		"UI188_RUN_UUID": result.UUID, "UI188_WAIT_CALLER_RUN_ID": result.UUID,
++		"UI188_PROBE_ATTEMPT": result.Case, "UI188_DB_SCHEMA": result.Schema,
++		"UI188_GITHUB_RUN_ID": strconv.FormatInt(result.RunID, 10), "UI188_GITHUB_RUN_ATTEMPT": "1",
++		"UI188_SOURCE_LOCK_SHA256": result.LockSHA,
++		"UI188_IDENTITY_JOB":       result.Job,
++	} {
++		if os.Getenv(key) != expected {
++			return result, false
++		}
++	}
++	if !regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(result.LockSHA) || len(result.Sources) != 4 || len(result.Services) != 6 {
++		return result, false
++	}
++	for _, key := range []string{"cp", "bot", "encoder", "worker"} {
++		if !regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(result.Sources[key]) {
++			return result, false
++		}
++	}
++	for _, key := range []string{"bot-a", "bot-b", "encoder-a", "encoder-b", "worker-a", "worker-b"} {
++		if result.Services[key] != key {
++			return result, false
++		}
++	}
++	return result, true
++}
++
++func ui188ActionsService(root, caseID, schema, runUUID, service string) bool {
++	manifest, valid := ui188ActionsManifest(root, caseID, schema, runUUID)
++	return valid && (service == manifest.Services["bot-a"] || service == manifest.Services["bot-b"])
++}
++
++// Unit policy fixtures are fresh for each invocation. The cross-language proof
++// below still requires the actual Python producer's manifest and environment.
++func ui188ActionsUnitContext(t *testing.T) (string, ui188ActionsRun, []byte) {
++	t.Helper()
++	id := make([]byte, 16)
++	if _, err := rand.Read(id); err != nil {
++		t.Fatal(err)
++	}
++	id[6] = (id[6] & 15) | 64
++	id[8] = (id[8] & 63) | 128
++	uuid := fmt.Sprintf("%x-%x-%x-%x-%x", id[:4], id[4:6], id[6:8], id[8:10], id[10:])
++	hexID := strings.ReplaceAll(uuid, "-", "")
++	run := ui188ActionsRun{SchemaVersion: 2, Scope: "UI188_ACTIONS_RUN", UUID: uuid,
++		Case: "gha-" + hexID[:16], Schema: "ui188_gha_" + hexID, LockSHA: strings.Repeat("a", 64),
++		RunID: 42, Attempt: 1, Job: "contract-smoke", StartedNS: time.Now().UnixNano(),
++		Services: map[string]string{}, Sources: map[string]string{}}
++	for _, key := range []string{"bot-a", "bot-b", "encoder-a", "encoder-b", "worker-a", "worker-b"} {
++		run.Services[key] = key
++	}
++	for _, key := range []string{"cp", "bot", "encoder", "worker"} {
++		run.Sources[key] = strings.Repeat("b", 40)
++	}
++	raw, err := json.Marshal(run)
++	if err != nil {
++		t.Fatal(err)
++	}
++	raw = append(raw, '\n')
++	root := t.TempDir()
++	path := filepath.Join(root, "identity.json")
++	if err := os.WriteFile(path, raw, 0600); err != nil {
++		t.Fatal(err)
++	}
++	digest := sha256.Sum256(raw)
++	for key, value := range map[string]string{"UI188_EVIDENCE_DIRECTORY": root, "UI188_RUN_IDENTITY": path,
++		"UI188_IDENTITY_SHA256": hex.EncodeToString(digest[:]), "UI188_RUN_UUID": uuid,
++		"UI188_WAIT_CALLER_RUN_ID": uuid, "UI188_PROBE_ATTEMPT": run.Case, "UI188_DB_SCHEMA": run.Schema,
++		"UI188_GITHUB_RUN_ID": "42", "UI188_GITHUB_RUN_ATTEMPT": "1", "UI188_SOURCE_LOCK_SHA256": run.LockSHA,
++		"UI188_IDENTITY_JOB": run.Job} {
++		t.Setenv(key, value)
++	}
++	return root, run, raw
++}
++
++func TestUI188ActionsActualConstructor(t *testing.T) {
++	root := os.Getenv("UI188_EVIDENCE_DIRECTORY")
++	caseID, schema, run := os.Getenv("UI188_PROBE_ATTEMPT"), os.Getenv("UI188_DB_SCHEMA"), os.Getenv("UI188_RUN_UUID")
++	if _, valid := ui188ActionsManifest(root, caseID, schema, run); !valid {
++		t.Fatal("Python-produced manifest/environment rejected by actual Go adapter")
++	}
++	for _, service := range []string{"bot-a", "bot-b"} {
++		transport, policy, closeTrace, err := newUI188MC12Heartbeat(service, http.DefaultTransport)
++		if err != nil || transport == nil || policy == nil {
++			t.Fatal("actual constructor failed", err)
++		}
++		closeTrace()
++		if _, _, closeAgain, err := newUI188MC12Heartbeat(service, http.DefaultTransport); err == nil {
++			closeAgain()
++			t.Fatal("duplicate producer accepted")
++		}
++	}
++	for _, wrong := range []string{"cb16-bot-a", "other-service", "", "worker-a"} {
++		if _, _, closeTrace, err := newUI188MC12Heartbeat(wrong, http.DefaultTransport); err == nil {
++			closeTrace()
++			t.Fatal("wrong service accepted")
++		}
++	}
++	for _, item := range [][2]string{{"UI188_PROBE_ATTEMPT", "cb16r"}, {"UI188_WAIT_CALLER_RUN_ID", "b49f7c83-06bd-4bde-9ca8-e5e0c8b5073b"},
++		{"UI188_DB_SCHEMA", "ui188_cb16r_trial3_20261019"}, {"UI188_GITHUB_RUN_ID", "1"}, {"UI188_GITHUB_RUN_ATTEMPT", "2"}, {"UI188_RUN_IDENTITY", ""}, {"UI188_IDENTITY_SHA256", ""}} {
++		t.Run(item[0], func(t *testing.T) {
++			t.Setenv(item[0], item[1])
++			if ui188HBContext(root, caseID, schema, run) {
++				t.Fatal("wrong or missing environment accepted")
++			}
++		})
++	}
++	raw, err := os.ReadFile(filepath.Join(root, "identity.json"))
++	if err != nil {
++		t.Fatal(err)
++	}
++	duplicate := bytes.Replace(raw, []byte(`"schema_version":2`), []byte(`"schema_version":2,"schema_version":2`), 1)
++	if bytes.Equal(raw, duplicate) || ui188ActionsUniqueJSON(duplicate) {
++		t.Fatal("duplicate JSON identity accepted")
++	}
++	for _, item := range []struct {
++		name   string
++		mutate func(*ui188ActionsRun)
++	}{
++		{"legacy-scope", func(v *ui188ActionsRun) { v.Scope = "UI188_CB16_DIAGNOSTIC" }},
++		{"wrong-uuid", func(v *ui188ActionsRun) { v.UUID = "b49f7c83-06bd-4bde-9ca8-e5e0c8b5073b" }},
++		{"wrong-schema", func(v *ui188ActionsRun) { v.Schema = "ui188_cb16r_trial3_20261019" }},
++		{"wrong-case", func(v *ui188ActionsRun) { v.Case = "cb16r" }},
++		{"wrong-service", func(v *ui188ActionsRun) { v.Services["bot-a"] = "cb16-bot-a" }},
++		{"attempt-two", func(v *ui188ActionsRun) { v.Attempt = 2 }},
++		{"missing-source", func(v *ui188ActionsRun) { delete(v.Sources, "cp") }},
++		{"future-start", func(v *ui188ActionsRun) { v.StartedNS = time.Now().Add(time.Hour).UnixNano() }},
++	} {
++		t.Run(item.name, func(t *testing.T) {
++			var changed ui188ActionsRun
++			if err := json.Unmarshal(raw, &changed); err != nil {
++				t.Fatal(err)
++			}
++			item.mutate(&changed)
++			bad, err := json.Marshal(changed)
++			if err != nil {
++				t.Fatal(err)
++			}
++			if err := os.WriteFile(filepath.Join(root, "identity.json"), bad, 0600); err != nil {
++				t.Fatal(err)
++			}
++			t.Cleanup(func() {
++				if err := os.WriteFile(filepath.Join(root, "identity.json"), raw, 0600); err != nil {
++					t.Fatal(err)
++				}
++			})
++			digest := sha256.Sum256(bad)
++			t.Setenv("UI188_IDENTITY_SHA256", hex.EncodeToString(digest[:]))
++			if ui188HBContext(root, caseID, schema, run) {
++				t.Fatal("changed manifest accepted by actual context gate")
++			}
++		})
++	}
++	t.Run("duplicate-json-with-matching-digest", func(t *testing.T) {
++		if err := os.WriteFile(filepath.Join(root, "identity.json"), duplicate, 0600); err != nil {
++			t.Fatal(err)
++		}
++		t.Cleanup(func() {
++			if err := os.WriteFile(filepath.Join(root, "identity.json"), raw, 0600); err != nil {
++				t.Fatal(err)
++			}
++		})
++		digest := sha256.Sum256(duplicate)
++		t.Setenv("UI188_IDENTITY_SHA256", hex.EncodeToString(digest[:]))
++		if ui188HBContext(root, caseID, schema, run) {
++			t.Fatal("duplicate identity accepted by actual context gate")
++		}
++	})
++	t.Run("case-alias-json-with-matching-digest", func(t *testing.T) {
++		alias := bytes.Replace(raw, []byte(`"scope":`), []byte(`"Scope":`), 1)
++		if bytes.Equal(alias, raw) {
++			t.Fatal("identity anchor missing")
++		}
++		if err := os.WriteFile(filepath.Join(root, "identity.json"), alias, 0600); err != nil {
++			t.Fatal(err)
++		}
++		t.Cleanup(func() {
++			if err := os.WriteFile(filepath.Join(root, "identity.json"), raw, 0600); err != nil {
++				t.Fatal(err)
++			}
++		})
++		digest := sha256.Sum256(alias)
++		t.Setenv("UI188_IDENTITY_SHA256", hex.EncodeToString(digest[:]))
++		if ui188HBContext(root, caseID, schema, run) {
++			t.Fatal("case alias accepted by actual context gate")
++		}
++	})
++	if ui188HBContext(root, "cb16r", "ui188_cb16r_trial3_20261019", "b49f7c83-06bd-4bde-9ca8-e5e0c8b5073b") {
++		t.Fatal("old run accepted")
++	}
++	proof, err := json.Marshal(map[string]any{"schema_version": 1, "actual_constructor": true, "accepted_services": []string{"bot-a", "bot-b"}, "legacy_rejected": true,
++		"identity_sha256": os.Getenv("UI188_IDENTITY_SHA256"), "run_uuid": run, "case": caseID, "schema": schema, "github_run_id": os.Getenv("UI188_GITHUB_RUN_ID"), "github_run_attempt": 1})
++	if err != nil {
++		t.Fatal(err)
++	}
++	if err := os.WriteFile(filepath.Join(root, "go-constructor-proof.json"), append(proof, '\n'), 0600); err != nil {
++		t.Fatal(err)
++	}
++}
+diff --git a/cmd/discord-bot/ui188_cb16_refresh_linux_test.go b/cmd/discord-bot/ui188_cb16_refresh_linux_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..5f62eac584d7f80cfd9dfb54a66ec9dd590e45e2
+--- /dev/null
++++ b/cmd/discord-bot/ui188_cb16_refresh_linux_test.go
+@@ -0,0 +1,148 @@
++//go:build linux && ui188_chain
++
++package main
++
++import (
++	"context"
++	"encoding/json"
++	"errors"
++	"net/http"
++	"sync"
++	"time"
++
++	"github.com/example/autostream-discord-bot/internal/control"
++	"github.com/example/autostream-discord-bot/internal/jobs"
++)
++
++const ui188CB16RefreshInterval = time.Second
++const ui188CB16RefreshMaxTicks = 3
++const ui188CB16AssignmentConflictCode = "current_discord_binding_assignment_conflict"
++
++// The callback follows runRuntimeConfigRefreshLoop's product policy exactly;
++// the surrounding test policy only bounds admission and records convergence.
++// It never changes a response or retries a mutation/secret resolver.
++func ui188CB16RefreshOnce(ctx context.Context, client control.Client, manager *jobs.Manager, trace func(control.RuntimeConfig, *jobs.Manager, string, bool)) (control.RuntimeConfig, error) {
++	var applied control.RuntimeConfig
++	err := manager.RefreshRuntimeConfig(func() error {
++		if err := ctx.Err(); err != nil {
++			return err
++		}
++		cfg, err := client.RuntimeConfig(ctx)
++		if err != nil {
++			var rejected control.ControlPanelError
++			if errors.Is(err, control.ErrInvalidCurrentDiscordBinding) || errors.As(err, &rejected) && (rejected.StatusCode == http.StatusUnauthorized || rejected.StatusCode == http.StatusForbidden) {
++				manager.SetStreamVoiceDefaults(nil)
++				manager.GatewayProfileForAssignments(nil, nil, true)
++				_ = manager.ReconcileGatewayCredential("", false, nil)
++			}
++			return err
++		}
++		if err := ctx.Err(); err != nil {
++			return err
++		}
++		if trace != nil {
++			trace(cfg, manager, "before", false)
++		}
++		if err := reconcileRuntimeGateway(ctx, client, manager, cfg); err != nil {
++			manager.SetStreamVoiceDefaults(nil)
++			if trace != nil {
++				trace(cfg, manager, "after", true)
++			}
++			return err
++		}
++		if err := ctx.Err(); err != nil {
++			return err
++		}
++		applyRuntimeConfigToManager(manager, cfg, reconnectPolicyFromEnv())
++		if trace != nil {
++			trace(cfg, manager, "after", false)
++		}
++		applied = cfg
++		return nil
++	})
++	return applied, err
++}
++
++type ui188CB16RefreshPolicy struct {
++	mu              sync.Mutex
++	maxTicks        int
++	window          time.Duration
++	deadline        time.Time
++	errors          int
++	pending, failed bool
++	last            control.RuntimeConfig
++	lastApplied     time.Time
++}
++
++func newUI188CB16RefreshPolicy(httpTimeout time.Duration) *ui188CB16RefreshPolicy {
++	return &ui188CB16RefreshPolicy{maxTicks: ui188CB16RefreshMaxTicks, window: ui188CB16RefreshMaxTicks * (httpTimeout + ui188CB16RefreshInterval)}
++}
++
++func (p *ui188CB16RefreshPolicy) Observe(cfg control.RuntimeConfig, err error, now time.Time) {
++	p.mu.Lock()
++	defer p.mu.Unlock()
++	if p.failed {
++		return
++	}
++	if p.pending && !now.Before(p.deadline) {
++		p.failed = true
++		p.pending = false
++		return
++	}
++	if err == nil {
++		p.pending = false
++		p.errors = 0
++		p.deadline = time.Time{}
++		p.last = cfg
++		p.lastApplied = now
++		return
++	}
++	var rejected control.ControlPanelError
++	if !errors.As(err, &rejected) || rejected.StatusCode != http.StatusInternalServerError || rejected.Code != ui188CB16AssignmentConflictCode {
++		p.failed = true
++		p.pending = false
++		return
++	}
++	if !p.pending {
++		p.deadline = now.Add(p.window)
++	}
++	p.errors++
++	p.pending = p.errors < p.maxTicks
++	p.failed = !p.pending
++}
++
++func (p *ui188CB16RefreshPolicy) CanAwait() bool {
++	p.mu.Lock()
++	defer p.mu.Unlock()
++	return p.pending && !p.failed
++}
++
++func (p *ui188CB16RefreshPolicy) Failed() bool {
++	p.mu.Lock()
++	defer p.mu.Unlock()
++	return p.failed
++}
++
++// This is a test readiness oracle, never a product authority or start grant.
++// The runner supplies the independent canonical CP assignment readback.
++func (p *ui188CB16RefreshPolicy) MatchesExpected(expected control.RuntimeConfig) bool {
++	p.mu.Lock()
++	defer p.mu.Unlock()
++	if p.pending || p.failed || p.lastApplied.IsZero() || p.last.CurrentDiscordBindings == nil || expected.CurrentDiscordBindings == nil || p.last.Service.ServiceID != expected.Service.ServiceID || p.last.Service.CurrentStreamID != expected.Service.CurrentStreamID {
++		return false
++	}
++	a, e1 := json.Marshal(p.last.CurrentDiscordBindings)
++	b, e2 := json.Marshal(expected.CurrentDiscordBindings)
++	x, e3 := json.Marshal(p.last.Assignments)
++	y, e4 := json.Marshal(expected.Assignments)
++	return e1 == nil && e2 == nil && e3 == nil && e4 == nil && string(a) == string(b) && string(x) == string(y)
++}
++
++func (p *ui188CB16RefreshPolicy) Status() map[string]any {
++	p.mu.Lock()
++	defer p.mu.Unlock()
++	return map[string]any{"pending": p.pending, "failed": p.failed, "errors_since_convergence": p.errors,
++		"last_applied_at": p.lastApplied, "service_id": p.last.Service.ServiceID, "current_stream_id": p.last.Service.CurrentStreamID,
++		"assignments": p.last.Assignments, "current_discord_bindings": p.last.CurrentDiscordBindings,
++		"canonical_confirmation": "INDEPENDENT_RUNNER_READBACK_REQUIRED", "max_ticks": p.maxTicks, "window_seconds": p.window.Seconds()}
++}
+diff --git a/cmd/discord-bot/ui188_cb16_refresh_policy_linux_test.go b/cmd/discord-bot/ui188_cb16_refresh_policy_linux_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..9dd949d684b29b9b2d0ec960c844436cc83ea911
+--- /dev/null
++++ b/cmd/discord-bot/ui188_cb16_refresh_policy_linux_test.go
+@@ -0,0 +1,247 @@
++//go:build linux && ui188_chain
++
++package main
++
++import (
++	"context"
++	"encoding/json"
++	"errors"
++	"net/http"
++	"net/http/httptest"
++	"os"
++	"path/filepath"
++	"sync/atomic"
++	"testing"
++	"time"
++
++	"github.com/example/autostream-discord-bot/internal/control"
++	"github.com/example/autostream-discord-bot/internal/jobs"
++)
++
++func TestUI188CB16AdapterConflictConvergesOnlyToCurrent(t *testing.T) {
++	a := cb15BoundConfig(t)
++	b := cb15Clone(t, a)
++	b.Service.CurrentStreamID = "s2"
++	b.Assignments[0].StreamID = "s2"
++	b.Assignments[0].AssignedAt = b.Assignments[0].AssignedAt.Add(time.Second)
++	b.CurrentDiscordBindings.Bindings[0].StreamID = "s2"
++	b.CurrentDiscordBindings.Bindings[0].AssignmentEpoch = b.Assignments[0].AssignedAt
++	b.StreamDiscordConfigs[0].StreamID = "s2"
++	var gets, resolves, mutations atomic.Int32
++	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		if r.Method == http.MethodPost && r.URL.Path == "/services/runtime-secrets/resolve" {
++			resolves.Add(1)
++			_ = json.NewEncoder(w).Encode(map[string]any{"value": "test-only-current-credential"})
++			return
++		}
++		if r.Method != http.MethodGet {
++			mutations.Add(1)
++			w.WriteHeader(403)
++			return
++		}
++		switch gets.Add(1) {
++		case 1:
++			_ = json.NewEncoder(w).Encode(a)
++		case 2:
++			w.WriteHeader(500)
++			_ = json.NewEncoder(w).Encode(map[string]string{"code": ui188CB16AssignmentConflictCode})
++		default:
++			_ = json.NewEncoder(w).Encode(b)
++		}
++	}))
++	defer server.Close()
++	client := control.Client{Config: control.Config{ControlPanelURL: server.URL, Token: "test-only", ServiceID: "own", ServiceName: "own", ServicePublicURL: "https://bot.example.com"}, HTTP: &http.Client{Timeout: 30 * time.Second}}
++	voice := &cb15ObservedGateway{}
++	manager := jobs.NewManager(voice)
++	policy := newUI188CB16RefreshPolicy(client.HTTP.Timeout)
++	step := func() error {
++		cfg, err := ui188CB16RefreshOnce(t.Context(), client, manager, nil)
++		policy.Observe(cfg, err, time.Now())
++		return err
++	}
++	if err := step(); err != nil || !policy.MatchesExpected(a) {
++		t.Fatal("initial real client/manager refresh failed")
++	}
++	before := resolves.Load()
++	err := step()
++	var rejected control.ControlPanelError
++	if !errors.As(err, &rejected) || rejected.StatusCode != 500 || rejected.Code != ui188CB16AssignmentConflictCode || !policy.CanAwait() || policy.MatchesExpected(a) || policy.MatchesExpected(b) || resolves.Load() != before {
++		t.Fatal("classified500 was hidden, reused as readiness or retried resolver")
++	}
++	if err = step(); err != nil || policy.CanAwait() || !policy.MatchesExpected(b) || policy.MatchesExpected(a) || gets.Load() != 3 || mutations.Load() != 0 {
++		t.Fatal("next regular read did not converge to current B without mutation replay")
++	}
++	stale := cb15Clone(t, b)
++	stale.CurrentDiscordBindings.Bindings[0].AssignmentEpoch = stale.CurrentDiscordBindings.Bindings[0].AssignmentEpoch.Add(-time.Second)
++	if policy.MatchesExpected(stale) {
++		t.Fatal("nonconverged epoch accepted as ready")
++	}
++}
++
++func TestUI188CB16AdapterAuthorityFailuresMatchProductPolicy(t *testing.T) {
++	for _, tc := range []struct {
++		name   string
++		status int
++		body   string
++		clears bool
++	}{
++		{"401", 401, `{"code":"service_token_invalid"}`, true},
++		{"unknown403", 403, `{"code":"unknown_forbidden"}`, true},
++		{"malformed current", 200, `{"current_discord_bindings":{"version":"invalid"}}`, true},
++		{"general500", 500, `{"code":"get_service_failed"}`, false},
++		{"old unclassified500", 500, `{"code":"current_discord_binding_unavailable"}`, false},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			cfg := cb15BoundConfig(t)
++			var gets, mutations atomic.Int32
++			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++				if r.Method == http.MethodPost && r.URL.Path == "/services/runtime-secrets/resolve" {
++					_ = json.NewEncoder(w).Encode(map[string]any{"value": "test-only-current-credential"})
++					return
++				}
++				if r.Method != http.MethodGet {
++					mutations.Add(1)
++					w.WriteHeader(403)
++					return
++				}
++				if gets.Add(1) == 1 {
++					_ = json.NewEncoder(w).Encode(cfg)
++					return
++				}
++				w.WriteHeader(tc.status)
++				_, _ = w.Write([]byte(tc.body))
++			}))
++			defer server.Close()
++			client := control.Client{Config: control.Config{ControlPanelURL: server.URL, Token: "test-only", ServiceID: "own", ServiceName: "own", ServicePublicURL: "https://bot.example.com"}, HTTP: &http.Client{Timeout: 30 * time.Second}}
++			voice := &cb15ObservedGateway{}
++			manager := jobs.NewManager(voice)
++			if _, err := ui188CB16RefreshOnce(t.Context(), client, manager, nil); err != nil {
++				t.Fatal("initial client fixture")
++			}
++			got, err := ui188CB16RefreshOnce(t.Context(), client, manager, nil)
++			policy := newUI188CB16RefreshPolicy(client.HTTP.Timeout)
++			policy.Observe(got, err, time.Now())
++			if err == nil || policy.CanAwait() || !policy.Failed() || gets.Load() != 2 || mutations.Load() != 0 {
++				t.Fatal("unknown/auth failure was retried or accepted")
++			}
++			if tc.clears && (voice.selected || voice.token != "") {
++				t.Fatal("authority failure did not apply product eligibility invalidation")
++			}
++		})
++	}
++}
++
++func TestUI188CB16AdapterConflictBudgetAndDeadline(t *testing.T) {
++	err := control.ControlPanelError{StatusCode: 500, Code: ui188CB16AssignmentConflictCode}
++	p := newUI188CB16RefreshPolicy(30 * time.Second)
++	now := time.Now()
++	if p.window != 93*time.Second {
++		t.Fatal("budget contradicts normal HTTP timeout/period")
++	}
++	for tick := 1; tick <= 3; tick++ {
++		p.Observe(control.RuntimeConfig{}, err, now.Add(time.Duration(tick)*time.Second))
++		if p.CanAwait() != (tick < 3) {
++			t.Fatal("conflict tick budget not finite")
++		}
++	}
++	p.Observe(cb15BoundConfig(t), nil, now.Add(4*time.Second))
++	if !p.Failed() || p.MatchesExpected(cb15BoundConfig(t)) {
++		t.Fatal("failed budget reset by later success")
++	}
++	p = newUI188CB16RefreshPolicy(30 * time.Second)
++	p.Observe(control.RuntimeConfig{}, err, now)
++	p.Observe(cb15BoundConfig(t), nil, now.Add(94*time.Second))
++	if !p.Failed() {
++		t.Fatal("late response exceeded original convergence deadline")
++	}
++	p = newUI188CB16RefreshPolicy(30 * time.Second)
++	p.Observe(control.RuntimeConfig{}, context.Canceled, now)
++	if !p.Failed() {
++		t.Fatal("cancel treated as recoverable conflict")
++	}
++}
++
++func TestUI188CB16AdapterRuntimeErrorTraceKeepsOriginal500(t *testing.T) {
++	var events []ui188HBExchange
++	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		w.WriteHeader(500)
++		_ = json.NewEncoder(w).Encode(map[string]string{"code": ui188CB16AssignmentConflictCode})
++	}))
++	defer server.Close()
++	clock := ui188HBRealClock{}
++	transport := &ui188HBTransport{next: http.DefaultTransport, clock: clock, origin: clock.Now(), write: func(v any) error { events = append(events, v.(ui188HBExchange)); return nil }}
++	client := control.Client{Config: control.Config{ControlPanelURL: server.URL, Token: "test-only", ServiceID: "own", ServiceName: "own", ServicePublicURL: "https://bot.example.com"}, HTTP: ui188HBHTTPClient(transport)}
++	_, err := client.RuntimeConfig(t.Context())
++	var rejected control.ControlPanelError
++	if !errors.As(err, &rejected) || rejected.StatusCode != 500 || len(events) != 1 || events[0].Status != 500 || events[0].Code != ui188CB16AssignmentConflictCode || events[0].OriginalResponseBody == nil || events[0].ResponseSHA256 == "" {
++		t.Fatal("runtime500 trace did not preserve original status/code-only body/hash")
++	}
++}
++
++func TestUI188CB16SecondTrialSealedContext(t *testing.T) {
++	root := t.TempDir()
++	raw := []byte(`{"case":"cb16r","schema":"ui188_cb16r_trial2_20261019"}`)
++	if err := os.WriteFile(filepath.Join(root, "cb16-diagnostic-identity.json"), raw, 0600); err != nil {
++		t.Fatal(err)
++	}
++	if ui188HBContext(root, "cb16r", "ui188_cb16r_trial2_20261019", "b49f7c83-06bd-4bde-9ca8-e5e0c8b5073b") {
++		t.Fatal("closed second trial accepted")
++	}
++	if ui188HBContext(root, "cb16r", "ui188_cb16r_20261019", "b49f7c83-06bd-4bde-9ca8-e5e0c8b5073b") {
++		t.Fatal("mixed trial identity accepted")
++	}
++}
++
++func TestUI188CB16RemainingMediaSealedContext(t *testing.T) {
++	root := t.TempDir()
++	raw := []byte(`{"case":"cb16r","schema":"ui188_cb16r_trial3_20261019"}`)
++	if err := os.WriteFile(filepath.Join(root, "cb16-diagnostic-identity.json"), raw, 0600); err != nil {
++		t.Fatal(err)
++	}
++	const schema = "ui188_cb16r_trial3_20261019"
++	const run = "b49f7c83-06bd-4bde-9ca8-e5e0c8b5073b"
++	if ui188HBContext(root, "cb16r", schema, run) {
++		t.Fatal("closed remaining-media trial accepted")
++	}
++	for _, wrong := range []string{"ui188_cb16r_20261019", "ui188_cb16r_trial2_20261019", "ui188_cb16r_trial4_20261019"} {
++		if ui188HBContext(root, "cb16r", wrong, run) {
++			t.Fatal("mixed schema/root authority accepted")
++		}
++	}
++	t.Setenv("UI188_PROBE_ATTEMPT", "cb16r")
++	t.Setenv("UI188_DB_SCHEMA", schema)
++	t.Setenv("UI188_EVIDENCE_DIRECTORY", root)
++	t.Setenv("UI188_WAIT_CALLER_RUN_ID", run)
++	for _, service := range []string{"cb16-bot-a", "cb16-bot-b"} {
++		_, _, closeTrace, err := newUI188MC12Heartbeat(service, http.DefaultTransport)
++		if err == nil {
++			closeTrace()
++			t.Fatal("legacy service constructor accepted")
++		}
++	}
++	for _, wrong := range []string{"bot-a", "cb16-bot-c", ""} {
++		if _, _, _, err := newUI188MC12Heartbeat(wrong, http.DefaultTransport); err == nil {
++			t.Fatal("foreign service accepted")
++		}
++	}
++	t.Setenv("UI188_DB_SCHEMA", "ui188_cb16r_trial2_20261019")
++	if _, _, _, err := newUI188MC12Heartbeat("cb16-bot-a", http.DefaultTransport); err == nil {
++		t.Fatal("actual constructor accepted mixed sealed schema")
++	}
++}
++
++func TestUI188CB16AdapterStartupIdentityServices(t *testing.T) {
++	ui188ActionsUnitContext(t)
++	for _, service := range []string{"bot-a", "bot-b"} {
++		_, _, closeTrace, err := newUI188MC12Heartbeat(service, http.DefaultTransport)
++		if err != nil {
++			t.Fatalf("new real adapter constructor rejected its declared service %s: %v", service, err)
++		}
++		closeTrace()
++	}
++	for _, service := range []string{"cb16-bot-a", "cb16-bot-b", "cb15-bot-a", "cb16-bot-c", ""} {
++		if _, _, _, err := newUI188MC12Heartbeat(service, http.DefaultTransport); err == nil {
++			t.Fatal("foreign/legacy service accepted by current scope")
++		}
++	}
++}
+diff --git a/cmd/discord-bot/ui188_mc13_heartbeat_linux_test.go b/cmd/discord-bot/ui188_mc13_heartbeat_linux_test.go
+index 44e0582aa886ec48ce6b8916821604b7e08d4ad1..5e046c2647031bc70697057093cf3a7f1052c165 100644
+--- a/cmd/discord-bot/ui188_mc13_heartbeat_linux_test.go
++++ b/cmd/discord-bot/ui188_mc13_heartbeat_linux_test.go
+@@ -138,13 +138,17 @@
+ 		response.Body = io.NopCloser(bytes.NewReader(raw))
+ 		if err == nil && len(raw) <= 131072 {
+ 			event.BodyValid = json.Valid(raw)
+-			if isHeartbeat && response.StatusCode != http.StatusAccepted {
++			if isHeartbeat && response.StatusCode != http.StatusAccepted || isRuntime && response.StatusCode != http.StatusOK {
+ 				event.Code, event.BodyValid = ui188HBCode(raw)
+ 				event.ResponseBodyBytes = len(raw)
+ 				digest := sha256.Sum256(raw)
+ 				event.ResponseSHA256 = hex.EncodeToString(digest[:])
+ 				if response.StatusCode == http.StatusForbidden && event.BodyValid && event.Code == "service_not_assigned_to_token" {
+ 					original := string(raw) // Exact bounded code-only body; no arbitrary body is printed.
++					event.OriginalResponseBody = &original
++				}
++				if isRuntime && response.StatusCode == http.StatusInternalServerError && event.BodyValid && event.Code == ui188CB16AssignmentConflictCode {
++					original := string(raw) // exact bounded code-only response, never arbitrary error data
+ 					event.OriginalResponseBody = &original
+ 				}
+ 			}
+@@ -590,38 +594,15 @@
+ }
+ 
+ func ui188HBContext(root, caseID, schema, runUUID string) bool {
+-	if caseID != "cb15" || schema != "ui188_cb15_20261018" || runUUID != "03e37a89-9a1b-4e39-aab3-49152b74d0a4" {
+-		return false
+-	}
+-	path := filepath.Join(root, "cb15-diagnostic-identity.json")
+-	info, err := os.Lstat(path)
+-	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+-		return false
+-	}
+-	raw, err := os.ReadFile(path)
+-	if err != nil {
+-		return false
+-	}
+-	digest := sha256.Sum256(raw)
+-	if hex.EncodeToString(digest[:]) != "5e3b75f0d82f56dd8a634c92324b5cea3c34e333e0c864ef25ed8b9c77594a61" {
+-		return false
+-	}
+-	var authority struct {
+-		Scope        string `json:"scope"`
+-		Case         string `json:"case"`
+-		RunUUID      string `json:"run_uuid"`
+-		Schema       string `json:"DB_schema"`
+-		T0           string `json:"T0_UTC"`
+-		NoAcceptance bool   `json:"not_formal_acceptance"`
+-	}
+-	return json.Unmarshal(raw, &authority) == nil && authority.Scope == "UI188_CURRENT_CREDENTIAL_BINDING_AND_WAIT_DIAGNOSIS" && authority.Case == caseID && authority.RunUUID == runUUID && authority.Schema == schema && authority.T0 == "2026-10-18T13:56:43+00:00" && authority.NoAcceptance
++	_, valid := ui188ActionsManifest(root, caseID, schema, runUUID)
++	return valid
+ }
+ 
+ func newUI188MC12Heartbeat(service string, next http.RoundTripper) (*ui188HBTransport, *ui188HBRecovery, func(), error) {
+ 	caseID, schema, root := os.Getenv("UI188_PROBE_ATTEMPT"), os.Getenv("UI188_DB_SCHEMA"), os.Getenv("UI188_EVIDENCE_DIRECTORY")
+ 	runUUID := os.Getenv("UI188_WAIT_CALLER_RUN_ID")
+ 	valid := ui188HBContext(root, caseID, schema, runUUID)
+-	if !valid || (service != "bot-a" && service != "bot-b") || !filepath.IsAbs(root) {
++	if !valid || !ui188ActionsService(root, caseID, schema, runUUID, service) || !filepath.IsAbs(root) {
+ 		return nil, nil, nil, errors.New("MC12 heartbeat scope identity invalid")
+ 	}
+ 	directory := filepath.Join(root, "heartbeat-recovery")
+diff --git a/cmd/discord-bot/ui188_mc13_heartbeat_policy_linux_test.go b/cmd/discord-bot/ui188_mc13_heartbeat_policy_linux_test.go
+index a158c4cc12ae4a57e04aa0a1cfbf036f628a64d0..448864f5f79b75b937e7cccdc8a26d1d463590b1 100644
+--- a/cmd/discord-bot/ui188_mc13_heartbeat_policy_linux_test.go
++++ b/cmd/discord-bot/ui188_mc13_heartbeat_policy_linux_test.go
+@@ -596,18 +596,16 @@
+ }
+ 
+ func TestUI188MC13ScopeBindingsRejectClosedScopes(t *testing.T) {
+-	root := t.TempDir()
+-	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "cb15-diagnostic-identity.json"))
+-	if err != nil {
+-		t.Fatal(err)
+-	}
+-	if err = os.WriteFile(filepath.Join(root, "cb15-diagnostic-identity.json"), raw, 0600); err != nil {
+-		t.Fatal(err)
+-	}
+-	if !ui188HBContext(root, "cb15", "ui188_cb15_20261018", "03e37a89-9a1b-4e39-aab3-49152b74d0a4") {
+-		t.Fatal("exact new diagnostic identity rejected")
++	root, run, _ := ui188ActionsUnitContext(t)
++	if !ui188HBContext(root, run.Case, run.Schema, run.UUID) {
++		t.Fatal("fresh manifest rejected")
+ 	}
+ 	for _, value := range [][3]string{
++		{"cb16r", "ui188_cb16r_20261019", "b49f7c83-06bd-4bde-9ca8-e5e0c8b5073b"},
++		{"cb16", "ui188_cb16_20261019", "6c1acb1b-776f-4eea-aa6e-4ba90211af9c"},
++		{"cb15", "ui188_cb15_20261018", "03e37a89-9a1b-4e39-aab3-49152b74d0a4"},
++		{"cb16r", "ui188_cb16_20261019", "b49f7c83-06bd-4bde-9ca8-e5e0c8b5073b"},
++		{"cb16r", "ui188_cb16r_20261019", "6c1acb1b-776f-4eea-aa6e-4ba90211af9c"},
+ 		{"wc14", "ui188_wc14_diagnostic_20261018", "7006d7d2-eb2c-4d4a-ad61-47927db9b9ee"},
+ 		{"mc13", "ui188_mc13_recovery_20261018", "4e7ac320-a685-4d00-b4a7-de0d36720f73"},
+ 		{"md13", "ui188_md13_diagnostic_20261018", "beff4f0f-b1a5-43ca-9f54-ab779befda56"},
+@@ -623,42 +621,43 @@
+ }
+ 
+ func TestUI188MC12HeartbeatCanaryContextIsFiniteAndSourceBound(t *testing.T) {
+-	root := t.TempDir()
++	root, run, raw := ui188ActionsUnitContext(t)
+ 	valid := func() bool {
+-		return ui188HBContext(root, "cb15", "ui188_cb15_20261018", "03e37a89-9a1b-4e39-aab3-49152b74d0a4")
++		return ui188HBContext(root, run.Case, run.Schema, run.UUID)
++	}
++	path := filepath.Join(root, "identity.json")
++	if err := os.Remove(path); err != nil {
++		t.Fatal(err)
+ 	}
+ 	if valid() {
+ 		t.Fatal("missing sealed identity accepted")
+ 	}
+-	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "cb15-diagnostic-identity.json"))
+-	if err != nil {
+-		t.Fatal(err)
+-	}
+-	path := filepath.Join(root, "cb15-diagnostic-identity.json")
+-	if err = os.WriteFile(path, raw, 0600); err != nil {
++	if err := os.WriteFile(path, raw, 0600); err != nil {
+ 		t.Fatal(err)
+ 	}
+ 	if !valid() {
+ 		t.Fatal("exact parent-authorized diagnostic context rejected")
+ 	}
+-	if err = os.WriteFile(path, append(raw, byte(' ')), 0600); err != nil {
++	if err := os.WriteFile(path, append(raw, byte(' ')), 0600); err != nil {
+ 		t.Fatal(err)
+ 	}
+ 	if valid() {
+ 		t.Fatal("changed sealed identity accepted")
+ 	}
+-	if err = os.Remove(path); err != nil {
++	if err := os.Remove(path); err != nil {
+ 		t.Fatal(err)
+ 	}
+ 	source := filepath.Join(root, "source.json")
+-	if err = os.WriteFile(source, raw, 0600); err != nil {
+-		t.Fatal(err)
+-	}
+-	if err = os.Symlink(source, path); err != nil {
+-		t.Fatal(err)
+-	}
++	if err := os.WriteFile(source, raw, 0600); err != nil {
++		t.Fatal(err)
++	}
++	// A foreign path must fail independently of its correct content/hash.
++	t.Setenv("UI188_RUN_IDENTITY", source)
+ 	if valid() {
+-		t.Fatal("symlink identity accepted")
++		t.Fatal("foreign manifest path accepted")
++	}
++	if err := os.WriteFile(path, raw, 0600); err != nil {
++		t.Fatal(err)
+ 	}
+ }
+ 
+diff --git a/cmd/discord-bot/ui188_r4_chain_linux_test.go b/cmd/discord-bot/ui188_r4_chain_linux_test.go
+index fae4ef2dc0f083c8b65a9fb321ab34311dc754a6..510fe96459662b8e62a38e044a2a8abd1f8b361d 100644
+--- a/cmd/discord-bot/ui188_r4_chain_linux_test.go
++++ b/cmd/discord-bot/ui188_r4_chain_linux_test.go
+@@ -380,31 +380,35 @@
+ 	controller := controlStreamStarter{client: client}
+ 	manager.SetStreamStarter(ui188R9CountedStarter{sink: r9, next: controller})
+ 	manager.SetStreamStopper(controller)
++	refreshPolicy := newUI188CB16RefreshPolicy(client.HTTP.Timeout)
+ 	refresh := func() error {
+-		return manager.RefreshRuntimeConfig(func() error {
+-			cfg, err := client.RuntimeConfig(ctx)
+-			if err != nil {
+-				return err
+-			}
+-			trace.snapshot(cfg, manager, "before", false)
+-			if err = reconcileRuntimeGateway(ctx, client, manager, cfg); err != nil {
+-				trace.snapshot(cfg, manager, "after", true)
+-				return err
+-			}
+-			trace.snapshot(cfg, manager, "after", false)
+-			applyRuntimeConfigToManager(manager, cfg, reconnectPolicyFromEnv())
+-			return nil
+-		})
+-	}
++		cfg, err := ui188CB16RefreshOnce(ctx, client, manager, trace.snapshot)
++		refreshPolicy.Observe(cfg, err, time.Now())
++		if err == nil && refreshPolicy.Failed() {
++			return errors.New("test runtime convergence failed closed")
++		}
++		return err // preserve original failure; auto-start cannot treat it as success
++	}
++	mux.HandleFunc("GET /r9/refresh", func(w http.ResponseWriter, _ *http.Request) { _ = json.NewEncoder(w).Encode(refreshPolicy.Status()) })
+ 	manager.SetAutoStartRefresher(refresh)
+-	if err := refresh(); err != nil {
+-		t.Fatalf("initial real runtime configuration: %v", err)
++	for {
++		if err := refresh(); err == nil {
++			break
++		}
++		if !refreshPolicy.CanAwait() {
++			t.Fatal("initial real runtime configuration failed closed; original HTTP trace retained")
++		}
++		select {
++		case <-ctx.Done():
++			t.Fatal("initial runtime convergence canceled")
++		case <-time.After(ui188CB16RefreshInterval):
++		}
+ 	}
+ 	service := &http.Server{Addr: cfg.BindAddress, Handler: httpapi.NewServerWithRuntimeConfigAndUpdaterIdentity(control.ServiceType, manager, httpapi.TokenVerifierFromEnv(), client.RuntimeConfig, httpapi.NewUpdaterIdentityLatch(control.ServiceType)), ReadHeaderTimeout: 5 * time.Second}
+ 	errs := make(chan error, 1)
+ 	go func() { errs <- service.ListenAndServe() }()
+ 	defer service.Close()
+-	ticker := time.NewTicker(time.Second)
++	ticker := time.NewTicker(ui188CB16RefreshInterval)
+ 	defer ticker.Stop()
+ 	fmt.Println("UI188_R4_BOT_CHILD_READY " + cfg.ServiceID)
+ 	for {
+@@ -413,7 +417,10 @@
+ 			t.Fatal(err)
+ 		case <-ticker.C:
+ 			if err := refresh(); err != nil {
+-				t.Fatalf("real runtime refresh: %v", err)
++				if !refreshPolicy.CanAwait() {
++					t.Fatal("real runtime refresh failed closed; original HTTP trace retained")
++				}
++				continue // next regular tick only; no immediate GET or mutation resend
+ 			}
+ 			if err := heartbeatRecovery.Tick(ctx, client, manager.CurrentStreamID(), manager.Metrics()); err != nil {
+ 				t.Fatalf("bounded real heartbeat: %v", err)

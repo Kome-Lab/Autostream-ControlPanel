@@ -1,0 +1,8 @@
+FROM node:26.5.0-bookworm-slim@sha256:2d49d876e96237d76de412761cf05dbfe5aee325cc4406a4d41d5824c5bb8beb
+ENV DEBIAN_FRONTEND=noninteractive PYTHONPATH=/opt/ui188 PYTHONDONTWRITEBYTECODE=1 GOMAXPROCS=2
+RUN apt-get update && apt-get install -y --no-install-recommends python3 mariadb-client iptables iproute2 util-linux xvfb xauth && rm -rf /var/lib/apt/lists/*
+COPY platform /opt/ui188
+COPY original_packet_capture.py /opt/ui188/original_packet_capture.py
+COPY bot-constructor /opt/ui188/bot-constructor
+RUN install -d -o 1000 -g 1000 -m 700 /r6 /r6/data /home/ui188 /var/lib/autostream/worker && chmod 755 /opt/ui188/bot-constructor
+WORKDIR /r6

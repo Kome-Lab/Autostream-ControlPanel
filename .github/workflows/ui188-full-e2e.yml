@@ -1,0 +1,105 @@
+name: UI188 Full E2E
+
+on:
+  workflow_dispatch:
+    inputs:
+      cp_sha:
+        description: Reviewed immutable CP commit (product and integration)
+        required: true
+        type: string
+      bot_sha:
+        description: Reviewed immutable BOT product commit
+        required: true
+        type: string
+      lock_sha256:
+        description: Reviewed source-lock.json SHA256
+        required: true
+        type: string
+      approval_id:
+        description: Owner approval receipt for this source set and billed runner
+        required: true
+        type: string
+      cost_ack:
+        description: Approve one billed Linux 8 core run for at most 120 minutes
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ui188-full-e2e-exclusive
+  cancel-in-progress: false
+
+jobs:
+  authorize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      cp_sha: ${{ steps.gate.outputs.cp_sha }}
+      bot_sha: ${{ steps.gate.outputs.bot_sha }}
+      lock_sha256: ${{ steps.gate.outputs.lock_sha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - name: Authorize trusted source and cost before paid allocation
+        id: gate
+        env:
+          CP_SHA: ${{ inputs.cp_sha }}
+          BOT_SHA: ${{ inputs.bot_sha }}
+          LOCK_SHA256: ${{ inputs.lock_sha256 }}
+          APPROVAL_ID: ${{ inputs.approval_id }}
+          COST_ACK: ${{ inputs.cost_ack }}
+          UI188_ENABLED: ${{ vars.UI188_FULL_E2E_ENABLED }}
+          UI188_APPROVED_DISPATCH: ${{ vars.UI188_APPROVED_DISPATCH }}
+        run: python3 scripts/ci/ui188-full-e2e/gate.py authorize
+
+  full-e2e:
+    needs: authorize
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.run_attempt == 1
+    runs-on:
+      group: ui188-hosted-linux
+      labels: ui188-linux-8core
+    environment: ui188-full-e2e
+    timeout-minutes: 120
+    env:
+      GOWORK: 'off'
+      GOMAXPROCS: '2'
+      CP_SHA: ${{ needs.authorize.outputs.cp_sha }}
+      BOT_SHA: ${{ needs.authorize.outputs.bot_sha }}
+      LOCK_SHA256: ${{ needs.authorize.outputs.lock_sha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ needs.authorize.outputs.cp_sha }}
+          path: cp
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Measure paid runner before preparation
+        env:
+          RUNNER_KIND: ${{ runner.environment }}
+        run: python3 cp/scripts/ci/ui188-full-e2e/gate.py capacity "$RUNNER_TEMP/ui188-capacity.json"
+      - name: Prepare fixed source set and Linux image
+        run: python3 cp/scripts/ci/ui188-full-e2e/host.py prepare
+      - name: Run closed network canary and all same-run acceptance groups
+        run: python3 cp/scripts/ci/ui188-full-e2e/host.py run
+      - name: Project and verify public metadata only
+        if: always()
+        run: python3 cp/scripts/ci/ui188-full-e2e/host.py package
+      - name: Upload reviewed allowlisted package
+        if: always() && hashFiles('ui188-public/VERIFIED.json') != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: ui188-sanitized-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ui188-public/evidence.zip
+            ui188-public/VERIFIED.json
+          if-no-files-found: error
+          retention-days: 3
+          include-hidden-files: false
+      - name: Stop only this run's owned containers and volumes
+        if: always()
+        run: python3 cp/scripts/ci/ui188-full-e2e/host.py cleanup

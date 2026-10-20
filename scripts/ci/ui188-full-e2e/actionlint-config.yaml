@@ -1,0 +1,5 @@
+# actionlint names its custom-label registry self-hosted-runner. This is lint
+# configuration only; the workflow requires runner.environment == github-hosted.
+self-hosted-runner:
+  labels:
+    - ui188-linux-8core
