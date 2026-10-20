@@ -6,12 +6,14 @@ import json
 import os
 from pathlib import Path
 import re
+import signal
 import socket
 import struct
 import sys
 import time
 
 from gate import require
+from checkpoints import atomic_json,begin,finish
 from run_identity import read_bound
 
 ADDRESS = '/tmp/ui188-secrets/rtp-tap.sock'
@@ -48,17 +50,20 @@ def request_tap(port):
         client.close()
 
 
-def serve():
-    identity=read_bound();root=Path('/evidence')
-    facts=status()
-    require(facts['uid']==facts['euid']==1000 and int(facts['CapEff'],16)==int(facts['CapBnd'],16)==1<<13,'BLOCKED_OBSERVER_CAPABILITIES')
-    spec=importlib.util.spec_from_file_location('immutable_packet_capture','/opt/ui188/original_packet_capture.py')
-    original=importlib.util.module_from_spec(spec);spec.loader.exec_module(original)
-    server=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM);server.bind(ADDRESS);os.chmod(ADDRESS,0o600);server.listen(4);server.settimeout(1)
-    (root/'tap-broker-ready.json').write_text(json.dumps({'identity':identity,'facts':facts,'original_filter_sha256':hashlib.sha256(Path('/opt/ui188/original_packet_capture.py').read_bytes()).hexdigest()})+'\n')
-    issued=set();exit_code=1;end=time.monotonic()+4500
+def serve(root=Path('/evidence')):
+    identity=read_bound();started=begin(root,identity,'broker_ready')
+    issued=set();exit_code=1;server=None;ready=False;number=None;received=[None]
+    previous={n:signal.signal(n,lambda value,_:received.__setitem__(0,value)) for n in (signal.SIGTERM,signal.SIGINT)}
     try:
-        while time.monotonic()<end:
+        facts=status()
+        require(facts['uid']==facts['euid']==1000 and int(facts['CapEff'],16)==int(facts['CapBnd'],16)==1<<13 and int(facts['CapAmb'],16)==1<<13 and facts['NoNewPrivs']=='1','BLOCKED_OBSERVER_CAPABILITIES')
+        spec=importlib.util.spec_from_file_location('immutable_packet_capture','/opt/ui188/original_packet_capture.py')
+        original=importlib.util.module_from_spec(spec);spec.loader.exec_module(original)
+        server=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM);server.bind(ADDRESS);os.chmod(ADDRESS,0o600);server.listen(4);server.settimeout(1)
+        atomic_json(root/'tap-broker-ready.json',{'identity':identity,'facts':facts,'original_filter_sha256':hashlib.sha256(Path('/opt/ui188/original_packet_capture.py').read_bytes()).hexdigest()})
+        finish(root,identity,'broker_ready',started,proofs=('broker_ready',));ready=True
+        end=time.monotonic()+4500
+        while time.monotonic()<end and received[0] is None:
             try: connection,_=server.accept()
             except socket.timeout: continue
             with connection:
@@ -80,9 +85,19 @@ def serve():
                     descriptors=array.array('i',[tap.fileno()])
                     connection.sendmsg([b'FILTERED_RTP_FD'],[(socket.SOL_SOCKET,socket.SCM_RIGHTS,descriptors)])
                 issued.add(port)
+        if received[0] is not None:exit_code=-received[0]
+    except BaseException as error:
+        number=error.errno if isinstance(error,OSError) and error.errno is not None else None
+        raise
     finally:
-        server.close()
-        (root/'tap-broker-exit.json').write_text(json.dumps({'identity':identity,'original_exit':exit_code,'issued_taps':len(issued)})+'\n')
+        if received[0] is not None:exit_code=-received[0]
+        if server is not None:server.close()
+        if not ready:
+            finish(root,identity,'broker_ready',started,original_exit=exit_code,signal=received[0],errno=number)
+        end_started=begin(root,identity,'broker_exit')
+        atomic_json(root/'tap-broker-exit.json',{'identity':identity,'original_exit':exit_code,'signal':received[0],'issued_taps':len(issued)})
+        finish(root,identity,'broker_exit',end_started,original_exit=exit_code,signal=received[0],errno=number,proofs=('broker_exit',))
+        for n,handler in previous.items():signal.signal(n,handler)
     return exit_code
 
 

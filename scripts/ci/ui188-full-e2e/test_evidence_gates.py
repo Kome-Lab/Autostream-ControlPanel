@@ -21,15 +21,19 @@ from test_contracts import Fixture
 class EvidenceGateTests(Fixture):
     def test_cleanup_failure_preserves_original_driver_exit(self):
         from runtime_supervisor import retire
+        self.write('tap-broker-ready.json',{'identity':self.ident})
         with patch('runtime_supervisor.shutdown',side_effect=OSError('synthetic private detail')):
             self.assertEqual(retire(self.root,self.ident,7),1)
         driver=json.loads((self.root/'driver-exit.json').read_text());receipt=json.loads((self.root/'supervisor-exit.json').read_text())
         self.assertEqual(driver['original_exit'],7);self.assertEqual(receipt['original_driver_exit'],7)
         self.assertEqual(receipt['cleanup_reason'],'BROKER_CLEANUP_FAILED');self.assertNotIn('synthetic private detail',json.dumps(receipt))
-        self.write('tap-broker-exit.json',{'identity':self.ident,'original_exit':0,'issued_taps':2})
+        normal=self.root/'normal-retire';normal.mkdir()
+        (normal/'tap-broker-ready.json').write_text(json.dumps({'identity':self.ident})+'\n')
+        (normal/'tap-broker-exit.json').write_text(json.dumps({'identity':self.ident,'original_exit':0,'issued_taps':2})+'\n')
         with patch('runtime_supervisor.shutdown'):
-            self.assertEqual(retire(self.root,self.ident,0),0)
-        self.assertEqual(json.loads((self.root/'supervisor-exit.json').read_text())['original_driver_exit'],0)
+            self.assertEqual(retire(normal,self.ident,0),0)
+        self.assertEqual(json.loads((normal/'supervisor-exit.json').read_text())['original_driver_exit'],0)
+        self.assertEqual(json.loads((self.root/'driver-exit.json').read_text())['original_exit'],7)
 
     def setup_streams(self):
         ids=('efefefef-efef-4fef-8fef-efefefefefe1','efefefef-efef-4fef-8fef-efefefefefe2')
@@ -112,9 +116,12 @@ class EvidenceGateTests(Fixture):
         with self.assertRaises(Blocked):validate_summary(bad)
 
     def test_short_smoke_projection_rejects_unknown_paths_missing_proof_and_false_success(self):
-        value={'schema_version':1,'kind':'CONTRACT_SMOKE','run_uuid':self.ident['run_uuid'],'case':self.ident['case'],'github_run_id':100,'github_run_attempt':1,
+        from checkpoints import PHASES
+        value={'schema_version':2,'kind':'CONTRACT_SMOKE','run_uuid':self.ident['run_uuid'],'case':self.ident['case'],'github_run_id':100,'github_run_attempt':1,
             'source_shas':{k:self.ident['source_shas'][k] for k in ('cp','bot')},'checks':{k:'NOT_RUN' for k in CHECKS},'original_exits':{},'aggregate':'FAIL',
-            'full_e2e':'NOT_RUN','known_issue':'KNOWN_UNRESOLVED_MEDIA_ISSUE','private_raw_storage':'NOT_CONFIGURED','proof_sha256':{},'container_exits':{},'failure':None,'timeline_ms':{}}
+            'full_e2e':'NOT_RUN','known_issue':'KNOWN_UNRESOLVED_MEDIA_ISSUE','private_raw_storage':'NOT_CONFIGURED','proof_sha256':{},'container_exits':{},'failure':None,'timeline_ms':{},
+            'source_lock_sha256':self.ident['source_lock_sha256'],'identity_sha256':sha_file(self.root/'identity.json'),
+            'checkpoints':{p:{'status':'NOT_RUN'} for p in PHASES},'launcher_comparison':{'status':'NOT_RUN'},'cleanup_failures':{},'observed_exits':{},'primary_process_failure':None}
         validate_public(value)
         for mutate in (lambda v:v.update(private_log='raw'),lambda v:v.update(aggregate='PASS'),lambda v:v.update(full_e2e='PASS'),
                        lambda v:v.update(checks={k:'PASS' for k in CHECKS},aggregate='PASS',original_exits={k:0 for k in EXITS})):

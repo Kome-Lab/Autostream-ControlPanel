@@ -65,13 +65,23 @@ def compile_actual(bot, state):
 
 
 def run_actual(binary, root, identity):
+    from checkpoints import atomic_json
     root.mkdir(mode=0o700)
     manifest = root / 'identity.json'
     manifest.write_bytes(encoded(identity))
     env = {**os.environ, **environment(identity, manifest), 'UI188_EVIDENCE_DIRECTORY': str(root)}
     with (root / 'go-constructor.private.log').open('xb') as log:
-        result = subprocess.run([str(binary), '-test.run', '^TestUI188ActionsActualConstructor$', '-test.v', '-test.timeout', '30s'],
-                                env=env, stdout=log, stderr=subprocess.STDOUT, timeout=40)
+        try:
+            result = subprocess.run([str(binary), '-test.run', '^TestUI188ActionsActualConstructor$', '-test.v', '-test.timeout', '30s'],
+                                    env=env, stdout=log, stderr=subprocess.STDOUT, timeout=40)
+        except subprocess.TimeoutExpired:
+            # 124 describes this deadline; no child signal is invented by the caller.
+            atomic_json(root / 'go-constructor-exit.json', {'identity': identity,
+                        'original_exit': 124, 'signal': None, 'deadline_expired': True})
+            raise
+    atomic_json(root / 'go-constructor-exit.json', {'identity': identity,
+                'original_exit': result.returncode, 'signal': -result.returncode if result.returncode < 0 else None,
+                'deadline_expired': False})
     require(result.returncode == 0, 'BLOCKED_ACTUAL_GO_CONSTRUCTOR')
     value = json.loads((root / 'go-constructor-proof.json').read_text())
     require(set(value) == {'schema_version', 'actual_constructor', 'accepted_services', 'legacy_rejected', 'identity_sha256', 'run_uuid', 'case', 'schema', 'github_run_id', 'github_run_attempt'}, 'BLOCKED_CONSTRUCTOR_PRODUCER_SCHEMA')

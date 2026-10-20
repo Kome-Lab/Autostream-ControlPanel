@@ -1,6 +1,34 @@
 #!/usr/bin/env bash
 set -euo pipefail
 umask 077
+export PYTHONPATH=/opt/ui188
+entry_signal=0
+broker_pid=''
+entry_failed() {
+  local code=$?
+  trap - EXIT
+  if (( code != 0 )); then
+    if (( entry_signal != 0 )); then
+      python3 -B /opt/ui188/checkpoints.py finish entry_setup --exit "$code" --signal "$entry_signal" || true
+    else
+      python3 -B /opt/ui188/checkpoints.py finish entry_setup --exit "$code" || true
+    fi
+    if [[ -n "$broker_pid" ]]; then
+      kill -TERM "$broker_pid" 2>/dev/null || true
+      for _ in $(seq 1 20); do
+        kill -0 "$broker_pid" 2>/dev/null || break
+        sleep 0.05
+      done
+      kill -KILL "$broker_pid" 2>/dev/null || true
+      wait "$broker_pid" 2>/dev/null || true
+    fi
+  fi
+  exit "$code"
+}
+trap entry_failed EXIT
+trap 'entry_signal=15; exit 143' TERM
+trap 'entry_signal=2; exit 130' INT
+python3 -B /opt/ui188/checkpoints.py begin entry_setup
 db_ip=$(getent ahostsv4 db | awk 'NR==1 {print $1}')
 [[ "$db_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]
 printf '%s db\n' "$db_ip" >> /etc/hosts
@@ -23,17 +51,27 @@ chmod 700 /evidence /worker-config
 chown 1000:1000 /evidence /worker-config
 chown -R 1000:1000 /tmp/ui188-secrets
 export UI188_TEST_CREDENTIALS=/tmp/ui188-secrets/credentials.json
-export PYTHONPATH=/opt/ui188
 export UI188_BROWSER_ATTEMPT=1 UI188_S4_ATTEMPT=1 UI188_S5_ATTEMPT=1 UI188_LOST_STOP_RESPONSE=1 UI188_LONG_AUDIO_SECONDS=900
 export UI188_HLS_CAPTURE_ROOT="/r6/hls-capture-$UI188_PROBE_ATTEMPT"
+python3 -B /opt/ui188/checkpoints.py finish entry_setup --proof identity --proof network_setup
 # Only the exact-port FD broker retains NET_RAW. Products, Chrome and the driver
 # receive no permitted/effective/inheritable/ambient/bounding capabilities.
 setpriv --reuid=1000 --regid=1000 --clear-groups --bounding-set=-all,+net_raw --inh-caps=-all,+net_raw --ambient-caps=-all,+net_raw --no-new-privs \
   python3 -B /opt/ui188/tap_broker.py > /evidence/tap-broker.private.log 2>&1 &
+broker_pid=$!
+export UI188_BROKER_PID="$broker_pid"
 for _ in $(seq 1 50); do
   test ! -f /evidence/tap-broker-ready.json || break
+  if ! kill -0 "$broker_pid" 2>/dev/null; then
+    set +e
+    wait "$broker_pid"
+    child_code=$?
+    set -e
+    broker_pid=''
+    if (( child_code == 0 )); then exit 1; else exit "$child_code"; fi
+  fi
   sleep 0.1
 done
 test -f /evidence/tap-broker-ready.json
 exec setpriv --reuid=1000 --regid=1000 --clear-groups --bounding-set=-all --inh-caps=-all --ambient-caps=-all --no-new-privs \
-  xvfb-run -a python3 -B /opt/ui188/runtime_supervisor.py
+  python3 -B /opt/ui188/launch_parent.py

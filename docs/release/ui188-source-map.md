@@ -111,7 +111,15 @@ CP owns the new two workflows, `scripts/ci/ui188-full-e2e/` and these `docs/rele
 The existing per-repository CI files and public product owners are not reassigned. No private evidence,
 recording, DB, credential file, host log or local agent policy belongs in this source set.
 The generated `source-owners.json` binds every product transition and lists the new integration responsibility.
-The generated `product-files.json` binds every one of the2,068 fixed product paths to mode/blob/SHA256.
+The historical `product-files.json` binds every one of the2,068 fixed product paths to mode/blob/SHA256.
+It remains byte unchanged. `cp-test-overlay.json` applies exactly three named test
+paths: the parity registration, the finite CB15/CB16 delta helper and its negative
+suite. Each edit includes the historical row (or explicit absence) and the exact
+new mode/blob/SHA256. `source.py` verifies all1,474 historical CP paths, applies
+only these test edits, and verifies the resulting1,476-path subtree against
+`source-lock.json`. All1,473 other historical CP paths remain byte unchanged.
+The historical product tree and the new verified test subtree are separate values;
+neither is the final integration tree containing the Actions harness itself.
 
 ## Required case responsibilities
 

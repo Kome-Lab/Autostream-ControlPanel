@@ -8,7 +8,10 @@
       "dispatch_commit": "6419d0fb04386bb86dba4b8f2aeb05cc2c055bb7",
       "contracts_version": "v1.2.12-0.20261012062538-f62ddfaf1144",
       "toolchain": "1.26.5",
-      "GOWORK": "off"
+      "GOWORK": "off",
+      "verified_tree": "1926f819cc22919507f24b4b6246ed3ae822be6b",
+      "test_contract_base_commit": "452e82d87a95d63448952a9e1cfd822f942990c7",
+      "verified_tree_kind": "HISTORICAL_PRODUCT_PLUS_EXACT_TEST_OVERLAY"
     },
     "bot": {
       "repository": "Kome-Lab/Autostream-DiscordBot",
@@ -104,5 +107,6 @@
     "S_denominator": 6,
     "F_denominator": 11,
     "group_denominator": 28
-  }
+  },
+  "cp_test_overlay_sha256": "bdeb0c7bc2be6f942e6e1a55d873a6717ba3996ab995e935eea694762c2c02ec"
 }

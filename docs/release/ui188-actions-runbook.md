@@ -105,3 +105,42 @@ Official references:
 - [Larger runner eligibility and billing](https://docs.github.com/en/actions/concepts/runners/larger-runners)
 - [Current runner rates](https://docs.github.com/en/billing/reference/actions-runner-pricing)
 - [Artifact read access](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/download-workflow-artifacts)
+# CP parity and short bootstrap closure
+
+The push-only integration workflow retains two jobs: static contracts and the
+short standard `ubuntu-24.04` bootstrap. The original CI retains its39-job
+denominator, including `overall`; these results are evaluated independently.
+
+The bootstrap builds one `Dockerfile.smoke` image and compares `xvfb-run` as PID1
+with a UID1000, capability-free supervisor as PID1. Both comparison containers
+have no network, no credentials and the same image/package hashes. The old case
+may time out; its original deadline and post-stop container exit are distinct.
+A successful comparison does not establish the historical Actions failure cause.
+
+The real startup then retains the limited root setup and NET_RAW-only broker.
+The PID1 supervisor, driver and Worker keep UID1000, zero capabilities and NNP.
+The normal Chrome sandbox and closed network are retained. Short bootstrap
+does not launch the full browser/media scenario or prove its acceptance.
+
+Closed checkpoints cover entry setup, privilege drop, broker, Xvfb, supervisor,
+runtime privileges, DB, Worker config/readiness, filtered RTP FD, Go constructor,
+driver/broker/Worker exit and container exit. Every checkpoint binds the current
+identity and proof hashes. Missing phases remain NOT_RUN; malformed or stale
+proofs are INVALID. Primary process failure and cleanup failures are separate.
+
+Only schema2 `summary.json` is uploaded. It permits fixed enums, booleans,
+numeric observations and hashes; package version numbers and the exact version
+hash identify the package query. Raw version output, credentials, DB contents,
+recordings and private logs remain in ephemeral runner storage. No external
+private evidence store or key is provisioned.
+
+The host reserves540 seconds for work and90 seconds for cleanup/diagnostics
+inside the12-minute job. Child failure is polled while waiting; a host deadline
+is124 and does not invent a container signal. Normal shutdown requires all nine
+bootstrap checks, all checkpoints, actual process exits and cleanup to pass.
+
+If this test-only candidate must be rolled back, restore the prior signed CP
+feature commit through a newly authorized normal revert. No force update, main
+merge, Release, deployment or migration is part of this workflow. BOT and its
+accepted CI remain fixed. `KNOWN_UNRESOLVED_MEDIA_ISSUE` remains open; ordinary
+CI and bootstrap success do not authorize Full E2E, RC or production release.

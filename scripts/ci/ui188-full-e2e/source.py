@@ -10,6 +10,48 @@ import subprocess
 from gate import Blocked, require
 
 HERE = Path(__file__).resolve().parent
+HISTORICAL_MANIFEST_SHA256 = '7b049a4fe97f334fd7c3c76001810bad6b215b67021a1871c1b69a3cca705815'
+CP_TEST_PATHS = frozenset({
+    'web/tests/ui-regression/parity.test.mts',
+    'web/tests/ui-regression/ui188-cb15-cb16-runtime-delta.mts',
+    'web/tests/ui-regression/ui188-cb15-cb16-runtime-delta.test.mts',
+})
+
+
+def unique_json(raw):
+    def pairs(items):
+        value = {}
+        for key, item in items:
+            require(key not in value, 'BLOCKED_SOURCE_DUPLICATE')
+            value[key] = item
+        return value
+    return json.loads(raw, object_pairs_hook=pairs)
+
+
+def cp_test_rows(manifest, lock, raw):
+    """Apply only the three explicitly authorized test edits to the historical tree."""
+    require(hashlib.sha256(raw).hexdigest() == lock['cp_test_overlay_sha256'], 'BLOCKED_SOURCE_OVERLAY_HASH')
+    overlay = unique_json(raw)
+    require(set(overlay) == {'schema_version', 'base_commit', 'base_product_tree', 'base_manifest_sha256', 'verified_tree', 'edits'}, 'BLOCKED_SOURCE_OVERLAY_SCHEMA')
+    require(overlay['schema_version'] == 1 and overlay['base_commit'] == '452e82d87a95d63448952a9e1cfd822f942990c7' and
+            overlay['base_product_tree'] == lock['components']['cp']['product_tree'] and
+            overlay['base_manifest_sha256'] == lock['source_manifest_sha256'] == HISTORICAL_MANIFEST_SHA256, 'BLOCKED_SOURCE_OVERLAY_BASE')
+    original = {row['path']: row for row in manifest['cp']}
+    require(len(original) == len(manifest['cp']) == 1474 and tree_hash(manifest['cp']) == overlay['base_product_tree'], 'BLOCKED_SOURCE_HISTORICAL_TREE')
+    edits = overlay['edits']
+    require(type(edits) is list and len(edits) == len(CP_TEST_PATHS) and {e['path'] for e in edits} == CP_TEST_PATHS, 'BLOCKED_SOURCE_OVERLAY_PATH')
+    result = dict(original)
+    for edit in edits:
+        require(set(edit) == {'path', 'before', 'after'} and edit['path'] in CP_TEST_PATHS, 'BLOCKED_SOURCE_OVERLAY_SCHEMA')
+        require(edit['before'] == original.get(edit['path']), 'BLOCKED_SOURCE_OVERLAY_BEFORE')
+        after = edit['after']
+        require(type(after) is dict and set(after) == {'path', 'mode', 'oid', 'sha256'} and after['path'] == edit['path'] and
+                after['mode'] == '100644' and re.fullmatch(r'[0-9a-f]{40}', after['oid']) and
+                re.fullmatch(r'[0-9a-f]{64}', after['sha256']) and after != edit['before'], 'BLOCKED_SOURCE_OVERLAY_AFTER')
+        result[edit['path']] = after
+    rows = [result[path] for path in sorted(result)]
+    require(tree_hash(rows) == overlay['verified_tree'] == lock['components']['cp']['verified_tree'], 'BLOCKED_SOURCE_OVERLAY_TREE')
+    return rows
 
 
 def tree_hash(rows):
@@ -32,11 +74,11 @@ def tree_hash(rows):
 
 
 def verify(root, component, manifest=None, lock=None):
-    lock = lock or json.loads((HERE / 'source-lock.json').read_text())
+    lock = lock or unique_json((HERE / 'source-lock.json').read_bytes())
     if manifest is None:
         raw_manifest = (HERE / 'product-files.json').read_bytes()
-        require(hashlib.sha256(raw_manifest).hexdigest() == lock['source_manifest_sha256'], 'BLOCKED_SOURCE_MANIFEST')
-        manifest = json.loads(raw_manifest)
+        require(hashlib.sha256(raw_manifest).hexdigest() == lock['source_manifest_sha256'] == HISTORICAL_MANIFEST_SHA256, 'BLOCKED_SOURCE_MANIFEST')
+        manifest = unique_json(raw_manifest)
     require(lock['components']['cp']['product_tree'] == '44ae3a676b6e9a462ea2a437bb8391f2198e7af4' and
             lock['components']['bot']['product_tree'] == '1141c416accf9fcb5d828f1174a7641863404972', 'BLOCKED_PRODUCT_AUTHORITY')
     require(lock['components']['encoder']['dispatch_commit'] == 'c51339fbe3d05b7ad96620c5a1adb83d2e5fc145' and
@@ -45,7 +87,7 @@ def verify(root, component, manifest=None, lock=None):
     require(lock['acceptance'] == {'two_stream_overlap_seconds':1000,'HLS_checkpoints':[580,900],
             'archive_per_stream':3,'socket_drops':0,'AAC_uncovered_over_50ms':0,'PCM_PTS_bands':[[250,400],[580,700],[800,950]],
             'S_denominator':6,'F_denominator':11,'group_denominator':28}, 'BLOCKED_ACCEPTANCE_RELAXED')
-    rows = manifest[component]
+    rows = cp_test_rows(manifest, lock, (HERE / 'cp-test-overlay.json').read_bytes()) if component == 'cp' else manifest[component]
     actual = []
     for row in rows:
         dest = root / row['path']
@@ -63,7 +105,8 @@ def verify(root, component, manifest=None, lock=None):
         oid = hashlib.sha1(b'blob ' + str(len(raw)).encode() + b'\0' + raw).hexdigest()
         require(oid == row['oid'], 'BLOCKED_SOURCE_BLOB')
         actual.append({**row, 'oid': oid})
-    require(tree_hash(actual) == lock['components'][component]['product_tree'], 'BLOCKED_SOURCE_TREE')
+    expected_tree = lock['components'][component]['verified_tree' if component == 'cp' else 'product_tree']
+    require(tree_hash(actual) == expected_tree, 'BLOCKED_SOURCE_TREE')
     gomod = (root / 'go.mod').read_text()
     require(re.search(r'^go 1\.26\.5$', gomod, re.M), 'BLOCKED_GO_VERSION')
     require(lock['components'][component]['contracts_version'] in gomod, 'BLOCKED_CONTRACTS_PIN')

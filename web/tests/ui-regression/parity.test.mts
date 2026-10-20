@@ -15,7 +15,9 @@ import "./ui188-r3-profile-delta.test.mts";
 import "./ui188-r3-session-delta.test.mts";
 import "./ui188-r4-delete-delta.test.mts";
 import "./ui188-r5-readiness-delta.test.mts";
+import "./ui188-cb15-cb16-runtime-delta.test.mts";
 import { cp174ProtectedPaths } from "./cp174-source-deltas.mts";
+import { currentBindingProtectedPaths, historicalCB15CB16RuntimeSource } from "./ui188-cb15-cb16-runtime-delta.mts";
 import ts from "typescript";
 import { createNormalizedReader, assertNormalizationManifest, inverseNormalization } from "./source-normalization.mts";
 import { approvedProtectedPaths, assertApprovedManifest, assertProtectedFixture, assertApprovedSourceDelta, assertRunnerTypeDelta, assertBrowserOperationSource } from "./approved-source-delta.mts";
@@ -103,9 +105,15 @@ test("UI-PARITY-003: original 733 records retain 728 current owners and five fix
   assertProtectedFixture(read("web/tests/fixtures/ui-regression/protected.json"), manifest);
   assertBrowserOperationSource(read(manifest.g3OperationDelta.newSource.path), manifest);
   assert.equal(records.length, 733);
-  let rawMatches = 0, normalizedMatches = 0, historicalMatches = 0, deltas = 0, ciDeltas = 0, cp174Deltas = 0;
+  let rawMatches = 0, normalizedMatches = 0, historicalMatches = 0, deltas = 0, ciDeltas = 0, cp174Deltas = 0, currentBindingDeltas = 0;
   for (const row of records) {
-    if (cp174ProtectedPaths.includes(row.path)) {
+    if (currentBindingProtectedPaths.includes(row.path)) {
+      const current = read(row.path);
+      const historical = historicalCB15CB16RuntimeSource(row.path, current, (ref, path) => execFileSync("git", ["show", ref + ":" + path], { cwd: root }));
+      assert.equal(sha(rawBase(row.path)), row.sha256, row.path);
+      assert.deepEqual(historical, rawBase(row.path), "CB15/CB16 finite inverse restores the original protected runtime bytes");
+      currentBindingDeltas++;
+    } else if (cp174ProtectedPaths.includes(row.path)) {
       assert.equal(sha(rawBase(row.path)), row.sha256, row.path);
       assert.deepEqual(read(row.path), rawBase(row.path), "CP174 finite inverse restores the original protected backend bytes");
       cp174Deltas++;
@@ -122,8 +130,8 @@ test("UI-PARITY-003: original 733 records retain 728 current owners and five fix
       else rawMatches++;
     }
   }
-  assert.equal(historicalMatches, 5); assert.equal(rawMatches + normalizedMatches + deltas + ciDeltas + cp174Deltas, 728);
-  assert.equal(rawMatches + normalizedMatches, 721); assert.equal(deltas, 4); assert.equal(ciDeltas, 2); assert.equal(cp174Deltas, 1);
+  assert.equal(historicalMatches, 5); assert.equal(rawMatches + normalizedMatches + deltas + ciDeltas + cp174Deltas + currentBindingDeltas, 728);
+  assert.equal(rawMatches + normalizedMatches, 719); assert.equal(deltas, 4); assert.equal(ciDeltas, 2); assert.equal(cp174Deltas, 1); assert.equal(currentBindingDeltas, 2);
 });
 function navigationBindings(source: string) {
   const bindings: { href: string; permissions: string[]; key: string }[] = [];

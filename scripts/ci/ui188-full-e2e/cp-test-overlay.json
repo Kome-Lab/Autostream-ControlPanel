@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "base_commit": "452e82d87a95d63448952a9e1cfd822f942990c7",
+  "base_product_tree": "44ae3a676b6e9a462ea2a437bb8391f2198e7af4",
+  "base_manifest_sha256": "7b049a4fe97f334fd7c3c76001810bad6b215b67021a1871c1b69a3cca705815",
+  "verified_tree": "1926f819cc22919507f24b4b6246ed3ae822be6b",
+  "edits": [
+    {
+      "path": "web/tests/ui-regression/parity.test.mts",
+      "before": {
+        "path": "web/tests/ui-regression/parity.test.mts",
+        "mode": "100644",
+        "oid": "816acf23a954b6c1121be09685bd192503dc1a28",
+        "sha256": "a53a9849b57660670fbf22dad3f39808ac5c8642570979c0123c13b71dcec52b"
+      },
+      "after": {
+        "path": "web/tests/ui-regression/parity.test.mts",
+        "mode": "100644",
+        "oid": "9a64165717c09b61cdddf5c98a78489ec5223727",
+        "sha256": "89ec4ea06350c5ceee4418874dfc7bc2e87790d94eb8ee9e921288b5d8875cba"
+      }
+    },
+    {
+      "path": "web/tests/ui-regression/ui188-cb15-cb16-runtime-delta.mts",
+      "before": null,
+      "after": {
+        "path": "web/tests/ui-regression/ui188-cb15-cb16-runtime-delta.mts",
+        "mode": "100644",
+        "oid": "c9dcd74ff28c66b11a5ac0678f6a4c606bfe5154",
+        "sha256": "c427eb8958e3a8e96a00dddf257e226bf91dfb2733a0d7401231ba90ef2c77fe"
+      }
+    },
+    {
+      "path": "web/tests/ui-regression/ui188-cb15-cb16-runtime-delta.test.mts",
+      "before": null,
+      "after": {
+        "path": "web/tests/ui-regression/ui188-cb15-cb16-runtime-delta.test.mts",
+        "mode": "100644",
+        "oid": "b634fbd89986659c1b4e9da008961a8a6a3b00c8",
+        "sha256": "8d8d5d38f68fdaddcb6379172496e81fafb22cc7525298b85da804096e8d2261"
+      }
+    }
+  ]
+}
