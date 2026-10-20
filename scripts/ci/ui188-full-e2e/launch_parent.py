@@ -263,7 +263,7 @@ def main():
                 all(int(facts[k], 16) == 0 for k in ('CapEff', 'CapBnd', 'CapAmb')) and
                 facts['NoNewPrivs'] == '1', 'BLOCKED_PRIVILEGED_INIT_RETAINED')
         atomic_json(root/'init-privileges.json',{'identity':identity,'facts':facts,'pid':os.getpid(),'ppid':os.getppid()})
-        finish(root, identity, 'privilege_drop', started, proofs=('identity','init_privileges'))
+        finish(root, identity, 'privilege_drop', started, proofs=('identity','init_privileges','entry_permissions'))
         begin(root, identity, 'xvfb_ready')
         result = run(root, identity, ['xvfb-run', '-a', sys.executable, '-B', '/opt/ui188/runtime_supervisor.py'],
                      timeout_seconds=80 if identity['job'] == 'contract-smoke' else 4500,

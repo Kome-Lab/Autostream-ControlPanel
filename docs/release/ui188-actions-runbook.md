@@ -122,6 +122,15 @@ The PID1 supervisor, driver and Worker keep UID1000, zero capabilities and NNP.
 The normal Chrome sandbox and closed network are retained. Short bootstrap
 does not launch the full browser/media scenario or prove its acceptance.
 
+Root setup has no CAP_KILL. Broker readiness uses its owned PID, parent,
+start time and process state; signal permission is never treated as liveness.
+An independent probe records the actual root and broker privileges and the
+signal-zero EPERM result. The closed projection and privilege-drop checkpoint
+bind this measurement to the same run and source. Failure cleanup uses a
+UID1000, capability-free helper and a pidfd with finite TERM/KILL deadlines;
+the parent reaps only a child already proved terminal. Cleanup cannot replace
+the original startup failure or extend its deadline.
+
 Closed checkpoints cover entry setup, privilege drop, broker, Xvfb, supervisor,
 runtime privileges, DB, Worker config/readiness, filtered RTP FD, Go constructor,
 driver/broker/Worker exit and container exit. Every checkpoint binds the current

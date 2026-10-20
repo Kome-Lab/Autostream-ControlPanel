@@ -121,7 +121,7 @@ class EvidenceGateTests(Fixture):
             'source_shas':{k:self.ident['source_shas'][k] for k in ('cp','bot')},'checks':{k:'NOT_RUN' for k in CHECKS},'original_exits':{},'aggregate':'FAIL',
             'full_e2e':'NOT_RUN','known_issue':'KNOWN_UNRESOLVED_MEDIA_ISSUE','private_raw_storage':'NOT_CONFIGURED','proof_sha256':{},'container_exits':{},'failure':None,'timeline_ms':{},
             'source_lock_sha256':self.ident['source_lock_sha256'],'identity_sha256':sha_file(self.root/'identity.json'),
-            'checkpoints':{p:{'status':'NOT_RUN'} for p in PHASES},'launcher_comparison':{'status':'NOT_RUN'},'cleanup_failures':{},'observed_exits':{},'primary_process_failure':None}
+            'checkpoints':{p:{'status':'NOT_RUN'} for p in PHASES},'launcher_comparison':{'status':'NOT_RUN'},'cleanup_failures':{},'observed_exits':{},'primary_process_failure':None,'entry_permissions':{'status':'NOT_RUN'}}
         validate_public(value)
         for mutate in (lambda v:v.update(private_log='raw'),lambda v:v.update(aggregate='PASS'),lambda v:v.update(full_e2e='PASS'),
                        lambda v:v.update(checks={k:'PASS' for k in CHECKS},aggregate='PASS',original_exits={k:0 for k in EXITS})):

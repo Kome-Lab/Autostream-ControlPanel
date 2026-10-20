@@ -10,7 +10,7 @@ from checkpoints import PHASES,begin,finish
 from gate import Blocked
 from launcher_compare import validate_comparison
 import linux_smoke
-from linux_smoke import CHECKS,EXITS,checkpoint_projection,load_public,validate_public,wait_service
+from linux_smoke import CHECKS,EXITS,ENTRY_ROOT_CAPS,checkpoint_projection,entry_permissions_projection,load_public,validate_entry_permissions,validate_public,wait_service
 from test_contracts import Fixture
 
 
@@ -23,7 +23,14 @@ class SmokeClosureTests(Fixture):
             'failure':None,'timeline_ms':{},'source_lock_sha256':self.ident['source_lock_sha256'],
             'identity_sha256':hashlib.sha256((self.root/'identity.json').read_bytes()).hexdigest(),
             'checkpoints':{p:{'status':'NOT_RUN'} for p in PHASES},'launcher_comparison':{'status':'NOT_RUN'},
-            'cleanup_failures':{},'observed_exits':{},'primary_process_failure':None}
+            'cleanup_failures':{},'observed_exits':{},'primary_process_failure':None,'entry_permissions':{'status':'NOT_RUN'}}
+
+    def entry_permission_proof(self):
+        def facts(pid,uid,caps):return {'pid':pid,'ppid':1,'uids':[uid]*4,'cap_eff':caps,'cap_bnd':caps,'cap_amb':0,'nnp':1}
+        value={'schema_version':1,'identity':self.ident,'root':facts(25,0,ENTRY_ROOT_CAPS),'broker':facts(26,1000,1<<13),
+               'owned_alive':True,'ready':True,'kill0':{'original_exit':-1,'errno':1}}
+        value['broker'].update(start_ticks=100,state='SLEEPING',cap_amb=1<<13)
+        return value
 
     def test_failure_schema_retains_unstarted_phases_without_inventing_exits(self):
         value=self.summary();validate_public(value)
@@ -42,6 +49,57 @@ class SmokeClosureTests(Fixture):
             original_exits={k:0 for k in EXITS},proof_sha256={k:'a'*64 for k in CHECKS},
             container_exits={k:{'exit':0,'oom':False,'running':False} for k in ('runtime','worker-b','db')})
         with self.assertRaises(Blocked):validate_public(value)
+
+    def test_entry_permission_measurement_requires_exact_uid_caps_owner_and_eperm(self):
+        self.write('entry-permissions.json',self.entry_permission_proof())
+        good=entry_permissions_projection(self.root,self.ident);validate_entry_permissions(good)
+        self.assertEqual(good['status'],'PASS');self.assertNotIn('identity',good)
+        for mutate in (lambda v:v['root'].update(cap_eff=ENTRY_ROOT_CAPS|(1<<5)),
+                       lambda v:v['root'].update(cap_bnd=ENTRY_ROOT_CAPS|(1<<5)),
+                       lambda v:v['root'].update(uids=[1000]*4),
+                       lambda v:v['broker'].update(cap_eff=0),
+                       lambda v:v['broker'].update(cap_amb=0),
+                       lambda v:v['broker'].update(ppid=9),
+                       lambda v:v['broker'].update(state='ZOMBIE'),
+                       lambda v:v.update(owned_alive=False),lambda v:v.update(ready=False),
+                       lambda v:v['kill0'].update(original_exit=0,errno=None),
+                       lambda v:v['kill0'].update(errno=3),
+                       lambda v:v['root'].update(nnp=True),lambda v:v.update(raw_log='private')):
+            bad=copy.deepcopy(good);mutate(bad)
+            with self.subTest(value=bad),self.assertRaises(Blocked):validate_entry_permissions(bad)
+
+    def test_entry_permission_projection_keeps_failed_measurement_and_rejects_stale_or_duplicate(self):
+        self.assertEqual(entry_permissions_projection(self.root,self.ident),{'status':'NOT_RUN'})
+        raw=self.entry_permission_proof();raw['kill0']={'original_exit':0,'errno':None}
+        self.write('entry-permissions.json',raw)
+        measured=entry_permissions_projection(self.root,self.ident)
+        self.assertEqual(measured['status'],'FAIL');self.assertEqual(measured['kill0'],raw['kill0'])
+        for change in ('stale','extra','duplicate','oversize'):
+            value=self.entry_permission_proof()
+            if change=='stale':value['identity']={**value['identity'],'github_run_id':99}
+            if change=='extra':value['raw_credential']='private'
+            content=json.dumps(value)
+            if change=='duplicate':content=content[:-1]+',"ready":true}'
+            if change=='oversize':content+=' '*4096
+            (self.root/'entry-permissions.json').write_text(content)
+            with self.subTest(change=change):
+                self.assertEqual(entry_permissions_projection(self.root,self.ident),{'status':'INVALID','code':'IDENTITY_OR_SCHEMA_REJECTED'})
+
+    def test_public_entry_measurement_is_bound_to_identity_and_privilege_drop_proof(self):
+        self.write('entry-permissions.json',self.entry_permission_proof())
+        self.write('init-privileges.json',{'synthetic_unit_only':True})
+        mark=begin(self.root,self.ident,'privilege_drop')
+        finish(self.root,self.ident,'privilege_drop',mark,proofs=('identity','init_privileges','entry_permissions'))
+        value=self.summary();value['entry_permissions']=entry_permissions_projection(self.root,self.ident)
+        value['checkpoints']=checkpoint_projection(self.root,self.ident);validate_public(value)
+        for key in ('identity_sha256','proof_sha256'):
+            bad=copy.deepcopy(value);bad['entry_permissions'][key]='f'*64
+            with self.subTest(key=key),self.assertRaises(Blocked):validate_public(bad)
+        for status in ('NOT_RUN','INVALID','FAIL'):
+            bad=copy.deepcopy(value)
+            bad['entry_permissions']=({'status':status} if status=='NOT_RUN' else
+                {'status':'INVALID','code':'IDENTITY_OR_SCHEMA_REJECTED'} if status=='INVALID' else {**value['entry_permissions'],'status':'FAIL'})
+            with self.subTest(status=status),self.assertRaises(Blocked):validate_public(bad)
 
     def test_public_consumer_rejects_duplicate_stale_run_attempt_and_source(self):
         good=self.summary();load_public(json.dumps(good).encode(),self.ident)

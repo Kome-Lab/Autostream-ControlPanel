@@ -1,5 +1,6 @@
 """Portable fault contracts; actual Linux privilege/PID1 proof remains the smoke job."""
 import copy
+import errno
 import hashlib
 import json
 import os
@@ -235,6 +236,86 @@ class ProcessTests(Fixture):
         observations=project(self.root,self.identity)
         self.assertEqual((observations['broker_ready']['status'],observations['broker_exit']['status']),('FAIL','FAIL'))
         self.assertEqual(observations['go_constructor']['status'],'NOT_RUN')
+
+
+class EntryHandoffTests(Fixture):
+    def fake_process(self,pid,parent,uid,caps,state='S',start=100):
+        directory=self.proc/str(pid);directory.mkdir(exist_ok=True)
+        fields=[state,str(parent),*(['0']*17),str(start)]
+        (directory/'stat').write_text(str(pid)+' (owned test process) '+' '.join(fields)+'\n')
+        (directory/'status').write_text('Uid:\t'+('\t'.join([str(uid)]*4))+'\nCapEff:\t'+format(caps,'016x')+
+            '\nCapBnd:\t'+format(caps,'016x')+'\nCapAmb:\t'+format(caps if uid==1000 else 0,'016x')+'\nNoNewPrivs:\t1\n')
+
+    def setUp(self):
+        super().setUp()
+        self.proc=self.root/'proc';self.proc.mkdir()
+        self.fake_process(1,0,0,0x31c3)
+        self.fake_process(os.getpid(),1,0,0x31c3)
+        self.broker_pid=424242
+        self.fake_process(self.broker_pid,1,1000,1<<13)
+        atomic_json(self.root/'tap-broker-ready.json',{'identity':self.identity})
+
+    def test_permission_model_eperm_is_not_child_death_or_blocking_wait(self):
+        from entry_handoff import wait_ready
+        calls=[]
+        def denied(pid,number):
+            calls.append((pid,number))
+            raise PermissionError(errno.EPERM,'SYNTHETIC_PERMISSION_MODEL')
+        started=time.monotonic()
+        self.assertEqual(wait_ready(self.root,self.identity,self.broker_pid,1,proc=self.proc,kill0=denied),0)
+        self.assertLess(time.monotonic()-started,.3)
+        self.assertEqual(calls,[(self.broker_pid,0)])
+        row=json.loads((self.root/'entry-permissions.json').read_text())
+        self.assertEqual(row['kill0'],{'original_exit':-1,'errno':errno.EPERM})
+        self.assertTrue(row['owned_alive'])
+        self.assertEqual(row['root']['cap_eff']&(1<<5),0)
+        self.assertEqual(row['broker']['uids'],[1000]*4)
+        with self.assertRaises(Blocked):wait_ready(self.root,self.identity,self.broker_pid,1,proc=self.proc,kill0=denied)
+
+    def test_unexpected_signal_permission_is_not_accepted(self):
+        from entry_handoff import wait_ready
+        with self.assertRaises(Blocked):
+            wait_ready(self.root,self.identity,self.broker_pid,1,proc=self.proc,kill0=lambda *_:None)
+        row=json.loads((self.root/'entry-permissions.json').read_text())
+        self.assertEqual(row['kill0'],{'original_exit':0,'errno':None})
+
+    def test_terminal_and_stopped_are_distinguished_before_any_signal_probe(self):
+        from entry_handoff import wait_ready
+        self.fake_process(self.broker_pid,1,1000,1<<13,state='Z')
+        self.assertEqual(wait_ready(self.root,self.identity,self.broker_pid,1,proc=self.proc),3)
+        self.fake_process(self.broker_pid,1,1000,1<<13,state='T')
+        self.assertEqual(wait_ready(self.root,self.identity,self.broker_pid,1,proc=self.proc),4)
+        self.assertFalse((self.root/'entry-permissions.json').exists())
+
+    def test_wrong_parent_reused_pid_and_missing_ready_fail_closed(self):
+        from entry_handoff import owned,wait_ready,cleanup_owned
+        with self.assertRaises(Blocked):owned(self.broker_pid,2,proc=self.proc)
+        with self.assertRaises(Blocked):owned(self.broker_pid,1,99,proc=self.proc)
+        atomic_json(self.root/'entry-broker-owner.json',{'identity':self.identity,'pid':self.broker_pid,'ppid':1,'start_ticks':99})
+        with self.assertRaises(Blocked):cleanup_owned(self.root,self.identity,self.broker_pid,1,proc=self.proc)
+        receipt=json.loads((self.root/'entry-broker-cleanup.json').read_text())
+        self.assertFalse(receipt['terminal'])
+        self.assertIsNone(receipt['sent_signal'])
+
+    def test_active_child_without_ready_hits_finite_deadline_without_reap(self):
+        from entry_handoff import wait_ready
+        (self.root/'tap-broker-ready.json').unlink()
+        self.assertEqual(wait_ready(self.root,self.identity,self.broker_pid,1,timeout_seconds=.05,proc=self.proc),124)
+        self.assertFalse((self.root/'entry-permissions.json').exists())
+
+    @unittest.skipUnless(hasattr(os,'pidfd_open') and hasattr(signal,'pidfd_send_signal'),'Linux pidfd cleanup is measured on Linux CI')
+    def test_actual_pidfd_cleanup_is_bounded_and_owned(self):
+        from entry_handoff import cleanup_owned,facts
+        with subprocess.Popen(self.child('import time;time.sleep(5)')) as child:
+            actual=facts(child.pid)
+            atomic_json(self.root/'entry-broker-owner.json',{'identity':self.identity,'pid':child.pid,'ppid':os.getpid(),'start_ticks':actual['start_ticks']})
+            started=time.monotonic()
+            self.assertEqual(cleanup_owned(self.root,self.identity,child.pid,os.getpid(),expected_uid=os.getuid(),grace=.2),0)
+            self.assertLess(time.monotonic()-started,1)
+            self.assertEqual(child.wait(timeout=1),-signal.SIGTERM)
+        receipt=json.loads((self.root/'entry-broker-cleanup.json').read_text())
+        self.assertTrue(receipt['terminal'])
+        self.assertEqual(receipt['sent_signal'],signal.SIGTERM)
 
 
 if __name__=='__main__':

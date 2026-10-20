@@ -17,6 +17,7 @@ PHASES = ('entry_setup', 'privilege_drop', 'broker_ready', 'xvfb_ready',
           'worker_ready', 'filtered_rtp_fd', 'go_constructor', 'driver_exit',
           'broker_exit', 'worker_exit', 'container_exit')
 PROOFS = {'identity': 'identity.json', 'network_setup': 'network-setup.json',
+          'entry_permissions': 'entry-permissions.json', 'entry_cleanup': 'entry-broker-cleanup.json',
           'init_privileges': 'init-privileges.json', 'db_readiness': 'db-ready.json',
           'runtime_privileges': 'runtime-privileges.json',
           'broker_ready': 'tap-broker-ready.json', 'broker_exit': 'tap-broker-exit.json',

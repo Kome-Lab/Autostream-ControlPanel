@@ -22,11 +22,13 @@ EXITS=('compile','image','secret-owner','compose-config','up','runtime-wait','wo
 ERROR_CODES=('BLOCKED_LINUX_BOOTSTRAP','BLOCKED_ACTUAL_GO_CONSTRUCTOR_COMPILE','BLOCKED_SMOKE_CONTAINER','BLOCKED_SMOKE_CONTAINER_OWNER',
     'BLOCKED_SMOKE_CONTAINER_EXIT','BLOCKED_SMOKE_IMAGE','BLOCKED_BOOTSTRAP_UID','BLOCKED_BOOTSTRAP_CAPABILITIES','BLOCKED_BOOTSTRAP_SETUP',
     'BLOCKED_BOOTSTRAP_WORKER','BLOCKED_BOOTSTRAP_DB_OR_RTP','BLOCKED_BOOTSTRAP_GO','BLOCKED_BOOTSTRAP_EXIT','BLOCKED_BOOTSTRAP_CONTAINER_EXIT',
-    'CONTRACT_VALIDATION_FAILED','BLOCKED_SMOKE_EARLY_CHILD','BLOCKED_SMOKE_PHASE_EVIDENCE')
+    'CONTRACT_VALIDATION_FAILED','BLOCKED_SMOKE_EARLY_CHILD','BLOCKED_SMOKE_PHASE_EVIDENCE','BLOCKED_SMOKE_ENTRY_PERMISSIONS')
+ENTRY_PROCESS_STATES=('RUNNING','SLEEPING','DISK_SLEEP','IDLE','ZOMBIE','DEAD','STOPPED','TRACING')
+ENTRY_ROOT_CAPS=(1<<0)|(1<<1)|(1<<6)|(1<<7)|(1<<8)|(1<<12)|(1<<13)
 TIMELINE={}
 PHASE='compile'
 WORK_DEADLINE=None
-PHASE_PROOFS={'entry_setup':{'identity','network_setup'},'privilege_drop':{'identity','init_privileges'},
+PHASE_PROOFS={'entry_setup':{'identity','network_setup'},'privilege_drop':{'identity','init_privileges','entry_permissions'},
     'broker_ready':{'broker_ready'},'runtime_privileges':{'runtime_privileges'},'db':{'db_readiness'},
     'worker_ready':{'worker_ready'},'filtered_rtp_fd':{'filtered_rtp_fd'},'go_constructor':{'constructor','constructor_exit'},
     'driver_exit':{'driver_exit'},'broker_exit':{'broker_exit'},'worker_exit':{'worker_exit'},
@@ -68,16 +70,63 @@ def validate_checkpoints(rows):
     return rows
 
 
+def validate_entry_permissions(value):
+    if value=={'status':'NOT_RUN'} or value=={'status':'INVALID','code':'IDENTITY_OR_SCHEMA_REJECTED'}:return value
+    require(type(value) is dict and set(value)=={'status','schema_version','root','broker','owned_alive','ready','kill0','identity_sha256','proof_sha256'} and
+            value['status'] in ('PASS','FAIL') and type(value['schema_version']) is int and value['schema_version']==1,'BLOCKED_SMOKE_ENTRY_PERMISSIONS')
+    require(all(type(value[k]) is str and HEX256.fullmatch(value[k]) for k in ('identity_sha256','proof_sha256')) and
+            all(type(value[k]) is bool for k in ('owned_alive','ready')),'BLOCKED_SMOKE_ENTRY_PERMISSIONS')
+    fields={'pid','ppid','uids','cap_eff','cap_bnd','cap_amb','nnp'}
+    for name in ('root','broker'):
+        row=value[name]
+        require(type(row) is dict and set(row)==fields|({'start_ticks','state'} if name=='broker' else set()),'BLOCKED_SMOKE_ENTRY_PERMISSIONS')
+        require(all(type(row[k]) is int and 0<=row[k]<2**31 for k in ('pid','ppid')) and row['pid']>1 and
+                type(row['uids']) is list and len(row['uids'])==4 and all(type(uid) is int and 0<=uid<2**32 for uid in row['uids']) and
+                all(type(row[k]) is int and 0<=row[k]<2**64 for k in ('cap_eff','cap_bnd','cap_amb')) and
+                type(row['nnp']) is int and row['nnp'] in (0,1),'BLOCKED_SMOKE_ENTRY_PERMISSIONS')
+        if name=='broker':require(type(row['start_ticks']) is int and 0<row['start_ticks']<2**63 and row['state'] in ENTRY_PROCESS_STATES,'BLOCKED_SMOKE_ENTRY_PERMISSIONS')
+    probe=value['kill0']
+    require(type(probe) is dict and set(probe)=={'original_exit','errno'} and type(probe['original_exit']) is int and probe['original_exit'] in (0,-1) and
+            (probe['errno'] is None if probe['original_exit']==0 else type(probe['errno']) is int and 1<=probe['errno']<=4095),'BLOCKED_SMOKE_ENTRY_PERMISSIONS')
+    root,broker=value['root'],value['broker']
+    expected=(root['uids']==[0]*4 and root['ppid']==1 and root['cap_eff']==root['cap_bnd']==ENTRY_ROOT_CAPS and root['cap_amb']==0 and root['nnp']==1 and
+              broker['uids']==[1000]*4 and broker['ppid']==1 and broker['pid']!=root['pid'] and broker['cap_eff']==broker['cap_bnd']==1<<13 and
+              broker['cap_amb']==1<<13 and broker['nnp']==1 and broker['state'] in ('RUNNING','SLEEPING','DISK_SLEEP','IDLE') and
+              value['owned_alive'] and value['ready'] and probe=={'original_exit':-1,'errno':1})
+    require(value['status']!='PASS' or expected,'BLOCKED_SMOKE_ENTRY_PERMISSIONS')
+    return value
+
+
+def entry_permissions_projection(root,identity):
+    target=root/'entry-permissions.json'
+    if not target.exists() and not target.is_symlink():return {'status':'NOT_RUN'}
+    try:
+        require(target.is_file() and not target.is_symlink() and target.stat().st_size<=4096,'BLOCKED_SMOKE_ENTRY_PERMISSIONS')
+        row=decode(target.read_bytes())
+        require(type(row) is dict and set(row)=={'schema_version','identity','root','broker','owned_alive','ready','kill0'},'BLOCKED_SMOKE_ENTRY_PERMISSIONS')
+        validate_identity(row['identity'],identity)
+        value={k:v for k,v in row.items() if k!='identity'}
+        value.update(status='PASS',identity_sha256=hashlib.sha256(encoded(identity)).hexdigest(),proof_sha256=sha_file(target))
+        try:validate_entry_permissions(value)
+        except Blocked:value['status']='FAIL';validate_entry_permissions(value)
+        return value
+    except Exception:return {'status':'INVALID','code':'IDENTITY_OR_SCHEMA_REJECTED'}
+
+
 def failure(error):
     code=str(error) if isinstance(error,Blocked) and str(error) in ERROR_CODES else 'CONTRACT_VALIDATION_FAILED'
     return {'stage':PHASE,'code':code}
 
 
 def validate_public(value):
-    require(set(value)=={'schema_version','kind','run_uuid','case','github_run_id','github_run_attempt','source_shas','checks','original_exits','aggregate','full_e2e','known_issue','private_raw_storage','proof_sha256','container_exits','failure','timeline_ms','source_lock_sha256','identity_sha256','checkpoints','launcher_comparison','cleanup_failures','observed_exits','primary_process_failure'},'BLOCKED_SMOKE_PUBLIC_SCHEMA')
+    require(set(value)=={'schema_version','kind','run_uuid','case','github_run_id','github_run_attempt','source_shas','checks','original_exits','aggregate','full_e2e','known_issue','private_raw_storage','proof_sha256','container_exits','failure','timeline_ms','source_lock_sha256','identity_sha256','checkpoints','launcher_comparison','cleanup_failures','observed_exits','primary_process_failure','entry_permissions'},'BLOCKED_SMOKE_PUBLIC_SCHEMA')
     require(value['schema_version']==2 and value['kind']=='CONTRACT_SMOKE' and value['full_e2e']=='NOT_RUN' and value['known_issue']=='KNOWN_UNRESOLVED_MEDIA_ISSUE' and value['private_raw_storage']=='NOT_CONFIGURED','BLOCKED_SMOKE_PUBLIC_SCOPE')
     require(HEX256.fullmatch(value['source_lock_sha256']) and HEX256.fullmatch(value['identity_sha256']),'BLOCKED_SMOKE_PUBLIC_SOURCE')
-    validate_checkpoints(value['checkpoints']);validate_comparison(value['launcher_comparison'])
+    validate_checkpoints(value['checkpoints']);validate_comparison(value['launcher_comparison']);validate_entry_permissions(value['entry_permissions'])
+    permission=value['entry_permissions']
+    require(permission['status'] not in ('PASS','FAIL') or permission['identity_sha256']==value['identity_sha256'],'BLOCKED_SMOKE_ENTRY_PERMISSIONS')
+    drop=value['checkpoints']['privilege_drop']
+    require(drop['status']!='PASS' or permission['status']=='PASS' and drop['proof_sha256']['entry_permissions']==permission['proof_sha256'],'BLOCKED_SMOKE_ENTRY_PERMISSIONS')
     require(set(value['cleanup_failures'])<= {'stop','read-owner','secret-read-owner','down'} and all(type(v) is int and v!=0 and -255<=v<=255 for v in value['cleanup_failures'].values()),'BLOCKED_SMOKE_PUBLIC_CLEANUP')
     require(set(value['observed_exits'])<={'runtime','worker-b','db'},'BLOCKED_SMOKE_PUBLIC_EXIT')
     for row in value['observed_exits'].values():
@@ -97,7 +146,7 @@ def validate_public(value):
     if value['failure'] is not None:require(set(value['failure'])=={'stage','code'} and value['failure']['stage'] in (*EXITS,'contract-proof','phase-evidence') and value['failure']['code'] in ERROR_CODES,'BLOCKED_SMOKE_PUBLIC_FAILURE')
     require(value['aggregate']!='PASS' or value['failure'] is None and set(value['container_exits'])=={'runtime','worker-b','db'} and all(v=={'exit':0,'oom':False,'running':False} for v in value['container_exits'].values()),'BLOCKED_SMOKE_FALSE_PASS')
     require(value['aggregate'] in ('PASS','FAIL') and (value['aggregate']!='PASS' or set(value['proof_sha256'])==set(CHECKS) and all(v=='PASS' for v in value['checks'].values()) and set(value['original_exits'])==set(EXITS) and all(v==0 for v in value['original_exits'].values())),'BLOCKED_SMOKE_FALSE_PASS')
-    require(value['aggregate']!='PASS' or not value['cleanup_failures'] and value['primary_process_failure'] is None and value['launcher_comparison']['status']=='PASS' and all(row['status']=='PASS' for row in value['checkpoints'].values()),'BLOCKED_SMOKE_FALSE_PASS')
+    require(value['aggregate']!='PASS' or not value['cleanup_failures'] and value['primary_process_failure'] is None and value['launcher_comparison']['status']=='PASS' and permission['status']=='PASS' and all(row['status']=='PASS' for row in value['checkpoints'].values()),'BLOCKED_SMOKE_FALSE_PASS')
     return value
 
 
@@ -167,6 +216,7 @@ def wait_service(compose,state,identity,service,label,exits,observed):
 
 
 def prove(root,identity):
+    require(entry_permissions_projection(root,identity)['status']=='PASS','BLOCKED_SMOKE_ENTRY_PERMISSIONS')
     rows={name:json.loads((root/(name+'.json')).read_text()) for name in ('runtime-privileges','bootstrap-runtime','bootstrap-worker','tap-broker-ready','tap-broker-exit','worker-b-exit','supervisor-exit','launch-parent-exit','broker-owned-exit')}
     for value in rows.values():validate_identity(value['identity'],identity)
     runtime,worker,broker=(rows[name]['facts'] for name in ('bootstrap-runtime','bootstrap-worker','tap-broker-ready'))
@@ -269,6 +319,9 @@ def main():
             except Exception as error:original=1;failed=failed or failure(error);cleanup_failures['down']=exits.get('down',1)
         PHASE='phase-evidence'
         checkpoints=checkpoint_projection(state/'evidence',identity)
+        entry_permissions=entry_permissions_projection(state/'evidence',identity)
+        if original==0 and entry_permissions['status']!='PASS':
+            original=1;failed=failed or {'stage':PHASE,'code':'BLOCKED_SMOKE_ENTRY_PERMISSIONS'}
         if original==0 and not all(row['status']=='PASS' for row in checkpoints.values()):
             original=1;failed=failed or {'stage':PHASE,'code':'BLOCKED_SMOKE_PHASE_EVIDENCE'}
         primary=state/'primary-process-failure.json'
@@ -278,7 +331,7 @@ def main():
             'container_exits':services,'failure':failed,'timeline_ms':TIMELINE,
             'source_lock_sha256':identity['source_lock_sha256'],'identity_sha256':hashlib.sha256(encoded(identity)).hexdigest(),
             'checkpoints':checkpoints,'launcher_comparison':launcher,'cleanup_failures':cleanup_failures,'observed_exits':observed,
-            'primary_process_failure':json.loads(primary.read_text()) if primary.is_file() else None}
+            'primary_process_failure':json.loads(primary.read_text()) if primary.is_file() else None,'entry_permissions':entry_permissions}
         validate_public(summary)
         output=Path.cwd()/'ui188-smoke-public';require(not output.exists(),'BLOCKED_SMOKE_PUBLIC_REUSE');output.mkdir()
         raw=(json.dumps(summary,sort_keys=True,indent=2)+'\n').encode()

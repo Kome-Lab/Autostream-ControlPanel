@@ -14,13 +14,16 @@ entry_failed() {
       python3 -B /opt/ui188/checkpoints.py finish entry_setup --exit "$code" || true
     fi
     if [[ -n "$broker_pid" ]]; then
-      kill -TERM "$broker_pid" 2>/dev/null || true
-      for _ in $(seq 1 20); do
-        kill -0 "$broker_pid" 2>/dev/null || break
-        sleep 0.05
-      done
-      kill -KILL "$broker_pid" 2>/dev/null || true
-      wait "$broker_pid" 2>/dev/null || true
+      # UID0 lacks CAP_KILL. A same-UID, capability-free helper retires only the
+      # recorded child through a pidfd. Reap only after it proves termination.
+      if setpriv --reuid=1000 --regid=1000 --clear-groups --bounding-set=-all --inh-caps=-all --ambient-caps=-all --no-new-privs \
+        python3 -B /opt/ui188/entry_handoff.py cleanup --pid "$broker_pid" --parent "$$" > /evidence/entry-cleanup.private.log 2>&1; then
+        set +e
+        wait "$broker_pid"
+        child_code=$?
+        set -e
+        python3 -B /opt/ui188/entry_handoff.py reaped --pid "$broker_pid" --parent "$$" --exit "$child_code" || true
+      fi
     fi
   fi
   exit "$code"
@@ -60,18 +63,22 @@ setpriv --reuid=1000 --regid=1000 --clear-groups --bounding-set=-all,+net_raw --
   python3 -B /opt/ui188/tap_broker.py > /evidence/tap-broker.private.log 2>&1 &
 broker_pid=$!
 export UI188_BROKER_PID="$broker_pid"
-for _ in $(seq 1 50); do
-  test ! -f /evidence/tap-broker-ready.json || break
-  if ! kill -0 "$broker_pid" 2>/dev/null; then
+set +e
+python3 -B /opt/ui188/entry_handoff.py ready --pid "$broker_pid" --parent "$$"
+handoff_code=$?
+set -e
+if (( handoff_code != 0 )); then
+  if (( handoff_code == 3 )); then
+    # /proc proved the exact child terminal, so this wait cannot block.
     set +e
     wait "$broker_pid"
     child_code=$?
     set -e
+    python3 -B /opt/ui188/entry_handoff.py reaped --pid "$broker_pid" --parent "$$" --exit "$child_code" || true
     broker_pid=''
     if (( child_code == 0 )); then exit 1; else exit "$child_code"; fi
   fi
-  sleep 0.1
-done
-test -f /evidence/tap-broker-ready.json
+  exit "$handoff_code"
+fi
 exec setpriv --reuid=1000 --regid=1000 --clear-groups --bounding-set=-all --inh-caps=-all --ambient-caps=-all --no-new-privs \
   python3 -B /opt/ui188/launch_parent.py
