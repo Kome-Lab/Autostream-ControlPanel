@@ -250,8 +250,8 @@ export function assertContainmentOwnership(beforeBytes: Buffer, currentBytes: Bu
       unchanged++;
       continue;
     }
-    const { destinations: _currentDestinations, ...identity } = row;
-    const { destinations: _oldDestinations, ...oldIdentity } = old;
+    const identity = Object.fromEntries(Object.entries(row).filter(([name]) => name !== "destinations"));
+    const oldIdentity = Object.fromEntries(Object.entries(old).filter(([name]) => name !== "destinations"));
     assert.deepEqual(identity, oldIdentity, "containment unapproved owner field change");
     assert.equal(new Set(row.destinations.map(item => item.path)).size, row.destinations.length, "containment owner destination uniqueness");
     assert.deepEqual(row.destinations.map(item => item.path).filter(path => path !== additions[0]), old.destinations.map(item => item.path), "containment owner permits only the explicit deadline-module addition");
