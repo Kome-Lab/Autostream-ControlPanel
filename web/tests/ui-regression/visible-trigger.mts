@@ -2,6 +2,15 @@ import assert from "node:assert/strict";
 import type { BrowserHarness } from "../helpers/browser-harness.mts";
 import { renderedDOM } from "./render-state.mts";
 
+export class VisibleTriggerCleanupFailure extends Error {
+  readonly phase: "click-target" | "worker-restart" | "select-visible";
+  readonly primary: unknown; readonly cleanup: unknown;
+  constructor(phase: VisibleTriggerCleanupFailure["phase"], primary: unknown, cleanup: unknown) {
+    super("Visible trigger body and cleanup failed", { cause: primary });
+    this.phase = phase; this.primary = primary; this.cleanup = cleanup;
+  }
+}
+
 export function visibleTriggerExpression(selector: string, pattern?: RegExp, disabled = false) {
   return `(() => {
     ${renderedDOM}
@@ -54,6 +63,7 @@ export const settledTriggerPoint = (disabled = false) => `(() => {
 })()`;
 async function clickTarget(browser: BrowserHarness, selector: string, pattern: RegExp | undefined, remember: boolean, disabled: boolean) {
   const deadline = Date.now() + 10_000;
+  let bodyFailed = false, bodyFailure: unknown;
   try {
     await browser.waitFor(visibleTriggerExpression(selector, pattern, disabled), Boolean, disabled ? "one visible disabled negative target" : "one visible enabled trigger", Math.max(0, deadline - Date.now()));
     if (remember) await browser.evaluate("globalThis.__uiReturnTrigger=globalThis.__uiScenarioTarget;true");
@@ -64,7 +74,11 @@ async function clickTarget(browser: BrowserHarness, selector: string, pattern: R
     assert.ok(Date.now() < deadline, "native input target exceeded its original deadline");
     await browser.clickAt(point.x, point.y);
   }
-  finally { await browser.evaluate("if(globalThis.__uiTriggerSettlement)cancelAnimationFrame(globalThis.__uiTriggerSettlement.frame);delete globalThis.__uiTriggerSettlement;globalThis.__uiScenarioTarget?.removeAttribute('data-ui-scenario-target');delete globalThis.__uiScenarioTarget;true"); }
+  catch (error) { bodyFailed = true; bodyFailure = error; throw error; }
+  finally {
+    try { await browser.evaluate("if(globalThis.__uiTriggerSettlement)cancelAnimationFrame(globalThis.__uiTriggerSettlement.frame);delete globalThis.__uiTriggerSettlement;globalThis.__uiScenarioTarget?.removeAttribute('data-ui-scenario-target');delete globalThis.__uiScenarioTarget;true"); }
+    catch (cleanup) { throw bodyFailed ? new VisibleTriggerCleanupFailure("click-target", bodyFailure, cleanup) : cleanup; }
+  }
 }
 export async function clickVisible(browser: BrowserHarness, selector: string, pattern?: RegExp, remember = false) {
   return clickTarget(browser, selector, pattern, remember, false);
@@ -93,13 +107,19 @@ export async function clickWorkerRestart(browser: BrowserHarness, worker: { id: 
     if(rows.length>1)throw Error('ambiguous eligible worker display identity');if(rows.length!==1||!uiAX(rows[0]))return false;
     rows[0].setAttribute('data-ui-worker-row','');globalThis.__uiWorkerRow=rows[0];return true;
   })()`, Boolean, "exact eligible Worker display row");
+  let bodyFailed = false, bodyFailure: unknown;
   try {
     await clickVisible(browser, '[data-ui-worker-row] button', /^(Worker を再起動|Restart worker)$/, true);
     await browser.waitFor(`(() => {const values=[...document.querySelectorAll('[role=alertdialog] [data-confirmation-section=target] li')].map(e=>e.textContent.trim());return values.length===2&&values.includes(${JSON.stringify(worker.id)})&&values.includes(${JSON.stringify(worker.name)});})()`, Boolean, "confirmation must name the same actual Worker ID and label");
-  } finally { await browser.evaluate("globalThis.__uiWorkerRow?.removeAttribute('data-ui-worker-row');delete globalThis.__uiWorkerRow;true"); }
+  } catch (error) { bodyFailed = true; bodyFailure = error; throw error; }
+  finally {
+    try { await browser.evaluate("globalThis.__uiWorkerRow?.removeAttribute('data-ui-worker-row');delete globalThis.__uiWorkerRow;true"); }
+    catch (cleanup) { throw bodyFailed ? new VisibleTriggerCleanupFailure("worker-restart", bodyFailure, cleanup) : cleanup; }
+  }
 }
 export async function selectVisible(browser: BrowserHarness, selector: string, value: string) {
   assert.equal(await browser.evaluate(visibleTriggerExpression(selector)), true, "select target must be visible, unique and enabled");
+  let bodyFailed = false, bodyFailure: unknown;
   try {
     await browser.evaluate(visibleTriggerPoint());
     // Exercise the real native select with keyboard input, not a hidden element click.
@@ -109,5 +129,9 @@ export async function selectVisible(browser: BrowserHarness, selector: string, v
     for (let i = 0; i < index; i++) await browser.pressKey("ArrowDown");
     await browser.pressNativeKey("Enter");
     await browser.waitFor("document.querySelector('[data-ui-scenario-target]')?.value", current => current === value, "native select changed");
-  } finally { await browser.evaluate("document.querySelector('[data-ui-scenario-target]')?.removeAttribute('data-ui-scenario-target');true"); }
+  } catch (error) { bodyFailed = true; bodyFailure = error; throw error; }
+  finally {
+    try { await browser.evaluate("document.querySelector('[data-ui-scenario-target]')?.removeAttribute('data-ui-scenario-target');true"); }
+    catch (cleanup) { throw bodyFailed ? new VisibleTriggerCleanupFailure("select-visible", bodyFailure, cleanup) : cleanup; }
+  }
 }

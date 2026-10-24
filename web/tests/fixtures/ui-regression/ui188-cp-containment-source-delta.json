@@ -1,0 +1,346 @@
+{
+  "schemaVersion": 1,
+  "beforeCommit": "c2e8b25ac8b96d985a13f7a3a457365adacb8a83",
+  "beforeTree": "e9cb92b26c29254f783534b2a3eb6649c0fcd496",
+  "records": [
+    {
+      "path": "scripts/ci/source-owner-map.json",
+      "before": {
+        "path": "scripts/ci/source-owner-map.json",
+        "mode": "100644",
+        "blob": "f4da0b7cdb88288b3d9619e7bc76c5e2f448050a",
+        "sha256": "47f3dfe57e0967ef35bbbc3391a99408d5d191b54ada04069599b1422278f908"
+      },
+      "after": {
+        "path": "scripts/ci/source-owner-map.json",
+        "mode": "100644",
+        "blob": "4f551221aa19b421aa47d7337b385cbbc729f302",
+        "sha256": "672229ce76acc60d6f693354aa40beacec9bf9b9eddadd97c4af620d945c91f3"
+      },
+      "hunks": [
+        {
+          "offsetBefore": 10392,
+          "offsetAfter": 10392,
+          "before": "        \"physical_lines\": 194\n      },\n      {\n        \"path\": \"web/tests/helpers/browser-harness.mts\",\n        \"sha256\": \"10c4eb5bdbd96ae23a53b3aceacae8861ef060314dce72f1fe6a1aa0770ba2a5\",\n        \"symbols\": [\n          \"BrowserHarness\",\n          \"createCommandSender\",\n          \"removeOwnedBrowserDirectory\",\n          \"resolveBrowserPath\",\n          \"terminateChildProcess\",\n          \"waitForChildExit\",\n          \"waitForMapCount\"\n        ],\n        \"physical_lines\": 798\n      },\n      {\n        \"path\": \"web/tests/helpers/browser-lifecycle-source-paths.mts\",\n        \"sha256\": \"06d946c9657447c6d34068db6a676cbffa4dbb2a42a5dac68f7dfc1f0d708a5e\",\n",
+          "after": "        \"physical_lines\": 194\n      },\n      {\n        \"path\": \"web/tests/helpers/browser-harness.mts\",\n        \"sha256\": \"a9c285cf94e218adde4cf259ee8e31801e872986d8fbafa6ec8534b3c1b51671\",\n        \"symbols\": [\n          \"BrowserHarness\",\n          \"removeOwnedBrowserDirectory\",\n          \"resolveBrowserPath\",\n          \"terminateChildProcess\",\n          \"waitForChildExit\",\n          \"waitForMapCount\"\n        ],\n        \"physical_lines\": 790\n      },\n      {\n        \"path\": \"web/tests/helpers/browser-command-deadline.mts\",\n        \"sha256\": \"bc826d2dff55ea45597c629dd1db102c95d9f3fcfb445d45e1c19fa80a5f7aae\",\n        \"symbols\": [\n          \"BrowserCommandDeadlineError\",\n          \"CommandDeadlines\",\n          \"commandTimeoutMs\",\n          \"createCommandSender\"\n        ],\n        \"physical_lines\": 80\n      },\n      {\n        \"path\": \"web/tests/helpers/browser-lifecycle-source-paths.mts\",\n        \"sha256\": \"06d946c9657447c6d34068db6a676cbffa4dbb2a42a5dac68f7dfc1f0d708a5e\",\n"
+        },
+        {
+          "offsetBefore": 11994,
+          "offsetAfter": 12324,
+          "before": "        \"physical_lines\": 255\n      },\n      {\n        \"path\": \"web/tests/helpers/browser-next-readiness-fixture.mts\",\n        \"sha256\": \"2afff945c0a8959740cae661a11b0b49705124f4552e3b99e9418e1994c102da\",\n        \"symbols\": [\n          \"NextReadinessChild\",\n          \"NextReadinessClock\",\n          \"aborted\",\n",
+          "after": "        \"physical_lines\": 255\n      },\n      {\n        \"path\": \"web/tests/helpers/browser-next-readiness-fixture.mts\",\n        \"sha256\": \"9657317cc80e2b2f37ea52474b9c18f9a97a04b993f5aecdce87afcdaf98511e\",\n        \"symbols\": [\n          \"NextReadinessChild\",\n          \"NextReadinessClock\",\n          \"aborted\",\n"
+        },
+        {
+          "offsetBefore": 58308,
+          "offsetAfter": 58638,
+          "before": "    \"responsibility\": \"single suite lifetime;scenario modules by domain;shared fixtures/navigation/assertions\",\n    \"destinations\": [\n      {\n        \"path\": \"web/tests/helpers/browser-harness.mts\",\n        \"sha256\": \"10c4eb5bdbd96ae23a53b3aceacae8861ef060314dce72f1fe6a1aa0770ba2a5\",\n        \"symbols\": [\n          \"BrowserHarness\",\n          \"createCommandSender\",\n          \"removeOwnedBrowserDirectory\",\n          \"resolveBrowserPath\",\n          \"terminateChildProcess\",\n          \"waitForChildExit\",\n          \"waitForMapCount\"\n        ],\n        \"physical_lines\": 798\n      },\n      {\n        \"path\": \"web/tests/helpers/browser-next-server.mts\",\n        \"sha256\": \"8d94b8c80631c123eb0a3bafb1f2da157c571cdf6f24a7bdb5521b2e8f940baf\",\n",
+          "after": "    \"responsibility\": \"single suite lifetime;scenario modules by domain;shared fixtures/navigation/assertions\",\n    \"destinations\": [\n      {\n        \"path\": \"web/tests/helpers/browser-harness.mts\",\n        \"sha256\": \"a9c285cf94e218adde4cf259ee8e31801e872986d8fbafa6ec8534b3c1b51671\",\n        \"symbols\": [\n          \"BrowserHarness\",\n          \"removeOwnedBrowserDirectory\",\n          \"resolveBrowserPath\",\n          \"terminateChildProcess\",\n          \"waitForChildExit\",\n          \"waitForMapCount\"\n        ],\n        \"physical_lines\": 790\n      },\n      {\n        \"path\": \"web/tests/helpers/browser-command-deadline.mts\",\n        \"sha256\": \"bc826d2dff55ea45597c629dd1db102c95d9f3fcfb445d45e1c19fa80a5f7aae\",\n        \"symbols\": [\n          \"BrowserCommandDeadlineError\",\n          \"CommandDeadlines\",\n          \"commandTimeoutMs\",\n          \"createCommandSender\"\n        ],\n        \"physical_lines\": 80\n      },\n      {\n        \"path\": \"web/tests/helpers/browser-next-server.mts\",\n        \"sha256\": \"8d94b8c80631c123eb0a3bafb1f2da157c571cdf6f24a7bdb5521b2e8f940baf\",\n"
+        },
+        {
+          "offsetBefore": 217066,
+          "offsetAfter": 217726,
+          "before": "    \"responsibility\": \"Next owned-process readiness;Chrome/CDP transport;request lifecycle adapter;page evaluation;cleanup\",\n    \"destinations\": [\n      {\n        \"path\": \"web/tests/helpers/browser-harness.mts\",\n        \"sha256\": \"10c4eb5bdbd96ae23a53b3aceacae8861ef060314dce72f1fe6a1aa0770ba2a5\",\n        \"symbols\": [\n          \"BrowserHarness\",\n          \"assertNoFatalError\",\n          \"browserVersion\",\n",
+          "after": "    \"responsibility\": \"Next owned-process readiness;Chrome/CDP transport;request lifecycle adapter;page evaluation;cleanup\",\n    \"destinations\": [\n      {\n        \"path\": \"web/tests/helpers/browser-harness.mts\",\n        \"sha256\": \"a9c285cf94e218adde4cf259ee8e31801e872986d8fbafa6ec8534b3c1b51671\",\n        \"symbols\": [\n          \"BrowserHarness\",\n          \"assertNoFatalError\",\n          \"browserVersion\",\n"
+        },
+        {
+          "offsetBefore": 217639,
+          "offsetAfter": 218299,
+          "before": "          \"clickAt\",\n          \"clickRoleWithText\",\n          \"clickSelector\",\n          \"close\",\n          \"configureDeterministicDocument\",\n          \"createCommandSender\",\n          \"evaluate\",\n          \"fetchNavigationObservation\",\n          \"fillSelector\",\n          \"handleRequest\",\n",
+          "after": "          \"clickAt\",\n          \"clickRoleWithText\",\n          \"clickSelector\",\n          \"close\",\n          \"closeOwned\",\n          \"commandDeadlineFailure\",\n          \"configureDeterministicDocument\",\n          \"evaluate\",\n          \"fetchNavigationObservation\",\n          \"fillSelector\",\n          \"handleRequest\",\n"
+        },
+        {
+          "offsetBefore": 218104,
+          "offsetAfter": 218791,
+          "before": "          \"pressKey\",\n          \"pressNativeKey\",\n          \"receive\",\n          \"recordFatalError\",\n          \"reload\",\n          \"removeOwnedBrowserDirectory\",\n          \"reportFetchGenerationFailure\",\n          \"resolveBrowserPath\",\n",
+          "after": "          \"pressKey\",\n          \"pressNativeKey\",\n          \"receive\",\n          \"recordFatalError\",\n          \"rejectPendingCommands\",\n          \"reload\",\n          \"removeOwnedBrowserDirectory\",\n          \"reportFetchGenerationFailure\",\n          \"resolveBrowserPath\",\n"
+        },
+        {
+          "offsetBefore": 218712,
+          "offsetAfter": 219434,
+          "before": "          \"waitForRequestCount\",\n          \"waitForRequestHandlersIdle\",\n          \"waitForResponseCount\"\n        ],\n        \"physical_lines\": 798\n      },\n      {\n        \"path\": \"web/tests/helpers/browser-next-server.mts\",\n        \"sha256\": \"8d94b8c80631c123eb0a3bafb1f2da157c571cdf6f24a7bdb5521b2e8f940baf\",\n",
+          "after": "          \"waitForRequestCount\",\n          \"waitForRequestHandlersIdle\",\n          \"waitForResponseCount\"\n        ],\n        \"physical_lines\": 790\n      },\n      {\n        \"path\": \"web/tests/helpers/browser-command-deadline.mts\",\n        \"sha256\": \"bc826d2dff55ea45597c629dd1db102c95d9f3fcfb445d45e1c19fa80a5f7aae\",\n        \"symbols\": [\n          \"BrowserCommandDeadlineError\",\n          \"CommandDeadlines\",\n          \"commandTimeoutMs\",\n          \"createCommandSender\"\n        ],\n        \"physical_lines\": 80\n      },\n      {\n        \"path\": \"web/tests/helpers/browser-next-server.mts\",\n        \"sha256\": \"8d94b8c80631c123eb0a3bafb1f2da157c571cdf6f24a7bdb5521b2e8f940baf\",\n"
+        },
+        {
+          "offsetBefore": 222837,
+          "offsetAfter": 223922,
+          "before": "        \"physical_lines\": 269\n      },\n      {\n        \"path\": \"web/tests/helpers/browser-harness.mts\",\n        \"sha256\": \"10c4eb5bdbd96ae23a53b3aceacae8861ef060314dce72f1fe6a1aa0770ba2a5\",\n        \"symbols\": [\n          \"BrowserHarness\",\n          \"createCommandSender\",\n          \"removeOwnedBrowserDirectory\",\n          \"resolveBrowserPath\",\n          \"terminateChildProcess\",\n          \"waitForChildExit\",\n          \"waitForMapCount\"\n        ],\n        \"physical_lines\": 798\n      },\n      {\n        \"path\": \"web/tests/helpers/browser-next-server.mts\",\n        \"sha256\": \"8d94b8c80631c123eb0a3bafb1f2da157c571cdf6f24a7bdb5521b2e8f940baf\",\n",
+          "after": "        \"physical_lines\": 269\n      },\n      {\n        \"path\": \"web/tests/helpers/browser-harness.mts\",\n        \"sha256\": \"a9c285cf94e218adde4cf259ee8e31801e872986d8fbafa6ec8534b3c1b51671\",\n        \"symbols\": [\n          \"BrowserHarness\",\n          \"removeOwnedBrowserDirectory\",\n          \"resolveBrowserPath\",\n          \"terminateChildProcess\",\n          \"waitForChildExit\",\n          \"waitForMapCount\"\n        ],\n        \"physical_lines\": 790\n      },\n      {\n        \"path\": \"web/tests/helpers/browser-command-deadline.mts\",\n        \"sha256\": \"bc826d2dff55ea45597c629dd1db102c95d9f3fcfb445d45e1c19fa80a5f7aae\",\n        \"symbols\": [\n          \"BrowserCommandDeadlineError\",\n          \"CommandDeadlines\",\n          \"commandTimeoutMs\",\n          \"createCommandSender\"\n        ],\n        \"physical_lines\": 80\n      },\n      {\n        \"path\": \"web/tests/helpers/browser-next-server.mts\",\n        \"sha256\": \"8d94b8c80631c123eb0a3bafb1f2da157c571cdf6f24a7bdb5521b2e8f940baf\",\n"
+        }
+      ]
+    },
+    {
+      "path": "web/tests/helpers/browser-harness.mts",
+      "before": {
+        "path": "web/tests/helpers/browser-harness.mts",
+        "mode": "100644",
+        "blob": "0d8640c374882b54f730058539af9f9c733d639b",
+        "sha256": "10c4eb5bdbd96ae23a53b3aceacae8861ef060314dce72f1fe6a1aa0770ba2a5"
+      },
+      "after": {
+        "path": "web/tests/helpers/browser-harness.mts",
+        "mode": "100644",
+        "blob": "93478fddbba06ab852aca0b81b161e6da6aac7e0",
+        "sha256": "a9c285cf94e218adde4cf259ee8e31801e872986d8fbafa6ec8534b3c1b51671"
+      },
+      "hunks": [
+        {
+          "offsetBefore": 0,
+          "offsetAfter": 0,
+          "before": "import type { BrowserOperationBoundary, BrowserOperationOptions, BrowserOperationRecord } from \"./browser-operation-boundary.mts\";\nimport { NativeFocusObserver } from \"./browser-ua-focus.mts\";\nimport { spawnSync, type ChildProcessWithoutNullStreams } from \"node:child_process\";\nimport { existsSync, rmSync } from \"node:fs\";\nimport { tmpdir } from \"node:os\";\n",
+          "after": "import type { BrowserOperationBoundary, BrowserOperationOptions, BrowserOperationRecord } from \"./browser-operation-boundary.mts\";\nimport { CommandDeadlines, commandTimeoutMs, createCommandSender, type CDPResponse, type PendingCommand } from \"./browser-command-deadline.mts\";\nimport { NativeFocusObserver } from \"./browser-ua-focus.mts\";\nimport { spawnSync, type ChildProcessWithoutNullStreams } from \"node:child_process\";\nimport { existsSync, rmSync } from \"node:fs\";\nimport { tmpdir } from \"node:os\";\n"
+        },
+        {
+          "offsetBefore": 1957,
+          "offsetAfter": 2102,
+          "before": "    nativeVirtualKeyCode: 27,\n  },\n} satisfies Readonly<Record<BrowserNativeKey, BrowserNativeKeyInput>>;\n\ntype CDPResponse = {\n  id?: number;\n  method?: string;\n  params?: Record<string, unknown>;\n  result?: Record<string, unknown>;\n  error?: { message?: string };\n  sessionId?: string;\n};\n\ntype PendingCommand = {\n  resolve: (value: Record<string, unknown>) => void;\n  reject: (error: Error) => void;\n};\n\nconst defaultBrowserCandidates = process.platform === \"win32\"\n  ? [\n      \"C:\\\\Program Files\\\\Google\\\\Chrome\\\\Application\\\\chrome.exe\",\n      \"C:\\\\Program Files (x86)\\\\Google\\\\Chrome\\\\Application\\\\chrome.exe\",\n",
+          "after": "    nativeVirtualKeyCode: 27,\n  },\n} satisfies Readonly<Record<BrowserNativeKey, BrowserNativeKeyInput>>;\n\nconst defaultBrowserCandidates = process.platform === \"win32\"\n  ? [\n      \"C:\\\\Program Files\\\\Google\\\\Chrome\\\\Application\\\\chrome.exe\",\n      \"C:\\\\Program Files (x86)\\\\Google\\\\Chrome\\\\Application\\\\chrome.exe\",\n"
+        },
+        {
+          "offsetBefore": 3718,
+          "offsetAfter": 3563,
+          "before": "  private generationFailureReported = false;\n  private generationFailureJSON: string | undefined;\n  private routeResolver: RouteResolver = () => null;\n  private readonly pendingCommands = new Map<number, PendingCommand>();\n  private readonly eventWaiters = new RejectableEventWaiters();\n  private readonly requestLifecycle = new FetchRequestLifecycle();\n  private consoleErrorEvents = 0;\n  private topLevelNavigationEvents = 0;\n",
+          "after": "  private generationFailureReported = false;\n  private generationFailureJSON: string | undefined;\n  private routeResolver: RouteResolver = () => null;\n  private readonly pendingCommands = new Map<number, PendingCommand>();\n  private readonly commandDeadlines = new CommandDeadlines(error => {\n    this.recordFatalError(error);\n    this.rejectPendingCommands(error); // Also fence a deadline racing owned close.\n  });\n  private closePromise: Promise<void> | undefined;\n  private readonly eventWaiters = new RejectableEventWaiters();\n  private readonly requestLifecycle = new FetchRequestLifecycle();\n  private consoleErrorEvents = 0;\n  private topLevelNavigationEvents = 0;\n"
+        },
+        {
+          "offsetBefore": 15725,
+          "offsetAfter": 15815,
+          "before": "  async navigate(url: string) {\n    this.requestLifecycle.beginNavigation(\"navigate\");\n    this.topLevelNavigationPending = true;\n    const loaded = this.eventWaiters.wait(\"Page.loadEventFired\", 20_000, `Timed out loading ${url}`);\n    try {\n      const result = await this.send(\"Page.navigate\", { url });\n      if (result.errorText) throw new Error(`Navigation failed: ${result.errorText}`);\n      await loaded.promise;\n    } catch (error) {\n      this.topLevelNavigationPending = false;\n      void loaded.promise.catch(() => {});\n      loaded.cancel(asError(error));\n      throw error;\n    }\n  }\n",
+          "after": "  async navigate(url: string) {\n    this.requestLifecycle.beginNavigation(\"navigate\");\n    this.topLevelNavigationPending = true;\n    const loaded = this.eventWaiters.wait(\"Page.loadEventFired\", 20_000, `Timed out loading ${url}`);\n    void loaded.promise.catch(() => {}); // Observed even while Page.navigate awaits its response.\n    try {\n      const result = await this.send(\"Page.navigate\", { url });\n      if (result.errorText) throw new Error(`Navigation failed: ${result.errorText}`);\n      await loaded.promise;\n    } catch (error) {\n      this.topLevelNavigationPending = false;\n      loaded.cancel(asError(error));\n      throw error;\n    }\n  }\n"
+        },
+        {
+          "offsetBefore": 16324,
+          "offsetAfter": 16470,
+          "before": "  async reload() {\n    this.requestLifecycle.beginNavigation(\"reload\");\n    this.topLevelNavigationPending = true;\n    const loaded = this.eventWaiters.wait(\"Page.loadEventFired\", 20_000, \"Timed out reloading the page\");\n    try {\n      await this.send(\"Page.reload\", { ignoreCache: true });\n      await loaded.promise;\n    } catch (error) {\n      this.topLevelNavigationPending = false;\n      void loaded.promise.catch(() => {});\n      loaded.cancel(asError(error));\n      throw error;\n    }\n  }\n\n  async evaluate<T>(expression: string): Promise<T> {\n    const response = await this.send(\"Runtime.evaluate\", {\n      expression,\n      awaitPromise: true,\n      returnByValue: true,\n      userGesture: true,\n    });\n    if (response.exceptionDetails) {\n      const details = response.exceptionDetails as { text?: string; exception?: { description?: string } };\n      throw new Error(details.exception?.description || details.text || \"Browser evaluation failed\");\n    }\n",
+          "after": "  async reload() {\n    this.requestLifecycle.beginNavigation(\"reload\");\n    this.topLevelNavigationPending = true;\n    const loaded = this.eventWaiters.wait(\"Page.loadEventFired\", 20_000, \"Timed out reloading the page\");\n    void loaded.promise.catch(() => {});\n    try {\n      await this.send(\"Page.reload\", { ignoreCache: true });\n      await loaded.promise;\n    } catch (error) {\n      this.topLevelNavigationPending = false;\n      loaded.cancel(asError(error));\n      throw error;\n    }\n  }\n\n  async evaluate<T>(expression: string, timeoutMs = commandTimeoutMs(\"Runtime.evaluate\")): Promise<T> {\n    const response = await this.send(\"Runtime.evaluate\", {\n      expression,\n      awaitPromise: true,\n      returnByValue: true,\n      userGesture: true,\n    }, timeoutMs);\n    if (response.exceptionDetails) {\n      const details = response.exceptionDetails as { text?: string; exception?: { description?: string } };\n      throw new Error(details.exception?.description || details.text || \"Browser evaluation failed\");\n    }\n"
+        },
+        {
+          "offsetBefore": 17368,
+          "offsetAfter": 17573,
+          "before": "  async waitFor<T>(expression: string, accept: (value: T) => boolean, description: string, timeoutMs = 10_000) {\n    const deadline = Date.now() + timeoutMs;\n    let lastValue: T | undefined;\n    while (Date.now() < deadline) {\n      lastValue = await this.evaluate<T>(expression);\n      if (accept(lastValue)) return lastValue;\n      await delay(50);\n    }\n    throw new Error(`${description}; last value: ${JSON.stringify(lastValue)}`);\n",
+          "after": "  async waitFor<T>(expression: string, accept: (value: T) => boolean, description: string, timeoutMs = 10_000) {\n    const deadline = Date.now() + timeoutMs;\n    let lastValue: T | undefined;\n    while (Date.now() < deadline) {\n      lastValue = await this.evaluate<T>(expression, Math.min(commandTimeoutMs(\"Runtime.evaluate\"), Math.max(1, deadline - Date.now())));\n      if (accept(lastValue)) return lastValue;\n      await delay(50);\n    }\n    throw new Error(`${description}; last value: ${JSON.stringify(lastValue)}`);\n"
+        },
+        {
+          "offsetBefore": 22129,
+          "offsetAfter": 22418,
+          "before": "    await this.send(\"Input.dispatchKeyEvent\", { type: \"keyDown\", key, code });\n    await this.send(\"Input.dispatchKeyEvent\", { type: \"keyUp\", key, code });\n  }\n\n  async close() {\n    if (this.closed) return;\n    this.closed = true;\n    this.nativeFocusObserver.clear();\n    this.requestLifecycle.beginNavigation(\"close\");\n    const closeError = new Error(\"Browser harness closed\");\n    this.eventWaiters.rejectAll(closeError);\n    try {\n      await withTimeout(this.sendBrowser(\"Browser.close\"), 3_000, \"Timed out closing the browser through CDP\");\n    } catch {\n      // The browser commonly closes the CDP socket before acknowledging Browser.close.\n",
+          "after": "    await this.send(\"Input.dispatchKeyEvent\", { type: \"keyDown\", key, code });\n    await this.send(\"Input.dispatchKeyEvent\", { type: \"keyUp\", key, code });\n  }\n\n  get commandDeadlineFailure() { return this.commandDeadlines.failure; }\n\n  close() {\n    this.closePromise ??= this.closeOwned();\n    return this.closePromise;\n  }\n\n  private async closeOwned() {\n    this.closed = true;\n    this.nativeFocusObserver.clear();\n    this.requestLifecycle.beginNavigation(\"close\");\n    const closeError = new Error(\"Browser harness closed\");\n    this.eventWaiters.rejectAll(closeError);\n    this.rejectPendingCommands(closeError);\n    try {\n      await withTimeout(this.sendBrowser(\"Browser.close\"), 3_000, \"Timed out closing the browser through CDP\");\n    } catch {\n      // The browser commonly closes the CDP socket before acknowledging Browser.close.\n"
+        },
+        {
+          "offsetBefore": 22957,
+          "offsetAfter": 23440,
+          "before": "        this.socket.close();\n        await removeOwnedBrowserDirectory(this.userDataDirectory);\n      }\n    } finally {\n      this.requestLifecycle.close(closeError);\n    }\n  }\n\n  private async send(method: string, params: Record<string, unknown> = {}) {\n    return this.sendCommand(method, params, this.sessionId);\n  }\n\n  private async sendBrowser(method: string, params: Record<string, unknown> = {}) {\n    return this.sendCommand(method, params);\n  }\n\n  private sendCommand(method: string, params: Record<string, unknown>, sessionId?: string) {\n    if (this.fatalError) return Promise.reject(this.fatalError);\n    const scope = this.operationBoundary;\n    const observed = scope?.beforeCommand(method, params);\n    const id = ++this.nextCommandId;\n    const payload = sessionId ? { id, method, params, sessionId } : { id, method, params };\n    const result = new Promise<Record<string, unknown>>((resolveCommand, rejectCommand) => {\n      this.pendingCommands.set(id, { resolve: resolveCommand, reject: rejectCommand });\n      if (method === \"Page.navigate\") {\n        this.diagnosticNavigateId = id;\n        this.diagnosticNavigateResponded = false;\n      }\n      this.socket.send(JSON.stringify(payload));\n    });\n    if (!scope || observed === undefined) return result;\n    return result.then((value) => { scope.afterCommand(observed, true); return value; },\n      (error) => { scope.afterCommand(observed, false, asError(error)); throw error; });\n",
+          "after": "        this.socket.close();\n        await removeOwnedBrowserDirectory(this.userDataDirectory);\n      }\n    } finally {\n      this.rejectPendingCommands(closeError);\n      this.requestLifecycle.close(closeError);\n    }\n  }\n\n  private async send(method: string, params: Record<string, unknown> = {}, timeoutMs = commandTimeoutMs(method)) {\n    return this.sendCommand(method, params, this.sessionId, timeoutMs);\n  }\n\n  private async sendBrowser(method: string, params: Record<string, unknown> = {}) {\n    return this.sendCommand(method, params);\n  }\n\n  private sendCommand(method: string, params: Record<string, unknown>, sessionId?: string, timeoutMs = commandTimeoutMs(method)) {\n    if (this.fatalError) return Promise.reject(this.fatalError);\n    if (this.closed && method !== \"Browser.close\") return Promise.reject(new Error(\"Browser harness closed\"));\n    const scope = this.operationBoundary;\n    const observed = scope?.beforeCommand(method, params);\n    const id = ++this.nextCommandId;\n    const payload = sessionId ? { id, method, params, sessionId } : { id, method, params };\n    const result = new Promise<Record<string, unknown>>((resolveCommand, rejectCommand) => {\n      // G3 owns its operation bound; Browser.close owns its existing ACK/fallback bound.\n      const cancel = scope || method === \"Browser.close\" ? () => {} : this.commandDeadlines.arm(id, method, timeoutMs);\n      this.pendingCommands.set(id, {\n        resolve: value => { cancel(); resolveCommand(value); },\n        reject: error => { cancel(); rejectCommand(error); },\n      });\n      if (method === \"Page.navigate\") {\n        this.diagnosticNavigateId = id;\n        this.diagnosticNavigateResponded = false;\n      }\n      try { this.socket.send(JSON.stringify(payload)); }\n      catch (error) { this.recordFatalError(error); this.rejectPendingCommands(asError(error)); }\n    });\n    if (!scope || observed === undefined) return result;\n    return result.then((value) => { scope.afterCommand(observed, true); return value; },\n      (error) => { scope.afterCommand(observed, false, asError(error)); throw error; });\n"
+        },
+        {
+          "offsetBefore": 24864,
+          "offsetAfter": 25992,
+          "before": "      else command.resolve(message.result || {});\n      return;\n    }\n    if (!message.method || (message.sessionId && message.sessionId !== this.sessionId)) return;\n    if (this.operationBoundary && message.method === \"Page.javascriptDialogOpening\") {\n      this.operationBoundary.dialogOpening(message.params || {}, message.sessionId === this.sessionId && (message.params?.frameId === undefined || message.params.frameId === this.mainFrameId));\n    }\n    if (this.operationBoundary && message.method === \"Page.javascriptDialogClosed\") {\n",
+          "after": "      else command.resolve(message.result || {});\n      return;\n    }\n    if (!message.method || (message.sessionId && message.sessionId !== this.sessionId)) return;\n    if (!this.operationBoundary && message.method === \"Page.javascriptDialogOpening\") {\n      this.recordFatalError(new Error(\"UNEXPECTED_JAVASCRIPT_DIALOG\"));\n    }\n    if (this.operationBoundary && message.method === \"Page.javascriptDialogOpening\") {\n      this.operationBoundary.dialogOpening(message.params || {}, message.sessionId === this.sessionId && (message.params?.frameId === undefined || message.params.frameId === this.mainFrameId));\n    }\n    if (this.operationBoundary && message.method === \"Page.javascriptDialogClosed\") {\n"
+        },
+        {
+          "offsetBefore": 29964,
+          "offsetAfter": 31258,
+          "before": "    if (this.closed || this.fatalError) return;\n    this.fatalError = asError(error);\n    this.requestLifecycle.fail(this.fatalError);\n    this.eventWaiters.rejectAll(this.fatalError);\n    for (const command of this.pendingCommands.values()) command.reject(this.fatalError);\n    this.pendingCommands.clear();\n  }\n\n  private handleSocketClose() {\n",
+          "after": "    if (this.closed || this.fatalError) return;\n    this.fatalError = asError(error);\n    this.requestLifecycle.fail(this.fatalError);\n    this.eventWaiters.rejectAll(this.fatalError);\n    this.rejectPendingCommands(this.fatalError);\n  }\n\n  private rejectPendingCommands(error: Error) {\n    for (const command of this.pendingCommands.values()) command.reject(error);\n    this.pendingCommands.clear();\n  }\n\n  private handleSocketClose() {\n"
+        },
+        {
+          "offsetBefore": 30556,
+          "offsetAfter": 31942,
+          "before": "    if (!this.closed) {\n      this.recordFatalError(error);\n      return;\n    }\n    for (const command of this.pendingCommands.values()) command.reject(error);\n    this.pendingCommands.clear();\n    this.eventWaiters.rejectAll(error);\n    this.requestLifecycle.close(error);\n  }\n}\n",
+          "after": "    if (!this.closed) {\n      this.recordFatalError(error);\n      return;\n    }\n    this.rejectPendingCommands(error);\n    this.eventWaiters.rejectAll(error);\n    this.requestLifecycle.close(error);\n  }\n}\n"
+        },
+        {
+          "offsetBefore": 31098,
+          "offsetAfter": 32409,
+          "before": "  }\n  const browserPath = defaultBrowserCandidates.find((candidate) => existsSync(candidate));\n  if (!browserPath) throw new Error(\"Chrome/Chromium was not found; set AUTOSTREAM_BROWSER_PATH\");\n  return browserPath;\n}\n\nfunction createCommandSender(socket: WebSocket) {\n  let commandId = 0;\n  const pending = new Map<number, PendingCommand>();\n  socket.addEventListener(\"message\", (event) => {\n    const message = JSON.parse(String(event.data)) as CDPResponse;\n    if (!message.id) return;\n    const command = pending.get(message.id);\n    if (!command) return;\n    pending.delete(message.id);\n    if (message.error) command.reject(new Error(message.error.message || \"CDP command failed\"));\n    else command.resolve(message.result || {});\n  });\n  return (method: string, params: Record<string, unknown>) => {\n    const id = ++commandId;\n    return new Promise<Record<string, unknown>>((resolveCommand, rejectCommand) => {\n      pending.set(id, { resolve: resolveCommand, reject: rejectCommand });\n      socket.send(JSON.stringify({ id, method, params }));\n    });\n  };\n}\n\nasync function removeOwnedBrowserDirectory(path: string) {\n  const resolved = resolve(path);\n",
+          "after": "  }\n  const browserPath = defaultBrowserCandidates.find((candidate) => existsSync(candidate));\n  if (!browserPath) throw new Error(\"Chrome/Chromium was not found; set AUTOSTREAM_BROWSER_PATH\");\n  return browserPath;\n}\n\nasync function removeOwnedBrowserDirectory(path: string) {\n  const resolved = resolve(path);\n"
+        }
+      ]
+    },
+    {
+      "path": "web/tests/helpers/browser-command-deadline.mts",
+      "before": null,
+      "after": {
+        "path": "web/tests/helpers/browser-command-deadline.mts",
+        "mode": "100644",
+        "blob": "275b309fa323ede958457b8f716c6d18dca1079b",
+        "sha256": "bc826d2dff55ea45597c629dd1db102c95d9f3fcfb445d45e1c19fa80a5f7aae"
+      },
+      "hunks": []
+    },
+    {
+      "path": "web/tests/helpers/browser-next-readiness-fixture.mts",
+      "before": {
+        "path": "web/tests/helpers/browser-next-readiness-fixture.mts",
+        "mode": "100644",
+        "blob": "7d028894de06437b91714a6e4f4765532dfdc8ec",
+        "sha256": "2afff945c0a8959740cae661a11b0b49705124f4552e3b99e9418e1994c102da"
+      },
+      "after": {
+        "path": "web/tests/helpers/browser-next-readiness-fixture.mts",
+        "mode": "100644",
+        "blob": "226f9d10c9060e84a61939fc5996e581bd02449f",
+        "sha256": "9657317cc80e2b2f37ea52474b9c18f9a97a04b993f5aecdce87afcdaf98511e"
+      },
+      "hunks": [
+        {
+          "offsetBefore": 3771,
+          "offsetAfter": 3771,
+          "before": "export function createNextReadinessFixture(options: NextReadinessOptions = {}) {\n  // Execute the complete checked-in harness, including ensureWebServer's real calls.\n  // Only OS, HTTP and clock boundaries are controlled; there is no alternate readiness algorithm.\n  nextReadinessHarnessJavascript ??= new Map([\n    \"browser-harness.mts\", \"browser-next-server.mts\", \"browser-process-timing.mts\",\n  ].map((name) => [\"./\" + name, ts.transpileModule(readFileSync(resolve(dirname(browserHarnessPath), name), \"utf8\"), {\n    fileName: name.replace(/\\.mts$/, \".ts\"),\n    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },\n  }).outputText]));\n",
+          "after": "export function createNextReadinessFixture(options: NextReadinessOptions = {}) {\n  // Execute the complete checked-in harness, including ensureWebServer's real calls.\n  // Only OS, HTTP and clock boundaries are controlled; there is no alternate readiness algorithm.\n  nextReadinessHarnessJavascript ??= new Map([\n    \"browser-harness.mts\", \"browser-next-server.mts\", \"browser-process-timing.mts\", \"browser-command-deadline.mts\",\n  ].map((name) => [\"./\" + name, ts.transpileModule(readFileSync(resolve(dirname(browserHarnessPath), name), \"utf8\"), {\n    fileName: name.replace(/\\.mts$/, \".ts\"),\n    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },\n  }).outputText]));\n"
+        }
+      ]
+    },
+    {
+      "path": "web/tests/ui-regression/browser-contracts.test.mts",
+      "before": {
+        "path": "web/tests/ui-regression/browser-contracts.test.mts",
+        "mode": "100644",
+        "blob": "5fbfdf57d3c89759fed1c6811cfc4d81af6ae1b8",
+        "sha256": "8fdaaa859a98e30656725fa4d695562e3970aba4ae4c7b6eae41585a79986043"
+      },
+      "after": {
+        "path": "web/tests/ui-regression/browser-contracts.test.mts",
+        "mode": "100644",
+        "blob": "ab5e23141cf4d0e2932b3d42f00c85dcdcbfac0b",
+        "sha256": "78ccebebb222e80a65b5b215728e9acd5f3024e4a2fc6ba51fe44e9de81d2dfa"
+      },
+      "hunks": [
+        {
+          "offsetBefore": 0,
+          "offsetAfter": 0,
+          "before": "import assert from \"node:assert/strict\";\nimport test from \"node:test\";\nimport { readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync, readdirSync } from \"node:fs\";\nimport { execFileSync } from \"node:child_process\";\nimport { tmpdir } from \"node:os\";\n",
+          "after": "import assert from \"node:assert/strict\";\nimport \"./command-deadline.test.mts\";\nimport test from \"node:test\";\nimport { readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync, readdirSync } from \"node:fs\";\nimport { execFileSync } from \"node:child_process\";\nimport { tmpdir } from \"node:os\";\n"
+        }
+      ]
+    },
+    {
+      "path": "web/tests/ui-regression/condition-lifecycle.mts",
+      "before": {
+        "path": "web/tests/ui-regression/condition-lifecycle.mts",
+        "mode": "100644",
+        "blob": "7b1076deb0efc8a7365812a6ba766fcbb39ceed0",
+        "sha256": "5343b784d98dc1a01e65bbfcac573a04d0dd60af1e1b7d08dd7911de37b1d4fe"
+      },
+      "after": {
+        "path": "web/tests/ui-regression/condition-lifecycle.mts",
+        "mode": "100644",
+        "blob": "3e71e1a9cd4e362cce363b4227c70bc0ccc327ec",
+        "sha256": "f34c99b7116a3a41ab2225b127f12646e1224b4cfc2f87375f49e7569471670c"
+      },
+      "hunks": [
+        {
+          "offsetBefore": 1640,
+          "offsetAfter": 1640,
+          "before": "    let browser: BrowserHarness | undefined, fixture: Fixture | undefined, stage: Stage = \"launch\";\n    let failure: unknown, failed = false, failedStage: Stage = stage, result: T | undefined;\n    const cleanup: unknown[] = [];\n    const save = (name: string, value: unknown) => { try { write(condition.id + \".\" + name, value); } catch (error) { stopped = true; throw error; } };\n    try {\n      browser = await launch();\n      assert.equal(browsers.has(browser), false, \"old browser instance reuse forbidden\"); browsers.add(browser);\n      assert.equal(browser.requests.size, 0, \"condition has requests before fixture setup\");\n",
+          "after": "    let browser: BrowserHarness | undefined, fixture: Fixture | undefined, stage: Stage = \"launch\";\n    let failure: unknown, failed = false, failedStage: Stage = stage, result: T | undefined;\n    const cleanup: unknown[] = [];\n    const save = (name: string, value: unknown) => { try { write(condition.id + \".\" + name, value); } catch (error) { stopped = true; throw error; } };\n    let deadlineSaved = false;\n    const saveCommandDeadline = (at: Stage) => {\n      const deadline = browser?.commandDeadlineFailure;\n      if (!deadline || deadlineSaved) return;\n      deadlineSaved = true; stopped = true;\n      try { save(\"command-deadline.json\", { schemaVersion: 1, stage: at, method: deadline.method, command: deadline.command, timeoutMs: deadline.timeoutMs }); }\n      catch (output) { cleanup.push(output); }\n    };\n    try {\n      browser = await launch();\n      assert.equal(browsers.has(browser), false, \"old browser instance reuse forbidden\"); browsers.add(browser);\n      assert.equal(browser.requests.size, 0, \"condition has requests before fixture setup\");\n"
+        },
+        {
+          "offsetBefore": 3626,
+          "offsetAfter": 4067,
+          "before": "      save(\"browser-version.json\", await browser.browserVersion());\n      browser.assertNoFatalError(); stage = \"exercise\";\n      result = await exercise(browser, fixture);\n      browser.assertNoFatalError();\n    } catch (error) { failure = error; failed = true; failedStage = stage;if(isUAOutputFailure(error))stopped=true; }\n    finally {\n      // Release held required responses before draining or closing their sole owner.\n      for (const [step, action] of [\n        [\"release\", async () => fixture?.release()],\n",
+          "after": "      save(\"browser-version.json\", await browser.browserVersion());\n      browser.assertNoFatalError(); stage = \"exercise\";\n      result = await exercise(browser, fixture);\n      browser.assertNoFatalError();\n    } catch (error) {\n      failure = error; failed = true; failedStage = stage;\n      if (isUAOutputFailure(error) || browser?.commandDeadlineFailure) stopped = true;\n      // Persist the transport failure before any further diagnostic/cleanup.\n      saveCommandDeadline(stage);\n    }\n    finally {\n      // Release held required responses before draining or closing their sole owner.\n      for (const [step, action] of [\n        [\"release\", async () => fixture?.release()],\n"
+        },
+        {
+          "offsetBefore": 4241,
+          "offsetAfter": 4850,
+          "before": "        [\"close\", async () => { if (browser) await browser.close(); }],\n      ] as const) {\n        try { stage = step; await action(); }\n        catch (error) { cleanup.push(error); stopped = true; if (!failed) { failure = error; failed = true; failedStage = stage; } }\n      }\n      if (browser && failed) preserveFetchDiagnostic(browser, (name, value) => save(name, value));\n      active = false;\n    }\n",
+          "after": "        [\"close\", async () => { if (browser) await browser.close(); }],\n      ] as const) {\n        try { stage = step; await action(); }\n        catch (error) { cleanup.push(error); stopped = true; if (!failed) { failure = error; failed = true; failedStage = stage; } }\n        finally { saveCommandDeadline(stage); }\n      }\n      if (browser && failed) preserveFetchDiagnostic(browser, (name, value) => save(name, value));\n      active = false;\n    }\n"
+        }
+      ]
+    },
+    {
+      "path": "web/tests/ui-regression/command-deadline.test.mts",
+      "before": null,
+      "after": {
+        "path": "web/tests/ui-regression/command-deadline.test.mts",
+        "mode": "100644",
+        "blob": "72f2991a7ee92d04cef4f13dd7badb8d3311133a",
+        "sha256": "4ddadd512c7f9a55ad2ce61c2fcb016c6a4d7f0b516097d1ff4a0531bcf0e2f4"
+      },
+      "hunks": []
+    },
+    {
+      "path": "web/tests/ui-regression/visible-trigger.mts",
+      "before": {
+        "path": "web/tests/ui-regression/visible-trigger.mts",
+        "mode": "100644",
+        "blob": "4cab1c5f82588cfb13de4dfa928417bace400db8",
+        "sha256": "0a312116c5308f40eb9f571ab3f13e667f4f47c4bea486fc6f25d7b3ed4c168c"
+      },
+      "after": {
+        "path": "web/tests/ui-regression/visible-trigger.mts",
+        "mode": "100644",
+        "blob": "0e635e84c48fe0dfc3007375286b702e3c274c92",
+        "sha256": "40c853cde0352281f11f4c77c67e07120730bcc4e7d6876b5579ca1d9b45471b"
+      },
+      "hunks": [
+        {
+          "offsetBefore": 0,
+          "offsetAfter": 0,
+          "before": "import assert from \"node:assert/strict\";\nimport type { BrowserHarness } from \"../helpers/browser-harness.mts\";\nimport { renderedDOM } from \"./render-state.mts\";\n\nexport function visibleTriggerExpression(selector: string, pattern?: RegExp, disabled = false) {\n  return `(() => {\n    ${renderedDOM}\n",
+          "after": "import assert from \"node:assert/strict\";\nimport type { BrowserHarness } from \"../helpers/browser-harness.mts\";\nimport { renderedDOM } from \"./render-state.mts\";\n\nexport class VisibleTriggerCleanupFailure extends Error {\n  readonly phase: \"click-target\" | \"worker-restart\" | \"select-visible\";\n  readonly primary: unknown; readonly cleanup: unknown;\n  constructor(phase: VisibleTriggerCleanupFailure[\"phase\"], primary: unknown, cleanup: unknown) {\n    super(\"Visible trigger body and cleanup failed\", { cause: primary });\n    this.phase = phase; this.primary = primary; this.cleanup = cleanup;\n  }\n}\n\nexport function visibleTriggerExpression(selector: string, pattern?: RegExp, disabled = false) {\n  return `(() => {\n    ${renderedDOM}\n"
+        },
+        {
+          "offsetBefore": 3967,
+          "offsetAfter": 4404,
+          "before": "  return point;\n})()`;\nasync function clickTarget(browser: BrowserHarness, selector: string, pattern: RegExp | undefined, remember: boolean, disabled: boolean) {\n  const deadline = Date.now() + 10_000;\n  try {\n    await browser.waitFor(visibleTriggerExpression(selector, pattern, disabled), Boolean, disabled ? \"one visible disabled negative target\" : \"one visible enabled trigger\", Math.max(0, deadline - Date.now()));\n    if (remember) await browser.evaluate(\"globalThis.__uiReturnTrigger=globalThis.__uiScenarioTarget;true\");\n    await browser.evaluate(beginTriggerSettlement(disabled));\n",
+          "after": "  return point;\n})()`;\nasync function clickTarget(browser: BrowserHarness, selector: string, pattern: RegExp | undefined, remember: boolean, disabled: boolean) {\n  const deadline = Date.now() + 10_000;\n  let bodyFailed = false, bodyFailure: unknown;\n  try {\n    await browser.waitFor(visibleTriggerExpression(selector, pattern, disabled), Boolean, disabled ? \"one visible disabled negative target\" : \"one visible enabled trigger\", Math.max(0, deadline - Date.now()));\n    if (remember) await browser.evaluate(\"globalThis.__uiReturnTrigger=globalThis.__uiScenarioTarget;true\");\n    await browser.evaluate(beginTriggerSettlement(disabled));\n"
+        },
+        {
+          "offsetBefore": 4823,
+          "offsetAfter": 5308,
+          "before": "    assert.ok(point && Number.isFinite(point.x) && Number.isFinite(point.y), \"native input needs the measured target point\");\n    assert.ok(Date.now() < deadline, \"native input target exceeded its original deadline\");\n    await browser.clickAt(point.x, point.y);\n  }\n  finally { await browser.evaluate(\"if(globalThis.__uiTriggerSettlement)cancelAnimationFrame(globalThis.__uiTriggerSettlement.frame);delete globalThis.__uiTriggerSettlement;globalThis.__uiScenarioTarget?.removeAttribute('data-ui-scenario-target');delete globalThis.__uiScenarioTarget;true\"); }\n}\nexport async function clickVisible(browser: BrowserHarness, selector: string, pattern?: RegExp, remember = false) {\n  return clickTarget(browser, selector, pattern, remember, false);\n}\n",
+          "after": "    assert.ok(point && Number.isFinite(point.x) && Number.isFinite(point.y), \"native input needs the measured target point\");\n    assert.ok(Date.now() < deadline, \"native input target exceeded its original deadline\");\n    await browser.clickAt(point.x, point.y);\n  }\n  catch (error) { bodyFailed = true; bodyFailure = error; throw error; }\n  finally {\n    try { await browser.evaluate(\"if(globalThis.__uiTriggerSettlement)cancelAnimationFrame(globalThis.__uiTriggerSettlement.frame);delete globalThis.__uiTriggerSettlement;globalThis.__uiScenarioTarget?.removeAttribute('data-ui-scenario-target');delete globalThis.__uiScenarioTarget;true\"); }\n    catch (cleanup) { throw bodyFailed ? new VisibleTriggerCleanupFailure(\"click-target\", bodyFailure, cleanup) : cleanup; }\n  }\n}\nexport async function clickVisible(browser: BrowserHarness, selector: string, pattern?: RegExp, remember = false) {\n  return clickTarget(browser, selector, pattern, remember, false);\n}\n"
+        },
+        {
+          "offsetBefore": 7170,
+          "offsetAfter": 7867,
+          "before": "      row.querySelector('td[headers$=\"-service_type\"] > div')?.textContent.trim()==='Worker');\n    if(rows.length>1)throw Error('ambiguous eligible worker display identity');if(rows.length!==1||!uiAX(rows[0]))return false;\n    rows[0].setAttribute('data-ui-worker-row','');globalThis.__uiWorkerRow=rows[0];return true;\n  })()`, Boolean, \"exact eligible Worker display row\");\n  try {\n    await clickVisible(browser, '[data-ui-worker-row] button', /^(Worker を再起動|Restart worker)$/, true);\n    await browser.waitFor(`(() => {const values=[...document.querySelectorAll('[role=alertdialog] [data-confirmation-section=target] li')].map(e=>e.textContent.trim());return values.length===2&&values.includes(${JSON.stringify(worker.id)})&&values.includes(${JSON.stringify(worker.name)});})()`, Boolean, \"confirmation must name the same actual Worker ID and label\");\n  } finally { await browser.evaluate(\"globalThis.__uiWorkerRow?.removeAttribute('data-ui-worker-row');delete globalThis.__uiWorkerRow;true\"); }\n}\nexport async function selectVisible(browser: BrowserHarness, selector: string, value: string) {\n  assert.equal(await browser.evaluate(visibleTriggerExpression(selector)), true, \"select target must be visible, unique and enabled\");\n  try {\n    await browser.evaluate(visibleTriggerPoint());\n    // Exercise the real native select with keyboard input, not a hidden element click.\n    const index = await browser.evaluate<number>(`(() => {const e=document.querySelector('[data-ui-scenario-target]');e.focus();return [...e.options].findIndex(o=>o.value===${JSON.stringify(value)} && !o.disabled);})()`);\n",
+          "after": "      row.querySelector('td[headers$=\"-service_type\"] > div')?.textContent.trim()==='Worker');\n    if(rows.length>1)throw Error('ambiguous eligible worker display identity');if(rows.length!==1||!uiAX(rows[0]))return false;\n    rows[0].setAttribute('data-ui-worker-row','');globalThis.__uiWorkerRow=rows[0];return true;\n  })()`, Boolean, \"exact eligible Worker display row\");\n  let bodyFailed = false, bodyFailure: unknown;\n  try {\n    await clickVisible(browser, '[data-ui-worker-row] button', /^(Worker を再起動|Restart worker)$/, true);\n    await browser.waitFor(`(() => {const values=[...document.querySelectorAll('[role=alertdialog] [data-confirmation-section=target] li')].map(e=>e.textContent.trim());return values.length===2&&values.includes(${JSON.stringify(worker.id)})&&values.includes(${JSON.stringify(worker.name)});})()`, Boolean, \"confirmation must name the same actual Worker ID and label\");\n  } catch (error) { bodyFailed = true; bodyFailure = error; throw error; }\n  finally {\n    try { await browser.evaluate(\"globalThis.__uiWorkerRow?.removeAttribute('data-ui-worker-row');delete globalThis.__uiWorkerRow;true\"); }\n    catch (cleanup) { throw bodyFailed ? new VisibleTriggerCleanupFailure(\"worker-restart\", bodyFailure, cleanup) : cleanup; }\n  }\n}\nexport async function selectVisible(browser: BrowserHarness, selector: string, value: string) {\n  assert.equal(await browser.evaluate(visibleTriggerExpression(selector)), true, \"select target must be visible, unique and enabled\");\n  let bodyFailed = false, bodyFailure: unknown;\n  try {\n    await browser.evaluate(visibleTriggerPoint());\n    // Exercise the real native select with keyboard input, not a hidden element click.\n    const index = await browser.evaluate<number>(`(() => {const e=document.querySelector('[data-ui-scenario-target]');e.focus();return [...e.options].findIndex(o=>o.value===${JSON.stringify(value)} && !o.disabled);})()`);\n"
+        },
+        {
+          "offsetBefore": 8832,
+          "offsetAfter": 9839,
+          "before": "    await browser.pressKey(\"Home\");\n    for (let i = 0; i < index; i++) await browser.pressKey(\"ArrowDown\");\n    await browser.pressNativeKey(\"Enter\");\n    await browser.waitFor(\"document.querySelector('[data-ui-scenario-target]')?.value\", current => current === value, \"native select changed\");\n  } finally { await browser.evaluate(\"document.querySelector('[data-ui-scenario-target]')?.removeAttribute('data-ui-scenario-target');true\"); }\n}\n",
+          "after": "    await browser.pressKey(\"Home\");\n    for (let i = 0; i < index; i++) await browser.pressKey(\"ArrowDown\");\n    await browser.pressNativeKey(\"Enter\");\n    await browser.waitFor(\"document.querySelector('[data-ui-scenario-target]')?.value\", current => current === value, \"native select changed\");\n  } catch (error) { bodyFailed = true; bodyFailure = error; throw error; }\n  finally {\n    try { await browser.evaluate(\"document.querySelector('[data-ui-scenario-target]')?.removeAttribute('data-ui-scenario-target');true\"); }\n    catch (cleanup) { throw bodyFailed ? new VisibleTriggerCleanupFailure(\"select-visible\", bodyFailure, cleanup) : cleanup; }\n  }\n}\n"
+        }
+      ]
+    },
+    {
+      "path": "web/tests/ui-regression/run-browser.mts",
+      "before": {
+        "path": "web/tests/ui-regression/run-browser.mts",
+        "mode": "100644",
+        "blob": "a2b4283b3ddf81d94d57b8bb13e96b63f4f2da1d",
+        "sha256": "b99dd5e0aa26f53b2b82e339972aaf1f3d52fdbd0465f07e57de826b4bcdc60c"
+      },
+      "after": {
+        "path": "web/tests/ui-regression/run-browser.mts",
+        "mode": "100644",
+        "blob": "83f71638578600cdec362924947dc68fc09326b2",
+        "sha256": "e49e58b6d9268dea58fc721d1b14ecc0eebe0f6e8f8eac5de14b9e2cedff3fc4"
+      },
+      "hunks": [
+        {
+          "offsetBefore": 641,
+          "offsetAfter": 641,
+          "before": "import { assertObservation, exerciseAccessibility, type UIObservation } from \"./observation.mts\";\nimport { assertState, deniedPrimaryRequests, loadingPaths, failureTextExpression, hasFailureCopy, type RequestEvidence } from \"./state-drivers.mts\";\nimport { driveFormContent, prepareFreshNodeDraft, type FreshNodeDraft } from \"./form-content-driver.mts\";\r\nimport { assertContentReached, canonicalFixturePath } from \"./fixture-inputs.mts\";\r\nimport { clickNamed, clickVisible, clickStreamPrimary, clickWorkerRestart } from \"./visible-trigger.mts\";\nimport { settleRender, closeOverlay, assertStableCapture } from \"./render-state.mts\";\r\nimport { exerciseTable } from \"./table-browser.mts\";\r\nimport { layoutExpression, assertLayout, type LayoutObservation } from \"./layout-observation.mts\";\r\nimport { captureObservation } from \"./capture.mts\";\r\n",
+          "after": "import { assertObservation, exerciseAccessibility, type UIObservation } from \"./observation.mts\";\nimport { assertState, deniedPrimaryRequests, loadingPaths, failureTextExpression, hasFailureCopy, type RequestEvidence } from \"./state-drivers.mts\";\nimport { driveFormContent, prepareFreshNodeDraft, type FreshNodeDraft } from \"./form-content-driver.mts\";\r\nimport { assertContentReached, canonicalFixturePath } from \"./fixture-inputs.mts\";\r\nimport { clickNamed, clickVisible, clickStreamPrimary, clickWorkerRestart, VisibleTriggerCleanupFailure } from \"./visible-trigger.mts\";\r\nimport { settleRender, closeOverlay, assertStableCapture } from \"./render-state.mts\";\r\nimport { exerciseTable } from \"./table-browser.mts\";\r\nimport { layoutExpression, assertLayout, type LayoutObservation } from \"./layout-observation.mts\";\r\nimport { captureObservation } from \"./capture.mts\";\r\n"
+        },
+        {
+          "offsetBefore": 5382,
+          "offsetAfter": 5413,
+          "before": "    super([original, output], \"Condition evidence output failed\", { cause: original });\r\n    this.original = original; this.output = output;\r\n  }\r\n}\r\nexport function conditionFailureStatus(condition: Condition, error: unknown, restoration?: DraftRestorationFailure) {\r\n  const cause = error instanceof ConditionFailure ? error.cause : error;\r\n  const draft = cause instanceof DraftRestorationFailure ? cause : restoration;\r\n  const primary = draft ? (draft.primaryFailed ? draft.primary : draft.restoration) : cause;\r\n  return { id: condition.id, status: \"FAIL\", error: primary instanceof Error ? primary.message : String(primary) };\r\n}\r\nexport function writeConditionFailure(condition: Condition, error: unknown, write: (name: string, value: unknown) => void, restoration?: DraftRestorationFailure) {\r\n  const cause = error instanceof ConditionFailure ? error.cause : error;\r\n",
+          "after": "    super([original, output], \"Condition evidence output failed\", { cause: original });\r\n    this.original = original; this.output = output;\r\n  }\r\n}\r\nfunction triggerCleanupLayers(primary: unknown) {\r\n  if (!(primary instanceof VisibleTriggerCleanupFailure)) return [];\r\n  // Only the known Worker -> clickTarget nesting is traversed. Arbitrary\r\n  // Error.cause graphs are neither followed nor serialized.\r\n  if (primary.phase === \"worker-restart\" && primary.primary instanceof VisibleTriggerCleanupFailure && primary.primary.phase === \"click-target\") return [primary, primary.primary];\r\n  return [primary];\r\n}\r\nexport function conditionFailureStatus(condition: Condition, error: unknown, restoration?: DraftRestorationFailure) {\r\n  const cause = error instanceof ConditionFailure ? error.cause : error;\r\n  const draft = cause instanceof DraftRestorationFailure ? cause : restoration;\r\n  const body = draft ? (draft.primaryFailed ? draft.primary : draft.restoration) : cause;\r\n  const layers = triggerCleanupLayers(body);\r\n  const primary = layers.length ? layers[layers.length - 1].primary : body;\r\n  return { id: condition.id, status: \"FAIL\", error: primary instanceof Error ? primary.message : String(primary) };\r\n}\r\nexport function writeConditionFailure(condition: Condition, error: unknown, write: (name: string, value: unknown) => void, restoration?: DraftRestorationFailure) {\r\n  const cause = error instanceof ConditionFailure ? error.cause : error;\r\n"
+        },
+        {
+          "offsetBefore": 6564,
+          "offsetAfter": 7178,
+          "before": "      const diagnostic = { schemaVersion: 1, conditionID: condition.id, primaryFailed: draft.primaryFailed, restorationFailed: true,\r\n        phase: \"draft-restoration\", code: draft.restoration instanceof AggregateError ? \"RESTORE_COMPOSITE\" : draft.restoration instanceof Error ? \"RESTORE_ERROR\" : \"RESTORE_UNKNOWN\" };\r\n      assert.ok(Buffer.byteLength(JSON.stringify(diagnostic), \"utf8\") <= 4096, \"bounded restoration diagnostic\");\r\n      write(condition.id + \".draft-restoration.json\", diagnostic);\r\n    }\r\n  } catch (output) { throw new ConditionOutputFailure(error, output); }\r\n  if (!(error instanceof ConditionFailure) || error.stop) throw error;\r\n}\r\n",
+          "after": "      const diagnostic = { schemaVersion: 1, conditionID: condition.id, primaryFailed: draft.primaryFailed, restorationFailed: true,\r\n        phase: \"draft-restoration\", code: draft.restoration instanceof AggregateError ? \"RESTORE_COMPOSITE\" : draft.restoration instanceof Error ? \"RESTORE_ERROR\" : \"RESTORE_UNKNOWN\" };\r\n      assert.ok(Buffer.byteLength(JSON.stringify(diagnostic), \"utf8\") <= 4096, \"bounded restoration diagnostic\");\r\n      write(condition.id + \".draft-restoration.json\", diagnostic);\r\n    }\r\n    const layers = triggerCleanupLayers(draft ? (draft.primaryFailed ? draft.primary : draft.restoration) : cause);\r\n    if (layers.length) {\r\n      assert.ok(conditions.some(item => item.id === condition.id), \"registered diagnostic condition\");\r\n      const diagnostic = { schemaVersion: 1, conditionID: condition.id, phase: \"visible-trigger-cleanup\", code: \"TRIGGER_BODY_AND_CLEANUP_FAILED\",\r\n        layers: layers.map(layer => ({ phase: layer.phase, code: \"BODY_AND_CLEANUP_FAILED\", primaryFailed: true, cleanupFailed: true })) };\r\n      assert.ok(Buffer.byteLength(JSON.stringify(diagnostic), \"utf8\") <= 4096, \"bounded trigger cleanup diagnostic\");\r\n      write(condition.id + \".trigger-cleanup.json\", diagnostic);\r\n    }\r\n  } catch (output) { throw new ConditionOutputFailure(error, output); }\r\n  if (!(error instanceof ConditionFailure) || error.stop) throw error;\r\n}\r\n"
+        }
+      ]
+    }
+  ]
+}

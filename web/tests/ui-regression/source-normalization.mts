@@ -14,6 +14,7 @@ import { historicalProfileUpdateSource } from "./ui188-r3-profile-delta.mts";
 import { historicalSessionRefreshSource } from "./ui188-r3-session-delta.mts";
 import { historicalR4DeleteCopySource } from "./ui188-r4-delete-delta.mts";
 import { historicalR5ReadinessSource } from "./ui188-r5-readiness-delta.mts";
+import { createContainmentAdapter } from "./ui188-cp-containment-source-delta.mts";
 
 type Replacement = { position: number; count: number; before: string; after: string };
 type Mapping = { oldPath: string; newPath: string; acceptedSha256: string; currentSha256: string; replacements: Replacement[] };
@@ -79,7 +80,8 @@ export function createNormalizedReader(root: string, io: SourceIO = {
   const raw = (path: string) => { assert.ok(safePath(path)); return io.raw(path); };
   const manifest = assertNormalizationManifest(raw("web/tests/fixtures/ui-regression/source-normalization.json"));
   const object = io.object;
-  const historicalRaw = (path: string) => historicalUI188Source(path, historicalProfileUpdateSource(path, historicalSessionRefreshSource(path, historicalR4DeleteCopySource(path, historicalR5ReadinessSource(path, raw(path), object), object), object), object), object);
+  const containment = createContainmentAdapter(root, { raw, object });
+  const historicalRaw = (path: string) => historicalUI188Source(path, historicalProfileUpdateSource(path, historicalSessionRefreshSource(path, historicalR4DeleteCopySource(path, historicalR5ReadinessSource(path, containment.inverse(path, raw(path)), object), object), object), object), object);
   const dependencies = (path: string, current: Buffer) => cp176Paths.includes(path)
     ? inverseCP176DependencyRepair(path, object(cp176Base, path), current) : current;
   const read = (path: string): Buffer => {

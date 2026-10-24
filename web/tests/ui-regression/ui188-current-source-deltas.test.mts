@@ -8,15 +8,18 @@ import { historicalR4DeleteCopySource } from "./ui188-r4-delete-delta.mts";
 import { historicalR5ReadinessSource } from "./ui188-r5-readiness-delta.mts";
 import { historicalR9FinalizationSource, inverseR9FinalizationSource, r9Deltas, inverseR9ArchiveGuardSource, r9ArchiveDeltas, inverseR9ArchiveProcessingSource, historicalR9OwnerMap } from "./ui188-r9-finalization-deltas.mts";
 import { assertUI188ContractRegistration, assertUI188CurrentContract, historicalUI188Source, inverseUI188CurrentSource, ui188CurrentContract } from "./ui188-current-source-deltas.mts";
+import { createContainmentAdapter } from "./ui188-cp-containment-source-delta.mts";
 
 const root = fileURLToPath(new URL("../../..", import.meta.url));
 const object = (commit: string, path: string) => execFileSync("git", ["show", commit + ":" + path], { cwd: root, maxBuffer: 32 * 1024 * 1024 });
 const raw = (path: string) => readFileSync(resolve(root, path));
+const containment = createContainmentAdapter(root, { raw, object });
+const currentRaw = (path: string) => containment.inverse(path, raw(path));
 const r9Presenter = (path: string, bytes: Buffer) => path !== "web/src/lib/i18n.ts" ? historicalR9FinalizationSource(path, bytes, object) : bytes;
 
 test("UI188-CONTRACT-001: every finite path binds immutable historical source and actual current bytes to existing behavior tests", () => {
   for (const row of ui188CurrentContract.records) {
-    const before = object(row.beforeCommit, row.path), current = r9Presenter(row.path, historicalR4DeleteCopySource(row.path, historicalR5ReadinessSource(row.path, raw(row.path), object), object));
+    const before = object(row.beforeCommit, row.path), current = r9Presenter(row.path, historicalR4DeleteCopySource(row.path, historicalR5ReadinessSource(row.path, currentRaw(row.path), object), object));
     assert.deepEqual(current, object(row.afterCommit, row.path), "current source remains the specified fixed product input");
     assert.deepEqual(inverseUI188CurrentSource(row.path, before, current), before);
     for (const witness of row.behaviorTests) assert.ok(existsSync(resolve(root, witness)), "registered behavior test source exists: " + witness);
@@ -25,7 +28,7 @@ test("UI188-CONTRACT-001: every finite path binds immutable historical source an
 
 test("UI188-CONTRACT-002: missing, reverted, truncated, extra, unauthorized and wrong-original bytes cannot fall back to history", () => {
   for (const row of ui188CurrentContract.records) {
-    const before = object(row.beforeCommit, row.path), current = r9Presenter(row.path, historicalR4DeleteCopySource(row.path, historicalR5ReadinessSource(row.path, raw(row.path), object), object));
+    const before = object(row.beforeCommit, row.path), current = r9Presenter(row.path, historicalR4DeleteCopySource(row.path, historicalR5ReadinessSource(row.path, currentRaw(row.path), object), object));
     for (const mutant of [Buffer.alloc(0), before, current.subarray(0, current.length - 1), Buffer.concat([current, Buffer.from("\n")])]) assert.throws(() => inverseUI188CurrentSource(row.path, before, mutant), /reviewed finite UI188 source bytes/);
     assert.throws(() => inverseUI188CurrentSource(row.path, Buffer.concat([before, Buffer.from("wrong")]), current), /fixed original hash/);
     assert.throws(() => inverseUI188CurrentSource("../unapproved", before, current), /unknown UI188 current source path/);
@@ -66,7 +69,7 @@ test("UI188-R9-CONTRACT-002: finite archive guard and list changes reject revert
   const before=object("a9efbed3e058bf016b171e50c22650075f20ef50","internal/store/stream_queries_mariadb.go"),current=raw("internal/store/stream_queries_mariadb.go");
   assert.deepEqual(inverseR9ArchiveProcessingSource(before,current),before);
   for(const mutant of [before,Buffer.alloc(0),Buffer.concat([current,Buffer.from("\n")])])assert.throws(()=>inverseR9ArchiveProcessingSource(before,mutant),/unreviewed current source digest/);
-  const path="scripts/ci/source-owner-map.json",owner=raw(path),original=object("a9efbed3e058bf016b171e50c22650075f20ef50",path);
+  const path="scripts/ci/source-owner-map.json",owner=currentRaw(path),original=object("a9efbed3e058bf016b171e50c22650075f20ef50",path);
   assert.deepEqual(historicalR9OwnerMap(path,owner,object),original);
   for(const mutant of [original,Buffer.alloc(0),Buffer.concat([owner,Buffer.from("\n")])])assert.throws(()=>historicalR9OwnerMap(path,mutant,object),/exactly the two current archive source digests/);
 });

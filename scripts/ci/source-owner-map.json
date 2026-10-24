@@ -214,17 +214,27 @@
       },
       {
         "path": "web/tests/helpers/browser-harness.mts",
-        "sha256": "10c4eb5bdbd96ae23a53b3aceacae8861ef060314dce72f1fe6a1aa0770ba2a5",
+        "sha256": "a9c285cf94e218adde4cf259ee8e31801e872986d8fbafa6ec8534b3c1b51671",
         "symbols": [
           "BrowserHarness",
-          "createCommandSender",
           "removeOwnedBrowserDirectory",
           "resolveBrowserPath",
           "terminateChildProcess",
           "waitForChildExit",
           "waitForMapCount"
         ],
-        "physical_lines": 798
+        "physical_lines": 790
+      },
+      {
+        "path": "web/tests/helpers/browser-command-deadline.mts",
+        "sha256": "bc826d2dff55ea45597c629dd1db102c95d9f3fcfb445d45e1c19fa80a5f7aae",
+        "symbols": [
+          "BrowserCommandDeadlineError",
+          "CommandDeadlines",
+          "commandTimeoutMs",
+          "createCommandSender"
+        ],
+        "physical_lines": 80
       },
       {
         "path": "web/tests/helpers/browser-lifecycle-source-paths.mts",
@@ -261,7 +271,7 @@
       },
       {
         "path": "web/tests/helpers/browser-next-readiness-fixture.mts",
-        "sha256": "2afff945c0a8959740cae661a11b0b49705124f4552e3b99e9418e1994c102da",
+        "sha256": "9657317cc80e2b2f37ea52474b9c18f9a97a04b993f5aecdce87afcdaf98511e",
         "symbols": [
           "NextReadinessChild",
           "NextReadinessClock",
@@ -1336,17 +1346,27 @@
     "destinations": [
       {
         "path": "web/tests/helpers/browser-harness.mts",
-        "sha256": "10c4eb5bdbd96ae23a53b3aceacae8861ef060314dce72f1fe6a1aa0770ba2a5",
+        "sha256": "a9c285cf94e218adde4cf259ee8e31801e872986d8fbafa6ec8534b3c1b51671",
         "symbols": [
           "BrowserHarness",
-          "createCommandSender",
           "removeOwnedBrowserDirectory",
           "resolveBrowserPath",
           "terminateChildProcess",
           "waitForChildExit",
           "waitForMapCount"
         ],
-        "physical_lines": 798
+        "physical_lines": 790
+      },
+      {
+        "path": "web/tests/helpers/browser-command-deadline.mts",
+        "sha256": "bc826d2dff55ea45597c629dd1db102c95d9f3fcfb445d45e1c19fa80a5f7aae",
+        "symbols": [
+          "BrowserCommandDeadlineError",
+          "CommandDeadlines",
+          "commandTimeoutMs",
+          "createCommandSender"
+        ],
+        "physical_lines": 80
       },
       {
         "path": "web/tests/helpers/browser-next-server.mts",
@@ -5098,7 +5118,7 @@
     "destinations": [
       {
         "path": "web/tests/helpers/browser-harness.mts",
-        "sha256": "10c4eb5bdbd96ae23a53b3aceacae8861ef060314dce72f1fe6a1aa0770ba2a5",
+        "sha256": "a9c285cf94e218adde4cf259ee8e31801e872986d8fbafa6ec8534b3c1b51671",
         "symbols": [
           "BrowserHarness",
           "assertNoFatalError",
@@ -5112,8 +5132,9 @@
           "clickRoleWithText",
           "clickSelector",
           "close",
+          "closeOwned",
+          "commandDeadlineFailure",
           "configureDeterministicDocument",
-          "createCommandSender",
           "evaluate",
           "fetchNavigationObservation",
           "fillSelector",
@@ -5128,6 +5149,7 @@
           "pressNativeKey",
           "receive",
           "recordFatalError",
+          "rejectPendingCommands",
           "reload",
           "removeOwnedBrowserDirectory",
           "reportFetchGenerationFailure",
@@ -5149,7 +5171,18 @@
           "waitForRequestHandlersIdle",
           "waitForResponseCount"
         ],
-        "physical_lines": 798
+        "physical_lines": 790
+      },
+      {
+        "path": "web/tests/helpers/browser-command-deadline.mts",
+        "sha256": "bc826d2dff55ea45597c629dd1db102c95d9f3fcfb445d45e1c19fa80a5f7aae",
+        "symbols": [
+          "BrowserCommandDeadlineError",
+          "CommandDeadlines",
+          "commandTimeoutMs",
+          "createCommandSender"
+        ],
+        "physical_lines": 80
       },
       {
         "path": "web/tests/helpers/browser-next-server.mts",
@@ -5284,17 +5317,27 @@
       },
       {
         "path": "web/tests/helpers/browser-harness.mts",
-        "sha256": "10c4eb5bdbd96ae23a53b3aceacae8861ef060314dce72f1fe6a1aa0770ba2a5",
+        "sha256": "a9c285cf94e218adde4cf259ee8e31801e872986d8fbafa6ec8534b3c1b51671",
         "symbols": [
           "BrowserHarness",
-          "createCommandSender",
           "removeOwnedBrowserDirectory",
           "resolveBrowserPath",
           "terminateChildProcess",
           "waitForChildExit",
           "waitForMapCount"
         ],
-        "physical_lines": 798
+        "physical_lines": 790
+      },
+      {
+        "path": "web/tests/helpers/browser-command-deadline.mts",
+        "sha256": "bc826d2dff55ea45597c629dd1db102c95d9f3fcfb445d45e1c19fa80a5f7aae",
+        "symbols": [
+          "BrowserCommandDeadlineError",
+          "CommandDeadlines",
+          "commandTimeoutMs",
+          "createCommandSender"
+        ],
+        "physical_lines": 80
       },
       {
         "path": "web/tests/helpers/browser-next-server.mts",

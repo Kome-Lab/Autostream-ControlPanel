@@ -7,11 +7,13 @@ import test from "node:test";
 import { ciClosureBase, ciClosurePaths, inverseCIClosure } from "./ci-closure-deltas.mts";
 import { createNormalizedReader } from "./source-normalization.mts";
 import { historicalUI188Source } from "./ui188-current-source-deltas.mts";
+import { createContainmentAdapter } from "./ui188-cp-containment-source-delta.mts";
 
 const root = fileURLToPath(new URL("../../..", import.meta.url));
 const object = (commit: string, path: string) => execFileSync("git", ["show", commit + ":" + path], { cwd: root, maxBuffer: 32 * 1024 * 1024 });
 const raw = (path: string) => readFileSync(resolve(root, path));
-const historicalRaw = (path: string) => historicalUI188Source(path, raw(path), object);
+const containment = createContainmentAdapter(root, { raw, object });
+const historicalRaw = (path: string) => historicalUI188Source(path, containment.inverse(path, raw(path)), object);
 const io = { raw, object, exists: (path: string) => existsSync(resolve(root, path)) };
 const expectedPaths = [
   "internal/httpapi/server_start_preparation_claim_test.go",

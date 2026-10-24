@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import "./command-deadline.test.mts";
 import test from "node:test";
 import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync, readdirSync } from "node:fs";
 import { execFileSync } from "node:child_process";

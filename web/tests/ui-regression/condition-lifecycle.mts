@@ -27,6 +27,14 @@ export function createConditionRunner(baseURL: string, write: Writer, launch = (
     let failure: unknown, failed = false, failedStage: Stage = stage, result: T | undefined;
     const cleanup: unknown[] = [];
     const save = (name: string, value: unknown) => { try { write(condition.id + "." + name, value); } catch (error) { stopped = true; throw error; } };
+    let deadlineSaved = false;
+    const saveCommandDeadline = (at: Stage) => {
+      const deadline = browser?.commandDeadlineFailure;
+      if (!deadline || deadlineSaved) return;
+      deadlineSaved = true; stopped = true;
+      try { save("command-deadline.json", { schemaVersion: 1, stage: at, method: deadline.method, command: deadline.command, timeoutMs: deadline.timeoutMs }); }
+      catch (output) { cleanup.push(output); }
+    };
     try {
       browser = await launch();
       assert.equal(browsers.has(browser), false, "old browser instance reuse forbidden"); browsers.add(browser);
@@ -50,7 +58,12 @@ export function createConditionRunner(baseURL: string, write: Writer, launch = (
       browser.assertNoFatalError(); stage = "exercise";
       result = await exercise(browser, fixture);
       browser.assertNoFatalError();
-    } catch (error) { failure = error; failed = true; failedStage = stage;if(isUAOutputFailure(error))stopped=true; }
+    } catch (error) {
+      failure = error; failed = true; failedStage = stage;
+      if (isUAOutputFailure(error) || browser?.commandDeadlineFailure) stopped = true;
+      // Persist the transport failure before any further diagnostic/cleanup.
+      saveCommandDeadline(stage);
+    }
     finally {
       // Release held required responses before draining or closing their sole owner.
       for (const [step, action] of [
@@ -60,6 +73,7 @@ export function createConditionRunner(baseURL: string, write: Writer, launch = (
       ] as const) {
         try { stage = step; await action(); }
         catch (error) { cleanup.push(error); stopped = true; if (!failed) { failure = error; failed = true; failedStage = stage; } }
+        finally { saveCommandDeadline(stage); }
       }
       if (browser && failed) preserveFetchDiagnostic(browser, (name, value) => save(name, value));
       active = false;

@@ -116,7 +116,7 @@ export function createNextReadinessFixture(options: NextReadinessOptions = {}) {
   // Execute the complete checked-in harness, including ensureWebServer's real calls.
   // Only OS, HTTP and clock boundaries are controlled; there is no alternate readiness algorithm.
   nextReadinessHarnessJavascript ??= new Map([
-    "browser-harness.mts", "browser-next-server.mts", "browser-process-timing.mts",
+    "browser-harness.mts", "browser-next-server.mts", "browser-process-timing.mts", "browser-command-deadline.mts",
   ].map((name) => ["./" + name, ts.transpileModule(readFileSync(resolve(dirname(browserHarnessPath), name), "utf8"), {
     fileName: name.replace(/\.mts$/, ".ts"),
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },

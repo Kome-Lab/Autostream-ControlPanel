@@ -11,7 +11,7 @@ import { assertObservation, exerciseAccessibility, type UIObservation } from "./
 import { assertState, deniedPrimaryRequests, loadingPaths, failureTextExpression, hasFailureCopy, type RequestEvidence } from "./state-drivers.mts";
 import { driveFormContent, prepareFreshNodeDraft, type FreshNodeDraft } from "./form-content-driver.mts";
 import { assertContentReached, canonicalFixturePath } from "./fixture-inputs.mts";
-import { clickNamed, clickVisible, clickStreamPrimary, clickWorkerRestart } from "./visible-trigger.mts";
+import { clickNamed, clickVisible, clickStreamPrimary, clickWorkerRestart, VisibleTriggerCleanupFailure } from "./visible-trigger.mts";
 import { settleRender, closeOverlay, assertStableCapture } from "./render-state.mts";
 import { exerciseTable } from "./table-browser.mts";
 import { layoutExpression, assertLayout, type LayoutObservation } from "./layout-observation.mts";
@@ -77,10 +77,19 @@ export class ConditionOutputFailure extends AggregateError {
     this.original = original; this.output = output;
   }
 }
+function triggerCleanupLayers(primary: unknown) {
+  if (!(primary instanceof VisibleTriggerCleanupFailure)) return [];
+  // Only the known Worker -> clickTarget nesting is traversed. Arbitrary
+  // Error.cause graphs are neither followed nor serialized.
+  if (primary.phase === "worker-restart" && primary.primary instanceof VisibleTriggerCleanupFailure && primary.primary.phase === "click-target") return [primary, primary.primary];
+  return [primary];
+}
 export function conditionFailureStatus(condition: Condition, error: unknown, restoration?: DraftRestorationFailure) {
   const cause = error instanceof ConditionFailure ? error.cause : error;
   const draft = cause instanceof DraftRestorationFailure ? cause : restoration;
-  const primary = draft ? (draft.primaryFailed ? draft.primary : draft.restoration) : cause;
+  const body = draft ? (draft.primaryFailed ? draft.primary : draft.restoration) : cause;
+  const layers = triggerCleanupLayers(body);
+  const primary = layers.length ? layers[layers.length - 1].primary : body;
   return { id: condition.id, status: "FAIL", error: primary instanceof Error ? primary.message : String(primary) };
 }
 export function writeConditionFailure(condition: Condition, error: unknown, write: (name: string, value: unknown) => void, restoration?: DraftRestorationFailure) {
@@ -94,6 +103,14 @@ export function writeConditionFailure(condition: Condition, error: unknown, writ
         phase: "draft-restoration", code: draft.restoration instanceof AggregateError ? "RESTORE_COMPOSITE" : draft.restoration instanceof Error ? "RESTORE_ERROR" : "RESTORE_UNKNOWN" };
       assert.ok(Buffer.byteLength(JSON.stringify(diagnostic), "utf8") <= 4096, "bounded restoration diagnostic");
       write(condition.id + ".draft-restoration.json", diagnostic);
+    }
+    const layers = triggerCleanupLayers(draft ? (draft.primaryFailed ? draft.primary : draft.restoration) : cause);
+    if (layers.length) {
+      assert.ok(conditions.some(item => item.id === condition.id), "registered diagnostic condition");
+      const diagnostic = { schemaVersion: 1, conditionID: condition.id, phase: "visible-trigger-cleanup", code: "TRIGGER_BODY_AND_CLEANUP_FAILED",
+        layers: layers.map(layer => ({ phase: layer.phase, code: "BODY_AND_CLEANUP_FAILED", primaryFailed: true, cleanupFailed: true })) };
+      assert.ok(Buffer.byteLength(JSON.stringify(diagnostic), "utf8") <= 4096, "bounded trigger cleanup diagnostic");
+      write(condition.id + ".trigger-cleanup.json", diagnostic);
     }
   } catch (output) { throw new ConditionOutputFailure(error, output); }
   if (!(error instanceof ConditionFailure) || error.stop) throw error;

@@ -1,4 +1,5 @@
 import type { BrowserOperationBoundary, BrowserOperationOptions, BrowserOperationRecord } from "./browser-operation-boundary.mts";
+import { CommandDeadlines, commandTimeoutMs, createCommandSender, type CDPResponse, type PendingCommand } from "./browser-command-deadline.mts";
 import { NativeFocusObserver } from "./browser-ua-focus.mts";
 import { spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync, rmSync } from "node:fs";
@@ -68,20 +69,6 @@ const browserNativeKeyInputs = {
   },
 } satisfies Readonly<Record<BrowserNativeKey, BrowserNativeKeyInput>>;
 
-type CDPResponse = {
-  id?: number;
-  method?: string;
-  params?: Record<string, unknown>;
-  result?: Record<string, unknown>;
-  error?: { message?: string };
-  sessionId?: string;
-};
-
-type PendingCommand = {
-  resolve: (value: Record<string, unknown>) => void;
-  reject: (error: Error) => void;
-};
-
 const defaultBrowserCandidates = process.platform === "win32"
   ? [
       "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
@@ -115,6 +102,11 @@ export class BrowserHarness {
   private generationFailureJSON: string | undefined;
   private routeResolver: RouteResolver = () => null;
   private readonly pendingCommands = new Map<number, PendingCommand>();
+  private readonly commandDeadlines = new CommandDeadlines(error => {
+    this.recordFatalError(error);
+    this.rejectPendingCommands(error); // Also fence a deadline racing owned close.
+  });
+  private closePromise: Promise<void> | undefined;
   private readonly eventWaiters = new RejectableEventWaiters();
   private readonly requestLifecycle = new FetchRequestLifecycle();
   private consoleErrorEvents = 0;
@@ -373,13 +365,13 @@ export class BrowserHarness {
     this.requestLifecycle.beginNavigation("navigate");
     this.topLevelNavigationPending = true;
     const loaded = this.eventWaiters.wait("Page.loadEventFired", 20_000, `Timed out loading ${url}`);
+    void loaded.promise.catch(() => {}); // Observed even while Page.navigate awaits its response.
     try {
       const result = await this.send("Page.navigate", { url });
       if (result.errorText) throw new Error(`Navigation failed: ${result.errorText}`);
       await loaded.promise;
     } catch (error) {
       this.topLevelNavigationPending = false;
-      void loaded.promise.catch(() => {});
       loaded.cancel(asError(error));
       throw error;
     }
@@ -389,24 +381,24 @@ export class BrowserHarness {
     this.requestLifecycle.beginNavigation("reload");
     this.topLevelNavigationPending = true;
     const loaded = this.eventWaiters.wait("Page.loadEventFired", 20_000, "Timed out reloading the page");
+    void loaded.promise.catch(() => {});
     try {
       await this.send("Page.reload", { ignoreCache: true });
       await loaded.promise;
     } catch (error) {
       this.topLevelNavigationPending = false;
-      void loaded.promise.catch(() => {});
       loaded.cancel(asError(error));
       throw error;
     }
   }
 
-  async evaluate<T>(expression: string): Promise<T> {
+  async evaluate<T>(expression: string, timeoutMs = commandTimeoutMs("Runtime.evaluate")): Promise<T> {
     const response = await this.send("Runtime.evaluate", {
       expression,
       awaitPromise: true,
       returnByValue: true,
       userGesture: true,
-    });
+    }, timeoutMs);
     if (response.exceptionDetails) {
       const details = response.exceptionDetails as { text?: string; exception?: { description?: string } };
       throw new Error(details.exception?.description || details.text || "Browser evaluation failed");
@@ -418,7 +410,7 @@ export class BrowserHarness {
     const deadline = Date.now() + timeoutMs;
     let lastValue: T | undefined;
     while (Date.now() < deadline) {
-      lastValue = await this.evaluate<T>(expression);
+      lastValue = await this.evaluate<T>(expression, Math.min(commandTimeoutMs("Runtime.evaluate"), Math.max(1, deadline - Date.now())));
       if (accept(lastValue)) return lastValue;
       await delay(50);
     }
@@ -517,13 +509,20 @@ export class BrowserHarness {
     await this.send("Input.dispatchKeyEvent", { type: "keyUp", key, code });
   }
 
-  async close() {
-    if (this.closed) return;
+  get commandDeadlineFailure() { return this.commandDeadlines.failure; }
+
+  close() {
+    this.closePromise ??= this.closeOwned();
+    return this.closePromise;
+  }
+
+  private async closeOwned() {
     this.closed = true;
     this.nativeFocusObserver.clear();
     this.requestLifecycle.beginNavigation("close");
     const closeError = new Error("Browser harness closed");
     this.eventWaiters.rejectAll(closeError);
+    this.rejectPendingCommands(closeError);
     try {
       await withTimeout(this.sendBrowser("Browser.close"), 3_000, "Timed out closing the browser through CDP");
     } catch {
@@ -538,31 +537,39 @@ export class BrowserHarness {
         await removeOwnedBrowserDirectory(this.userDataDirectory);
       }
     } finally {
+      this.rejectPendingCommands(closeError);
       this.requestLifecycle.close(closeError);
     }
   }
 
-  private async send(method: string, params: Record<string, unknown> = {}) {
-    return this.sendCommand(method, params, this.sessionId);
+  private async send(method: string, params: Record<string, unknown> = {}, timeoutMs = commandTimeoutMs(method)) {
+    return this.sendCommand(method, params, this.sessionId, timeoutMs);
   }
 
   private async sendBrowser(method: string, params: Record<string, unknown> = {}) {
     return this.sendCommand(method, params);
   }
 
-  private sendCommand(method: string, params: Record<string, unknown>, sessionId?: string) {
+  private sendCommand(method: string, params: Record<string, unknown>, sessionId?: string, timeoutMs = commandTimeoutMs(method)) {
     if (this.fatalError) return Promise.reject(this.fatalError);
+    if (this.closed && method !== "Browser.close") return Promise.reject(new Error("Browser harness closed"));
     const scope = this.operationBoundary;
     const observed = scope?.beforeCommand(method, params);
     const id = ++this.nextCommandId;
     const payload = sessionId ? { id, method, params, sessionId } : { id, method, params };
     const result = new Promise<Record<string, unknown>>((resolveCommand, rejectCommand) => {
-      this.pendingCommands.set(id, { resolve: resolveCommand, reject: rejectCommand });
+      // G3 owns its operation bound; Browser.close owns its existing ACK/fallback bound.
+      const cancel = scope || method === "Browser.close" ? () => {} : this.commandDeadlines.arm(id, method, timeoutMs);
+      this.pendingCommands.set(id, {
+        resolve: value => { cancel(); resolveCommand(value); },
+        reject: error => { cancel(); rejectCommand(error); },
+      });
       if (method === "Page.navigate") {
         this.diagnosticNavigateId = id;
         this.diagnosticNavigateResponded = false;
       }
-      this.socket.send(JSON.stringify(payload));
+      try { this.socket.send(JSON.stringify(payload)); }
+      catch (error) { this.recordFatalError(error); this.rejectPendingCommands(asError(error)); }
     });
     if (!scope || observed === undefined) return result;
     return result.then((value) => { scope.afterCommand(observed, true); return value; },
@@ -581,6 +588,9 @@ export class BrowserHarness {
       return;
     }
     if (!message.method || (message.sessionId && message.sessionId !== this.sessionId)) return;
+    if (!this.operationBoundary && message.method === "Page.javascriptDialogOpening") {
+      this.recordFatalError(new Error("UNEXPECTED_JAVASCRIPT_DIALOG"));
+    }
     if (this.operationBoundary && message.method === "Page.javascriptDialogOpening") {
       this.operationBoundary.dialogOpening(message.params || {}, message.sessionId === this.sessionId && (message.params?.frameId === undefined || message.params.frameId === this.mainFrameId));
     }
@@ -687,7 +697,11 @@ export class BrowserHarness {
     this.fatalError = asError(error);
     this.requestLifecycle.fail(this.fatalError);
     this.eventWaiters.rejectAll(this.fatalError);
-    for (const command of this.pendingCommands.values()) command.reject(this.fatalError);
+    this.rejectPendingCommands(this.fatalError);
+  }
+
+  private rejectPendingCommands(error: Error) {
+    for (const command of this.pendingCommands.values()) command.reject(error);
     this.pendingCommands.clear();
   }
 
@@ -700,8 +714,7 @@ export class BrowserHarness {
       this.recordFatalError(error);
       return;
     }
-    for (const command of this.pendingCommands.values()) command.reject(error);
-    this.pendingCommands.clear();
+    this.rejectPendingCommands(error);
     this.eventWaiters.rejectAll(error);
     this.requestLifecycle.close(error);
   }
@@ -716,27 +729,6 @@ export function resolveBrowserPath() {
   const browserPath = defaultBrowserCandidates.find((candidate) => existsSync(candidate));
   if (!browserPath) throw new Error("Chrome/Chromium was not found; set AUTOSTREAM_BROWSER_PATH");
   return browserPath;
-}
-
-function createCommandSender(socket: WebSocket) {
-  let commandId = 0;
-  const pending = new Map<number, PendingCommand>();
-  socket.addEventListener("message", (event) => {
-    const message = JSON.parse(String(event.data)) as CDPResponse;
-    if (!message.id) return;
-    const command = pending.get(message.id);
-    if (!command) return;
-    pending.delete(message.id);
-    if (message.error) command.reject(new Error(message.error.message || "CDP command failed"));
-    else command.resolve(message.result || {});
-  });
-  return (method: string, params: Record<string, unknown>) => {
-    const id = ++commandId;
-    return new Promise<Record<string, unknown>>((resolveCommand, rejectCommand) => {
-      pending.set(id, { resolve: resolveCommand, reject: rejectCommand });
-      socket.send(JSON.stringify({ id, method, params }));
-    });
-  };
 }
 
 async function removeOwnedBrowserDirectory(path: string) {

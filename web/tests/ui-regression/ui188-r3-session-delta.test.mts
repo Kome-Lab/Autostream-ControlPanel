@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
 import {execFileSync} from "node:child_process";
 import {readFileSync} from "node:fs";
+import {fileURLToPath} from "node:url";
 import test from "node:test";
 import {historicalSessionRefreshSource,inverseSessionRefresh,sessionRefreshDelta} from "./ui188-r3-session-delta.mts";
 import {historicalR9OwnerMap} from "./ui188-r9-finalization-deltas.mts";
+import {createContainmentAdapter} from "./ui188-cp-containment-source-delta.mts";
 const root=new URL("../../..",import.meta.url);
 const object=(commit:string,path:string)=>execFileSync("git",["show",commit+":"+path],{cwd:root});
-const current=(path:string)=>historicalR9OwnerMap(path,readFileSync(new URL(path,root.href+"/")),object);
+const raw=(path:string)=>readFileSync(new URL(path,root.href+"/"));
+const containment=createContainmentAdapter(fileURLToPath(root),{raw,object});
+const current=(path:string)=>historicalR9OwnerMap(path,containment.inverse(path,raw(path)),object);
 test("UI188-R3-SESSION-001: finite current session repair preserves frozen history and strict authority witnesses",()=>{
   assert.equal(sessionRefreshDelta.paths.length,2);
   for(const delta of sessionRefreshDelta.paths){const before=object(sessionRefreshDelta.beforeCommit,delta.path);assert.notDeepEqual(before,current(delta.path));assert.deepEqual(inverseSessionRefresh(delta.path,before,current(delta.path)),before)}
