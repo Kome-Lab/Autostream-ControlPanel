@@ -326,6 +326,7 @@ test("registry definitions are deep-copied, deeply frozen, and detached from lat
     messageKey: "apiErrorUnknown",
   });
   assert.deepEqual(Object.keys(defaultAPIErrorRegistry.codes), [
+    "cover_upload_limit",
     "invalid_json_response",
     "non_json_response",
   ]);
