@@ -39,7 +39,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     : safeUserUIPreference({ theme_id: "autostream", color_mode: "system", revision: 0 }),
   [bootstrapReady]);
   const [preview, setPreview] = useState<SafeUserUIPreference | null>(null);
-  const [systemDark, setSystemDark] = useState(() => typeof window !== "undefined" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+  const [systemDark, setSystemDark] = useState(false);
   const preferenceQuery = useQuery({
     queryKey: uiPreferenceQueryKey,
     queryFn: () => apiGet<UserUIPreference>("/account/preferences/ui"),
@@ -57,6 +57,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     const media = window.matchMedia("(prefers-color-scheme: dark)");
     const update = () => setSystemDark(media.matches);
     media.addEventListener("change", update);
+    update();
     return () => media.removeEventListener("change", update);
   }, []);
 

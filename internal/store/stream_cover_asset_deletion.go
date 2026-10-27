@@ -12,12 +12,14 @@ import (
 func retireStreamCoverAssetsTx(ctx context.Context, tx *sql.Tx, streamID string, now time.Time) error {
 	// Keep action IDs, fingerprints and outcomes for audit, while retiring this
 	// completed stream's file references so they cannot pin its uploads forever.
+	// Replay, outcome and delayed receipt paths lock runtime before actions even
+	// after a normal stop. Match that order across every retained generation.
 	for _, mutation := range []struct {
 		query string
 		args  []any
 	}{
-		{`UPDATE stream_video_cover_actions SET requested_asset_variant_id=NULL WHERE stream_id=?`, []any{streamID}},
 		{`UPDATE stream_video_cover_runtime SET asset_variant_id=NULL,applied_asset_variant_id=NULL,retired_at=COALESCE(retired_at,?) WHERE stream_id=?`, []any{now, streamID}},
+		{`UPDATE stream_video_cover_actions SET requested_asset_variant_id=NULL WHERE stream_id=?`, []any{streamID}},
 		{`DELETE FROM stream_video_cover_candidates WHERE stream_id=?`, []any{streamID}},
 		{`UPDATE stream_visual_settings SET cover_source='none',cover_preset_id=NULL,cover_preset_revision=NULL,cover_asset_id=NULL,cover_variant_id=NULL,cover_start_active=FALSE WHERE stream_id=?`, []any{streamID}},
 	} {

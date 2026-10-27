@@ -42,7 +42,7 @@ export function renderUI(element: ReactElement, locale: "ja"|"en", route="/admin
     const tree=createElement(QueryClientProvider,{client},createElement(AppRouterContext.Provider,{value:router},
       createElement(SearchParamsContext.Provider,{value:new URL(route,"http://ui.test").searchParams},
       createElement(PathnameContext.Provider,{value:new URL(route,"http://ui.test").pathname},
-      createElement(I18nProvider,null,createElement(ThemeProvider,null,createElement(TooltipProvider,null,element)))))));
+      createElement(I18nProvider,{initialLocale:locale},createElement(ThemeProvider,null,createElement(TooltipProvider,null,element)))))));
     return renderToStaticMarkup(tree);
   } finally {Date.now=dateNowBefore;if(windowBefore)Object.defineProperty(globalThis,"window",windowBefore);else Reflect.deleteProperty(globalThis,"window");client.clear();}
 }

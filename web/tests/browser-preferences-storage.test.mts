@@ -107,7 +107,7 @@ function hookHost(hydrated: { value: boolean }) {
   };
 }
 
-function createProviders(options: { fault?: Fault; errorName?: string; data?: UserUIPreference; pathname?: string; hydrated?: boolean; mirror?: string | null; locale?: string | null } = {}) {
+function createProviders(options: { fault?: Fault; errorName?: string; data?: UserUIPreference; pathname?: string; hydrated?: boolean; mirror?: string | null; locale?: string | null; systemDark?: boolean } = {}) {
   const values = new Map<string, string>([["autostream.theme", "SYNTHETIC_LEGACY_VALUE_DO_NOT_USE"]]);
   if (options.mirror !== null) values.set(preferences.themeMirrorStorageKey, options.mirror ?? JSON.stringify({ theme_id: "ocean", color_mode: "system" }));
   if (options.locale !== null) values.set(i18n.localeStorageKey, options.locale ?? "ja");
@@ -128,7 +128,7 @@ function createProviders(options: { fault?: Fault; errorName?: string; data?: Us
     removeItem: () => deny("removeItem"), clear: () => deny("clear"),
   };
   const media = {
-    matches: false,
+    matches: options.systemDark ?? false,
     addEventListener(name: string, callback: () => void) { assert.equal(name, "change"); mediaAdds++; listeners.add(callback); },
     removeEventListener(name: string, callback: () => void) { assert.equal(name, "change"); mediaRemoves++; listeners.delete(callback); },
   };
@@ -177,7 +177,7 @@ function createProviders(options: { fault?: Fault; errorName?: string; data?: Us
     assert.fail("Provider effects did not settle");
   }
   return {
-    commit, values, reads, writes, root, classes, listeners, apiCalls, hydrated,
+    render, commit, values, reads, writes, root, classes, listeners, apiCalls, hydrated,
     get theme() { return theme.useTheme(); }, get language() { return language.useI18n(); },
     get getterCalls() { return getterCalls; }, get mediaAdds() { return mediaAdds; }, get mediaRemoves() { return mediaRemoves; },
     get queryOptions() { return queryOptions; },
@@ -231,10 +231,37 @@ test("real React SSR renders both production Providers without touching window, 
   const language = loadModule<I18nModule>(i18nSource, { react: React, "@/lib/i18n": i18n }, globals);
   function Child() {
     assert.equal(theme.useTheme().themeID, "autostream"); assert.equal(theme.useTheme().preference.revision, 0);
+    assert.equal(theme.useTheme().dark, false);
     assert.equal(language.useI18n().locale, "ja"); assert.equal(language.useI18n().t("dashboard"), "ダッシュボード");
     return React.createElement("span", null, "SSR-child");
   }
   assert.equal(renderToStaticMarkup(React.createElement(theme.ThemeProvider, null, React.createElement(language.I18nProvider, null, React.createElement(Child)))), "<span>SSR-child</span>");
+  function EnglishChild() {
+    assert.equal(language.useI18n().locale, "en");
+    return React.createElement("span", null, language.useI18n().t("dashboard"));
+  }
+  assert.equal(renderToStaticMarkup(React.createElement(language.I18nProvider, { initialLocale: "en" }, React.createElement(EnglishChild))), "<span>Dashboard</span>");
+});
+
+test("initial hydration snapshots match SSR before stored locale and dark system preference are applied", (t) => {
+  const providers = createProviders({ pathname: "/login", hydrated: false, locale: "en", systemDark: true });
+  t.after(() => providers.close());
+  providers.render();
+  assert.equal(providers.language.locale, "ja");
+  assert.equal(providers.language.t("dashboard"), "ダッシュボード");
+  assert.equal(providers.theme.dark, false);
+  assert.deepEqual(providers.reads, []);
+  assert.equal(providers.mediaAdds, 0);
+  providers.commit();
+  assert.equal(providers.language.locale, "ja");
+  assert.equal(providers.root.lang, "ja");
+  assert.equal(providers.theme.dark, true);
+  providers.hydrated.value = true;
+  providers.commit();
+  assert.equal(providers.language.locale, "en");
+  assert.equal(providers.root.lang, "en");
+  assert.equal(providers.classes.has("dark"), true);
+  assert.equal(providers.mediaAdds, 1);
 });
 
 for (const fault of ["getter", "getItem"] as const) {
@@ -282,7 +309,7 @@ test("normal mirror and en locale initialize both Providers and persist only sup
 test("hydration, DB arrival, unsaved preview and persisted revision retain their existing priority", (t) => {
   const providers = createProviders({ hydrated: false, locale: "unsupported-locale" }); t.after(() => providers.close()); providers.commit();
   assert.equal(providers.theme.themeID, "autostream"); assert.equal(providers.language.locale, "ja");
-  assert.deepEqual(providers.reads, [i18n.localeStorageKey]); assert.equal(providers.writes.length, 0);
+  assert.deepEqual(providers.reads, []); assert.equal(providers.writes.length, 0);
   providers.hydrated.value = true; providers.commit(); assert.equal(providers.theme.themeID, "ocean"); assert.equal(providers.writes.length, 0);
   providers.theme.previewPreference({ theme_id: "rose" }); providers.commit(); assert.equal(providers.theme.themeID, "rose"); assert.equal(providers.writes.length, 0);
   providers.setData(dbTheme); providers.theme.applyPersistedPreference(dbTheme); providers.commit();
