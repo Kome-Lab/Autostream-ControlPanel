@@ -11,6 +11,7 @@ import { createNormalizedReader } from "./source-normalization.mts";
 import { releaseAssemblyBase, releaseAssemblySource } from "./release-assembly-deltas.mts";
 import { cp176Base, cp176Paths, inverseCP176DependencyRepair } from "./cp176-dependency-deltas.mts";
 import { historicalUI188Source } from "./ui188-current-source-deltas.mts";
+import { createStreamCreateCurrentAdapter, streamCreateCurrentPaths } from "./stream-create-current-source-delta.mts";
 
 const root = fileURLToPath(new URL("../../..", import.meta.url));
 const raw = (path: string) => readFileSync(resolve(root, path));
@@ -18,7 +19,8 @@ const object = (commit: string, path: string) => execFileSync("git", ["show", co
 const io = { raw, object, exists: (path: string) => existsSync(resolve(root, path)) };
 const expectedPaths = ["internal/httpapi/server_streams.go", "web/package.json", ".github/workflows/ci.yml"];
 const hash = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
-const historicalRaw = (path: string) => historicalUI188Source(path, raw(path), object);
+const currentSource = createStreamCreateCurrentAdapter(root, { raw, object });
+const historicalRaw = (path: string) => historicalUI188Source(path, currentSource.inverse(path, raw(path)), object);
 const beforeDependencyRepair = (path: string) => cp176Paths.includes(path)
   ? inverseCP176DependencyRepair(path, object(cp176Base, path), historicalRaw(path)) : historicalRaw(path);
 
@@ -58,7 +60,7 @@ test("UI-CP174-002: missing, reverted, truncated, extra and wrong-original bytes
     const absent = createNormalizedReader(root, { ...io, raw: p => { if (p === path) throw missing; return raw(p); } });
     assert.throws(() => absent.read(path), error => error === missing);
     const changed = createNormalizedReader(root, { ...io, raw: p => p === path ? Buffer.concat([raw(p), Buffer.from("drift")]) : raw(p) });
-    assert.throws(() => changed.read(path), path === ".github/workflows/ci.yml" ? /R9 unreviewed current finalization bytes/ : /exact specified name edits/);
+    assert.throws(() => changed.read(path), /stream-create unreviewed current source bytes/);
     const wrongBase = createNormalizedReader(root, { ...io, object: (commit, p) => commit === cp174Base && p === path ? Buffer.alloc(0) : object(commit, p) });
     assert.throws(() => wrongBase.read(path), /fixed original hash/);
   }
@@ -167,7 +169,7 @@ function assertBrowserWitness(path: string, bytes: Buffer) {
   const row = browserSources.find(source => source.path === path);
   assert.ok(row, "unknown CP174 browser witness");
   // Bind the current F05/F08 witness first, then preserve its historical hash.
-  assert.equal(hash(historicalUI188Source(path, bytes, object)), row.sha256, "CP174 required browser witness bytes changed");
+  assert.equal(hash(historicalUI188Source(path, currentSource.inverse(path, bytes), object)), row.sha256, "CP174 required browser witness bytes changed");
 }
 test("UI-CP174-004: required browser witnesses cannot be omitted, skipped, returned early or weakened", () => {
   for (const { path, guard, candidateSha256, sha256, additions } of browserSources) {
@@ -179,7 +181,7 @@ test("UI-CP174-004: required browser witnesses cannot be omitted, skipped, retur
     const mutants = ["", source.replace("test(\"CP", "test.skip(\"CP"), source.replace("async t => {", "async t => { return;"), source.replace(guard, "void 0;"), ...additions.map(addition => source.replace(addition, "omitted correction"))];
     for (const mutant of mutants) {
       assert.notEqual(mutant, source, "negative control must change the actual witness");
-      assert.throws(() => assertBrowserWitness(path, Buffer.from(mutant)), /browser witness bytes changed|reviewed finite UI188 source bytes/);
+      assert.throws(() => assertBrowserWitness(path, Buffer.from(mutant)), streamCreateCurrentPaths.some(listed => listed === path) ? /stream-create unreviewed current source bytes/ : /browser witness bytes changed|reviewed finite UI188 source bytes/);
     }
   }
   assert.match(raw("web/tests/ui-regression/parity.test.mts").toString("utf8"), /^import "\.\/cp174-source-deltas\.test\.mts";$/m, "CP174 independent tests are imported unconditionally by the existing required suite");

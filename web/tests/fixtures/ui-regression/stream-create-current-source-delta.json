@@ -1,0 +1,1264 @@
+{
+  "schemaVersion": 1,
+  "beforeCommit": "f64cd5cd423afda31644afbfaddfbc52313a1648",
+  "beforeTree": "6faec1199df72ddd1628a72d7c9bf1badc30d43d",
+  "records": [
+    {
+      "path": ".github/workflows/ci.yml",
+      "before": {
+        "mode": "100644",
+        "blob": "9f36c6ae3cac7f0b9a5b5d70479b9c60f56e8856",
+        "sha256": "e1b80880ed52c6acb469e6040a62ce6f1a2e2266dded7c58fbe410b76c5e09e1"
+      },
+      "after": {
+        "mode": "100644",
+        "blob": "1e35925f23e31e46ffd9fdbe933d2ae698bb9ea4",
+        "sha256": "14d6a81128dc678138ac084788ab73128244d1ce58ced4e1377559480e4880da"
+      },
+      "hunks": [
+        {
+          "offsetBefore": 37822,
+          "offsetAfter": 37822,
+          "before": "        env:\n          AUTOSTREAM_BROWSER_PATH: /usr/bin/google-chrome\n        run: npm run test:ui-foundation-browser\n      - name: Test Observability and Updater UI operation witnesses\n        run: npm run test:operation-witnesses\n      - name: Test foundation migration action denominator\n",
+          "after": "        env:\n          AUTOSTREAM_BROWSER_PATH: /usr/bin/google-chrome\n        run: npm run test:ui-foundation-browser\n      - name: Test full-page stream creation and all cover previews\n        timeout-minutes: 6\n        env:\n          AUTOSTREAM_BROWSER_PATH: /usr/bin/google-chrome\n          AUTOSTREAM_STREAM_CREATE_EVIDENCE_DIR: ${{ runner.temp }}/stream-create-cover-evidence\n        run: node --no-warnings --test --test-concurrency=1 tests/helpers/browser-viewport-capture.test.mts tests/stream-create-covers-browser.test.mts\n      - name: Upload stream creation and cover browser evidence\n        if: always() && !cancelled()\n        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n          name: stream-create-cover-evidence-${{ github.sha }}\n          path: ${{ runner.temp }}/stream-create-cover-evidence\n          if-no-files-found: warn\n      - name: Test Observability and Updater UI operation witnesses\n        run: npm run test:operation-witnesses\n      - name: Test foundation migration action denominator\n"
+        }
+      ]
+    },
+    {
+      "path": "internal/httpapi/control_platform_features.go",
+      "before": {
+        "mode": "100644",
+        "blob": "0a3e92406e747bef26f7dd47526e6f35dc10afe1",
+        "sha256": "0a5a934155541165dd989fb0504f46e789c8276109130c47c9fa0e53b1068e87"
+      },
+      "after": {
+        "mode": "100644",
+        "blob": "cfa6864ab3cf8ebef973b132a272d1f7d5c78421",
+        "sha256": "073d91d8cd3b6c9faacf01404c72c6344c431fc2e1b493d032b0a54a07104291"
+      },
+      "hunks": [
+        {
+          "offsetBefore": 98,
+          "offsetAfter": 98,
+          "before": "\t\"errors\"\n\t\"io\"\n\t\"net/http\"\n\t\"strconv\"\n\t\"strings\"\n\t\"time\"\n",
+          "after": "\t\"errors\"\n\t\"io\"\n\t\"net/http\"\n\t\"net/url\"\n\t\"strconv\"\n\t\"strings\"\n\t\"time\"\n"
+        },
+        {
+          "offsetBefore": 13245,
+          "offsetAfter": 13256,
+          "before": "\t\treturn\n\t}\n\tcurrent := currentFromContext(r.Context())\n\tif err := s.mediaAssets.SoftDeleteAsset(r.Context(), current.User.ID, r.PathValue(\"id\"), time.Now().UTC()); err != nil {\n\t\twriteMediaAssetError(w, err)\n\t\treturn\n\t}\n",
+          "after": "\t\treturn\n\t}\n\tcurrent := currentFromContext(r.Context())\n\tvar err error\n\tparameters, parseErr := url.ParseQuery(r.URL.RawQuery)\n\tif parseErr != nil {\n\t\twriteJSON(w, http.StatusBadRequest, map[string]string{\"code\": \"bad_request\"})\n\t\treturn\n\t}\n\tif expected, scoped := parameters[\"expected_upload_session_id\"]; scoped {\n\t\tif len(expected) != 1 || strings.TrimSpace(expected[0]) == \"\" {\n\t\t\twriteJSON(w, http.StatusBadRequest, map[string]string{\"code\": \"bad_request\"})\n\t\t\treturn\n\t\t}\n\t\tdeleter, ok := s.mediaAssets.(mediaassets.DraftAssetDeleter)\n\t\tif !ok {\n\t\t\twriteJSON(w, http.StatusServiceUnavailable, map[string]string{\"code\": \"media_assets_unavailable\"})\n\t\t\treturn\n\t\t}\n\t\terr = deleter.SoftDeleteDraftAsset(r.Context(), current.User.ID, r.PathValue(\"id\"), expected[0], time.Now().UTC())\n\t} else {\n\t\terr = s.mediaAssets.SoftDeleteAsset(r.Context(), current.User.ID, r.PathValue(\"id\"), time.Now().UTC())\n\t}\n\tif err != nil {\n\t\twriteMediaAssetError(w, err)\n\t\treturn\n\t}\n"
+        },
+        {
+          "offsetBefore": 14561,
+          "offsetAfter": 15313,
+          "before": "\t\tstatus, code = http.StatusConflict, \"upload_session_expired\"\n\tcase errors.Is(err, mediaassets.ErrDraftClaimed):\n\t\tstatus, code = http.StatusConflict, \"upload_session_claimed\"\n\tcase errors.Is(err, mediaassets.ErrIntegrity):\n\t\tstatus, code = http.StatusConflict, \"media_asset_integrity\"\n\t}\n",
+          "after": "\t\tstatus, code = http.StatusConflict, \"upload_session_expired\"\n\tcase errors.Is(err, mediaassets.ErrDraftClaimed):\n\t\tstatus, code = http.StatusConflict, \"upload_session_claimed\"\n\tcase errors.Is(err, mediaassets.ErrCoverUploadLimit):\n\t\tstatus, code = http.StatusConflict, \"cover_upload_limit\"\n\tcase errors.Is(err, mediaassets.ErrIntegrity):\n\t\tstatus, code = http.StatusConflict, \"media_asset_integrity\"\n\t}\n"
+        },
+        {
+          "offsetBefore": 18501,
+          "offsetAfter": 19367,
+          "before": "\t}\n\tticker := time.NewTicker(interval)\n\tdefer ticker.Stop()\n\tfor {\n\t\tselect {\n\t\tcase <-ctx.Done():\n\t\t\treturn\n\t\tcase now := <-ticker.C:\n\t\t\tremoved, err := s.mediaAssets.GarbageCollect(ctx, now.UTC(), 100)\n\t\t\tif err != nil {\n\t\t\t\ts.writeSystemAudit(ctx, store.AuditEvent{Action: \"media_assets.gc\", ResourceType: \"media_asset\", Result: \"failure\", Metadata: map[string]any{\"error_code\": \"media_asset_gc_failed\", \"limit\": 100}})\n\t\t\t\tcontinue\n\t\t\t}\n\t\t\tif removed > 0 {\n\t\t\t\ts.writeSystemAudit(ctx, store.AuditEvent{Action: \"media_assets.gc\", ResourceType: \"media_asset\", Result: \"success\", Metadata: map[string]any{\"removed_count\": removed, \"limit\": 100}})\n\t\t\t}\n\t\t}\n\t}\n}\n",
+          "after": "\t}\n\tticker := time.NewTicker(interval)\n\tdefer ticker.Stop()\n\t// A restart resumes durable file-removal attempts immediately.\n\ts.collectMediaAssets(ctx, time.Now().UTC())\n\tfor {\n\t\tselect {\n\t\tcase <-ctx.Done():\n\t\t\treturn\n\t\tcase now := <-ticker.C:\n\t\t\ts.collectMediaAssets(ctx, now.UTC())\n\t\t}\n\t}\n}\n\nfunc (s *Server) collectMediaAssets(ctx context.Context, now time.Time) {\n\tremoved, err := s.mediaAssets.GarbageCollect(ctx, now, 100)\n\tif err != nil {\n\t\ts.writeSystemAudit(ctx, store.AuditEvent{Action: \"media_assets.gc\", ResourceType: \"media_asset\", Result: \"failure\", Metadata: map[string]any{\"error_code\": \"media_asset_gc_failed\", \"metadata_removed_count\": removed, \"file_removal_retry\": \"pending\", \"limit\": 100}})\n\t\treturn\n\t}\n\tif removed > 0 {\n\t\ts.writeSystemAudit(ctx, store.AuditEvent{Action: \"media_assets.gc\", ResourceType: \"media_asset\", Result: \"success\", Metadata: map[string]any{\"metadata_removed_count\": removed, \"limit\": 100}})\n\t}\n}\n\nfunc (s *Server) collectDeletedStreamMediaAssets(ctx context.Context, streamID string) {\n\tif s.mediaAssets == nil {\n\t\treturn\n\t}\n\tcleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)\n\tdefer cancel()\n\tif memory, ok := s.mediaAssets.(interface {\n\t\tRetireStreamCoverAssets(context.Context, string, time.Time) error\n\t}); ok {\n\t\tif err := memory.RetireStreamCoverAssets(cleanupCtx, streamID, time.Now().UTC()); err != nil {\n\t\t\ts.writeSystemAudit(cleanupCtx, store.AuditEvent{Action: \"media_assets.gc\", ResourceType: \"stream\", ResourceID: streamID, Result: \"failure\", Metadata: map[string]any{\"error_code\": \"media_asset_retirement_failed\"}})\n\t\t\treturn\n\t\t}\n\t}\n\t// SQL retirement already committed inside the guarded DeleteStream\n\t// transaction. Collection failure cannot undo that successful deletion;\n\t// pending metadata and file keys remain for the next tick or process.\n\ts.collectMediaAssets(cleanupCtx, time.Now().UTC())\n}\n"
+        }
+      ]
+    },
+    {
+      "path": "internal/httpapi/control_platform_visual_cover.go",
+      "before": {
+        "mode": "100644",
+        "blob": "c8f20b07fab59c7112566b1b673a5816ce2d9f3b",
+        "sha256": "773e26e3b1df512b13ba246c17040ca6ef79ebc3e4b1c127d3fb2972ebb9390d"
+      },
+      "after": {
+        "mode": "100644",
+        "blob": "7596ca8604619424d3cf3ecaf2c1e78890311ba0",
+        "sha256": "d372554fcf3b40d9cbf4de3c39a9418347704f78c04be05e882608dba7a862ba"
+      },
+      "hunks": [
+        {
+          "offsetBefore": 3384,
+          "offsetAfter": 3384,
+          "before": "\t\tstatus, code = http.StatusConflict, \"revision_conflict\"\n\tcase errors.Is(err, streamvisual.ErrStreamStateLocked):\n\t\tstatus, code = http.StatusConflict, \"stream_state_locked\"\n\tcase errors.Is(err, mediaassets.ErrForbidden):\n\t\tstatus, code = http.StatusForbidden, \"asset_claim_forbidden\"\n\tcase errors.Is(err, streamvisual.ErrAssetClaim):\n",
+          "after": "\t\tstatus, code = http.StatusConflict, \"revision_conflict\"\n\tcase errors.Is(err, streamvisual.ErrStreamStateLocked):\n\t\tstatus, code = http.StatusConflict, \"stream_state_locked\"\n\tcase errors.Is(err, mediaassets.ErrCoverUploadLimit):\n\t\tstatus, code = http.StatusConflict, \"cover_upload_limit\"\n\tcase errors.Is(err, mediaassets.ErrForbidden):\n\t\tstatus, code = http.StatusForbidden, \"asset_claim_forbidden\"\n\tcase errors.Is(err, streamvisual.ErrAssetClaim):\n"
+        }
+      ]
+    },
+    {
+      "path": "internal/httpapi/server_stream_assignments.go",
+      "before": {
+        "mode": "100644",
+        "blob": "9884a58a37d030b6d2d8cb14841e517f1b65d4f4",
+        "sha256": "8ef4925b9472c0aa06cd013dbbda345812d46cf0572dd89f91d6e100d750f950"
+      },
+      "after": {
+        "mode": "100644",
+        "blob": "7c6fb8d1a691cb217118da32747038b53efc33c2",
+        "sha256": "330a88889026c996ae9686426f1612b2939c939aec946c4f4704d748a2df2b78"
+      },
+      "hunks": [
+        {
+          "offsetBefore": 73,
+          "offsetAfter": 73,
+          "before": "\t\"net/url\"\n\t\"sort\"\n\t\"strings\"\n\n\t\"github.com/example/autostream-control-panel/internal/security\"\n\t\"github.com/example/autostream-control-panel/internal/store\"\n",
+          "after": "\t\"net/url\"\n\t\"sort\"\n\t\"strings\"\n\t\"time\"\n\n\t\"github.com/example/autostream-control-panel/internal/security\"\n\t\"github.com/example/autostream-control-panel/internal/store\"\n"
+        },
+        {
+          "offsetBefore": 489,
+          "offsetAfter": 497,
+          "before": "\treturn []streamServiceAssignmentOperation{\n\t\t{serviceID: body.EncoderServiceID, serviceType: \"encoder_recorder\", permission: \"services.assign\", notFound: \"encoder_service_not_found\", wrongType: \"encoder_service_type_invalid\"},\n\t\t{serviceID: body.WorkerServiceID, serviceType: \"worker\", permission: \"workers.assign\", notFound: \"worker_service_not_found\", wrongType: \"worker_service_type_invalid\"},\n\t}\n}\n\n",
+          "after": "\treturn []streamServiceAssignmentOperation{\n\t\t{serviceID: body.EncoderServiceID, serviceType: \"encoder_recorder\", permission: \"services.assign\", notFound: \"encoder_service_not_found\", wrongType: \"encoder_service_type_invalid\"},\n\t\t{serviceID: body.WorkerServiceID, serviceType: \"worker\", permission: \"workers.assign\", notFound: \"worker_service_not_found\", wrongType: \"worker_service_type_invalid\"},\n\t\t{serviceID: body.discordServiceID, serviceType: \"discord_bot\", permission: \"services.assign\", notFound: \"service_not_found\", wrongType: \"discord_config_service_mismatch\"},\n\t}\n}\n\n"
+        },
+        {
+          "offsetBefore": 3859,
+          "offsetAfter": 4041,
+          "before": "\t\treturn result, \"list_stream_assignments_failed\", http.StatusInternalServerError\n\t}\n\tresult.Snapshots = snapshots\n\tfor _, operation := range operations {\n\t\tif operation.serviceID == nil {\n\t\t\tcontinue\n",
+          "after": "\t\treturn result, \"list_stream_assignments_failed\", http.StatusInternalServerError\n\t}\n\tresult.Snapshots = snapshots\n\tif body.discordServiceID != nil && assignmentRequestServiceID(body.discordServiceID) != \"\" {\n\t\tfor _, snapshot := range snapshots {\n\t\t\tif snapshot.ServiceID == assignmentRequestServiceID(body.discordServiceID) && snapshot.CurrentStream != \"\" && snapshot.CurrentStream != streamID {\n\t\t\t\treturn result, \"service_assignment_conflict\", http.StatusConflict\n\t\t\t}\n\t\t}\n\t}\n\tfor _, operation := range operations {\n\t\tif operation.serviceID == nil {\n\t\t\tcontinue\n"
+        },
+        {
+          "offsetBefore": 9653,
+          "offsetAfter": 10200,
+          "before": "\nfunc (assignments appliedStreamServiceAssignments) WriteAudit(r *http.Request, s *Server, current currentUser) {\n\tfor _, applied := range assignments.Applied {\n\t\ts.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: \"services.assign\", ResourceType: \"service\", ResourceID: applied.Service.ServiceID, Result: \"success\", Metadata: map[string]any{\"stream_id\": assignments.StreamID, \"service_type\": applied.ServiceType, \"assignment_role\": \"primary\", \"source\": \"stream_settings\"}})\n\t}\n\tfor _, cleared := range assignments.Cleared {\n\t\ts.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: \"services.unassign\", ResourceType: \"service\", ResourceID: cleared.ServiceID, Result: \"success\", Metadata: map[string]any{\"stream_id\": assignments.StreamID, \"service_type\": cleared.ServiceType, \"assignment_role\": cleared.AssignmentRole, \"source\": \"stream_settings\"}})\n",
+          "after": "\nfunc (assignments appliedStreamServiceAssignments) WriteAudit(r *http.Request, s *Server, current currentUser) {\n\tfor _, applied := range assignments.Applied {\n\t\ts.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: \"services.assign\", ResourceType: \"service\", ResourceID: applied.Service.ServiceID, Result: \"success\", Metadata: map[string]any{\"stream_id\": assignments.StreamID, \"service_type\": applied.ServiceType, \"assignment_role\": \"primary\", \"assignment_epoch\": applied.Service.UpdatedAt.UTC().Format(time.RFC3339Nano), \"source\": \"stream_settings\"}})\n\t}\n\tfor _, cleared := range assignments.Cleared {\n\t\ts.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: \"services.unassign\", ResourceType: \"service\", ResourceID: cleared.ServiceID, Result: \"success\", Metadata: map[string]any{\"stream_id\": assignments.StreamID, \"service_type\": cleared.ServiceType, \"assignment_role\": cleared.AssignmentRole, \"source\": \"stream_settings\"}})\n"
+        }
+      ]
+    },
+    {
+      "path": "internal/httpapi/server_stream_lifecycle_test.go",
+      "before": {
+        "mode": "100644",
+        "blob": "f1b450bf93837b43b497c7ad5ea2f25f65088dfd",
+        "sha256": "cdfd1bd2e74de904769d1e46f5878b1db453e8d3f013e841828ff580c4595868"
+      },
+      "after": {
+        "mode": "100644",
+        "blob": "ff88293f375850d6f7b808429d37ac9a7a11e106",
+        "sha256": "7bcf3bf9b0e04af2f078348e4defaef8671eb76140c1e90de9979d797041478a"
+      },
+      "hunks": [
+        {
+          "offsetBefore": 753,
+          "offsetAfter": 753,
+          "before": "\t}\n\tstreams := store.NewMemoryStreamStore()\n\tprofiles := store.NewMemoryProfileStore()\n\tconfig := createDiscordConfigForTest(t, profiles, \"lifecycle discord\", \"discord_bot-01\", \"guild-life\", \"voice-life\", \"\")\n\tdispatcher := &fakeServiceDispatcher{}\n\thandler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithServiceDispatcher(dispatcher))\n",
+          "after": "\t}\n\tstreams := store.NewMemoryStreamStore()\n\tprofiles := store.NewMemoryProfileStore()\n\tregisterServiceInstance(t, auth, \"discord_bot-01\", \"discord_bot\")\n\tconfig := createDiscordConfigForTest(t, profiles, \"lifecycle discord\", \"discord_bot-01\", \"guild-life\", \"voice-life\", \"\")\n\tdispatcher := &fakeServiceDispatcher{}\n\thandler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithServiceDispatcher(dispatcher))\n"
+        },
+        {
+          "offsetBefore": 2005,
+          "offsetAfter": 2072,
+          "before": "\tif created.Status != \"created\" || created.ID == \"\" {\n\t\tt.Fatalf(\"bad created stream: %#v\", created)\n\t}\n\tregisterAssignedServices(t, auth, created.ID, requiredStartServiceTypes...)\n\n\tstartReq := httptest.NewRequest(http.MethodPost, \"/streams/\"+created.ID+\"/start\", nil)\n\tstartReq.AddCookie(cookie)\n",
+          "after": "\tif created.Status != \"created\" || created.ID == \"\" {\n\t\tt.Fatalf(\"bad created stream: %#v\", created)\n\t}\n\tbot, err := auth.GetService(t.Context(), \"discord_bot-01\")\n\tif err != nil || bot.CurrentStreamID != created.ID || bot.AssignmentRole != \"primary\" {\n\t\tt.Fatal(\"create did not reserve the selected Bot as the primary owner\")\n\t}\n\tfor _, serviceType := range requiredStartServiceTypes {\n\t\tif serviceType != \"discord_bot\" {\n\t\t\tregisterAssignedServices(t, auth, created.ID, serviceType)\n\t\t}\n\t}\n\n\tstartReq := httptest.NewRequest(http.MethodPost, \"/streams/\"+created.ID+\"/start\", nil)\n\tstartReq.AddCookie(cookie)\n"
+        }
+      ]
+    },
+    {
+      "path": "internal/httpapi/server_stream_settings.go",
+      "before": {
+        "mode": "100644",
+        "blob": "79e2f85723a6d079a639628709aa75d2c809ec1c",
+        "sha256": "db7b4b6d593753c04c01af77f2bc1d04aecdefc72a9ecff58bf780a64c461a1f"
+      },
+      "after": {
+        "mode": "100644",
+        "blob": "b3cfea3003da50e3e604dc17749a6391cfbb8113",
+        "sha256": "edfaa8a77c8308aebbea00f22241e6bda76246a28479798eb7acb4ec34fd6f69"
+      },
+      "hunks": [
+        {
+          "offsetBefore": 2219,
+          "offsetAfter": 2219,
+          "before": "\t\twriteJSON(w, http.StatusBadRequest, map[string]string{\"code\": streamSettingsReferenceCode(err)})\n\t\treturn\n\t}\n\tpreserveOmittedLegacyArchiveSettings(&settings, existing, body)\n\tif strings.TrimSpace(existing.YouTubeOutputID) != strings.TrimSpace(settings.YouTubeOutputID) {\n\t\tif claimed, err := s.youtubeRelayBindingStreamClaimActive(r.Context(), existing.ID); err != nil {\n",
+          "after": "\t\twriteJSON(w, http.StatusBadRequest, map[string]string{\"code\": streamSettingsReferenceCode(err)})\n\t\treturn\n\t}\n\tif code, status := s.prepareStreamDiscordAssignment(r.Context(), streamID, settings.DiscordConfigID, &body, current.Permissions); code != \"\" {\n\t\twriteJSON(w, status, map[string]string{\"code\": code})\n\t\treturn\n\t}\n\tsettings.ExpectedDiscordServiceID = body.expectedDiscordServiceID\n\tpreserveOmittedLegacyArchiveSettings(&settings, existing, body)\n\tif strings.TrimSpace(existing.YouTubeOutputID) != strings.TrimSpace(settings.YouTubeOutputID) {\n\t\tif claimed, err := s.youtubeRelayBindingStreamClaimActive(r.Context(), existing.ID); err != nil {\n"
+        },
+        {
+          "offsetBefore": 3678,
+          "offsetAfter": 3957,
+          "before": "\t\t}\n\t}\n\tstream, err := s.streams.UpdateStreamSettings(r.Context(), streamID, settings)\n\tif errors.Is(err, store.ErrNotFound) {\n\t\twriteJSON(w, http.StatusNotFound, map[string]string{\"code\": \"not_found\"})\n\t\treturn\n\t}\n\tif errors.Is(err, store.ErrYouTubeRelayBindingClaimActive) {\n\t\tif rollbackErr := assignments.Rollback(r.Context(), s.services, current.User.ID); rollbackErr != nil {\n\t\t\tlog.Printf(\"stream settings assignment rollback failed after relay binding claim error: stream_id=%s error=%v\", streamID, rollbackErr)\n",
+          "after": "\t\t}\n\t}\n\tstream, err := s.streams.UpdateStreamSettings(r.Context(), streamID, settings)\n\tif errors.Is(err, store.ErrYouTubeRelayBindingClaimActive) {\n\t\tif rollbackErr := assignments.Rollback(r.Context(), s.services, current.User.ID); rollbackErr != nil {\n\t\t\tlog.Printf(\"stream settings assignment rollback failed after relay binding claim error: stream_id=%s error=%v\", streamID, rollbackErr)\n"
+        },
+        {
+          "offsetBefore": 4454,
+          "offsetAfter": 4605,
+          "before": "\t\tif rollbackErr := assignments.Rollback(r.Context(), s.services, current.User.ID); rollbackErr != nil {\n\t\t\tlog.Printf(\"stream settings assignment rollback failed after settings update error: stream_id=%s error=%v\", streamID, rollbackErr)\n\t\t\twriteJSON(w, http.StatusInternalServerError, map[string]string{\"code\": \"assign_service_rollback_failed\"})\n\t\t\treturn\n\t\t}\n\t\twriteJSON(w, http.StatusInternalServerError, map[string]string{\"code\": \"update_stream_settings_failed\"})\n",
+          "after": "\t\tif rollbackErr := assignments.Rollback(r.Context(), s.services, current.User.ID); rollbackErr != nil {\n\t\t\tlog.Printf(\"stream settings assignment rollback failed after settings update error: stream_id=%s error=%v\", streamID, rollbackErr)\n\t\t\twriteJSON(w, http.StatusInternalServerError, map[string]string{\"code\": \"assign_service_rollback_failed\"})\n\t\t\treturn\n\t\t}\n\t\tif errors.Is(err, store.ErrNotFound) {\n\t\t\twriteJSON(w, http.StatusNotFound, map[string]string{\"code\": \"not_found\"})\n\t\t\treturn\n\t\t}\n\t\tif code, status, handled := serviceAssignmentHTTPError(err, false); handled {\n\t\t\twriteJSON(w, status, map[string]string{\"code\": code})\n\t\t\treturn\n\t\t}\n\t\twriteJSON(w, http.StatusInternalServerError, map[string]string{\"code\": \"update_stream_settings_failed\"})\n"
+        }
+      ]
+    },
+    {
+      "path": "internal/httpapi/server_stream_settings_test.go",
+      "before": {
+        "mode": "100644",
+        "blob": "c927865c272f8c1a590bffd26ee969713d61021a",
+        "sha256": "12e0c0545f40d7bee050f7e722926281745e0af01347830ec695da8b9c99a12e"
+      },
+      "after": {
+        "mode": "100644",
+        "blob": "375060156202d9dccdb1a432d3234cc88b959f15",
+        "sha256": "000cf74b4614e88f79c9a9c2f0bb9bca038f8e4a94aee5985c830c1329ecc142"
+      },
+      "hunks": [
+        {
+          "offsetBefore": 8558,
+          "offsetAfter": 8558,
+          "before": "\tif err := auth.AddUser(store.User{Username: \"operator\"}, \"correct horse battery\", []string{\"services.assign\", \"workers.assign\", \"streams.create\", \"streams.update\", \"streams.read\"}); err != nil {\n\t\tt.Fatal(err)\n\t}\n\tstreams := store.NewMemoryStreamStore()\n\tprofiles := store.NewMemoryProfileStore()\n\tdiscordOne, err := profiles.CreateProfile(t.Context(), store.ProfileDiscordConfig, \"discord one\", map[string]any{\"guild_id\": \"guild-01\", \"voice_channel_id\": \"voice-01\"})\n\tif err != nil {\n\t\tt.Fatal(err)\n\t}\n\tdiscordTwo, err := profiles.CreateProfile(t.Context(), store.ProfileDiscordConfig, \"discord two\", map[string]any{\"guild_id\": \"guild-02\", \"voice_channel_id\": \"voice-02\"})\n\tif err != nil {\n\t\tt.Fatal(err)\n\t}\n\tyoutubeOutput, err := profiles.CreateProfile(t.Context(), store.ProfileYouTubeOutput, \"youtube output\", map[string]any{\"mode\": \"rtmp\", \"rtmp_url\": \"rtmps://a.rtmps.youtube.com/live2\"})\n\tif err != nil {\n",
+          "after": "\tif err := auth.AddUser(store.User{Username: \"operator\"}, \"correct horse battery\", []string{\"services.assign\", \"workers.assign\", \"streams.create\", \"streams.update\", \"streams.read\"}); err != nil {\n\t\tt.Fatal(err)\n\t}\n\tstreams := store.NewMemoryStreamStore()\n\tprofiles := store.NewMemoryProfileStore()\n\tregisterServiceInstance(t, auth, \"settings-bot-one\", \"discord_bot\")\n\tregisterServiceInstance(t, auth, \"settings-bot-two\", \"discord_bot\")\n\tdiscordOne, err := profiles.CreateProfile(t.Context(), store.ProfileDiscordConfig, \"discord one\", map[string]any{\"service_id\": \"settings-bot-one\"})\n\tif err != nil {\n\t\tt.Fatal(err)\n\t}\n\tdiscordTwo, err := profiles.CreateProfile(t.Context(), store.ProfileDiscordConfig, \"discord two\", map[string]any{\"service_id\": \"settings-bot-two\"})\n\tif err != nil {\n\t\tt.Fatal(err)\n\t}\n\tyoutubeOutput, err := profiles.CreateProfile(t.Context(), store.ProfileYouTubeOutput, \"youtube output\", map[string]any{\"mode\": \"rtmp\", \"rtmp_url\": \"rtmps://a.rtmps.youtube.com/live2\"})\n\tif err != nil {\n"
+        },
+        {
+          "offsetBefore": 16165,
+          "offsetAfter": 16259,
+          "before": "\tif err := auth.AddUser(store.User{Username: \"operator\"}, \"correct horse battery\", []string{\"streams.create\", \"services.assign\", \"workers.assign\"}); err != nil {\n\t\tt.Fatal(err)\n\t}\n\tstreams := store.NewMemoryStreamStore()\n\tprofiles := store.NewMemoryProfileStore()\n\tdiscordProfile, err := profiles.CreateProfile(t.Context(), store.ProfileDiscordConfig, \"discord\", map[string]any{\"guild_id\": \"guild-01\", \"voice_channel_id\": \"voice-01\"})\n\tif err != nil {\n\t\tt.Fatal(err)\n\t}\n\thandler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithProfileStore(profiles))\n\tcookie, csrf := loginForTest(t, handler, \"operator\", \"correct horse battery\")\n\n\tfor _, tc := range []struct {\n\t\tname string\n",
+          "after": "\tif err := auth.AddUser(store.User{Username: \"operator\"}, \"correct horse battery\", []string{\"streams.create\", \"services.assign\", \"workers.assign\"}); err != nil {\n\t\tt.Fatal(err)\n\t}\n\tstreams := store.NewMemoryStreamStore()\n\tprofiles := store.NewMemoryProfileStore()\n\tregisterServiceInstance(t, auth, \"invalid-autostart-bot\", \"discord_bot\")\n\tdiscordProfile := createDiscordConfigForTest(t, profiles, \"discord\", \"invalid-autostart-bot\", \"\", \"\", \"\")\n\thandler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithProfileStore(profiles))\n\tcookie, csrf := loginForTest(t, handler, \"operator\", \"correct horse battery\")\n\n\tfor _, tc := range []struct {\n\t\tname string\n"
+        },
+        {
+          "offsetBefore": 17558,
+          "offsetAfter": 17627,
+          "before": "\t\treq.Header.Set(\"X-CSRF-Token\", csrf)\n\t\tres := httptest.NewRecorder()\n\t\thandler.ServeHTTP(res, req)\n\t\tif res.Code != http.StatusBadRequest || !strings.Contains(res.Body.String(), tc.code) {\n\t\t\tt.Fatalf(\"%s status = %d body = %s\", tc.name, res.Code, res.Body.String())\n\t\t}\n\t}\n}\n\nfunc TestCreateStreamRejectsDirectArchiveBeforeAnyPersistence(t *testing.T) {\n",
+          "after": "\t\treq.Header.Set(\"X-CSRF-Token\", csrf)\n\t\tres := httptest.NewRecorder()\n\t\thandler.ServeHTTP(res, req)\n\t\tif res.Code != http.StatusBadRequest || !strings.Contains(res.Body.String(), tc.code) {\n\t\t\tt.Fatalf(\"%s status = %d body = %s\", tc.name, res.Code, res.Body.String())\n\t\t}\n\t\trows, err := streams.ListStreams(t.Context())\n\t\tif err != nil || len(rows) != 0 {\n\t\t\tt.Fatalf(\"%s rejection persisted a partial stream\", tc.name)\n\t\t}\n\t\tbot, err := auth.GetService(t.Context(), \"invalid-autostart-bot\")\n\t\tif err != nil || bot.CurrentStreamID != \"\" {\n\t\t\tt.Fatalf(\"%s rejection reserved the selected Bot\", tc.name)\n\t\t}\n\t}\n}\n\nfunc TestCreateStreamRejectsDirectArchiveBeforeAnyPersistence(t *testing.T) {\n"
+        }
+      ]
+    },
+    {
+      "path": "internal/httpapi/server_streams.go",
+      "before": {
+        "mode": "100644",
+        "blob": "8636316e96131abd4c2a2399e97bd953fcd6cddb",
+        "sha256": "d348f16ab1c444ea28af8f64ed209f5b4154a47304d022cade64f431a91822d2"
+      },
+      "after": {
+        "mode": "100644",
+        "blob": "1222309ef472830fa5c0dc19fb79a03f0bb9a641",
+        "sha256": "716d2276cebbe2be297f246fee06ee7cc8bb7b27012d8712dfb4c23c5a643439"
+      },
+      "hunks": [
+        {
+          "offsetBefore": 73,
+          "offsetAfter": 73,
+          "before": "\t\"io\"\n\t\"net/http\"\n\t\"strings\"\n\n\t\"github.com/example/autostream-control-panel/internal/store\"\n\t\"github.com/example/autostream-control-panel/internal/streamvisual\"\n",
+          "after": "\t\"io\"\n\t\"net/http\"\n\t\"strings\"\n\t\"time\"\n\n\t\"github.com/example/autostream-control-panel/internal/store\"\n\t\"github.com/example/autostream-control-panel/internal/streamvisual\"\n"
+        },
+        {
+          "offsetBefore": 9364,
+          "offsetAfter": 9372,
+          "before": "\t// existing assignment, while an explicit empty string unassigns that role.\n\tEncoderServiceID *string `json:\"encoder_service_id,omitempty\"`\n\tWorkerServiceID  *string `json:\"worker_service_id,omitempty\"`\n}\n\nfunc archiveRequestString(value *string) string {\n",
+          "after": "\t// existing assignment, while an explicit empty string unassigns that role.\n\tEncoderServiceID *string `json:\"encoder_service_id,omitempty\"`\n\tWorkerServiceID  *string `json:\"worker_service_id,omitempty\"`\n\t// Derived only from the selected authentication profile, never from a\n\t// client field or the independent Discord destination preset.\n\tdiscordServiceID         *string\n\texpectedDiscordServiceID *string\n}\n\nfunc archiveRequestString(value *string) string {\n"
+        },
+        {
+          "offsetBefore": 13993,
+          "offsetAfter": 14205,
+          "before": "\t\treturn\n\t}\n\tassignments := store.StreamCreateAssignments{EncoderServiceID: assignmentRequestServiceID(body.EncoderServiceID), WorkerServiceID: assignmentRequestServiceID(body.WorkerServiceID)}\n\tstream, _, err = creator.CreateStream(r.Context(), current.User.ID, streamvisual.Create{Name: body.Name, UploadSessionID: envelope.UploadSessionID, Settings: visualUpdate, StreamSettings: settings, Assignments: assignments})\n\tif err != nil {\n\t\tif code, status, handled := serviceAssignmentHTTPError(err, false); handled {\n",
+          "after": "\t\treturn\n\t}\n\tassignments := store.StreamCreateAssignments{EncoderServiceID: assignmentRequestServiceID(body.EncoderServiceID), WorkerServiceID: assignmentRequestServiceID(body.WorkerServiceID)}\n\tif settings.DiscordConfigID != \"\" {\n\t\tserviceID, code, status := s.selectedDiscordServiceID(r.Context(), \"\", settings.DiscordConfigID)\n\t\tif code != \"\" {\n\t\t\twriteJSON(w, status, map[string]string{\"code\": code})\n\t\t\treturn\n\t\t}\n\t\tassignments.DiscordConfigID, assignments.DiscordServiceID = settings.DiscordConfigID, serviceID\n\t}\n\tstream, _, err = creator.CreateStream(r.Context(), current.User.ID, streamvisual.Create{Name: body.Name, UploadSessionID: envelope.UploadSessionID, Settings: visualUpdate, StreamSettings: settings, Assignments: assignments})\n\tif err != nil {\n\t\tif code, status, handled := serviceAssignmentHTTPError(err, false); handled {\n"
+        },
+        {
+          "offsetBefore": 14702,
+          "offsetAfter": 15240,
+          "before": "\t// committed together. Creation never transfers another stream's services.\n\tfor _, assignment := range []struct{ id, serviceType string }{{assignments.EncoderServiceID, \"encoder_recorder\"}, {assignments.WorkerServiceID, \"worker\"}} {\n\t\ts.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: \"services.assign\", ResourceType: \"service\", ResourceID: assignment.id, Result: \"success\", Metadata: map[string]any{\"stream_id\": stream.ID, \"service_type\": assignment.serviceType, \"assignment_role\": \"primary\", \"source\": \"stream_create\"}})\n\t}\n\ts.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: \"streams.create\", ResourceType: \"stream\", ResourceID: stream.ID, Result: \"success\", Metadata: streamSettingsAuditMetadata(stream)})\n\twriteJSON(w, http.StatusCreated, stream)\n",
+          "after": "\t// committed together. Creation never transfers another stream's services.\n\tfor _, assignment := range []struct{ id, serviceType string }{{assignments.EncoderServiceID, \"encoder_recorder\"}, {assignments.WorkerServiceID, \"worker\"}} {\n\t\ts.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: \"services.assign\", ResourceType: \"service\", ResourceID: assignment.id, Result: \"success\", Metadata: map[string]any{\"stream_id\": stream.ID, \"service_type\": assignment.serviceType, \"assignment_role\": \"primary\", \"source\": \"stream_create\"}})\n\t}\n\tif assignments.DiscordServiceID != \"\" {\n\t\ts.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: \"services.assign\", ResourceType: \"service\", ResourceID: assignments.DiscordServiceID, Result: \"success\", Metadata: map[string]any{\"stream_id\": stream.ID, \"service_type\": \"discord_bot\", \"assignment_role\": \"primary\", \"assignment_epoch\": stream.CreatedAt.UTC().Format(time.RFC3339Nano), \"source\": \"stream_create\"}})\n\t}\n\ts.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: \"streams.create\", ResourceType: \"stream\", ResourceID: stream.ID, Result: \"success\", Metadata: streamSettingsAuditMetadata(stream)})\n\twriteJSON(w, http.StatusCreated, stream)\n"
+        },
+        {
+          "offsetBefore": 18614,
+          "offsetAfter": 19620,
+          "before": "\t\twriteJSON(w, http.StatusInternalServerError, map[string]string{\"code\": \"delete_stream_failed\"})\n\t\treturn\n\t}\n\ts.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: \"streams.delete\", ResourceType: \"stream\", ResourceID: stream.ID, Result: \"success\", Metadata: map[string]any{\"name\": stream.Name, \"status\": stream.Status}})\n\twriteJSON(w, http.StatusOK, map[string]string{\"status\": \"deleted\", \"stream_id\": stream.ID})\n}\n",
+          "after": "\t\twriteJSON(w, http.StatusInternalServerError, map[string]string{\"code\": \"delete_stream_failed\"})\n\t\treturn\n\t}\n\ts.collectDeletedStreamMediaAssets(r.Context(), stream.ID)\n\ts.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: \"streams.delete\", ResourceType: \"stream\", ResourceID: stream.ID, Result: \"success\", Metadata: map[string]any{\"name\": stream.Name, \"status\": stream.Status}})\n\twriteJSON(w, http.StatusOK, map[string]string{\"status\": \"deleted\", \"stream_id\": stream.ID})\n}\n"
+        }
+      ]
+    },
+    {
+      "path": "internal/mediaassets/memory_repository.go",
+      "before": {
+        "mode": "100644",
+        "blob": "51be3b62b0c03b3e4cc2098ccd6e515377de7e8a",
+        "sha256": "ed30017de09ecdc1eee339a461439e0dce4b3868c723dcc43d21a87b269204a1"
+      },
+      "after": {
+        "mode": "100644",
+        "blob": "8b54dd03e3dedaa1e4468966a5976d4f45a51f15",
+        "sha256": "d8c36ca64c0d8abd25b71bb6fa0e1cc062b8ed2ebc183244c72229bc69d7912f"
+      },
+      "hunks": [
+        {
+          "offsetBefore": 2198,
+          "offsetAfter": 2198,
+          "before": "\t\tr.mu.Unlock()\n\t\treturn Asset{}, ErrDraftExpired\n\t}\n\tr.mu.Unlock()\n\tprocessed, err := r.processor.ProcessUpload(in.Filename, in.ContentType, in.Body)\n\tif err != nil {\n",
+          "after": "\t\tr.mu.Unlock()\n\t\treturn Asset{}, ErrDraftExpired\n\t}\n\tif in.UsageType == \"video_cover\" && r.draftCoverCountLocked(in.SessionID) >= MaxStreamCoverUploads {\n\t\tr.mu.Unlock()\n\t\treturn Asset{}, ErrCoverUploadLimit\n\t}\n\tr.mu.Unlock()\n\tprocessed, err := r.processor.ProcessUpload(in.Filename, in.ContentType, in.Body)\n\tif err != nil {\n"
+        },
+        {
+          "offsetBefore": 2537,
+          "offsetAfter": 2696,
+          "before": "\t}\n\tif session.OwnerType != \"upload_draft\" || !session.ExpiresAt.After(r.now()) {\n\t\treturn Asset{}, ErrDraftClaimed\n\t}\n\tid, err := newID()\n\tif err != nil {\n",
+          "after": "\t}\n\tif session.OwnerType != \"upload_draft\" || !session.ExpiresAt.After(r.now()) {\n\t\treturn Asset{}, ErrDraftClaimed\n\t}\n\tif in.UsageType == \"video_cover\" && r.draftCoverCountLocked(in.SessionID) >= MaxStreamCoverUploads {\n\t\treturn Asset{}, ErrCoverUploadLimit\n\t}\n\tid, err := newID()\n\tif err != nil {\n"
+        },
+        {
+          "offsetBefore": 5970,
+          "offsetAfter": 6272,
+          "before": "\tif !session.ExpiresAt.After(now) {\n\t\treturn ErrDraftExpired\n\t}\n\tsession.OwnerType = \"stream\"\n\tsession.ClaimedStreamID = streamID\n\tsession.UpdatedAt = now\n",
+          "after": "\tif !session.ExpiresAt.After(now) {\n\t\treturn ErrDraftExpired\n\t}\n\tif r.draftCoverCountLocked(sessionID) > MaxStreamCoverUploads {\n\t\treturn ErrCoverUploadLimit\n\t}\n\tfor _, asset := range r.assets {\n\t\tif asset.UploadSessionID == sessionID && asset.OwnerUserID != userID {\n\t\t\treturn ErrForbidden\n\t\t}\n\t}\n\tsession.OwnerType = \"stream\"\n\tsession.ClaimedStreamID = streamID\n\tsession.UpdatedAt = now\n"
+        },
+        {
+          "offsetBefore": 6143,
+          "offsetAfter": 6679,
+          "before": "\tsession.ClaimedAt = &claimedAt\n\tr.sessions[sessionID] = session\n\tfor id, asset := range r.assets {\n\t\tif asset.UploadSessionID == sessionID {\n\t\t\tif asset.OwnerUserID != userID {\n\t\t\t\treturn ErrForbidden\n\t\t\t}\n\t\t\tasset.OwnerType = \"stream\"\n\t\t\tasset.OwnerID = streamID\n\t\t\tasset.UpdatedAt = now\n",
+          "after": "\tsession.ClaimedAt = &claimedAt\n\tr.sessions[sessionID] = session\n\tfor id, asset := range r.assets {\n\t\tif asset.UploadSessionID == sessionID && asset.DeletedAt == nil {\n\t\t\tasset.OwnerType = \"stream\"\n\t\t\tasset.OwnerID = streamID\n\t\t\tasset.UpdatedAt = now\n"
+        },
+        {
+          "offsetBefore": 6457,
+          "offsetAfter": 6954,
+          "before": "\t\t}\n\t}\n\treturn nil\n}\n\nfunc (r *MemoryRepository) ReferenceVariant(streamID, variantID string) {\n",
+          "after": "\t\t}\n\t}\n\treturn nil\n}\n\nfunc (r *MemoryRepository) draftCoverCountLocked(sessionID string) int {\n\tcount := 0\n\tfor _, asset := range r.assets {\n\t\tif asset.UploadSessionID == sessionID && asset.UsageType == \"video_cover\" && asset.DeletedAt == nil {\n\t\t\tcount++\n\t\t}\n\t}\n\treturn count\n}\n\nfunc (r *MemoryRepository) ReferenceVariant(streamID, variantID string) {\n"
+        },
+        {
+          "offsetBefore": 8546,
+          "offsetAfter": 9301,
+          "before": "\t\t\tcontinue\n\t\t}\n\t\tstorageKeys := map[string]bool{asset.StorageKey: true}\n\t\tfor variantID, v := range r.variants {\n\t\t\tif v.AssetID == id {\n\t\t\t\tstorageKeys[v.StorageKey] = true\n\t\t\t\tdelete(r.variants, variantID)\n\t\t\t}\n\t\t}\n\t\tdelete(r.assets, id)\n\t\tfor storageKey := range storageKeys {\n\t\t\tif !r.storageKeyReferencedLocked(storageKey) {\n\t\t\t\t_ = r.storage.Remove(storageKey)\n\t\t\t}\n\t\t}\n\t\tremoved++\n\t}\n\tfor sessionID, session := range r.sessions {\n",
+          "after": "\t\t\tcontinue\n\t\t}\n\t\tstorageKeys := map[string]bool{asset.StorageKey: true}\n\t\tfor _, v := range r.variants {\n\t\t\tif v.AssetID == id {\n\t\t\t\tstorageKeys[v.StorageKey] = true\n\t\t\t}\n\t\t}\n\t\tfor storageKey := range storageKeys {\n\t\t\tif !r.storageKeyReferencedExceptAssetLocked(storageKey, id) {\n\t\t\t\tif err := r.storage.Remove(storageKey); err != nil {\n\t\t\t\t\t// Retain tombstone metadata and every variant until all\n\t\t\t\t\t// removals succeed. A retry tolerates already missing files.\n\t\t\t\t\treturn removed, err\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t\tfor variantID, variant := range r.variants {\n\t\t\tif variant.AssetID == id {\n\t\t\t\tdelete(r.variants, variantID)\n\t\t\t}\n\t\t}\n\t\tdelete(r.assets, id)\n\t\tremoved++\n\t}\n\tfor sessionID, session := range r.sessions {\n"
+        },
+        {
+          "offsetBefore": 9364,
+          "offsetAfter": 10392,
+          "before": "}\n\nfunc (r *MemoryRepository) storageKeyReferencedLocked(storageKey string) bool {\n\tfor _, asset := range r.assets {\n\t\tif asset.StorageKey == storageKey {\n\t\t\treturn true\n\t\t}\n\t}\n\tfor _, variant := range r.variants {\n\t\tif variant.StorageKey == storageKey {\n\t\t\treturn true\n\t\t}\n\t}\n",
+          "after": "}\n\nfunc (r *MemoryRepository) storageKeyReferencedLocked(storageKey string) bool {\n\treturn r.storageKeyReferencedExceptAssetLocked(storageKey, \"\")\n}\n\nfunc (r *MemoryRepository) storageKeyReferencedExceptAssetLocked(storageKey, excludedAssetID string) bool {\n\tfor _, asset := range r.assets {\n\t\tif asset.ID != excludedAssetID && asset.StorageKey == storageKey {\n\t\t\treturn true\n\t\t}\n\t}\n\tfor _, variant := range r.variants {\n\t\tif variant.AssetID != excludedAssetID && variant.StorageKey == storageKey {\n\t\t\treturn true\n\t\t}\n\t}\n"
+        }
+      ]
+    },
+    {
+      "path": "internal/mediaassets/sql_repository.go",
+      "before": {
+        "mode": "100644",
+        "blob": "43680e8a906dbe971a8a38fd9056cfb3c79f7a61",
+        "sha256": "af9d8e095d6b6e53219739fe9f08be642932d87b238285a02b8959fcf4db65cb"
+      },
+      "after": {
+        "mode": "100644",
+        "blob": "257b8877b3bcebe5cc310cb4c46b787f99720a90",
+        "sha256": "e381d929ac53e070af455660c72a3a0a189932075fe2e7683845162b72f7ba2c"
+      },
+      "hunks": [
+        {
+          "offsetBefore": 1533,
+          "offsetAfter": 1533,
+          "before": "\treturn session, nil\n}\n\nfunc (r *SQLRepository) Upload(ctx context.Context, in UploadInput) (Asset, error) {\n\tin.SessionID = strings.TrimSpace(in.SessionID)\n\tin.UserID = strings.TrimSpace(in.UserID)\n\tin.UsageType = strings.TrimSpace(in.UsageType)\n",
+          "after": "\treturn session, nil\n}\n\nfunc (r *SQLRepository) Upload(ctx context.Context, in UploadInput) (result Asset, err error) {\n\tin.SessionID = strings.TrimSpace(in.SessionID)\n\tin.UserID = strings.TrimSpace(in.UserID)\n\tin.UsageType = strings.TrimSpace(in.UsageType)\n"
+        },
+        {
+          "offsetBefore": 1931,
+          "offsetAfter": 1942,
+          "before": "\tif err := r.validateDraft(ctx, r.db, in.SessionID, in.UserID, r.now(), false); err != nil {\n\t\treturn Asset{}, err\n\t}\n\tprocessed, err := r.processor.ProcessUpload(in.Filename, in.ContentType, in.Body)\n\tif err != nil {\n\t\treturn Asset{}, err\n\t}\n\tnow := r.now()\n\tid, err := newID()\n\tif err != nil {\n",
+          "after": "\tif err := r.validateDraft(ctx, r.db, in.SessionID, in.UserID, r.now(), false); err != nil {\n\t\treturn Asset{}, err\n\t}\n\tif in.UsageType == \"video_cover\" {\n\t\tif err := validateDraftCoverLimit(ctx, r.db, in.SessionID, true); err != nil {\n\t\t\treturn Asset{}, err\n\t\t}\n\t}\n\tprocessed, err := r.processor.ProcessUpload(in.Filename, in.ContentType, in.Body)\n\tif err != nil {\n\t\treturn Asset{}, err\n\t}\n\tpublished := false\n\tdefer r.queueUnpublishedFile(ctx, processed.StorageKey, &published, &err)\n\tnow := r.now()\n\tid, err := newID()\n\tif err != nil {\n"
+        },
+        {
+          "offsetBefore": 3005,
+          "offsetAfter": 3258,
+          "before": "\tif err := r.validateDraft(ctx, tx, in.SessionID, in.UserID, now, true); err != nil {\n\t\treturn Asset{}, err\n\t}\n\t_, err = tx.ExecContext(ctx, `INSERT INTO media_assets\n      (id,owner_user_id,owner_type,owner_id,upload_session_id,usage_type,storage_key,sha256,\n       media_type,byte_size,width,height,opaque,processor_revision,deleted_at,retention_until,created_at,updated_at)\n",
+          "after": "\tif err := r.validateDraft(ctx, tx, in.SessionID, in.UserID, now, true); err != nil {\n\t\treturn Asset{}, err\n\t}\n\tif in.UsageType == \"video_cover\" {\n\t\tif err := validateDraftCoverLimit(ctx, tx, in.SessionID, true); err != nil {\n\t\t\treturn Asset{}, err\n\t\t}\n\t}\n\tif err := queueFileDeletionsTx(ctx, tx, []string{processed.StorageKey}, now); err != nil {\n\t\treturn Asset{}, err\n\t}\n\tif err := r.processor.Verify(processed); err != nil {\n\t\treturn Asset{}, err\n\t}\n\t_, err = tx.ExecContext(ctx, `INSERT INTO media_assets\n      (id,owner_user_id,owner_type,owner_id,upload_session_id,usage_type,storage_key,sha256,\n       media_type,byte_size,width,height,opaque,processor_revision,deleted_at,retention_until,created_at,updated_at)\n"
+        },
+        {
+          "offsetBefore": 3690,
+          "offsetAfter": 4285,
+          "before": "\tif err != nil {\n\t\treturn Asset{}, err\n\t}\n\tif err := tx.Commit(); err != nil {\n\t\treturn Asset{}, err\n\t}\n\treturn asset, nil\n}\n\ntype rowQuerier interface {\n\tQueryRowContext(context.Context, string, ...any) *sql.Row\n}\n\nfunc (r *SQLRepository) validateDraft(ctx context.Context, q rowQuerier, sessionID, userID string, now time.Time, lock bool) error {\n",
+          "after": "\tif err != nil {\n\t\treturn Asset{}, err\n\t}\n\tif _, err := tx.ExecContext(ctx, `DELETE FROM media_asset_file_deletions WHERE storage_key=?`, processed.StorageKey); err != nil {\n\t\treturn Asset{}, err\n\t}\n\tif err := tx.Commit(); err != nil {\n\t\treturn Asset{}, err\n\t}\n\tpublished = true\n\treturn asset, nil\n}\n\ntype rowQuerier interface {\n\tQueryRowContext(context.Context, string, ...any) *sql.Row\n}\n\n// Upload and claim both hold the upload-session row before their final check.\n// Count original assets, never generated variants or scene backgrounds.\nfunc validateDraftCoverLimit(ctx context.Context, q rowQuerier, sessionID string, adding bool) error {\n\tvar count int\n\tif err := q.QueryRowContext(ctx, `SELECT COUNT(*) FROM media_assets WHERE upload_session_id=? AND usage_type='video_cover' AND deleted_at IS NULL FOR UPDATE`, sessionID).Scan(&count); err != nil {\n\t\treturn err\n\t}\n\tif adding {\n\t\tcount++\n\t}\n\tif count > MaxStreamCoverUploads {\n\t\treturn ErrCoverUploadLimit\n\t}\n\treturn nil\n}\n\nfunc (r *SQLRepository) validateDraft(ctx context.Context, q rowQuerier, sessionID, userID string, now time.Time, lock bool) error {\n"
+        },
+        {
+          "offsetBefore": 5166,
+          "offsetAfter": 6529,
+          "before": "\treturn asset, nil\n}\n\nfunc (r *SQLRepository) EnsureVariant(ctx context.Context, userID, assetID string, width, height int, opaque bool) (Variant, error) {\n\tasset, err := r.GetAsset(ctx, userID, assetID)\n\tif err != nil {\n\t\treturn Variant{}, err\n",
+          "after": "\treturn asset, nil\n}\n\nfunc (r *SQLRepository) EnsureVariant(ctx context.Context, userID, assetID string, width, height int, opaque bool) (result Variant, err error) {\n\tasset, err := r.GetAsset(ctx, userID, assetID)\n\tif err != nil {\n\t\treturn Variant{}, err\n"
+        },
+        {
+          "offsetBefore": 6858,
+          "offsetAfter": 8232,
+          "before": "\t\t_, _ = r.db.ExecContext(ctx, `UPDATE media_asset_variants SET status='failed',last_error_code=?,updated_at=? WHERE id=?`, safeProcessorErrorCode(processErr), r.now(), id)\n\t\treturn Variant{}, processErr\n\t}\n\tnow = r.now()\n\t_, err = r.db.ExecContext(ctx, `UPDATE media_asset_variants SET\n      status='ready',storage_key=?,sha256=?,media_type=?,byte_size=?,width=?,height=?,opaque=?,last_error_code=NULL,updated_at=?\n      WHERE id=? AND status='processing'`, processed.StorageKey, processed.SHA256, processed.MediaType,\n\t\tprocessed.ByteSize, processed.Width, processed.Height, processed.Opaque, now, id)\n\tif err != nil {\n\t\treturn Variant{}, err\n\t}\n\tvariant, err := r.getVariantBySpec(ctx, asset.ID, width, height, cropMode)\n\tif err != nil {\n\t\treturn Variant{}, err\n",
+          "after": "\t\t_, _ = r.db.ExecContext(ctx, `UPDATE media_asset_variants SET status='failed',last_error_code=?,updated_at=? WHERE id=?`, safeProcessorErrorCode(processErr), r.now(), id)\n\t\treturn Variant{}, processErr\n\t}\n\tpublished := false\n\tdefer r.queueUnpublishedFile(ctx, processed.StorageKey, &published, &err)\n\tnow = r.now()\n\ttx, err := r.db.BeginTx(ctx, nil)\n\tif err != nil {\n\t\treturn Variant{}, err\n\t}\n\tdefer tx.Rollback()\n\tvar liveAssetID string\n\tif err := tx.QueryRowContext(ctx, `SELECT id FROM media_assets WHERE id=? AND deleted_at IS NULL FOR UPDATE`, asset.ID).Scan(&liveAssetID); errors.Is(err, sql.ErrNoRows) {\n\t\treturn Variant{}, ErrNotFound\n\t} else if err != nil {\n\t\treturn Variant{}, err\n\t}\n\tif err := queueFileDeletionsTx(ctx, tx, []string{processed.StorageKey}, now); err != nil {\n\t\treturn Variant{}, err\n\t}\n\tif err := r.processor.Verify(processed); err != nil {\n\t\treturn Variant{}, err\n\t}\n\tupdate, err := tx.ExecContext(ctx, `UPDATE media_asset_variants SET\n      status='ready',storage_key=?,sha256=?,media_type=?,byte_size=?,width=?,height=?,opaque=?,last_error_code=NULL,updated_at=?\n      WHERE id=? AND status='processing'`, processed.StorageKey, processed.SHA256, processed.MediaType,\n\t\tprocessed.ByteSize, processed.Width, processed.Height, processed.Opaque, now, id)\n\tif err != nil {\n\t\treturn Variant{}, err\n\t}\n\tif affected, err := update.RowsAffected(); err != nil || affected != 1 {\n\t\treturn Variant{}, ErrIntegrity\n\t}\n\tif _, err := tx.ExecContext(ctx, `DELETE FROM media_asset_file_deletions WHERE storage_key=?`, processed.StorageKey); err != nil {\n\t\treturn Variant{}, err\n\t}\n\tif err := tx.Commit(); err != nil {\n\t\treturn Variant{}, err\n\t}\n\tpublished = true\n\tvariant, err := r.getVariantBySpec(ctx, asset.ID, width, height, cropMode)\n\tif err != nil {\n\t\treturn Variant{}, err\n"
+        },
+        {
+          "offsetBefore": 13107,
+          "offsetAfter": 15512,
+          "before": "\tif foreignAssets != 0 {\n\t\treturn ErrForbidden\n\t}\n\tif _, err := tx.ExecContext(ctx, `UPDATE media_upload_sessions SET owner_type='stream',claimed_stream_id=?,updated_at=? WHERE id=?`, streamID, now, sessionID); err != nil {\n\t\treturn err\n\t}\n\t_, err = tx.ExecContext(ctx, `UPDATE media_assets SET owner_type='stream',owner_id=?,updated_at=? WHERE upload_session_id=? AND owner_user_id=? AND owner_type='upload_draft'`, streamID, now, sessionID, userID)\n\treturn err\n}\n\n",
+          "after": "\tif foreignAssets != 0 {\n\t\treturn ErrForbidden\n\t}\n\tif err := validateDraftCoverLimit(ctx, tx, sessionID, false); err != nil {\n\t\treturn err\n\t}\n\tif _, err := tx.ExecContext(ctx, `UPDATE media_upload_sessions SET owner_type='stream',claimed_stream_id=?,updated_at=? WHERE id=?`, streamID, now, sessionID); err != nil {\n\t\treturn err\n\t}\n\t_, err = tx.ExecContext(ctx, `UPDATE media_assets SET owner_type='stream',owner_id=?,updated_at=? WHERE upload_session_id=? AND owner_user_id=? AND owner_type='upload_draft' AND deleted_at IS NULL`, streamID, now, sessionID, userID)\n\treturn err\n}\n\n"
+        },
+        {
+          "offsetBefore": 15021,
+          "offsetAfter": 17541,
+          "before": "\t\t}\n\t\tids = append(ids, id)\n\t}\n\tif err := rows.Close(); err != nil {\n\t\treturn 0, err\n\t}\n",
+          "after": "\t\t}\n\t\tids = append(ids, id)\n\t}\n\tif err := rows.Err(); err != nil {\n\t\t_ = rows.Close()\n\t\treturn 0, err\n\t}\n\tif err := rows.Close(); err != nil {\n\t\treturn 0, err\n\t}\n"
+        },
+        {
+          "offsetBefore": 15246,
+          "offsetAfter": 17840,
+          "before": "\t\t}\n\t\tremoved += count\n\t}\n\t_, _ = r.db.ExecContext(ctx, `DELETE us FROM media_upload_sessions us\n      WHERE us.expires_at<=? AND (\n        us.owner_type='stream' OR\n",
+          "after": "\t\t}\n\t\tremoved += count\n\t}\n\tif err := r.collectFileDeletions(ctx, now, limit); err != nil {\n\t\treturn removed, err\n\t}\n\t_, _ = r.db.ExecContext(ctx, `DELETE us FROM media_upload_sessions us\n      WHERE us.expires_at<=? AND (\n        us.owner_type='stream' OR\n"
+        },
+        {
+          "offsetBefore": 15565,
+          "offsetAfter": 18249,
+          "before": "}\n\nfunc (r *SQLRepository) deleteUnreferencedAsset(ctx context.Context, id string, now time.Time) (int, error) {\n\ttx, err := r.db.BeginTx(ctx, nil)\n\tif err != nil {\n\t\treturn 0, err\n\t}\n\tdefer tx.Rollback()\n\tvar assetKey string\n\tif err := tx.QueryRowContext(ctx, `SELECT storage_key FROM media_assets WHERE id=? FOR UPDATE`, id).Scan(&assetKey); errors.Is(err, sql.ErrNoRows) {\n\t\treturn 0, nil\n\t} else if err != nil {\n\t\treturn 0, err\n\t}\n\trows, err := tx.QueryContext(ctx, `SELECT storage_key FROM media_asset_variants WHERE asset_id=? AND storage_key IS NOT NULL`, id)\n\tif err != nil {\n",
+          "after": "}\n\nfunc (r *SQLRepository) deleteUnreferencedAsset(ctx context.Context, id string, now time.Time) (int, error) {\n\t// Draft cleanup, stream/preset claims and upload publication all lock the\n\t// session before its assets. The final DELETE also reads session ownership\n\t// to revalidate expiry; acquire that session first rather than inverting\n\t// their lock order after taking the asset lock.\n\tvar observedSession string\n\tif err := r.db.QueryRowContext(ctx, `SELECT COALESCE(upload_session_id,'') FROM media_assets WHERE id=?`, id).Scan(&observedSession); errors.Is(err, sql.ErrNoRows) {\n\t\treturn 0, nil\n\t} else if err != nil {\n\t\treturn 0, err\n\t}\n\ttx, err := r.db.BeginTx(ctx, nil)\n\tif err != nil {\n\t\treturn 0, err\n\t}\n\tdefer tx.Rollback()\n\tif observedSession != \"\" {\n\t\tvar lockedSession string\n\t\tif err := tx.QueryRowContext(ctx, `SELECT id FROM media_upload_sessions WHERE id=? FOR UPDATE`, observedSession).Scan(&lockedSession); errors.Is(err, sql.ErrNoRows) {\n\t\t\treturn 0, nil\n\t\t} else if err != nil {\n\t\t\treturn 0, err\n\t\t}\n\t}\n\tvar assetKey, currentSession string\n\tif err := tx.QueryRowContext(ctx, `SELECT storage_key,COALESCE(upload_session_id,'') FROM media_assets WHERE id=? FOR UPDATE`, id).Scan(&assetKey, &currentSession); errors.Is(err, sql.ErrNoRows) {\n\t\treturn 0, nil\n\t} else if err != nil {\n\t\treturn 0, err\n\t}\n\tif currentSession != observedSession {\n\t\t// A preset claim or session expiry changed the discovered lock set.\n\t\t// Retry in a later sweep instead of acquiring a new parent lock late.\n\t\treturn 0, nil\n\t}\n\trows, err := tx.QueryContext(ctx, `SELECT storage_key FROM media_asset_variants WHERE asset_id=? AND storage_key IS NOT NULL`, id)\n\tif err != nil {\n"
+        },
+        {
+          "offsetBefore": 16311,
+          "offsetAfter": 20084,
+          "before": "\t\t}\n\t\tkeys = append(keys, key)\n\t}\n\t_ = rows.Close()\n\t// A deleted preset is a retention tombstone, not a permanent asset\n\t// reference. Purge it only after the asset itself is eligible and only when\n\t// no saved stream still points at that preset. The final asset DELETE keeps\n",
+          "after": "\t\t}\n\t\tkeys = append(keys, key)\n\t}\n\tif err := rows.Err(); err != nil {\n\t\t_ = rows.Close()\n\t\treturn 0, err\n\t}\n\tif err := rows.Close(); err != nil {\n\t\treturn 0, err\n\t}\n\t// A deleted preset is a retention tombstone, not a permanent asset\n\t// reference. Purge it only after the asset itself is eligible and only when\n\t// no saved stream still points at that preset. The final asset DELETE keeps\n"
+        },
+        {
+          "offsetBefore": 17016,
+          "offsetAfter": 20902,
+          "before": "\t\treturn 0, err\n\t}\n\tresult, err := tx.ExecContext(ctx, `DELETE FROM media_assets WHERE id=?\n      AND NOT EXISTS (SELECT 1 FROM stream_visual_settings sv WHERE sv.background_asset_id=media_assets.id OR sv.cover_asset_id=media_assets.id)\n      AND NOT EXISTS (SELECT 1 FROM video_cover_presets p WHERE p.asset_id=media_assets.id)\n      AND NOT EXISTS (SELECT 1 FROM stream_video_cover_candidates c WHERE c.asset_id=media_assets.id)\n      AND NOT EXISTS (SELECT 1 FROM stream_video_cover_runtime vr JOIN media_asset_variants v ON v.id=vr.asset_variant_id OR v.id=vr.applied_asset_variant_id WHERE v.asset_id=media_assets.id)\n      AND NOT EXISTS (SELECT 1 FROM stream_video_cover_actions ca JOIN media_asset_variants v ON v.id=ca.requested_asset_variant_id WHERE v.asset_id=media_assets.id)`, id)\n\tif err != nil {\n\t\treturn 0, err\n\t}\n",
+          "after": "\t\treturn 0, err\n\t}\n\tresult, err := tx.ExecContext(ctx, `DELETE FROM media_assets WHERE id=?\n\t  AND ((deleted_at IS NOT NULL AND retention_until IS NOT NULL AND retention_until<=?)\n\t    OR (owner_type='upload_draft' AND EXISTS (SELECT 1 FROM media_upload_sessions us WHERE us.id=media_assets.upload_session_id AND us.owner_type='upload_draft' AND us.expires_at<=?)))\n      AND NOT EXISTS (SELECT 1 FROM stream_visual_settings sv WHERE sv.background_asset_id=media_assets.id OR sv.cover_asset_id=media_assets.id)\n      AND NOT EXISTS (SELECT 1 FROM video_cover_presets p WHERE p.asset_id=media_assets.id)\n      AND NOT EXISTS (SELECT 1 FROM stream_video_cover_candidates c WHERE c.asset_id=media_assets.id)\n      AND NOT EXISTS (SELECT 1 FROM stream_video_cover_runtime vr JOIN media_asset_variants v ON v.id=vr.asset_variant_id OR v.id=vr.applied_asset_variant_id WHERE v.asset_id=media_assets.id)\n      AND NOT EXISTS (SELECT 1 FROM stream_video_cover_actions ca JOIN media_asset_variants v ON v.id=ca.requested_asset_variant_id WHERE v.asset_id=media_assets.id)`, id, now, now)\n\tif err != nil {\n\t\treturn 0, err\n\t}\n"
+        },
+        {
+          "offsetBefore": 17885,
+          "offsetAfter": 22055,
+          "before": "\tif affected == 0 {\n\t\treturn 0, nil\n\t}\n\tif err := tx.Commit(); err != nil {\n\t\treturn 0, err\n\t}\n\tfor _, key := range keys {\n\t\tvar references int\n\t\tif err := r.db.QueryRowContext(ctx, `SELECT\n          (SELECT COUNT(*) FROM media_assets WHERE storage_key=?) +\n          (SELECT COUNT(*) FROM media_asset_variants WHERE storage_key=?)`, key, key).Scan(&references); err == nil && references == 0 {\n\t\t\t_ = r.storage.Remove(key)\n\t\t}\n\t}\n\treturn 1, nil\n}\n",
+          "after": "\tif affected == 0 {\n\t\treturn 0, nil\n\t}\n\tif err := queueFileDeletionsTx(ctx, tx, keys, now); err != nil {\n\t\treturn 0, err\n\t}\n\tif err := tx.Commit(); err != nil {\n\t\treturn 0, err\n\t}\n\treturn 1, nil\n}\n"
+        }
+      ]
+    },
+    {
+      "path": "internal/mediaassets/types.go",
+      "before": {
+        "mode": "100644",
+        "blob": "9445aaa3d177ab19f2c8ff6a9bab3a9c7cb71f78",
+        "sha256": "56529989e1d8661fee601d53a7ef4fb1b8b7d3af9e8407767dc28be428da9fcf"
+      },
+      "after": {
+        "mode": "100644",
+        "blob": "a90b95a27bb61d65ce71132b186ba0742c81bd15",
+        "sha256": "bec0fb095917d7ab238557029128242895ae674a30f332dc91637c175a295d71"
+      },
+      "hunks": [
+        {
+          "offsetBefore": 174,
+          "offsetAfter": 174,
+          "before": "\tMaxImageSide            = 8192\n\tProcessorRevision       = 1\n\tDraftRetention          = 24 * time.Hour\n)\n\nvar (\n",
+          "after": "\tMaxImageSide            = 8192\n\tProcessorRevision       = 1\n\tDraftRetention          = 24 * time.Hour\n\tMaxStreamCoverUploads   = 4\n)\n\nvar (\n"
+        },
+        {
+          "offsetBefore": 761,
+          "offsetAfter": 790,
+          "before": "\tErrDraftExpired        = errors.New(\"upload draft expired\")\n\tErrDraftClaimed        = errors.New(\"upload draft already claimed\")\n\tErrIntegrity           = errors.New(\"media asset integrity failure\")\n)\n\ntype UploadSession struct {\n",
+          "after": "\tErrDraftExpired        = errors.New(\"upload draft expired\")\n\tErrDraftClaimed        = errors.New(\"upload draft already claimed\")\n\tErrIntegrity           = errors.New(\"media asset integrity failure\")\n\tErrCoverUploadLimit    = errors.New(\"cover upload limit exceeded\")\n)\n\ntype UploadSession struct {\n"
+        }
+      ]
+    },
+    {
+      "path": "internal/store/memory_stream_settings.go",
+      "before": {
+        "mode": "100644",
+        "blob": "ddb827db3f1b8ed024feae19cb3f3fcf47539378",
+        "sha256": "9eae7ccad568ae943d4ebdbf734c1badc86c653d8b60a0f17050cbe794cbd582"
+      },
+      "after": {
+        "mode": "100644",
+        "blob": "55bce91adb724ee743c26397225884cbd990fda4",
+        "sha256": "5e8868168a0b3194d877861136c08cc18acbc6cb8033746dda7b58e4eb4a9225"
+      },
+      "hunks": [
+        {
+          "offsetBefore": 999,
+          "offsetAfter": 999,
+          "before": "\tif err := ctx.Err(); err != nil {\n\t\treturn Stream{}, err\n\t}\n\ts.mu.Lock()\n\tdefer s.mu.Unlock()\n\tstream, ok := s.streams[id]\n",
+          "after": "\tif err := ctx.Err(); err != nil {\n\t\treturn Stream{}, err\n\t}\n\tunlockDiscord, err := s.lockExpectedDiscordSettings(ctx, id, settings)\n\tif err != nil {\n\t\treturn Stream{}, err\n\t}\n\tdefer unlockDiscord()\n\ts.mu.Lock()\n\tdefer s.mu.Unlock()\n\tstream, ok := s.streams[id]\n"
+        }
+      ]
+    },
+    {
+      "path": "internal/store/stream_mutations_mariadb.go",
+      "before": {
+        "mode": "100644",
+        "blob": "de22faf32fbd2896e6c2fe03b548db1c37ab7ed4",
+        "sha256": "5e99fb304adaa2c5785ada3efbbdd6ebf8100d4f066d14431f36c6cd3cf928b9"
+      },
+      "after": {
+        "mode": "100644",
+        "blob": "95425967318d8ef9ada57cc7192643ef48b595a5",
+        "sha256": "7ddef8744211386f9a91a7e6f6a4d3dc485b38c628d51101e1ccfe9ca818ae6a"
+      },
+      "hunks": [
+        {
+          "offsetBefore": 4993,
+          "offsetAfter": 4993,
+          "before": "\tif affected == 0 {\n\t\treturn ErrNotFound\n\t}\n\tif err := tx.Commit(); err != nil {\n\t\treturn err\n\t}\n",
+          "after": "\tif affected == 0 {\n\t\treturn ErrNotFound\n\t}\n\tif err := retireStreamCoverAssetsTx(ctx, tx, id, now); err != nil {\n\t\treturn err\n\t}\n\tif err := tx.Commit(); err != nil {\n\t\treturn err\n\t}\n"
+        },
+        {
+          "offsetBefore": 5868,
+          "offsetAfter": 5953,
+          "before": "\t\treturn Stream{}, ErrNotFound\n\t}\n\tif err != nil {\n\t\treturn Stream{}, err\n\t}\n\tvar claimOutputID string\n",
+          "after": "\t\treturn Stream{}, ErrNotFound\n\t}\n\tif err != nil {\n\t\treturn Stream{}, err\n\t}\n\tif err := validateExpectedDiscordSettingsTx(ctx, tx, id, settings); err != nil {\n\t\treturn Stream{}, err\n\t}\n\tvar claimOutputID string\n"
+        }
+      ]
+    },
+    {
+      "path": "internal/store/streams.go",
+      "before": {
+        "mode": "100644",
+        "blob": "182f2632aae5ab9e94c376d06698c0bb3e053c25",
+        "sha256": "23f400d1ec2e2aae4092a0291b80f4851fb19d6972307b28f71e6f8c815e5b40"
+      },
+      "after": {
+        "mode": "100644",
+        "blob": "dffab2144a91ab06edc22522a84b990feabb55f6",
+        "sha256": "be50f5278b57cb5c80f6927b188d93ccec2081d6ee61faaf2c5483e681c85e43"
+      },
+      "hunks": [
+        {
+          "offsetBefore": 2212,
+          "offsetAfter": 2212,
+          "before": "}\n\ntype StreamSettings struct {\n\tName                      string     `json:\"name,omitempty\"`\n\tScheduledStartAt          *time.Time `json:\"scheduled_start_at,omitempty\"`\n\tScheduledEndAt            *time.Time `json:\"scheduled_end_at,omitempty\"`\n",
+          "after": "}\n\ntype StreamSettings struct {\n\t// Set by the Panel after resolving the authentication selection. The\n\t// settings commit revalidates this owner; it is never a client wire field.\n\tExpectedDiscordServiceID  *string    `json:\"-\"`\n\tName                      string     `json:\"name,omitempty\"`\n\tScheduledStartAt          *time.Time `json:\"scheduled_start_at,omitempty\"`\n\tScheduledEndAt            *time.Time `json:\"scheduled_end_at,omitempty\"`\n"
+        }
+      ]
+    },
+    {
+      "path": "internal/streamvisual/memory.go",
+      "before": {
+        "mode": "100644",
+        "blob": "7570cbf47bb2cc94ad1969721cab881c6d82587e",
+        "sha256": "2f82b4ef6fca3455f23d69256a66f97e7265815188d26a16d6e735f2d2d89e1e"
+      },
+      "after": {
+        "mode": "100644",
+        "blob": "314bcda20475ae917f149ef98441ff4bf19fcbce",
+        "sha256": "c5753149f275d7d50315bfcae045a4f06c8f86c347df7f538bcef725f7839af8"
+      },
+      "hunks": [
+        {
+          "offsetBefore": 1389,
+          "offsetAfter": 1389,
+          "before": "}\n\nfunc (r *MemoryRepository) Update(ctx context.Context, streamID, _ string, update Update) (Settings, error) {\n\tcurrent, err := r.Get(ctx, streamID)\n\tif err != nil {\n\t\treturn Settings{}, err\n",
+          "after": "}\n\nfunc (r *MemoryRepository) Update(ctx context.Context, streamID, _ string, update Update) (Settings, error) {\n\tif r.streams == nil {\n\t\treturn Settings{}, ErrNotFound\n\t}\n\tif stream, err := r.streams.GetStream(ctx, strings.TrimSpace(streamID)); err != nil || stream.DeletedAt != nil {\n\t\treturn Settings{}, ErrNotFound\n\t}\n\tcurrent, err := r.Get(ctx, streamID)\n\tif err != nil {\n\t\treturn Settings{}, err\n"
+        },
+        {
+          "offsetBefore": 3802,
+          "offsetAfter": 4011,
+          "before": "}\n\nfunc validateMemoryCandidates(current, next Settings, update Update) error {\n\tif update.CoverCandidates == nil {\n\t\treturn nil\n\t}\n",
+          "after": "}\n\nfunc validateMemoryCandidates(current, next Settings, update Update) error {\n\tif err := validateCoverUploadLimit(current, next); err != nil {\n\t\treturn err\n\t}\n\tif update.CoverCandidates == nil {\n\t\treturn nil\n\t}\n"
+        }
+      ]
+    },
+    {
+      "path": "internal/streamvisual/repository.go",
+      "before": {
+        "mode": "100644",
+        "blob": "c3d53d414c8ed5a5885668adf611517c4cc75910",
+        "sha256": "6ee8ca5df2f7e8dddcc5cbd1de6ac23a2aef83389d38234f4938a4f2ce81f6a1"
+      },
+      "after": {
+        "mode": "100644",
+        "blob": "379cfb1b888984d1ace1aab88f01e17971b70f18",
+        "sha256": "b3ff53e6126bb8eaeeef66c141e266f73396124478d70465ac6a154b470d3dd7"
+      },
+      "hunks": [
+        {
+          "offsetBefore": 3987,
+          "offsetAfter": 3987,
+          "before": "\t}\n\tdefer tx.Rollback()\n\tvar status string\n\tif err := tx.QueryRowContext(ctx, `SELECT status FROM streams WHERE id=? FOR UPDATE`, streamID).Scan(&status); errors.Is(err, sql.ErrNoRows) {\n\t\treturn Settings{}, ErrNotFound\n\t} else if err != nil {\n\t\treturn Settings{}, err\n",
+          "after": "\t}\n\tdefer tx.Rollback()\n\tvar status string\n\tif err := tx.QueryRowContext(ctx, `SELECT status FROM streams WHERE id=? AND deleted_at IS NULL FOR UPDATE`, streamID).Scan(&status); errors.Is(err, sql.ErrNoRows) {\n\t\treturn Settings{}, ErrNotFound\n\t} else if err != nil {\n\t\treturn Settings{}, err\n"
+        },
+        {
+          "offsetBefore": 4716,
+          "offsetAfter": 4739,
+          "before": "\tif err != nil {\n\t\treturn Settings{}, err\n\t}\n\tif sessionID := strings.TrimSpace(update.UploadSessionID); sessionID != \"\" {\n\t\tselectedAssetIDs := selectedUploadAssetIDs(next, changes)\n\t\tif len(selectedAssetIDs) == 0 {\n",
+          "after": "\tif err != nil {\n\t\treturn Settings{}, err\n\t}\n\tif err := validateCoverUploadLimit(current, next); err != nil {\n\t\treturn Settings{}, err\n\t}\n\tif sessionID := strings.TrimSpace(update.UploadSessionID); sessionID != \"\" {\n\t\tselectedAssetIDs := selectedUploadAssetIDs(next, changes)\n\t\tif len(selectedAssetIDs) == 0 {\n"
+        },
+        {
+          "offsetBefore": 5007,
+          "offsetAfter": 5123,
+          "before": "\t\t\treturn Settings{}, ErrAssetClaim\n\t\t}\n\t\tif err := r.draftClaimer.ClaimDraftTx(ctx, tx, userID, sessionID, streamID, r.now()); err != nil {\n\t\t\treturn Settings{}, fmt.Errorf(\"%w: %v\", ErrAssetClaim, err)\n\t\t}\n\t\tif err := validateClaimedDraftSelection(ctx, tx, userID, sessionID, streamID, selectedAssetIDs); err != nil {\n",
+          "after": "\t\t\treturn Settings{}, ErrAssetClaim\n\t\t}\n\t\tif err := r.draftClaimer.ClaimDraftTx(ctx, tx, userID, sessionID, streamID, r.now()); err != nil {\n\t\t\tif errors.Is(err, mediaassets.ErrCoverUploadLimit) {\n\t\t\t\treturn Settings{}, err\n\t\t\t}\n\t\t\treturn Settings{}, fmt.Errorf(\"%w: %v\", ErrAssetClaim, err)\n\t\t}\n\t\tif err := validateClaimedDraftSelection(ctx, tx, userID, sessionID, streamID, selectedAssetIDs); err != nil {\n"
+        },
+        {
+          "offsetBefore": 7124,
+          "offsetAfter": 7328,
+          "before": "\tif err != nil {\n\t\treturn store.Stream{}, Settings{}, err\n\t}\n\t// Creation has no prior persisted snapshot. Any selected media must therefore\n\t// be resolved and validated from the canonical visual input.\n\tchanges.backgroundSelection = settings.BackgroundMode == \"image\"\n",
+          "after": "\tif err != nil {\n\t\treturn store.Stream{}, Settings{}, err\n\t}\n\tif err := validateCoverUploadLimit(settingsBase, settings); err != nil {\n\t\treturn store.Stream{}, Settings{}, err\n\t}\n\t// Creation has no prior persisted snapshot. Any selected media must therefore\n\t// be resolved and validated from the canonical visual input.\n\tchanges.backgroundSelection = settings.BackgroundMode == \"image\"\n"
+        },
+        {
+          "offsetBefore": 8237,
+          "offsetAfter": 8559,
+          "before": "\t\t\treturn store.Stream{}, Settings{}, ErrAssetClaim\n\t\t}\n\t\tif err = r.draftClaimer.ClaimDraftTx(ctx, tx, userID, sessionID, stream.ID, now); err != nil {\n\t\t\treturn store.Stream{}, Settings{}, fmt.Errorf(\"%w: %v\", ErrAssetClaim, err)\n\t\t}\n\t\tif err = validateClaimedDraftSelection(ctx, tx, userID, sessionID, stream.ID, selectedAssetIDs); err != nil {\n",
+          "after": "\t\t\treturn store.Stream{}, Settings{}, ErrAssetClaim\n\t\t}\n\t\tif err = r.draftClaimer.ClaimDraftTx(ctx, tx, userID, sessionID, stream.ID, now); err != nil {\n\t\t\tif errors.Is(err, mediaassets.ErrCoverUploadLimit) {\n\t\t\t\treturn store.Stream{}, Settings{}, err\n\t\t\t}\n\t\t\treturn store.Stream{}, Settings{}, fmt.Errorf(\"%w: %v\", ErrAssetClaim, err)\n\t\t}\n\t\tif err = validateClaimedDraftSelection(ctx, tx, userID, sessionID, stream.ID, selectedAssetIDs); err != nil {\n"
+        },
+        {
+          "offsetBefore": 10754,
+          "offsetAfter": 11180,
+          "before": "\tfor _, id := range expectedIDs {\n\t\texpected[strings.TrimSpace(id)] = true\n\t}\n\trows, err := tx.QueryContext(ctx, `SELECT id,owner_user_id,owner_type,owner_id FROM media_assets WHERE upload_session_id=? FOR UPDATE`, sessionID)\n\tif err != nil {\n\t\treturn err\n\t}\n",
+          "after": "\tfor _, id := range expectedIDs {\n\t\texpected[strings.TrimSpace(id)] = true\n\t}\n\trows, err := tx.QueryContext(ctx, `SELECT id,owner_user_id,owner_type,owner_id FROM media_assets WHERE upload_session_id=? AND deleted_at IS NULL FOR UPDATE`, sessionID)\n\tif err != nil {\n\t\treturn err\n\t}\n"
+        }
+      ]
+    },
+    {
+      "path": "scripts/ci/source-owner-map.json",
+      "before": {
+        "mode": "100644",
+        "blob": "4f551221aa19b421aa47d7337b385cbbc729f302",
+        "sha256": "672229ce76acc60d6f693354aa40beacec9bf9b9eddadd97c4af620d945c91f3"
+      },
+      "after": {
+        "mode": "100644",
+        "blob": "3969f5ab4a6a483ee2aacd601a89fa906979dd15",
+        "sha256": "1748d5b1d43da89de7767df596a9da52f614725b26d3fa9200258ac09cb9d9ff"
+      },
+      "hunks": [
+        {
+          "offsetBefore": 10141,
+          "offsetAfter": 10141,
+          "before": "        \"symbols\": [],\n        \"physical_lines\": 100\n      },\n      {\n        \"path\": \"web/tests/helpers/browser-fetch-settlement-cases.mts\",\n        \"sha256\": \"3ab79254478215ad0c5088c00881e942a2d4907138902fe0be214c61ce941c8a\",\n        \"symbols\": [],\n        \"physical_lines\": 194\n      },\n      {\n        \"path\": \"web/tests/helpers/browser-harness.mts\",\n        \"sha256\": \"a9c285cf94e218adde4cf259ee8e31801e872986d8fbafa6ec8534b3c1b51671\",\n        \"symbols\": [\n          \"BrowserHarness\",\n          \"removeOwnedBrowserDirectory\",\n          \"resolveBrowserPath\",\n          \"terminateChildProcess\",\n          \"waitForChildExit\",\n          \"waitForMapCount\"\n        ],\n        \"physical_lines\": 790\n      },\n      {\n        \"path\": \"web/tests/helpers/browser-command-deadline.mts\",\n        \"sha256\": \"bc826d2dff55ea45597c629dd1db102c95d9f3fcfb445d45e1c19fa80a5f7aae\",\n        \"symbols\": [\n",
+          "after": "        \"symbols\": [],\n        \"physical_lines\": 100\n      },\n      {\n        \"path\": \"web/tests/helpers/browser-fetch-settlement-cases.mts\",\n        \"sha256\": \"be13a59709bfc67a9cde5646b94669510ed195d6391fbba9380fc870a6815dac\",\n        \"symbols\": [],\n        \"physical_lines\": 208\n      },\n      {\n        \"path\": \"web/tests/helpers/browser-harness.mts\",\n        \"sha256\": \"84cd6803955b7b6e266518d13f6fd582842fbeb512b3cd449a8d4143e803b95c\",\n        \"symbols\": [\n          \"BrowserHarness\",\n          \"removeOwnedBrowserDirectory\",\n          \"resolveBrowserPath\",\n          \"terminateChildProcess\",\n          \"waitForChildExit\",\n          \"waitForMapCount\"\n        ],\n        \"physical_lines\": 793\n      },\n      {\n        \"path\": \"web/tests/helpers/browser-command-deadline.mts\",\n        \"sha256\": \"bc826d2dff55ea45597c629dd1db102c95d9f3fcfb445d45e1c19fa80a5f7aae\",\n        \"symbols\": [\n"
+        },
+        {
+          "offsetBefore": 58595,
+          "offsetAfter": 58595,
+          "before": "    \"disposition\": \"responsibility-split\",\n    \"responsibility\": \"single suite lifetime;scenario modules by domain;shared fixtures/navigation/assertions\",\n    \"destinations\": [\n      {\n        \"path\": \"web/tests/helpers/browser-harness.mts\",\n        \"sha256\": \"a9c285cf94e218adde4cf259ee8e31801e872986d8fbafa6ec8534b3c1b51671\",\n        \"symbols\": [\n          \"BrowserHarness\",\n          \"removeOwnedBrowserDirectory\",\n          \"resolveBrowserPath\",\n          \"terminateChildProcess\",\n          \"waitForChildExit\",\n          \"waitForMapCount\"\n        ],\n        \"physical_lines\": 790\n      },\n      {\n        \"path\": \"web/tests/helpers/browser-command-deadline.mts\",\n        \"sha256\": \"bc826d2dff55ea45597c629dd1db102c95d9f3fcfb445d45e1c19fa80a5f7aae\",\n        \"symbols\": [\n",
+          "after": "    \"disposition\": \"responsibility-split\",\n    \"responsibility\": \"single suite lifetime;scenario modules by domain;shared fixtures/navigation/assertions\",\n    \"destinations\": [\n      {\n        \"path\": \"web/tests/helpers/browser-harness.mts\",\n        \"sha256\": \"84cd6803955b7b6e266518d13f6fd582842fbeb512b3cd449a8d4143e803b95c\",\n        \"symbols\": [\n          \"BrowserHarness\",\n          \"removeOwnedBrowserDirectory\",\n          \"resolveBrowserPath\",\n          \"terminateChildProcess\",\n          \"waitForChildExit\",\n          \"waitForMapCount\"\n        ],\n        \"physical_lines\": 793\n      },\n      {\n        \"path\": \"web/tests/helpers/browser-command-deadline.mts\",\n        \"sha256\": \"bc826d2dff55ea45597c629dd1db102c95d9f3fcfb445d45e1c19fa80a5f7aae\",\n        \"symbols\": [\n"
+        },
+        {
+          "offsetBefore": 60494,
+          "offsetAfter": 60494,
+          "before": "        ],\n        \"physical_lines\": 319\n      },\n      {\n        \"path\": \"web/tests/ui-browser-fixture.mts\",\n        \"sha256\": \"d662ffb7b1cedc4f3cc7997778c08dfc948249dff2f6798816ad55ddcbd9f20e\",\n        \"symbols\": [\n          \"controlPlatformCoverState\",\n          \"createBrowserRouteFixture\",\n          \"escapeRegExp\",\n          \"normalizePath\",\n          \"permissionUser\",\n          \"productionLoginReturnParameterName\",\n          \"versionResponse\",\n          \"workerConfiguration\"\n        ],\n        \"physical_lines\": 253\n      },\n      {\n        \"path\": \"web/tests/ui-browser-navigation-helpers.mts\",\n        \"sha256\": \"88ba65cb4f68b4326e3f492b2994cb0a05e1ecfd5a384e381a90dcd76f45d248\",\n        \"symbols\": [\n",
+          "after": "        ],\n        \"physical_lines\": 319\n      },\n      {\n        \"path\": \"web/tests/ui-browser-fixture.mts\",\n        \"sha256\": \"7cfcc8587b79b496486430c4cfd1bde4ea83d489ee18378974a55074a909893e\",\n        \"symbols\": [\n          \"controlPlatformCoverState\",\n          \"createBrowserRouteFixture\",\n          \"escapeRegExp\",\n          \"normalizePath\",\n          \"permissionUser\",\n          \"productionLoginReturnParameterName\",\n          \"versionResponse\",\n          \"workerConfiguration\"\n        ],\n        \"physical_lines\": 255\n      },\n      {\n        \"path\": \"web/tests/ui-browser-navigation-helpers.mts\",\n        \"sha256\": \"88ba65cb4f68b4326e3f492b2994cb0a05e1ecfd5a384e381a90dcd76f45d248\",\n        \"symbols\": [\n"
+        },
+        {
+          "offsetBefore": 61447,
+          "offsetAfter": 61447,
+          "before": "        ],\n        \"physical_lines\": 84\n      },\n      {\n        \"path\": \"web/tests/ui-browser-navigation-scenarios.mts\",\n        \"sha256\": \"7a6ad6983327c78c240610be2959945e5b1ec31e13fb7e8d71deb02b98d59a9a\",\n        \"symbols\": [],\n        \"physical_lines\": 255\n      },\n      {\n        \"path\": \"web/tests/ui-browser-observation-scenarios.mts\",\n",
+          "after": "        ],\n        \"physical_lines\": 84\n      },\n      {\n        \"path\": \"web/tests/ui-browser-navigation-scenarios.mts\",\n        \"sha256\": \"41f98efed8026ee4b44942ee4ae099ae6fafd600878a63bdba137ae4897a0d85\",\n        \"symbols\": [],\n        \"physical_lines\": 255\n      },\n      {\n        \"path\": \"web/tests/ui-browser-observation-scenarios.mts\",\n"
+        },
+        {
+          "offsetBefore": 61877,
+          "offsetAfter": 61877,
+          "before": "        \"symbols\": [],\n        \"physical_lines\": 268\n      },\n      {\n        \"path\": \"web/tests/ui-browser-query-auth-helpers.mts\",\n        \"sha256\": \"a945f201133e61f9a57c97d094b3e7feb62236e5ed45ae6a5b3aed13758ab8c1\",\n        \"symbols\": [\n          \"assertCreateOutcome\",\n          \"assertStatusSnapshot\",\n          \"authMeExpirySnapshotExpression\",\n          \"closeCreateAndAssertFocusReturn\",\n",
+          "after": "        \"symbols\": [],\n        \"physical_lines\": 268\n      },\n      {\n        \"path\": \"web/tests/ui-browser-query-auth-helpers.mts\",\n        \"sha256\": \"913d20b67f4fec2158194b2fd71ab4609fb00d1bb701657be2c1b231a0fc2afd\",\n        \"symbols\": [\n          \"assertCreateOutcome\",\n          \"assertStatusSnapshot\",\n          \"authMeExpirySnapshotExpression\",\n          \"closeCreateAndAssertFocusReturn\",\n"
+        },
+        {
+          "offsetBefore": 62484,
+          "offsetAfter": 62484,
+          "before": "        ],\n        \"physical_lines\": 203\n      },\n      {\n        \"path\": \"web/tests/ui-browser-query-auth-scenarios.mts\",\n        \"sha256\": \"915dfb34de4bd8e697daa7cad699ad381d65bdada1f68876af4284b93d3ff938\",\n        \"symbols\": [],\n        \"physical_lines\": 395\n      },\n      {\n        \"path\": \"web/tests/ui-browser-start-readiness-scenarios.mts\",\n        \"sha256\": \"f2c88c954c4f71f9a42421c6c73079c5d0b28f517f32407741b0a13c2cabc854\",\n        \"symbols\": [],\n",
+          "after": "        ],\n        \"physical_lines\": 203\n      },\n      {\n        \"path\": \"web/tests/ui-browser-query-auth-scenarios.mts\",\n        \"sha256\": \"4cfb602b9f07e068264b73e7886f898aab646d26711b974acb66eb96692b8c28\",\n        \"symbols\": [],\n        \"physical_lines\": 403\n      },\n      {\n        \"path\": \"web/tests/ui-browser-start-readiness-scenarios.mts\",\n        \"sha256\": \"f2c88c954c4f71f9a42421c6c73079c5d0b28f517f32407741b0a13c2cabc854\",\n        \"symbols\": [],\n"
+        },
+        {
+          "offsetBefore": 74210,
+          "offsetAfter": 74210,
+          "before": "        ],\n        \"physical_lines\": 145\n      },\n      {\n        \"path\": \"internal/httpapi/server_stream_lifecycle_test.go\",\n        \"sha256\": \"cdfd1bd2e74de904769d1e46f5878b1db453e8d3f013e841828ff580c4595868\",\n        \"symbols\": [\n          \"TestApplyEncoderVideoProfileRejectsUnsupportedWorkerSceneGeometry\",\n          \"TestStartStreamCompensatesPartialDispatchFailure\",\n          \"TestStreamLifecycleEndpoints\",\n          \"TestStreamStartPersistsNegotiatedWorkerVideoOverlayBurnIn\",\n          \"TestStreamStartStopDispatchesAssignedServices\"\n        ],\n        \"physical_lines\": 371\n      },\n      {\n        \"path\": \"internal/httpapi/server_stream_media_proxy_test.go\",\n        \"sha256\": \"813f020d98b149c1e9ce504d5be143608177a2eb3212dba90a40565b710c0dd8\",\n        \"symbols\": [\n",
+          "after": "        ],\n        \"physical_lines\": 145\n      },\n      {\n        \"path\": \"internal/httpapi/server_stream_lifecycle_test.go\",\n        \"sha256\": \"7bcf3bf9b0e04af2f078348e4defaef8671eb76140c1e90de9979d797041478a\",\n        \"symbols\": [\n          \"TestApplyEncoderVideoProfileRejectsUnsupportedWorkerSceneGeometry\",\n          \"TestStartStreamCompensatesPartialDispatchFailure\",\n          \"TestStreamLifecycleEndpoints\",\n          \"TestStreamStartPersistsNegotiatedWorkerVideoOverlayBurnIn\",\n          \"TestStreamStartStopDispatchesAssignedServices\"\n        ],\n        \"physical_lines\": 380\n      },\n      {\n        \"path\": \"internal/httpapi/server_stream_media_proxy_test.go\",\n        \"sha256\": \"813f020d98b149c1e9ce504d5be143608177a2eb3212dba90a40565b710c0dd8\",\n        \"symbols\": [\n"
+        },
+        {
+          "offsetBefore": 136734,
+          "offsetAfter": 136734,
+          "before": "        ],\n        \"physical_lines\": 134\n      },\n      {\n        \"path\": \"internal/store/stream_mutations_mariadb.go\",\n        \"sha256\": \"5e99fb304adaa2c5785ada3efbbdd6ebf8100d4f066d14431f36c6cd3cf928b9\",\n        \"symbols\": [\n          \"MariaDBStreamStore.DeleteStream\",\n          \"MariaDBStreamStore.GetStream\",\n          \"MariaDBStreamStore.TransitionStreamStatus\",\n          \"MariaDBStreamStore.UpdateStreamEncoderRuntimeSettings\",\n          \"MariaDBStreamStore.UpdateStreamSettings\",\n          \"MariaDBStreamStore.UpdateStreamStatus\",\n          \"UpsertStreamSettingsTx\"\n        ],\n        \"physical_lines\": 290\n      },\n      {\n        \"path\": \"internal/store/stream_queries_mariadb.go\",\n        \"sha256\": \"abb4193851ead7c7eb8f3299dcc1ffae76ca1c4708cddb87570c82e22b9ee36f\",\n        \"symbols\": [\n",
+          "after": "        ],\n        \"physical_lines\": 134\n      },\n      {\n        \"path\": \"internal/store/stream_mutations_mariadb.go\",\n        \"sha256\": \"7ddef8744211386f9a91a7e6f6a4d3dc485b38c628d51101e1ccfe9ca818ae6a\",\n        \"symbols\": [\n          \"MariaDBStreamStore.DeleteStream\",\n          \"MariaDBStreamStore.GetStream\",\n          \"MariaDBStreamStore.TransitionStreamStatus\",\n          \"MariaDBStreamStore.UpdateStreamEncoderRuntimeSettings\",\n          \"MariaDBStreamStore.UpdateStreamSettings\",\n          \"MariaDBStreamStore.UpdateStreamStatus\",\n          \"UpsertStreamSettingsTx\"\n        ],\n        \"physical_lines\": 296\n      },\n      {\n        \"path\": \"internal/store/stream_queries_mariadb.go\",\n        \"sha256\": \"abb4193851ead7c7eb8f3299dcc1ffae76ca1c4708cddb87570c82e22b9ee36f\",\n        \"symbols\": [\n"
+        },
+        {
+          "offsetBefore": 138874,
+          "offsetAfter": 138874,
+          "before": "        ],\n        \"physical_lines\": 192\n      },\n      {\n        \"path\": \"internal/store/streams.go\",\n        \"sha256\": \"23f400d1ec2e2aae4092a0291b80f4851fb19d6972307b28f71e6f8c815e5b40\",\n        \"symbols\": [\n          \"ActiveStreamStore\",\n          \"ArchiveProcessingStreamStore\",\n          \"ArchiveStreamStore\",\n          \"ErrInvalidStreamArtifact\",\n",
+          "after": "        ],\n        \"physical_lines\": 192\n      },\n      {\n        \"path\": \"internal/store/streams.go\",\n        \"sha256\": \"be50f5278b57cb5c80f6927b188d93ccec2081d6ee61faaf2c5483e681c85e43\",\n        \"symbols\": [\n          \"ActiveStreamStore\",\n          \"ArchiveProcessingStreamStore\",\n          \"ArchiveStreamStore\",\n          \"ErrInvalidStreamArtifact\",\n"
+        },
+        {
+          "offsetBefore": 139682,
+          "offsetAfter": 139682,
+          "before": "          \"StreamSettings\",\n          \"StreamStore\",\n          \"StreamYouTubeRuntime\",\n          \"StreamYouTubeRuntimeStore\"\n        ],\n        \"physical_lines\": 220\n      }\n    ]\n  },\n  {\n    \"target_id\": \"B9-M032\",\n",
+          "after": "          \"StreamSettings\",\n          \"StreamStore\",\n          \"StreamYouTubeRuntime\",\n          \"StreamYouTubeRuntimeStore\"\n        ],\n        \"physical_lines\": 223\n      }\n    ]\n  },\n  {\n    \"target_id\": \"B9-M032\",\n"
+        },
+        {
+          "offsetBefore": 202463,
+          "offsetAfter": 202463,
+          "before": "        ],\n        \"physical_lines\": 80\n      },\n      {\n        \"path\": \"internal/store/memory_stream_settings.go\",\n        \"sha256\": \"9eae7ccad568ae943d4ebdbf734c1badc86c653d8b60a0f17050cbe794cbd582\",\n        \"symbols\": [\n          \"*MemoryStreamStore.GetStreamMediaRuntime\",\n          \"*MemoryStreamStore.SetStreamVideoOverlayBurnIn\",\n          \"*MemoryStreamStore.UpdateStreamEncoderRuntimeSettings\",\n          \"*MemoryStreamStore.UpdateStreamSettings\",\n          \"cloneTimePtr\"\n        ],\n        \"physical_lines\": 106\n      },\n      {\n        \"path\": \"internal/store/memory_stream_start_claim.go\",\n        \"sha256\": \"85a89465639996ecfe548799c3db7426134b1c8676752de814dbd0b0d187dc3e\",\n        \"symbols\": [\n",
+          "after": "        ],\n        \"physical_lines\": 80\n      },\n      {\n        \"path\": \"internal/store/memory_stream_settings.go\",\n        \"sha256\": \"5e8868168a0b3194d877861136c08cc18acbc6cb8033746dda7b58e4eb4a9225\",\n        \"symbols\": [\n          \"*MemoryStreamStore.GetStreamMediaRuntime\",\n          \"*MemoryStreamStore.SetStreamVideoOverlayBurnIn\",\n          \"*MemoryStreamStore.UpdateStreamEncoderRuntimeSettings\",\n          \"*MemoryStreamStore.UpdateStreamSettings\",\n          \"cloneTimePtr\"\n        ],\n        \"physical_lines\": 111\n      },\n      {\n        \"path\": \"internal/store/memory_stream_start_claim.go\",\n        \"sha256\": \"85a89465639996ecfe548799c3db7426134b1c8676752de814dbd0b0d187dc3e\",\n        \"symbols\": [\n"
+        },
+        {
+          "offsetBefore": 217683,
+          "offsetAfter": 217683,
+          "before": "    \"disposition\": \"responsibility-split\",\n    \"responsibility\": \"Next owned-process readiness;Chrome/CDP transport;request lifecycle adapter;page evaluation;cleanup\",\n    \"destinations\": [\n      {\n        \"path\": \"web/tests/helpers/browser-harness.mts\",\n        \"sha256\": \"a9c285cf94e218adde4cf259ee8e31801e872986d8fbafa6ec8534b3c1b51671\",\n        \"symbols\": [\n          \"BrowserHarness\",\n          \"assertNoFatalError\",\n          \"browserVersion\",\n          \"captureScreenshot\",\n",
+          "after": "    \"disposition\": \"responsibility-split\",\n    \"responsibility\": \"Next owned-process readiness;Chrome/CDP transport;request lifecycle adapter;page evaluation;cleanup\",\n    \"destinations\": [\n      {\n        \"path\": \"web/tests/helpers/browser-harness.mts\",\n        \"sha256\": \"84cd6803955b7b6e266518d13f6fd582842fbeb512b3cd449a8d4143e803b95c\",\n        \"symbols\": [\n          \"BrowserHarness\",\n          \"assertNoFatalError\",\n          \"browserVersion\",\n          \"captureScreenshot\",\n"
+        },
+        {
+          "offsetBefore": 219405,
+          "offsetAfter": 219405,
+          "before": "          \"waitForMapCount\",\n          \"waitForRequestCount\",\n          \"waitForRequestHandlersIdle\",\n          \"waitForResponseCount\"\n        ],\n        \"physical_lines\": 790\n      },\n      {\n        \"path\": \"web/tests/helpers/browser-command-deadline.mts\",\n        \"sha256\": \"bc826d2dff55ea45597c629dd1db102c95d9f3fcfb445d45e1c19fa80a5f7aae\",\n        \"symbols\": [\n",
+          "after": "          \"waitForMapCount\",\n          \"waitForRequestCount\",\n          \"waitForRequestHandlersIdle\",\n          \"waitForResponseCount\"\n        ],\n        \"physical_lines\": 793\n      },\n      {\n        \"path\": \"web/tests/helpers/browser-command-deadline.mts\",\n        \"sha256\": \"bc826d2dff55ea45597c629dd1db102c95d9f3fcfb445d45e1c19fa80a5f7aae\",\n        \"symbols\": [\n"
+        },
+        {
+          "offsetBefore": 223911,
+          "offsetAfter": 223911,
+          "before": "        ],\n        \"physical_lines\": 269\n      },\n      {\n        \"path\": \"web/tests/helpers/browser-harness.mts\",\n        \"sha256\": \"a9c285cf94e218adde4cf259ee8e31801e872986d8fbafa6ec8534b3c1b51671\",\n        \"symbols\": [\n          \"BrowserHarness\",\n          \"removeOwnedBrowserDirectory\",\n          \"resolveBrowserPath\",\n          \"terminateChildProcess\",\n          \"waitForChildExit\",\n          \"waitForMapCount\"\n        ],\n        \"physical_lines\": 790\n      },\n      {\n        \"path\": \"web/tests/helpers/browser-command-deadline.mts\",\n        \"sha256\": \"bc826d2dff55ea45597c629dd1db102c95d9f3fcfb445d45e1c19fa80a5f7aae\",\n        \"symbols\": [\n",
+          "after": "        ],\n        \"physical_lines\": 269\n      },\n      {\n        \"path\": \"web/tests/helpers/browser-harness.mts\",\n        \"sha256\": \"84cd6803955b7b6e266518d13f6fd582842fbeb512b3cd449a8d4143e803b95c\",\n        \"symbols\": [\n          \"BrowserHarness\",\n          \"removeOwnedBrowserDirectory\",\n          \"resolveBrowserPath\",\n          \"terminateChildProcess\",\n          \"waitForChildExit\",\n          \"waitForMapCount\"\n        ],\n        \"physical_lines\": 793\n      },\n      {\n        \"path\": \"web/tests/helpers/browser-command-deadline.mts\",\n        \"sha256\": \"bc826d2dff55ea45597c629dd1db102c95d9f3fcfb445d45e1c19fa80a5f7aae\",\n        \"symbols\": [\n"
+        }
+      ]
+    },
+    {
+      "path": "web/package.json",
+      "before": {
+        "mode": "100644",
+        "blob": "a9d32ac16b605429be218e418d4a21efa33a67eb",
+        "sha256": "c3f39c1a52f9ba56efcdfd8a3d0803d0ce2f93d314411bfcd84fe6f6aea70fe4"
+      },
+      "after": {
+        "mode": "100644",
+        "blob": "98cb74942f47d1cd0e0a8734bbb7153c1dae9efc",
+        "sha256": "b904fbc4a2c14cbb529869e1228455da7ae07a69c1e07e8cbd2f64e74fc128b2"
+      },
+      "hunks": [
+        {
+          "offsetBefore": 258,
+          "offsetAfter": 258,
+          "before": "    \"test:i18n\": \"node scripts/test-i18n.mjs\",\n    \"test:ui-regression:components\": \"node --no-warnings --test --test-concurrency=1 tests/ui-regression/table-components.test.mts tests/ui-regression/form-components.test.mts tests/ui-regression/table-state.test.mts tests/ui-regression/table-location.test.mts tests/ui-regression/dashboard-components.test.mts tests/ui-regression/resource-components.test.mts tests/ui-regression/draft-exit.test.mts tests/ui-regression/stream-detail.test.mts tests/ui-regression/current-copy.test.mts tests/ui-regression/current-bindings.test.mts tests/ui-regression/draft-flow.test.mts\",\n    \"test:ui-regression:parity\": \"node --no-warnings --test tests/ui-regression/parity.test.mts\",\n    \"test:ui-regression:browser-contracts\": \"node --no-warnings --test --test-concurrency=1 tests/ui-regression/browser-contracts.test.mts tests/ui-regression/comparison-core.test.mts tests/ui-regression/fetch-diagnostics-core.test.mts tests/ui-regression/capture-contracts.test.mts tests/ui-regression/observer-regressions.test.mts tests/ui-regression/state-input-regressions.test.mts tests/ui-regression/effect-regressions.test.mts tests/ui-regression/form-content-driver.test.mts tests/ui-regression/keyboard-navigation.test.mts tests/ui-regression/condition-lifecycle.test.mts tests/ui-regression/render-state.test.mts tests/ui-regression/dependency-integrity.test.mts\",\n    \"test:ui-regression:browser\": \"node --no-warnings tests/ui-regression/run-browser.mts\",\n    \"test:metrics\": \"node --no-warnings --test tests/metric-classification.test.mts\",\n    \"test:oauth-account\": \"node --no-warnings --test tests/oauth-account.test.mts\",\n",
+          "after": "    \"test:i18n\": \"node scripts/test-i18n.mjs\",\n    \"test:ui-regression:components\": \"node --no-warnings --test --test-concurrency=1 tests/ui-regression/table-components.test.mts tests/ui-regression/form-components.test.mts tests/ui-regression/table-state.test.mts tests/ui-regression/table-location.test.mts tests/ui-regression/dashboard-components.test.mts tests/ui-regression/resource-components.test.mts tests/ui-regression/draft-exit.test.mts tests/ui-regression/stream-detail.test.mts tests/ui-regression/current-copy.test.mts tests/ui-regression/current-bindings.test.mts tests/ui-regression/draft-flow.test.mts\",\n    \"test:ui-regression:parity\": \"node --no-warnings --test tests/ui-regression/parity.test.mts\",\n    \"test:ui-regression:browser-contracts\": \"node --no-warnings --test --test-concurrency=1 tests/ui-regression/browser-contracts.test.mts tests/ui-regression/comparison-core.test.mts tests/ui-regression/fetch-diagnostics-core.test.mts tests/ui-regression/capture-contracts.test.mts tests/ui-regression/observer-regressions.test.mts tests/ui-regression/state-input-regressions.test.mts tests/ui-regression/effect-regressions.test.mts tests/ui-regression/form-content-driver.test.mts tests/ui-regression/stream-create-page-driver.test.mts tests/ui-regression/keyboard-navigation.test.mts tests/ui-regression/condition-lifecycle.test.mts tests/ui-regression/render-state.test.mts tests/ui-regression/dependency-integrity.test.mts\",\n    \"test:ui-regression:browser\": \"node --no-warnings tests/ui-regression/run-browser.mts\",\n    \"test:metrics\": \"node --no-warnings --test tests/metric-classification.test.mts\",\n    \"test:oauth-account\": \"node --no-warnings --test tests/oauth-account.test.mts\",\n"
+        }
+      ]
+    },
+    {
+      "path": "web/src/components/admin/i18n-provider.tsx",
+      "before": {
+        "mode": "100644",
+        "blob": "1a0c6dcc1c159598db50b8c0e2310b1efcc161ab",
+        "sha256": "5723e2fdae7a09cdbe83be20717f63c197ba9c8ea81464c3a7489fe8ba638a20"
+      },
+      "after": {
+        "mode": "100644",
+        "blob": "d5f57a5f9ba7eed7b7d1be9ebf9c401d8d61824a",
+        "sha256": "a548646d9dd1202387318d65a4b8a95f5f1d548bff945f4b6a319790edd6ba79"
+      },
+      "hunks": [
+        {
+          "offsetBefore": 0,
+          "offsetAfter": 0,
+          "before": "\"use client\";\n\nimport { createContext, useContext, useEffect, useMemo, useState } from \"react\";\nimport { localeStorageKey, supportedLocales, translate, type TranslationKey, type TranslationValues } from \"@/lib/i18n\";\nimport type { Locale } from \"@/types/domain\";\n\n",
+          "after": "\"use client\";\n\nimport { createContext, useContext, useEffect, useMemo, useState, useSyncExternalStore } from \"react\";\nimport { localeStorageKey, supportedLocales, translate, type TranslationKey, type TranslationValues } from \"@/lib/i18n\";\nimport type { Locale } from \"@/types/domain\";\n\n"
+        },
+        {
+          "offsetBefore": 413,
+          "offsetAfter": 435,
+          "before": "};\n\nconst I18nContext = createContext<I18nContextValue | null>(null);\n\nexport function I18nProvider({ children }: { children: React.ReactNode }) {\n  const [locale, setLocaleState] = useState<Locale>(() => {\n    if (typeof window === \"undefined\") return \"ja\";\n    let stored: Locale | null = null;\n    try {\n      stored = window.localStorage.getItem(localeStorageKey) as Locale | null;\n    } catch {\n      // Browser storage is optional; keep the default locale when unavailable.\n    }\n    return stored && supportedLocales.includes(stored) ? stored : \"ja\";\n  });\n\n  useEffect(() => {\n    document.documentElement.lang = locale;\n",
+          "after": "};\n\nconst I18nContext = createContext<I18nContextValue | null>(null);\nconst subscribeHydration = () => () => {};\nconst clientHydrated = () => true;\nconst serverHydrated = () => false;\n\nexport function I18nProvider({ children, initialLocale = \"ja\" }: { children?: React.ReactNode; initialLocale?: Locale }) {\n  const bootstrapReady = useSyncExternalStore(subscribeHydration, clientHydrated, serverHydrated);\n  const bootstrapLocale = useMemo(() => {\n    if (!bootstrapReady) return initialLocale;\n    let stored: Locale | null = null;\n    try {\n      stored = window.localStorage.getItem(localeStorageKey) as Locale | null;\n    } catch {\n      // Browser storage is optional; keep the default locale when unavailable.\n    }\n    return stored && supportedLocales.includes(stored) ? stored : initialLocale;\n  }, [bootstrapReady, initialLocale]);\n  const [selectedLocale, setLocaleState] = useState<Locale | null>(null);\n  const locale = selectedLocale ?? bootstrapLocale;\n\n  useEffect(() => {\n    document.documentElement.lang = locale;\n"
+        }
+      ]
+    },
+    {
+      "path": "web/src/components/admin/theme-provider.tsx",
+      "before": {
+        "mode": "100644",
+        "blob": "be6a55a88ed83bfd08de6d13d7c15f9e99d16fae",
+        "sha256": "2b8f25b410e0c14629d58faece767bb2e9b25c0db4da71dd494f9492f9aa3647"
+      },
+      "after": {
+        "mode": "100644",
+        "blob": "c83716ce76ad49d3b2028d574f904769e90385f8",
+        "sha256": "dcdde3df37802ec69d45a4d88970399ad8aebb39c86016712973affa5641394a"
+      },
+      "hunks": [
+        {
+          "offsetBefore": 1319,
+          "offsetAfter": 1319,
+          "before": "    : safeUserUIPreference({ theme_id: \"autostream\", color_mode: \"system\", revision: 0 }),\n  [bootstrapReady]);\n  const [preview, setPreview] = useState<SafeUserUIPreference | null>(null);\n  const [systemDark, setSystemDark] = useState(() => typeof window !== \"undefined\" && window.matchMedia(\"(prefers-color-scheme: dark)\").matches);\n  const preferenceQuery = useQuery({\n    queryKey: uiPreferenceQueryKey,\n    queryFn: () => apiGet<UserUIPreference>(\"/account/preferences/ui\"),\n",
+          "after": "    : safeUserUIPreference({ theme_id: \"autostream\", color_mode: \"system\", revision: 0 }),\n  [bootstrapReady]);\n  const [preview, setPreview] = useState<SafeUserUIPreference | null>(null);\n  const [systemDark, setSystemDark] = useState(false);\n  const preferenceQuery = useQuery({\n    queryKey: uiPreferenceQueryKey,\n    queryFn: () => apiGet<UserUIPreference>(\"/account/preferences/ui\"),\n"
+        },
+        {
+          "offsetBefore": 2232,
+          "offsetAfter": 2141,
+          "before": "    const media = window.matchMedia(\"(prefers-color-scheme: dark)\");\n    const update = () => setSystemDark(media.matches);\n    media.addEventListener(\"change\", update);\n    return () => media.removeEventListener(\"change\", update);\n  }, []);\n\n",
+          "after": "    const media = window.matchMedia(\"(prefers-color-scheme: dark)\");\n    const update = () => setSystemDark(media.matches);\n    media.addEventListener(\"change\", update);\n    update();\n    return () => media.removeEventListener(\"change\", update);\n  }, []);\n\n"
+        }
+      ]
+    },
+    {
+      "path": "web/src/features/streams/stream-action-control.tsx",
+      "before": {
+        "mode": "100644",
+        "blob": "df908769a6d79c651de1e35a7088c99ef7c39474",
+        "sha256": "e16fa799e7825a9b681c295e58254b5aa1f981fbeef378100ec9c05101a0e272"
+      },
+      "after": {
+        "mode": "100644",
+        "blob": "1bc5dbbf1c40e39ce2e1623080634d63a7ee3a13",
+        "sha256": "d7c2678a90e801356b0c1a82e555590151f416a164e0e13d42df052264815779"
+      },
+      "hunks": [
+        {
+          "offsetBefore": 1040,
+          "offsetAfter": 1040,
+          "before": "  context?: HighRiskConfirmationContext;\n  buttonProps?: Omit<ComponentProps<typeof Button>, \"children\" | \"onClick\">;\n  disabled?: boolean;\n  onResult: (result: StreamActionExecutionResult, intent: StreamActionIntent) => boolean | void | Promise<boolean | void>;\n}>;\n\n",
+          "after": "  context?: HighRiskConfirmationContext;\n  buttonProps?: Omit<ComponentProps<typeof Button>, \"children\" | \"onClick\">;\n  disabled?: boolean;\n  onPendingChange?: (pending: boolean) => void;\n  onResult: (result: StreamActionExecutionResult, intent: StreamActionIntent) => boolean | void | Promise<boolean | void>;\n}>;\n\n"
+        },
+        {
+          "offsetBefore": 1464,
+          "offsetAfter": 1512,
+          "before": "  context,\n  buttonProps,\n  disabled = false,\n  onResult,\n}, ref) {\n  const { t } = useI18n();\n",
+          "after": "  context,\n  buttonProps,\n  disabled = false,\n  onPendingChange,\n  onResult,\n}, ref) {\n  const { t } = useI18n();\n"
+        },
+        {
+          "offsetBefore": 2169,
+          "offsetAfter": 2236,
+          "before": "    setDialogState({ kind: \"revalidating\" });\n    await Promise.resolve();\n    setDialogState({ kind: \"submitting\" });\n    const result = await controller.submit(allowed, {\n      confirmed: true,\n      ...(allowed.typedToken === undefined ? {} : { typedValue: allowed.typedToken }),\n    });\n    const authorityRefreshed = await onResult(result, allowed.intent);\n    if (result.kind === \"succeeded\") {\n      setOpened(null);\n",
+          "after": "    setDialogState({ kind: \"revalidating\" });\n    await Promise.resolve();\n    setDialogState({ kind: \"submitting\" });\n    onPendingChange?.(true);\n    let result: StreamActionExecutionResult;\n    try {\n      result = await controller.submit(allowed, {\n        confirmed: true,\n        ...(allowed.typedToken === undefined ? {} : { typedValue: allowed.typedToken }),\n      });\n    } finally {\n      onPendingChange?.(false);\n    }\n    const authorityRefreshed = await onResult(result, allowed.intent);\n    if (result.kind === \"succeeded\") {\n      setOpened(null);\n"
+        },
+        {
+          "offsetBefore": 3085,
+          "offsetAfter": 3292,
+          "before": "      return;\n    }\n    setDialogState(dialogStateForResult(result));\n  }, [controller, onResult]);\n\n  const open = useCallback(() => {\n    if (disabled || opening.current) return;\n",
+          "after": "      return;\n    }\n    setDialogState(dialogStateForResult(result));\n  }, [controller, onPendingChange, onResult]);\n\n  const open = useCallback(() => {\n    if (disabled || opening.current) return;\n"
+        }
+      ]
+    },
+    {
+      "path": "web/src/features/streams/stream-visual-draft.ts",
+      "before": {
+        "mode": "100644",
+        "blob": "9e25ab549ace02fa7f869c7466ecf114464fac24",
+        "sha256": "4bdd35be4dd028da875da3e8bd42d1a968279322b34b331fdefe4599157dd562"
+      },
+      "after": {
+        "mode": "100644",
+        "blob": "be5e09fca84c23b20a6bc970687c6e7bbe18d44b",
+        "sha256": "08b73c771f72c3796ba11d6b5c6b932d0ca405acced1347b2c3a136b473e17ac"
+      },
+      "hunks": [
+        {
+          "offsetBefore": 884,
+          "offsetAfter": 884,
+          "before": "\nexport type StreamVisualSection = \"background\" | \"title\" | \"discord\" | \"cover\";\nexport type StreamVisualPreviewKind = \"background\" | \"cover\";\n\nexport function createStreamVisualPreviewOwner(revoke: (url: string) => void) {\n  const current: Record<StreamVisualPreviewKind, string> = { background: \"\", cover: \"\" };\n",
+          "after": "\nexport type StreamVisualSection = \"background\" | \"title\" | \"discord\" | \"cover\";\nexport type StreamVisualPreviewKind = \"background\" | \"cover\";\n\nexport const maximumUploadedCovers = 4;\n\nexport function uploadedCoverCount(candidates: readonly CoverCandidate[]) {\n  return new Set(candidates.filter((candidate) => candidate.source === \"upload\").map((candidate) => candidate.asset_id)).size;\n}\n\nexport function coverCandidatePreviewURL(candidate: CoverCandidate, streamID: string | undefined, saved: StreamVisualSettings | undefined, localURL = \"\") {\n  if (localURL) return localURL;\n  const savedReference = saved?.cover_candidates?.some((item) => item.variant_id === candidate.variant_id && item.asset_id === candidate.asset_id)\n    || saved?.cover_variant_id === candidate.variant_id && saved?.cover_asset_id === candidate.asset_id;\n  if (streamID && savedReference) return `/streams/${encodeURIComponent(streamID)}/media-assets/${encodeURIComponent(candidate.variant_id)}`;\n  if (candidate.source === \"preset\" && candidate.preset_id) return `/video-cover-presets/${encodeURIComponent(candidate.preset_id)}/media-assets/${encodeURIComponent(candidate.variant_id)}`;\n  return \"\";\n}\n\nexport function createStreamVisualPreviewOwner(revoke: (url: string) => void) {\n  const current: Record<StreamVisualPreviewKind, string> = { background: \"\", cover: \"\" };\n"
+        }
+      ]
+    },
+    {
+      "path": "web/src/lib/foundation/api-errors/registry.ts",
+      "before": {
+        "mode": "100644",
+        "blob": "7a4867a25d1bfa24b25406853d91d3d2282347cf",
+        "sha256": "7c0654835cadff8a80b224b3d4bba3dd99802a0712681210a61cc7a9cce0d8b6"
+      },
+      "after": {
+        "mode": "100644",
+        "blob": "6581f4d3d17ad085867b4bbaafec2bc183c59539",
+        "sha256": "a9d6827978f985eb101124a5e5d7c1ba6fed11450b9663c135e4599ebbdde7f0"
+      },
+      "hunks": [
+        {
+          "offsetBefore": 4782,
+          "offsetAfter": 4782,
+          "before": "\nexport const defaultAPIErrorRegistry = defineAPIErrorRegistry({\n  codes: {\n    invalid_json_response: {\n      kind: \"protocol\",\n      messageKey: \"apiErrorProtocol\",\n",
+          "after": "\nexport const defaultAPIErrorRegistry = defineAPIErrorRegistry({\n  codes: {\n    cover_upload_limit: {\n      kind: \"conflict\",\n      messageKey: \"apiErrorCoverUploadLimit\",\n      statuses: [409],\n    },\n    invalid_json_response: {\n      kind: \"protocol\",\n      messageKey: \"apiErrorProtocol\",\n"
+        }
+      ]
+    },
+    {
+      "path": "web/src/lib/i18n.ts",
+      "before": {
+        "mode": "100644",
+        "blob": "72a6306253762b6634eaf8400bb24339538349fc",
+        "sha256": "e3b4a5457c44b7a4c99a854d4324b869b8f5f8f9f2ed35c3122f17626398995c"
+      },
+      "after": {
+        "mode": "100644",
+        "blob": "355af694a2c4aefc86c9f6e01182522d42c5bbfd",
+        "sha256": "09d6d0123fd2be24f1efad508540a098d5ca8e5180fae59d2803c5c9a91b1440"
+      },
+      "hunks": [
+        {
+          "offsetBefore": 2199,
+          "offsetAfter": 2199,
+          "before": "    apiErrorValidation: \"入力内容を確認してください。\",\n    apiErrorNotFound: \"対象が見つかりません。\",\n    apiErrorConflict: \"状態が更新されています。最新の情報を確認してください。\",\n    apiErrorProtectedState: \"現在の状態ではこの操作を実行できません。\",\n    apiErrorRateLimited: \"操作が集中しています。時間をおいて再試行してください。\",\n    apiErrorTimeout: \"処理の確認がタイムアウトしました。最新の状態を確認してください。\",\n",
+          "after": "    apiErrorValidation: \"入力内容を確認してください。\",\n    apiErrorNotFound: \"対象が見つかりません。\",\n    apiErrorConflict: \"状態が更新されています。最新の情報を確認してください。\",\n    apiErrorCoverUploadLimit: \"枠専用の蓋画像は4枚までです。最新設定を確認し、不要な候補を削除してから追加してください。\",\n    apiErrorProtectedState: \"現在の状態ではこの操作を実行できません。\",\n    apiErrorRateLimited: \"操作が集中しています。時間をおいて再試行してください。\",\n    apiErrorTimeout: \"処理の確認がタイムアウトしました。最新の状態を確認してください。\",\n"
+        },
+        {
+          "offsetBefore": 18185,
+          "offsetAfter": 18352,
+          "before": "    apiErrorValidation: \"Review the entered values.\",\n    apiErrorNotFound: \"The requested resource was not found.\",\n    apiErrorConflict: \"The resource has changed. Review the latest state.\",\n    apiErrorProtectedState: \"The current state does not allow this operation.\",\n    apiErrorRateLimited: \"Too many requests. Wait before trying again.\",\n    apiErrorTimeout: \"The request timed out. Check the latest state before trying again.\",\n",
+          "after": "    apiErrorValidation: \"Review the entered values.\",\n    apiErrorNotFound: \"The requested resource was not found.\",\n    apiErrorConflict: \"The resource has changed. Review the latest state.\",\n    apiErrorCoverUploadLimit: \"A slot can have up to four uploaded cover images. Review the latest settings and remove an unwanted candidate before adding another.\",\n    apiErrorProtectedState: \"The current state does not allow this operation.\",\n    apiErrorRateLimited: \"Too many requests. Wait before trying again.\",\n    apiErrorTimeout: \"The request timed out. Check the latest state before trying again.\",\n"
+        }
+      ]
+    },
+    {
+      "path": "web/tests/helpers/browser-fetch-settlement-cases.mts",
+      "before": {
+        "mode": "100644",
+        "blob": "27747e8c1f0a0b582567ee559b32d12c96563203",
+        "sha256": "3ab79254478215ad0c5088c00881e942a2d4907138902fe0be214c61ce941c8a"
+      },
+      "after": {
+        "mode": "100644",
+        "blob": "85c56c2430dfe0a8cc72de1312e31dea1c693bdb",
+        "sha256": "be13a59709bfc67a9cde5646b94669510ed195d6391fbba9380fc870a6815dac"
+      },
+      "hunks": [
+        {
+          "offsetBefore": 1350,
+          "offsetAfter": 1350,
+          "before": "    () => lifecycle.handleSettlementError(attempt, new Error(invalidInterceptionIdMessage)),\n    /Invalid InterceptionId\\./,\n  );\n});\n\ntest(\"required stale interception cancellation remains fatal\", () => {\n",
+          "after": "    () => lifecycle.handleSettlementError(attempt, new Error(invalidInterceptionIdMessage)),\n    /Invalid InterceptionId\\./,\n  );\n});\n\ntest(\"non-required current interception cancellation remains fatal\", () => {\n  const lifecycle = new FetchRequestLifecycle();\n  lifecycle.beginNavigation(\"navigate\");\n  lifecycle.register({ requestId: \"optional-current-1\", method: \"GET\", pathname: \"/setup/status\", requiredResponse: false });\n  const attempt = lifecycle.beginSettlement(\"optional-current-1\", \"Fetch.fulfillRequest\");\n\n  assert.throws(\n    () => lifecycle.handleSettlementError(attempt, new Error(invalidInterceptionIdMessage)),\n    /Invalid InterceptionId\\./,\n  );\n  assert.equal(lifecycle.safeCancellationCount, 0, \"an optional current-generation response must not be accepted as cancelled\");\n  assert.equal(lifecycle.activeCount, 1, \"the failed current-generation response must remain unsettled\");\n});\n\ntest(\"required stale interception cancellation remains fatal\", () => {\n"
+        }
+      ]
+    },
+    {
+      "path": "web/tests/helpers/browser-harness.mts",
+      "before": {
+        "mode": "100644",
+        "blob": "93478fddbba06ab852aca0b81b161e6da6aac7e0",
+        "sha256": "a9c285cf94e218adde4cf259ee8e31801e872986d8fbafa6ec8534b3c1b51671"
+      },
+      "after": {
+        "mode": "100644",
+        "blob": "25e90f0c5b4f116d24ead12e9c55ae898b46db5f",
+        "sha256": "84cd6803955b7b6e266518d13f6fd582842fbeb512b3cd449a8d4143e803b95c"
+      },
+      "hunks": [
+        {
+          "offsetBefore": 10789,
+          "offsetAfter": 10789,
+          "before": "    const width = Math.ceil(view?.clientWidth ?? 0), height = Math.ceil(view?.clientHeight ?? 0);\n    const pageX = view?.pageX, pageY = view?.pageY, scale = view?.scale;\n    if (![width, height, pageX, pageY, scale].every(value => typeof value === \"number\" && Number.isFinite(value)) || width <= 0 || height <= 0 || width > 30_000 || height > 30_000 || Math.abs(pageX!) > 30_000 || Math.abs(pageY!) > 30_000 || scale !== 1) throw new Error(\"Invalid bounded viewport evidence geometry\");\n    const screenshot = await this.send(\"Page.captureScreenshot\", { format: \"png\", fromSurface: true, captureBeyondViewport: false });\n    if (typeof screenshot.data !== \"string\" || !screenshot.data) throw new Error(\"Viewport evidence was empty\");\n    const png = Buffer.from(screenshot.data, \"base64\");\n    if (png.length < 24 || !png.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) || png.readUInt32BE(16) !== width || png.readUInt32BE(20) !== height) throw new Error(\"Viewport evidence dimensions mismatch\");\n",
+          "after": "    const width = Math.ceil(view?.clientWidth ?? 0), height = Math.ceil(view?.clientHeight ?? 0);\n    const pageX = view?.pageX, pageY = view?.pageY, scale = view?.scale;\n    if (![width, height, pageX, pageY, scale].every(value => typeof value === \"number\" && Number.isFinite(value)) || width <= 0 || height <= 0 || width > 30_000 || height > 30_000 || Math.abs(pageX!) > 30_000 || Math.abs(pageY!) > 30_000 || scale !== 1) throw new Error(\"Invalid bounded viewport evidence geometry\");\n    const screenshot = await this.send(\"Page.captureScreenshot\", {\n      format: \"png\", fromSurface: true, captureBeyondViewport: false,\n      clip: { x: pageX, y: pageY, width, height, scale: 1 },\n    });\n    if (typeof screenshot.data !== \"string\" || !screenshot.data) throw new Error(\"Viewport evidence was empty\");\n    const png = Buffer.from(screenshot.data, \"base64\");\n    if (png.length < 24 || !png.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) || png.readUInt32BE(16) !== width || png.readUInt32BE(20) !== height) throw new Error(\"Viewport evidence dimensions mismatch\");\n"
+        }
+      ]
+    },
+    {
+      "path": "web/tests/ui-refresh-layout-browser.test.mts",
+      "before": {
+        "mode": "100644",
+        "blob": "24893e41ba8809fb9f2206354d23ef5d95483e29",
+        "sha256": "bef00a2241bc5ac9726fe1f625049ef963db389ada183369846aff2747394336"
+      },
+      "after": {
+        "mode": "100644",
+        "blob": "78ff4246cc50bbbead84c7a3ef6edb4ef3fe4ca8",
+        "sha256": "9a2bccdc9fd3aa92135970d766b1a1c3777eceb4e2a92adcebe79657a8094638"
+      },
+      "hunks": [
+        {
+          "offsetBefore": 17774,
+          "offsetAfter": 17774,
+          "before": "    await browser.navigate(server.baseUrl + condition.route);\n    await waitForShell(browser, condition.locale === \"ja\" ? \"アカウントメニュー\" : \"Account menu\");\n    await browser.waitForResponseCount(surface.primary, 1);\n    await browser.waitFor(`document.querySelectorAll('[role=\"dialog\"]').length`, value => value === 1, \"the actual stream creation dialog\");\n    await browser.waitForRequestHandlersIdle();\n    await paint(browser);\n    assert.equal(await browser.evaluate(\"document.documentElement.style.zoom='2';true\"), true);\n",
+          "after": "    await browser.navigate(server.baseUrl + condition.route);\n    await waitForShell(browser, condition.locale === \"ja\" ? \"アカウントメニュー\" : \"Account menu\");\n    await browser.waitForResponseCount(surface.primary, 1);\n    await browser.waitFor(`document.querySelectorAll('main [data-stream-create-view] #create-stream-visual').length`, value => value === 1, \"the full-page stream creation form\");\n    assert.deepEqual(await browser.evaluate(`({\n      owners: document.querySelectorAll('main [data-stream-create-view]').length,\n      dialogs: document.querySelectorAll('[role=\"dialog\"],[role=\"alertdialog\"]').length,\n      visualOwner: document.querySelector('#create-stream-visual')?.closest('[data-stream-create-view]') === document.querySelector('main [data-stream-create-view]')\n    })`), { owners: 1, dialogs: 0, visualOwner: true }, \"creation owns the main page rather than an overlay\");\n    await browser.waitForRequestHandlersIdle();\n    await paint(browser);\n    assert.equal(await browser.evaluate(\"document.documentElement.style.zoom='2';true\"), true);\n"
+        }
+      ]
+    },
+    {
+      "path": "web/tests/ui-regression/browser-contracts.test.mts",
+      "before": {
+        "mode": "100644",
+        "blob": "ab5e23141cf4d0e2932b3d42f00c85dcdcbfac0b",
+        "sha256": "78ccebebb222e80a65b5b215728e9acd5f3024e4a2fc6ba51fe44e9de81d2dfa"
+      },
+      "after": {
+        "mode": "100644",
+        "blob": "78312585a6dce00d1f2d52b5a935388f052659bd",
+        "sha256": "429ce030e39f19a34593e4450b03746c59b72e976cd975f6aa168833d32e6deb"
+      },
+      "hunks": [
+        {
+          "offsetBefore": 1857,
+          "offsetAfter": 1857,
+          "before": "import { deferred, setStoredDisplay } from \"../ui-browser-navigation-helpers.mts\";\nimport { clickVisible } from \"./visible-trigger.mts\";\nimport { assertBootstrapWitness, installBootstrapInput, readBootstrapWitness, type BootstrapWitness } from \"../ui-browser-bootstrap-input.mts\";\n\ntype AccountCallerFault = \"assertion\" | \"registration\" | \"navigate\" | \"read\" | \"writer\" | \"unregister\" | \"pointer\";\nasync function runAccountCallerGuard(fault: AccountCallerFault, source: string, diagnostics = accountAppearanceDiagnostics) {\n",
+          "after": "import { deferred, setStoredDisplay } from \"../ui-browser-navigation-helpers.mts\";\nimport { clickVisible } from \"./visible-trigger.mts\";\nimport { assertBootstrapWitness, installBootstrapInput, readBootstrapWitness, type BootstrapWitness } from \"../ui-browser-bootstrap-input.mts\";\nimport * as uaDiagnostic from \"../helpers/browser-ua-diagnostic.mts\";\n\ntype AccountCallerFault = \"assertion\" | \"registration\" | \"navigate\" | \"read\" | \"writer\" | \"unregister\" | \"pointer\";\nasync function runAccountCallerGuard(fault: AccountCallerFault, source: string, diagnostics = accountAppearanceDiagnostics) {\n"
+        },
+        {
+          "offsetBefore": 24815,
+          "offsetAfter": 24885,
+          "before": "});\nfunction diagnosticOutput(lines:string[],code:string){assert.equal(lines.length,1);assert.ok(lines[0].startsWith('UI_BROWSER_DIAGNOSTIC_013 '));const json=lines[0].slice('UI_BROWSER_DIAGNOSTIC_013 '.length);assert.ok(Buffer.byteLength(json)<=4096);assert.doesNotMatch(json,/PRIVATE|https:|password|stack|query=|inputValue/);const result=JSON.parse(json);assert.equal(result.code,code);return result;}\ntest('UI-D013-MOBILE: actual close helper records phases only on failure and preserves original and diagnostic causes',async()=>{\n for(const fault of ['none','focus','observation','output'])for(const route of ['same-route','cross-route'] as const){\n   const dom=observerDOM(),dialog=dom.body.add(new Element('DIV'));dialog.setAttribute('role','dialog');dom.document.activeElement=dialog;dom.button.setAttribute('aria-label','Menu');Object.assign(dom.context,{__uiReturnTrigger:dom.button});\n   const original=new Error('PRIVATE primary',{cause:Error('PRIVATE cause')}),diagnostic=Error('PRIVATE diagnostic'),lines:string[]=[];let escape=0;\n   const browser={evaluate:async(e:string)=>{if(e===mobileFocusDiagnosticExpression&&fault==='observation')throw diagnostic;return dom.run(e);},pressKey:async(key:string)=>{assert.equal(key,'Escape');escape++;dom.body.children=dom.body.children.filter(e=>e!==dialog);dialog.parentElement=null;},waitFor:async(e:string,p:(v:unknown)=>boolean)=>{if(e.includes('document.activeElement===')){if(fault!=='none')throw original;await Promise.resolve();dom.document.activeElement=dom.button;}assert.ok(p(dom.run(e)));}} as unknown as BrowserHarness;\n   let caught:unknown;try{await closeCreateAndAssertFocusReturn(browser,'Menu',route,line=>{if(fault==='output')throw diagnostic;lines.push(line);});}catch(error){caught=error;}\n   assert.equal(escape,1);if(fault==='none'){assert.equal(caught,undefined);assert.equal(lines.length,0);}else if(fault==='focus'){assert.equal(caught,original);assert.equal((caught as Error).cause,original.cause);const value=diagnosticOutput(lines,'D013-MOBILE');assert.equal(value.route,route);assert.equal(value.phase,'dialog-closed');assert.deepEqual(value.observations.map((v:{dialogs:number})=>v.dialogs),[1,0,0]);}else{assert.ok(caught instanceof AggregateError);assert.equal(caught.cause,original);assert.ok(caught.errors.includes(diagnostic));if(fault==='observation')assert.equal(diagnosticOutput(lines,'D013-MOBILE').diagnosticFailed,true);}\n }\n const navigation=readFileSync(new URL('../ui-browser-navigation-scenarios.mts',import.meta.url),'utf8');for(const route of ['same-route','cross-route'])assert.equal(navigation.split('\"'+route+'\"').length-1,1,'one actual phase for each unchanged scenario section');\n});\ntest('UI-D013-ACCOUNT: actual English scenario uses one real tab operation and bounded DOM/request-settlement diagnostics',async()=>{\n",
+          "after": "});\nfunction diagnosticOutput(lines:string[],code:string){assert.equal(lines.length,1);assert.ok(lines[0].startsWith('UI_BROWSER_DIAGNOSTIC_013 '));const json=lines[0].slice('UI_BROWSER_DIAGNOSTIC_013 '.length);assert.ok(Buffer.byteLength(json)<=4096);assert.doesNotMatch(json,/PRIVATE|https:|password|stack|query=|inputValue/);const result=JSON.parse(json);assert.equal(result.code,code);return result;}\ntest('UI-D013-MOBILE: actual close helper records phases only on failure and preserves original and diagnostic causes',async()=>{\n let cases=0;\n for(const fault of ['none','focus','observation','output'])for(const route of ['same-route','cross-route'] as const){\n   const dom=observerDOM(),create=dom.main.add(new Element('SECTION'));create.setAttribute('data-stream-create-view','');dom.document.activeElement=create;dom.button.setAttribute('aria-label','Menu');Object.assign(dom.context,{__uiReturnTrigger:dom.button});\n   const original=new Error('PRIVATE primary',{cause:Error('PRIVATE cause')}),diagnostic=Error('PRIVATE diagnostic'),lines:string[]=[];let backClicks=0,closedChecks=0;\n   const browser={evaluate:async(e:string)=>{if(e===mobileFocusDiagnosticExpression&&fault==='observation')throw diagnostic;return dom.run(e);},clickSelector:async(selector:string)=>{assert.equal(selector,'button[aria-label=\"配信枠の一覧へ戻る\"]');assert.equal(dom.document.querySelector('[data-stream-create-view]'),create);assert.equal(create.isConnected,true);backClicks++;dom.main.children=dom.main.children.filter(e=>e!==create);create.parentElement=null;},pressKey:async()=>{assert.fail('full-page create must close through its Back control');},waitFor:async(e:string,p:(v:unknown)=>boolean)=>{if(e===\"!document.querySelector('[data-stream-create-view]')\"){closedChecks++;assert.equal(backClicks,1);assert.equal(create.isConnected,false);}if(e.includes('document.activeElement===')){if(fault!=='none')throw original;await Promise.resolve();dom.document.activeElement=dom.button;}assert.ok(p(dom.run(e)));}} as unknown as BrowserHarness;\n   let caught:unknown;try{await closeCreateAndAssertFocusReturn(browser,'Menu',route,line=>{if(fault==='output')throw diagnostic;lines.push(line);});}catch(error){caught=error;}\n   assert.equal(backClicks,1);assert.equal(closedChecks,1);assert.equal(create.isConnected,false);if(fault==='none'){assert.equal(caught,undefined);assert.equal(lines.length,0);assert.equal(dom.document.activeElement,dom.button);}else if(fault==='focus'){assert.equal(caught,original);assert.equal((caught as Error).cause,original.cause);const value=diagnosticOutput(lines,'D013-MOBILE');assert.equal(value.route,route);assert.equal(value.phase,'dialog-closed');assert.deepEqual(value.observations.map((v:{dialogs:number})=>v.dialogs),[0,0,0]);}else{assert.ok(caught instanceof AggregateError);assert.equal(caught.cause,original);assert.ok(caught.errors.includes(diagnostic));if(fault==='observation')assert.equal(diagnosticOutput(lines,'D013-MOBILE').diagnosticFailed,true);}cases++;\n }\n assert.equal(cases,8);\n const navigation=readFileSync(new URL('../ui-browser-navigation-scenarios.mts',import.meta.url),'utf8');for(const route of ['same-route','cross-route'])assert.equal(navigation.split('\"'+route+'\"').length-1,1,'one actual phase for each unchanged scenario section');\n});\ntest('UI-D013-ACCOUNT: actual English scenario uses one real tab operation and bounded DOM/request-settlement diagnostics',async()=>{\n"
+        },
+        {
+          "offsetBefore": 52386,
+          "offsetAfter": 53072,
+          "before": "  }\n }\n});\n",
+          "after": "  }\n }\n});\n\ntest('UI-UA-SECONDARY-001: owned immediate rejection metadata is closed, passive and preserves original errors and diagnostic limits',async()=>{\n type Secondary={code:string;ctor:string};\n const physical=()=>new assert.AssertionError({message:'UA subtree identity replaced during traversal'});\n const pair=(second:unknown,first:unknown=physical())=>new AggregateError([first,second],'UA identity and complete observation rejected',{cause:first});\n const locked=new assert.AssertionError({message:'unknown/control/owner or required ancestor changed'}),original=pair(locked);\n const record=(delta=0):uaDiagnostic.UADiagnostic=>({boundary:'between',baseline:true,total:121,delta:[delta,0,0],classes:[[],[],[]],same:Array(11).fill(true),mediaStates:['error','error'],focusable:1,focused:2,unknown:79,overflow:false});\n const emitted=async(error:unknown,delta=0)=>{\n  const diagnostic=new uaDiagnostic.UAConditionDiagnostic(),values:unknown[]=[];\n  uaDiagnostic.bindUADiagnostic(error,record(delta));\n  await assert.rejects(diagnostic.observe('negative-space-return',async()=>{throw error;}),caught=>caught===error);\n  diagnostic.write('accessibility--public-archive-share--ready--autostream--light--ja--390--keyboard',value=>values.push(value));\n  assert.equal(values.length,1);\n  return values[0] as {observations:{secondary?:Secondary;phase:string;failed:boolean}[]};\n };\n const compact=await emitted(original);\n assert.deepEqual(compact.observations[0].secondary,{code:'LOCKED_CHANGED',ctor:'ASSERTION'});\n assert.equal(compact.observations[0].phase,'negative-space-return');assert.equal(compact.observations[0].failed,true);\n assert.equal(original.cause,original.errors[0]);assert.equal(original.errors[1],locked);\n const full=await emitted(original,1);assert.deepEqual(full.observations[0].secondary,compact.observations[0].secondary);\n const classify=(uaDiagnostic as unknown as {closedUASecondary:(error:unknown)=>Secondary}).closedUASecondary;\n assert.equal(typeof classify,'function');\n const known:[string,string][]=[\n  ['unknown/control/owner or required ancestor changed','LOCKED_CHANGED'],['delta touches unproven or operational UA node','UNPROVEN_DELTA'],\n  ['unproven AX facts changed','UNPROVEN_AX_FACTS'],['unproven AX node removed','UNPROVEN_AX_REMOVED'],['unproven AX node added','UNPROVEN_AX_ADDED'],\n  ['UA AX topology changed inside observation','AX_WITHIN_CHANGED'],['UA DOM/AX changed inside semantic observation','DOM_AX_WITHIN_CHANGED'],\n  ['original UA owner/media scope changed','OWNER_MEDIA_SCOPE_CHANGED'],['UA observation scope race','SCOPE_RACE'],\n ];\n for(const [message,code]of known)for(const suffix of ['', '\\nPRIVATE assertion suffix']){\n  assert.deepEqual(classify(pair(new assert.AssertionError({message:message+suffix}))),{code,ctor:'ASSERTION'});\n }\n assert.deepEqual(classify(pair(new assert.AssertionError({message:'complete UA control/focused ancestry changed PRIVATE dynamic details'}))),{code:'OPERATIONAL_CHANGED',ctor:'ASSERTION'});\n for(const [value,ctor]of [[new TypeError('PRIVATE type'),'TYPE'],[new RangeError('PRIVATE range'),'RANGE'],[new Error('PRIVATE error'),'ERROR'],[new AggregateError([Error('PRIVATE nested')],'PRIVATE aggregate'),'AGGREGATE'],[null,'OTHER']]as const){\n  assert.deepEqual(classify(pair(value)),{code:'OTHER',ctor});\n }\n const unknown={code:'UNKNOWN',ctor:'UNKNOWN'};\n const wrongCause=pair(locked);Object.defineProperty(wrongCause,'cause',{value:physical()});\n const wrongLength=pair(locked);Object.defineProperty(wrongLength,'errors',{value:[physical(),locked,Error('PRIVATE third')]});\n const wrongWrapper=pair(locked);Object.defineProperty(wrongWrapper,'message',{value:'PRIVATE wrapper https://fixture.invalid/private?token=synthetic'});\n const cyclic=Error('PRIVATE cyclic');cyclic.cause=cyclic;\n for(const value of [cyclic,wrongCause,wrongLength,wrongWrapper,new AggregateError([],'PRIVATE empty'),pair(locked,Error('UA subtree identity replaced during traversal'))])assert.deepEqual(classify(value),unknown);\n let getterReads=0;\n const poison=()=>{getterReads++;throw Error('PRIVATE getter must not execute');};\n const getterErrors=pair(locked);Object.defineProperty(getterErrors,'errors',{get:poison});\n const getterCause=pair(locked);Object.defineProperty(getterCause,'cause',{get:poison});\n const getterMessage=pair(locked);Object.defineProperty(getterMessage,'message',{get:poison});\n const getterFirst=physical();Object.defineProperty(getterFirst,'message',{get:poison});\n const getterSlot=pair(locked);Object.defineProperty(getterSlot.errors,'1',{get:poison});\n const sparse=pair(locked);delete sparse.errors[1];\n for(const value of [getterErrors,getterCause,getterMessage,pair(locked,getterFirst),getterSlot,sparse])assert.deepEqual(classify(value),unknown);\n const secondaryGetter=new assert.AssertionError({message:'PRIVATE secondary'});Object.defineProperty(secondaryGetter,'message',{get:poison});\n assert.deepEqual(classify(pair(secondaryGetter)),unknown);\n const spoof=Error('PRIVATE spoof');Object.defineProperty(spoof,'name',{get:poison});Object.defineProperty(spoof,'constructor',{get:poison});\n assert.deepEqual(classify(pair(spoof)),{code:'OTHER',ctor:'ERROR'});assert.equal(getterReads,0);\n const hidden=pair(new assert.AssertionError({message:'PRIVATE https://fixture.invalid/private?token=synthetic'}));\n const hiddenOutput=await emitted(hidden);\n assert.deepEqual(hiddenOutput.observations[0].secondary,{code:'OTHER',ctor:'ASSERTION'});\n assert.doesNotMatch(JSON.stringify(hiddenOutput),/PRIVATE|https:|token=|stack|message|Hash|constructor/);\n const writerFailure=Error('PRIVATE writer');const output=new uaDiagnostic.UAConditionDiagnostic();\n await assert.rejects(output.observe('negative-space-return',async()=>{throw original;}),caught=>caught===original);\n assert.throws(()=>output.write('condition',()=>{throw writerFailure;}),caught=>caught instanceof uaDiagnostic.UAOutputFailure&&caught.cause===writerFailure);\n const oversized=new uaDiagnostic.UAConditionDiagnostic(),huge=record(1);huge.classes=[[{classification:'x'.repeat(5000),count:1}],[],[]];\n uaDiagnostic.bindUADiagnostic(original,huge);\n await assert.rejects(oversized.observe('negative-space-return',async()=>{throw original;}),caught=>caught===original);\n const overflow:unknown[]=[];assert.throws(()=>oversized.write('condition',value=>overflow.push(value)),uaDiagnostic.UAOutputFailure);\n assert.equal((overflow[0]as {code:string}).code,'UA_OBSERVATION_STABILITY_OVERFLOW');\n assert.equal(original.cause,original.errors[0]);assert.equal(original.errors[1],locked);\n});\n"
+        }
+      ]
+    },
+    {
+      "path": "web/tests/ui-regression/ci-closure-deltas.test.mts",
+      "before": {
+        "mode": "100644",
+        "blob": "fd07193bc6d89b52a13cef4a680da0502932c5b3",
+        "sha256": "37a846a838de455b2c3c58ccfcb07593272335e5107ef121a0b55a015b31e33c"
+      },
+      "after": {
+        "mode": "100644",
+        "blob": "b6a5cfd0bd4801ecafdf97e4ba0781243ed67dec",
+        "sha256": "5ca20b4f0f8935cb1c99f86d58d65b867a3670fbf486a5c28ee2535806367a62"
+      },
+      "hunks": [
+        {
+          "offsetBefore": 344,
+          "offsetAfter": 344,
+          "before": "import { createNormalizedReader } from \"./source-normalization.mts\";\nimport { historicalUI188Source } from \"./ui188-current-source-deltas.mts\";\nimport { createContainmentAdapter } from \"./ui188-cp-containment-source-delta.mts\";\n\nconst root = fileURLToPath(new URL(\"../../..\", import.meta.url));\nconst object = (commit: string, path: string) => execFileSync(\"git\", [\"show\", commit + \":\" + path], { cwd: root, maxBuffer: 32 * 1024 * 1024 });\nconst raw = (path: string) => readFileSync(resolve(root, path));\nconst containment = createContainmentAdapter(root, { raw, object });\nconst historicalRaw = (path: string) => historicalUI188Source(path, containment.inverse(path, raw(path)), object);\nconst io = { raw, object, exists: (path: string) => existsSync(resolve(root, path)) };\nconst expectedPaths = [\n  \"internal/httpapi/server_start_preparation_claim_test.go\",\n",
+          "after": "import { createNormalizedReader } from \"./source-normalization.mts\";\nimport { historicalUI188Source } from \"./ui188-current-source-deltas.mts\";\nimport { createContainmentAdapter } from \"./ui188-cp-containment-source-delta.mts\";\nimport { createStreamCreateCurrentAdapter, streamCreateCurrentPaths } from \"./stream-create-current-source-delta.mts\";\n\nconst root = fileURLToPath(new URL(\"../../..\", import.meta.url));\nconst object = (commit: string, path: string) => execFileSync(\"git\", [\"show\", commit + \":\" + path], { cwd: root, maxBuffer: 32 * 1024 * 1024 });\nconst raw = (path: string) => readFileSync(resolve(root, path));\nconst containment = createContainmentAdapter(root, { raw, object });\nconst currentSource = createStreamCreateCurrentAdapter(root, { raw, object });\nconst historicalRaw = (path: string) => historicalUI188Source(path, containment.inverse(path, currentSource.inverse(path, raw(path))), object);\nconst io = { raw, object, exists: (path: string) => existsSync(resolve(root, path)) };\nconst expectedPaths = [\n  \"internal/httpapi/server_start_preparation_claim_test.go\",\n"
+        },
+        {
+          "offsetBefore": 3179,
+          "offsetAfter": 3406,
+          "before": "    const absent = createNormalizedReader(root, { ...io, raw: p => { if (p === path) throw missing; return raw(p); } });\n    assert.throws(() => absent.read(mapped), error => error === missing);\n    const changed = createNormalizedReader(root, { ...io, raw: p => p === path ? Buffer.concat([raw(p), Buffer.from(\"drift\")]) : raw(p) });\n    assert.throws(() => changed.read(mapped), /exact specified name edits/);\n  }\n});\n",
+          "after": "    const absent = createNormalizedReader(root, { ...io, raw: p => { if (p === path) throw missing; return raw(p); } });\n    assert.throws(() => absent.read(mapped), error => error === missing);\n    const changed = createNormalizedReader(root, { ...io, raw: p => p === path ? Buffer.concat([raw(p), Buffer.from(\"drift\")]) : raw(p) });\n    assert.throws(() => changed.read(mapped), streamCreateCurrentPaths.some(listed => listed === path) ? /stream-create unreviewed current source bytes/ : /exact specified name edits/);\n  }\n});\n"
+        }
+      ]
+    },
+    {
+      "path": "web/tests/ui-regression/cp174-source-deltas.test.mts",
+      "before": {
+        "mode": "100644",
+        "blob": "fa593a54282e3ed23bd40ccc2e8064077cd5c64c",
+        "sha256": "d4ee2ffe80b9f690c90c865dbb4d4c926b307da28b16f9211c913d1bd1a0e2fe"
+      },
+      "after": {
+        "mode": "100644",
+        "blob": "49743c15fa520ad8d8f8d05dd41b2246eedcd546",
+        "sha256": "2916f8965962b8ca890ee1ae0b084a3253ee9dcccd70b232a85f0a1704859420"
+      },
+      "hunks": [
+        {
+          "offsetBefore": 573,
+          "offsetAfter": 573,
+          "before": "import { releaseAssemblyBase, releaseAssemblySource } from \"./release-assembly-deltas.mts\";\nimport { cp176Base, cp176Paths, inverseCP176DependencyRepair } from \"./cp176-dependency-deltas.mts\";\nimport { historicalUI188Source } from \"./ui188-current-source-deltas.mts\";\n\nconst root = fileURLToPath(new URL(\"../../..\", import.meta.url));\nconst raw = (path: string) => readFileSync(resolve(root, path));\n",
+          "after": "import { releaseAssemblyBase, releaseAssemblySource } from \"./release-assembly-deltas.mts\";\nimport { cp176Base, cp176Paths, inverseCP176DependencyRepair } from \"./cp176-dependency-deltas.mts\";\nimport { historicalUI188Source } from \"./ui188-current-source-deltas.mts\";\nimport { createStreamCreateCurrentAdapter, streamCreateCurrentPaths } from \"./stream-create-current-source-delta.mts\";\n\nconst root = fileURLToPath(new URL(\"../../..\", import.meta.url));\nconst raw = (path: string) => readFileSync(resolve(root, path));\n"
+        },
+        {
+          "offsetBefore": 1118,
+          "offsetAfter": 1237,
+          "before": "const io = { raw, object, exists: (path: string) => existsSync(resolve(root, path)) };\nconst expectedPaths = [\"internal/httpapi/server_streams.go\", \"web/package.json\", \".github/workflows/ci.yml\"];\nconst hash = (bytes: Buffer) => createHash(\"sha256\").update(bytes).digest(\"hex\");\nconst historicalRaw = (path: string) => historicalUI188Source(path, raw(path), object);\nconst beforeDependencyRepair = (path: string) => cp176Paths.includes(path)\n  ? inverseCP176DependencyRepair(path, object(cp176Base, path), historicalRaw(path)) : historicalRaw(path);\n\n",
+          "after": "const io = { raw, object, exists: (path: string) => existsSync(resolve(root, path)) };\nconst expectedPaths = [\"internal/httpapi/server_streams.go\", \"web/package.json\", \".github/workflows/ci.yml\"];\nconst hash = (bytes: Buffer) => createHash(\"sha256\").update(bytes).digest(\"hex\");\nconst currentSource = createStreamCreateCurrentAdapter(root, { raw, object });\nconst historicalRaw = (path: string) => historicalUI188Source(path, currentSource.inverse(path, raw(path)), object);\nconst beforeDependencyRepair = (path: string) => cp176Paths.includes(path)\n  ? inverseCP176DependencyRepair(path, object(cp176Base, path), historicalRaw(path)) : historicalRaw(path);\n\n"
+        },
+        {
+          "offsetBefore": 4184,
+          "offsetAfter": 4411,
+          "before": "    const absent = createNormalizedReader(root, { ...io, raw: p => { if (p === path) throw missing; return raw(p); } });\n    assert.throws(() => absent.read(path), error => error === missing);\n    const changed = createNormalizedReader(root, { ...io, raw: p => p === path ? Buffer.concat([raw(p), Buffer.from(\"drift\")]) : raw(p) });\n    assert.throws(() => changed.read(path), path === \".github/workflows/ci.yml\" ? /R9 unreviewed current finalization bytes/ : /exact specified name edits/);\n    const wrongBase = createNormalizedReader(root, { ...io, object: (commit, p) => commit === cp174Base && p === path ? Buffer.alloc(0) : object(commit, p) });\n    assert.throws(() => wrongBase.read(path), /fixed original hash/);\n  }\n",
+          "after": "    const absent = createNormalizedReader(root, { ...io, raw: p => { if (p === path) throw missing; return raw(p); } });\n    assert.throws(() => absent.read(path), error => error === missing);\n    const changed = createNormalizedReader(root, { ...io, raw: p => p === path ? Buffer.concat([raw(p), Buffer.from(\"drift\")]) : raw(p) });\n    assert.throws(() => changed.read(path), /stream-create unreviewed current source bytes/);\n    const wrongBase = createNormalizedReader(root, { ...io, object: (commit, p) => commit === cp174Base && p === path ? Buffer.alloc(0) : object(commit, p) });\n    assert.throws(() => wrongBase.read(path), /fixed original hash/);\n  }\n"
+        },
+        {
+          "offsetBefore": 14760,
+          "offsetAfter": 14923,
+          "before": "  const row = browserSources.find(source => source.path === path);\n  assert.ok(row, \"unknown CP174 browser witness\");\n  // Bind the current F05/F08 witness first, then preserve its historical hash.\n  assert.equal(hash(historicalUI188Source(path, bytes, object)), row.sha256, \"CP174 required browser witness bytes changed\");\n}\ntest(\"UI-CP174-004: required browser witnesses cannot be omitted, skipped, returned early or weakened\", () => {\n  for (const { path, guard, candidateSha256, sha256, additions } of browserSources) {\n",
+          "after": "  const row = browserSources.find(source => source.path === path);\n  assert.ok(row, \"unknown CP174 browser witness\");\n  // Bind the current F05/F08 witness first, then preserve its historical hash.\n  assert.equal(hash(historicalUI188Source(path, currentSource.inverse(path, bytes), object)), row.sha256, \"CP174 required browser witness bytes changed\");\n}\ntest(\"UI-CP174-004: required browser witnesses cannot be omitted, skipped, returned early or weakened\", () => {\n  for (const { path, guard, candidateSha256, sha256, additions } of browserSources) {\n"
+        },
+        {
+          "offsetBefore": 15654,
+          "offsetAfter": 15846,
+          "before": "    const mutants = [\"\", source.replace(\"test(\\\"CP\", \"test.skip(\\\"CP\"), source.replace(\"async t => {\", \"async t => { return;\"), source.replace(guard, \"void 0;\"), ...additions.map(addition => source.replace(addition, \"omitted correction\"))];\n    for (const mutant of mutants) {\n      assert.notEqual(mutant, source, \"negative control must change the actual witness\");\n      assert.throws(() => assertBrowserWitness(path, Buffer.from(mutant)), /browser witness bytes changed|reviewed finite UI188 source bytes/);\n    }\n  }\n  assert.match(raw(\"web/tests/ui-regression/parity.test.mts\").toString(\"utf8\"), /^import \"\\.\\/cp174-source-deltas\\.test\\.mts\";$/m, \"CP174 independent tests are imported unconditionally by the existing required suite\");\n",
+          "after": "    const mutants = [\"\", source.replace(\"test(\\\"CP\", \"test.skip(\\\"CP\"), source.replace(\"async t => {\", \"async t => { return;\"), source.replace(guard, \"void 0;\"), ...additions.map(addition => source.replace(addition, \"omitted correction\"))];\n    for (const mutant of mutants) {\n      assert.notEqual(mutant, source, \"negative control must change the actual witness\");\n      assert.throws(() => assertBrowserWitness(path, Buffer.from(mutant)), streamCreateCurrentPaths.some(listed => listed === path) ? /stream-create unreviewed current source bytes/ : /browser witness bytes changed|reviewed finite UI188 source bytes/);\n    }\n  }\n  assert.match(raw(\"web/tests/ui-regression/parity.test.mts\").toString(\"utf8\"), /^import \"\\.\\/cp174-source-deltas\\.test\\.mts\";$/m, \"CP174 independent tests are imported unconditionally by the existing required suite\");\n"
+        }
+      ]
+    },
+    {
+      "path": "web/tests/ui-regression/parity.test.mts",
+      "before": {
+        "mode": "100644",
+        "blob": "16f93da6de2f164043c6791aeb014ef05799ff95",
+        "sha256": "31464d1c5ac74fcee87ab3130a33a82b746bc1cea0bc5474cdb923c6663e3c34"
+      },
+      "after": {
+        "mode": "100644",
+        "blob": "4a8334dc0558929e1ee0c407c8b963d79b18861f",
+        "sha256": "3fde5780602e9c4b7de3e7cb6ddcce6e952198e8c56b6f549f5dd27ea95ebf85"
+      },
+      "hunks": [
+        {
+          "offsetBefore": 865,
+          "offsetAfter": 865,
+          "before": "import \"./ui188-r5-readiness-delta.test.mts\";\nimport \"./ui188-cb15-cb16-runtime-delta.test.mts\";\nimport \"./ui188-cp-containment-source-delta.test.mts\";\nimport { cp174ProtectedPaths } from \"./cp174-source-deltas.mts\";\nimport { currentBindingProtectedPaths, historicalCB15CB16RuntimeSource } from \"./ui188-cb15-cb16-runtime-delta.mts\";\nimport ts from \"typescript\";\n",
+          "after": "import \"./ui188-r5-readiness-delta.test.mts\";\nimport \"./ui188-cb15-cb16-runtime-delta.test.mts\";\nimport \"./ui188-cp-containment-source-delta.test.mts\";\nimport \"./stream-create-current-source-delta.test.mts\";\nimport { cp174ProtectedPaths } from \"./cp174-source-deltas.mts\";\nimport { currentBindingProtectedPaths, historicalCB15CB16RuntimeSource } from \"./ui188-cb15-cb16-runtime-delta.mts\";\nimport ts from \"typescript\";\n"
+        }
+      ]
+    },
+    {
+      "path": "web/tests/ui-regression/release-assembly-deltas.test.mts",
+      "before": {
+        "mode": "100644",
+        "blob": "a323c5240bbb24e1eb4e5a6fac75575865c319c7",
+        "sha256": "ba3d178b79cada0b98f9213c158241c146d5c8c9b18b4b84dd9386d19a13f48f"
+      },
+      "after": {
+        "mode": "100644",
+        "blob": "ebace32b27016aab44aca10186b742c00e297c4d",
+        "sha256": "49d8496d73db59b16fea2d3303f09bdd793a72e08c34ade77e35ed8f1c938598"
+      },
+      "hunks": [
+        {
+          "offsetBefore": 391,
+          "offsetAfter": 391,
+          "before": "import { cp174Paths, inverseCP174Source } from \"./cp174-source-deltas.mts\";\nimport { createNormalizedReader } from \"./source-normalization.mts\";\nimport { historicalUI188Source } from \"./ui188-current-source-deltas.mts\";\n\nconst root = fileURLToPath(new URL(\"../../..\", import.meta.url));\nconst object = (commit: string, path: string) => execFileSync(\"git\", [\"show\", commit + \":\" + path], { cwd: root, maxBuffer: 32 * 1024 * 1024 });\nconst raw = (path: string) => readFileSync(resolve(root, path));\nconst historicalRaw = (path: string) => historicalUI188Source(path, raw(path), object);\nconst assemblyRaw = (path: string) => cp174Paths.includes(path) ? inverseCP174Source(path, historicalRaw(path)) : historicalRaw(path);\nconst io = { raw, object, exists: (path: string) => existsSync(resolve(root, path)) };\nconst expectedPaths = [\n",
+          "after": "import { cp174Paths, inverseCP174Source } from \"./cp174-source-deltas.mts\";\nimport { createNormalizedReader } from \"./source-normalization.mts\";\nimport { historicalUI188Source } from \"./ui188-current-source-deltas.mts\";\nimport { createStreamCreateCurrentAdapter } from \"./stream-create-current-source-delta.mts\";\n\nconst root = fileURLToPath(new URL(\"../../..\", import.meta.url));\nconst object = (commit: string, path: string) => execFileSync(\"git\", [\"show\", commit + \":\" + path], { cwd: root, maxBuffer: 32 * 1024 * 1024 });\nconst raw = (path: string) => readFileSync(resolve(root, path));\nconst currentSource = createStreamCreateCurrentAdapter(root, { raw, object });\nconst historicalRaw = (path: string) => historicalUI188Source(path, currentSource.inverse(path, raw(path)), object);\nconst assemblyRaw = (path: string) => cp174Paths.includes(path) ? inverseCP174Source(path, historicalRaw(path)) : historicalRaw(path);\nconst io = { raw, object, exists: (path: string) => existsSync(resolve(root, path)) };\nconst expectedPaths = [\n"
+        },
+        {
+          "offsetBefore": 3654,
+          "offsetAfter": 3855,
+          "before": "    const absent = createNormalizedReader(root, { ...io, raw: p => { if (p === path) throw missing; return raw(p); } });\n    assert.throws(() => absent.read(path), error => error === missing);\n    const changed = createNormalizedReader(root, { ...io, raw: p => p === path ? Buffer.concat([raw(p), Buffer.from(\"drift\")]) : raw(p) });\n    assert.throws(() => changed.read(path), path === \".github/workflows/ci.yml\" ? /R9 unreviewed current finalization bytes/ : /exact specified name edits/);\n  }\n  const badOriginal = createNormalizedReader(root, { ...io, object: (commit, path) => path === \"go.mod\" ? Buffer.alloc(0) : object(commit, path) });\n  assert.throws(() => badOriginal.read(\"go.mod\"), /fixed original hash/);\n",
+          "after": "    const absent = createNormalizedReader(root, { ...io, raw: p => { if (p === path) throw missing; return raw(p); } });\n    assert.throws(() => absent.read(path), error => error === missing);\n    const changed = createNormalizedReader(root, { ...io, raw: p => p === path ? Buffer.concat([raw(p), Buffer.from(\"drift\")]) : raw(p) });\n    assert.throws(() => changed.read(path), path === \".github/workflows/ci.yml\" ? /stream-create unreviewed current source bytes/ : /exact specified name edits/);\n  }\n  const badOriginal = createNormalizedReader(root, { ...io, object: (commit, path) => path === \"go.mod\" ? Buffer.alloc(0) : object(commit, path) });\n  assert.throws(() => badOriginal.read(\"go.mod\"), /fixed original hash/);\n"
+        }
+      ]
+    },
+    {
+      "path": "web/tests/ui-regression/run-browser.mts",
+      "before": {
+        "mode": "100644",
+        "blob": "83f71638578600cdec362924947dc68fc09326b2",
+        "sha256": "e49e58b6d9268dea58fc721d1b14ecc0eebe0f6e8f8eac5de14b9e2cedff3fc4"
+      },
+      "after": {
+        "mode": "100644",
+        "blob": "9ff24b1dcc7a9f52c3a34de7faa07bfc1c55eb83",
+        "sha256": "4e1b968d81928eb154ed688a8a3728d7ade0c5b7807f1a1b83eedd294c687df7"
+      },
+      "hunks": [
+        {
+          "offsetBefore": 13044,
+          "offsetAfter": 13044,
+          "before": "          await waitForLivePreview(target, fixture.detailStream(), condition);\n        }\r\n        if (surface.stage === \"form\") {\r\n          await target.waitFor(\"document.querySelectorAll('[role=dialog]').length\", value => value === 1, \"deep-link stream creation form\");\r\n          await settleRender(target, \"open\", reportRender);\r\n          await closeOverlay(target, reportRender);\r\n          await target.waitFor(\"document.querySelectorAll('[role=dialog]').length\", value => value === 0, \"close deep-link form\");\r\n          await clickNamed(target, condition.locale === \"ja\" ? /^配信枠を作成$/ : /^Create stream$/, \"main\", true);\r\n          await target.waitFor(\"document.querySelectorAll('[role=dialog]').length\", value => value === 1, \"creation form with real focus-return trigger\");\r\n        }\r\n        if (condition.exercise === \"Confirmation\") {\r\n          await clickWorkerRestart(target, fixture.workerRestartTarget());\n",
+          "after": "          await waitForLivePreview(target, fixture.detailStream(), condition);\n        }\r\n        if (surface.stage === \"form\") {\r\n          await target.waitFor(\"(() => {const owners=[...document.querySelectorAll('main [data-stream-create-view]')];if(document.querySelector('[role=dialog],[role=alertdialog]'))throw Error('stream creation is a page owner');return owners.length===1&&owners[0].querySelectorAll('#create-stream').length===1;})()\", Boolean, \"deep-link stream creation page\");\n          await settleRender(target, \"page\", reportRender);\n          await clickNamed(target, /^(配信枠の一覧へ戻る|Back to stream list)$/, \"main [data-stream-create-view]\");\n          await target.waitFor(\"document.querySelectorAll('main [data-stream-create-view],[role=dialog],[role=alertdialog]').length===0\", Boolean, \"close deep-link form through its Back action\");\n          await clickNamed(target, condition.locale === \"ja\" ? /^配信枠を作成$/ : /^Create stream$/, \"main\", true);\r\n          await target.waitFor(\"(() => {const owners=[...document.querySelectorAll('main [data-stream-create-view]')];if(document.querySelector('[role=dialog],[role=alertdialog]'))throw Error('stream creation is a page owner');return owners.length===1&&owners[0].querySelectorAll('#create-stream').length===1;})()\", Boolean, \"creation page with real focus-return trigger\");\n        }\r\n        if (condition.exercise === \"Confirmation\") {\r\n          await clickWorkerRestart(target, fixture.workerRestartTarget());\n"
+        },
+        {
+          "offsetBefore": 17602,
+          "offsetAfter": 18173,
+          "before": "        if (condition.state === \"ready\") assert.equal(target.consoleErrorCount, 0, \"ready console errors\");\r\n        await restoreOnce();\r\n        if (nodeContent || condition.exercise === \"Confirmation\" || surface.stage === \"detail\" || surface.stage === \"form\" || condition.family === \"roles\" && condition.state === \"partial\") {\n          await closeOverlay(target, reportRender);\r\n          await target.waitFor(\"document.querySelectorAll('[role=dialog],[role=alertdialog]').length\", value => value === 0, \"dialog closes without duplicate owner\");\r\n          await target.waitFor(\"(() => { const trigger=globalThis.__uiReturnTrigger; if(!trigger?.isConnected)throw Error('opening trigger lost'); return document.activeElement===trigger && trigger!==document.body && !trigger.disabled && trigger.getAttribute('aria-disabled')!=='true' && !trigger.closest('[inert]') && trigger.getClientRects().length>0; })()\", Boolean, \"focus returns to the exact opening trigger after focus cleanup\");\r\n          await target.evaluate(\"delete globalThis.__uiReturnTrigger;true\");\r\n        }\r\n",
+          "after": "        if (condition.state === \"ready\") assert.equal(target.consoleErrorCount, 0, \"ready console errors\");\r\n        await restoreOnce();\r\n        if (nodeContent || condition.exercise === \"Confirmation\" || surface.stage === \"detail\" || surface.stage === \"form\" || condition.family === \"roles\" && condition.state === \"partial\") {\n          if (surface.stage === \"form\") {\n            await clickNamed(target, /^(配信枠の一覧へ戻る|Back to stream list)$/, \"main [data-stream-create-view]\");\n            await target.waitFor(\"document.querySelectorAll('main [data-stream-create-view],[role=dialog],[role=alertdialog]').length===0\", Boolean, \"creation page closes without duplicate owner\");\n            await settleRender(target, \"page\", reportRender);\n          } else {\n            await closeOverlay(target, reportRender);\n            await target.waitFor(\"document.querySelectorAll('[role=dialog],[role=alertdialog]').length\", value => value === 0, \"dialog closes without duplicate owner\");\n          }\n          await target.waitFor(\"(() => { const trigger=globalThis.__uiReturnTrigger; if(!trigger?.isConnected)throw Error('opening trigger lost'); return document.activeElement===trigger && trigger!==document.body && !trigger.disabled && trigger.getAttribute('aria-disabled')!=='true' && !trigger.closest('[inert]') && trigger.getClientRects().length>0; })()\", Boolean, \"focus returns to the exact opening trigger after focus cleanup\");\r\n          await target.evaluate(\"delete globalThis.__uiReturnTrigger;true\");\r\n        }\r\n"
+        }
+      ]
+    },
+    {
+      "path": "web/tests/ui-regression/source-normalization.mts",
+      "before": {
+        "mode": "100644",
+        "blob": "273abc5cf3783789af6a4de2aa6b77bdbc3b4b65",
+        "sha256": "08ce320d557424ce5787243ea2e70d1194460b24a8b487ba0d8fda8ddb1a4ea1"
+      },
+      "after": {
+        "mode": "100644",
+        "blob": "44d51e49c010ed209b760918ae77a45fc8ec3911",
+        "sha256": "61fdf9e43d59da922f96068f1b46736402cb66c8a09975d22d3893afa24df554"
+      },
+      "hunks": [
+        {
+          "offsetBefore": 872,
+          "offsetAfter": 872,
+          "before": "import { historicalR4DeleteCopySource } from \"./ui188-r4-delete-delta.mts\";\nimport { historicalR5ReadinessSource } from \"./ui188-r5-readiness-delta.mts\";\nimport { createContainmentAdapter } from \"./ui188-cp-containment-source-delta.mts\";\n\ntype Replacement = { position: number; count: number; before: string; after: string };\ntype Mapping = { oldPath: string; newPath: string; acceptedSha256: string; currentSha256: string; replacements: Replacement[] };\n",
+          "after": "import { historicalR4DeleteCopySource } from \"./ui188-r4-delete-delta.mts\";\nimport { historicalR5ReadinessSource } from \"./ui188-r5-readiness-delta.mts\";\nimport { createContainmentAdapter } from \"./ui188-cp-containment-source-delta.mts\";\nimport { createStreamCreateCurrentAdapter } from \"./stream-create-current-source-delta.mts\";\n\ntype Replacement = { position: number; count: number; before: string; after: string };\ntype Mapping = { oldPath: string; newPath: string; acceptedSha256: string; currentSha256: string; replacements: Replacement[] };\n"
+        },
+        {
+          "offsetBefore": 5607,
+          "offsetAfter": 5700,
+          "before": "  const manifest = assertNormalizationManifest(raw(\"web/tests/fixtures/ui-regression/source-normalization.json\"));\n  const object = io.object;\n  const containment = createContainmentAdapter(root, { raw, object });\n  const historicalRaw = (path: string) => historicalUI188Source(path, historicalProfileUpdateSource(path, historicalSessionRefreshSource(path, historicalR4DeleteCopySource(path, historicalR5ReadinessSource(path, containment.inverse(path, raw(path)), object), object), object), object), object);\n  const dependencies = (path: string, current: Buffer) => cp176Paths.includes(path)\n    ? inverseCP176DependencyRepair(path, object(cp176Base, path), current) : current;\n  const read = (path: string): Buffer => {\n",
+          "after": "  const manifest = assertNormalizationManifest(raw(\"web/tests/fixtures/ui-regression/source-normalization.json\"));\n  const object = io.object;\n  const containment = createContainmentAdapter(root, { raw, object });\n  const currentSource = createStreamCreateCurrentAdapter(root, { raw, object });\n  const historicalRaw = (path: string) => historicalUI188Source(path, historicalProfileUpdateSource(path, historicalSessionRefreshSource(path, historicalR4DeleteCopySource(path, historicalR5ReadinessSource(path, containment.inverse(path, currentSource.inverse(path, raw(path))), object), object), object), object), object);\n  const dependencies = (path: string, current: Buffer) => cp176Paths.includes(path)\n    ? inverseCP176DependencyRepair(path, object(cp176Base, path), current) : current;\n  const read = (path: string): Buffer => {\n"
+        }
+      ]
+    },
+    {
+      "path": "web/tests/ui-regression/ui188-cp-containment-source-delta.test.mts",
+      "before": {
+        "mode": "100644",
+        "blob": "85f1e177243987376abe1539954fedfc5c34b4f1",
+        "sha256": "87b0f6c4926f79ce45a6639ff0dd21801f869145fdff23be5c7e47bc27f8efda"
+      },
+      "after": {
+        "mode": "100644",
+        "blob": "d1685a1f3d1714b8be64e8d5c910f2517e6e4712",
+        "sha256": "17b3cb9d7b07aa53abc11e60de392c5e39d9dbe35c823780d64d055695ba4b0f"
+      },
+      "hunks": [
+        {
+          "offsetBefore": 595,
+          "offsetAfter": 595,
+          "before": "import { createNormalizedReader } from \"./source-normalization.mts\";\nimport { historicalUI188Source } from \"./ui188-current-source-deltas.mts\";\nimport { historicalSessionRefreshSource } from \"./ui188-r3-session-delta.mts\";\n\nconst root = fileURLToPath(new URL(\"../../..\", import.meta.url));\nconst real = containmentIO(root);\nconst hash = (bytes: Buffer) => createHash(\"sha256\").update(bytes).digest(\"hex\");\nconst blob = (bytes: Buffer) => createHash(\"sha1\").update(`blob ${bytes.length}\\0`).update(bytes).digest(\"hex\");\nconst contract = () => assertContainmentContract(real.raw(containmentFixturePath));\n",
+          "after": "import { createNormalizedReader } from \"./source-normalization.mts\";\nimport { historicalUI188Source } from \"./ui188-current-source-deltas.mts\";\nimport { historicalSessionRefreshSource } from \"./ui188-r3-session-delta.mts\";\nimport { createStreamCreateCurrentAdapter } from \"./stream-create-current-source-delta.mts\";\n\nconst root = fileURLToPath(new URL(\"../../..\", import.meta.url));\nconst actual = containmentIO(root);\nconst currentSource = createStreamCreateCurrentAdapter(root, actual);\nconst real = { ...actual, raw: (path: string) => currentSource.inverse(path, actual.raw(path)) };\nconst hash = (bytes: Buffer) => createHash(\"sha256\").update(bytes).digest(\"hex\");\nconst blob = (bytes: Buffer) => createHash(\"sha1\").update(`blob ${bytes.length}\\0`).update(bytes).digest(\"hex\");\nconst contract = () => assertContainmentContract(real.raw(containmentFixturePath));\n"
+        },
+        {
+          "offsetBefore": 2798,
+          "offsetAfter": 3061,
+          "before": "const fixed = () => snapshot ??= captured();\n\ntest(\"UI188-CONTAINMENT-001: all nine actual current paths, additions, registration and four existing owners are mandatory\", () => {\n  assert.deepEqual(assertContainmentGroup(root), { records: 9, modified: 7, additions: 2, owners: 51, unchangedOwners: 47, supportSources: 6 });\n  const value = contract();\n  assert.equal(value.beforeCommit, containmentBeforeCommit);\n  assert.equal(value.beforeTree, containmentBeforeTree);\n",
+          "after": "const fixed = () => snapshot ??= captured();\n\ntest(\"UI188-CONTAINMENT-001: all nine actual current paths, additions, registration and four existing owners are mandatory\", () => {\n  assert.deepEqual(assertContainmentGroup(root, real), { records: 9, modified: 7, additions: 2, owners: 51, unchangedOwners: 47, supportSources: 6 });\n  const value = contract();\n  assert.equal(value.beforeCommit, containmentBeforeCommit);\n  assert.equal(value.beforeTree, containmentBeforeTree);\n"
+        },
+        {
+          "offsetBefore": 13023,
+          "offsetAfter": 13292,
+          "before": "  const path = containmentPaths[1], ownerPath = containmentPaths[0], current = real.raw(path);\n  const adapter = createContainmentAdapter(root), reader = createNormalizedReader(root);\n  const before = real.object(containmentBeforeCommit, path);\n  assert.deepEqual(reader.raw(path), current, \"raw never becomes historical source\");\n  assert.deepEqual(adapter.inverse(path, current), before);\n  assert.deepEqual(reader.historicalRaw(path), historicalUI188Source(path, before, real.object), \"new inverse enters the old UI188 chain exactly once\");\n  const beforeOwner = real.object(containmentBeforeCommit, ownerPath);\n",
+          "after": "  const path = containmentPaths[1], ownerPath = containmentPaths[0], current = real.raw(path);\n  const adapter = createContainmentAdapter(root), reader = createNormalizedReader(root);\n  const before = real.object(containmentBeforeCommit, path);\n  assert.deepEqual(reader.raw(path), actual.raw(path), \"raw never becomes historical source\");\n  assert.deepEqual(adapter.inverse(path, current), before);\n  assert.deepEqual(reader.historicalRaw(path), historicalUI188Source(path, before, real.object), \"new inverse enters the old UI188 chain exactly once\");\n  const beforeOwner = real.object(containmentBeforeCommit, ownerPath);\n"
+        }
+      ]
+    },
+    {
+      "path": "web/tests/ui-regression/ui188-current-source-deltas.test.mts",
+      "before": {
+        "mode": "100644",
+        "blob": "4d184bb1a2cbfe491489e7cc7c6a1d35c302dc90",
+        "sha256": "b4d5d47c868fdc51c63b0bc5fb3c64c2b7db2f0ee4d5608e1531dad68ac84d68"
+      },
+      "after": {
+        "mode": "100644",
+        "blob": "26b93795346b03025667415b663571378a87ba15",
+        "sha256": "69077902d0d8564ebd8f691006665a84ad7b0311eec04afef6d121d456965c9a"
+      },
+      "hunks": [
+        {
+          "offsetBefore": 407,
+          "offsetAfter": 407,
+          "before": "import { historicalR9FinalizationSource, inverseR9FinalizationSource, r9Deltas, inverseR9ArchiveGuardSource, r9ArchiveDeltas, inverseR9ArchiveProcessingSource, historicalR9OwnerMap } from \"./ui188-r9-finalization-deltas.mts\";\nimport { assertUI188ContractRegistration, assertUI188CurrentContract, historicalUI188Source, inverseUI188CurrentSource, ui188CurrentContract } from \"./ui188-current-source-deltas.mts\";\nimport { createContainmentAdapter } from \"./ui188-cp-containment-source-delta.mts\";\n\nconst root = fileURLToPath(new URL(\"../../..\", import.meta.url));\nconst object = (commit: string, path: string) => execFileSync(\"git\", [\"show\", commit + \":\" + path], { cwd: root, maxBuffer: 32 * 1024 * 1024 });\nconst raw = (path: string) => readFileSync(resolve(root, path));\nconst containment = createContainmentAdapter(root, { raw, object });\nconst currentRaw = (path: string) => containment.inverse(path, raw(path));\nconst r9Presenter = (path: string, bytes: Buffer) => path !== \"web/src/lib/i18n.ts\" ? historicalR9FinalizationSource(path, bytes, object) : bytes;\n\ntest(\"UI188-CONTRACT-001: every finite path binds immutable historical source and actual current bytes to existing behavior tests\", () => {\n",
+          "after": "import { historicalR9FinalizationSource, inverseR9FinalizationSource, r9Deltas, inverseR9ArchiveGuardSource, r9ArchiveDeltas, inverseR9ArchiveProcessingSource, historicalR9OwnerMap } from \"./ui188-r9-finalization-deltas.mts\";\nimport { assertUI188ContractRegistration, assertUI188CurrentContract, historicalUI188Source, inverseUI188CurrentSource, ui188CurrentContract } from \"./ui188-current-source-deltas.mts\";\nimport { createContainmentAdapter } from \"./ui188-cp-containment-source-delta.mts\";\nimport { createStreamCreateCurrentAdapter } from \"./stream-create-current-source-delta.mts\";\n\nconst root = fileURLToPath(new URL(\"../../..\", import.meta.url));\nconst object = (commit: string, path: string) => execFileSync(\"git\", [\"show\", commit + \":\" + path], { cwd: root, maxBuffer: 32 * 1024 * 1024 });\nconst raw = (path: string) => readFileSync(resolve(root, path));\nconst containment = createContainmentAdapter(root, { raw, object });\nconst currentSource = createStreamCreateCurrentAdapter(root, { raw, object });\nconst currentRaw = (path: string) => containment.inverse(path, currentSource.inverse(path, raw(path)));\nconst r9Presenter = (path: string, bytes: Buffer) => path !== \"web/src/lib/i18n.ts\" ? historicalR9FinalizationSource(path, bytes, object) : bytes;\n\ntest(\"UI188-CONTRACT-001: every finite path binds immutable historical source and actual current bytes to existing behavior tests\", () => {\n"
+        },
+        {
+          "offsetBefore": 3528,
+          "offsetAfter": 3729,
+          "before": "\ntest(\"UI188-R9-CONTRACT-001: only the independently specified bilingual refusal and pending insertion preserve history\", () => {\n  for (const row of r9Deltas) {\n    const before = object(\"a9efbed3e058bf016b171e50c22650075f20ef50\", row.path), current = raw(row.path);\n    assert.deepEqual(historicalR9FinalizationSource(row.path, current, object), before);\n    for (const mutant of [Buffer.alloc(0), before, current.subarray(0, current.length - 1), Buffer.concat([current, Buffer.from(\"\\n\")]), Buffer.from(current.toString().replace(row.additions[0][1], row.additions[0][1] + row.additions[0][1]))]) {\n      assert.throws(() => inverseR9FinalizationSource(row.path, before, mutant), /unreviewed current finalization bytes/);\n",
+          "after": "\ntest(\"UI188-R9-CONTRACT-001: only the independently specified bilingual refusal and pending insertion preserve history\", () => {\n  for (const row of r9Deltas) {\n    const before = object(\"a9efbed3e058bf016b171e50c22650075f20ef50\", row.path), current = currentRaw(row.path);\n    assert.deepEqual(historicalR9FinalizationSource(row.path, current, object), before);\n    for (const mutant of [Buffer.alloc(0), before, current.subarray(0, current.length - 1), Buffer.concat([current, Buffer.from(\"\\n\")]), Buffer.from(current.toString().replace(row.additions[0][1], row.additions[0][1] + row.additions[0][1]))]) {\n      assert.throws(() => inverseR9FinalizationSource(row.path, before, mutant), /unreviewed current finalization bytes/);\n"
+        }
+      ]
+    },
+    {
+      "path": "web/tests/ui-regression/ui188-r3-session-delta.test.mts",
+      "before": {
+        "mode": "100644",
+        "blob": "2badccebb25ad4738ec3fa966257437d9a262509",
+        "sha256": "a13fde23e66220be641b80f0900e9cb3c97080a39f3613c352aa2dc94e189f40"
+      },
+      "after": {
+        "mode": "100644",
+        "blob": "be5c64b8b45bdc178953931c0f6c2c79483a16b9",
+        "sha256": "c7e45c6e093fb1e7a7bca94225306219ac2469d42783491398d880594ab3552e"
+      },
+      "hunks": [
+        {
+          "offsetBefore": 198,
+          "offsetAfter": 198,
+          "before": "import {historicalSessionRefreshSource,inverseSessionRefresh,sessionRefreshDelta} from \"./ui188-r3-session-delta.mts\";\nimport {historicalR9OwnerMap} from \"./ui188-r9-finalization-deltas.mts\";\nimport {createContainmentAdapter} from \"./ui188-cp-containment-source-delta.mts\";\nconst root=new URL(\"../../..\",import.meta.url);\nconst object=(commit:string,path:string)=>execFileSync(\"git\",[\"show\",commit+\":\"+path],{cwd:root});\nconst raw=(path:string)=>readFileSync(new URL(path,root.href+\"/\"));\nconst containment=createContainmentAdapter(fileURLToPath(root),{raw,object});\nconst current=(path:string)=>historicalR9OwnerMap(path,containment.inverse(path,raw(path)),object);\ntest(\"UI188-R3-SESSION-001: finite current session repair preserves frozen history and strict authority witnesses\",()=>{\n  assert.equal(sessionRefreshDelta.paths.length,2);\n  for(const delta of sessionRefreshDelta.paths){const before=object(sessionRefreshDelta.beforeCommit,delta.path);assert.notDeepEqual(before,current(delta.path));assert.deepEqual(inverseSessionRefresh(delta.path,before,current(delta.path)),before)}\n",
+          "after": "import {historicalSessionRefreshSource,inverseSessionRefresh,sessionRefreshDelta} from \"./ui188-r3-session-delta.mts\";\nimport {historicalR9OwnerMap} from \"./ui188-r9-finalization-deltas.mts\";\nimport {createContainmentAdapter} from \"./ui188-cp-containment-source-delta.mts\";\nimport { createStreamCreateCurrentAdapter } from \"./stream-create-current-source-delta.mts\";\nconst root=new URL(\"../../..\",import.meta.url);\nconst object=(commit:string,path:string)=>execFileSync(\"git\",[\"show\",commit+\":\"+path],{cwd:root});\nconst raw=(path:string)=>readFileSync(new URL(path,root.href+\"/\"));\nconst containment=createContainmentAdapter(fileURLToPath(root),{raw,object});\nconst currentSource=createStreamCreateCurrentAdapter(fileURLToPath(root),{raw,object});\nconst current=(path:string)=>historicalR9OwnerMap(path,containment.inverse(path,currentSource.inverse(path,raw(path))),object);\ntest(\"UI188-R3-SESSION-001: finite current session repair preserves frozen history and strict authority witnesses\",()=>{\n  assert.equal(sessionRefreshDelta.paths.length,2);\n  for(const delta of sessionRefreshDelta.paths){const before=object(sessionRefreshDelta.beforeCommit,delta.path);assert.notDeepEqual(before,current(delta.path));assert.deepEqual(inverseSessionRefresh(delta.path,before,current(delta.path)),before)}\n"
+        }
+      ]
+    },
+    {
+      "path": "web/tests/ui-regression/ui188-r4-delete-delta.test.mts",
+      "before": {
+        "mode": "100644",
+        "blob": "df4b0df6909c73dafc62442feb43ad168d5e8f53",
+        "sha256": "7c99203e991f8b9702f8d937b7a0c71fd572fce6c4d6272a99cddff063329c19"
+      },
+      "after": {
+        "mode": "100644",
+        "blob": "920dc66278f5b13bbacaa08ff2919622834dea9e",
+        "sha256": "0f957c1f97b1068aaf0617c2fdc1f97a48b442558e8bdba572e6d693258c3678"
+      },
+      "hunks": [
+        {
+          "offsetBefore": 0,
+          "offsetAfter": 0,
+          "before": "import assert from \"node:assert/strict\";\nimport {execFileSync} from \"node:child_process\";\nimport {readFileSync} from \"node:fs\";\nimport test from \"node:test\";\nimport {deleteCopyDeltas,historicalR4DeleteCopySource} from \"./ui188-r4-delete-delta.mts\";\nimport {translate} from \"../../src/lib/i18n.ts\";\nconst root=new URL(\"../../..\",import.meta.url);\nconst object=(ref:string,path:string)=>execFileSync(\"git\",[\"show\",ref+\":\"+path],{cwd:root});\ntest(\"UI188-R4-DELETE-001: three finite presentation paths preserve history and reject extra current bytes\",()=>{\n for(const row of deleteCopyDeltas){const before=object(row.beforeCommit,row.path),current=readFileSync(new URL(row.path,root.href+\"/\"));assert.deepEqual(historicalR4DeleteCopySource(row.path,current,object),before);assert.throws(()=>historicalR4DeleteCopySource(row.path,Buffer.concat([current,Buffer.from(\"\\n\")]),object),row.path===\"web/src/lib/i18n.ts\"?/R9 unreviewed current finalization bytes/:/R4 unreviewed current delete copy/);assert.throws(()=>historicalR4DeleteCopySource(row.path,current,()=>Buffer.concat([before,Buffer.from(\"wrong\")])),row.path===\"web/src/lib/i18n.ts\"?/R9 fixed original hash mismatch/:/R4 fixed delete-copy original mismatch/)}\n const unrelated=Buffer.from(\"actual unrelated source\");assert.equal(historicalR4DeleteCopySource(\"unrelated\",unrelated,()=>{throw Error(\"unknown must not read history\")}),unrelated);\n});\ntest(\"UI188-R4-DELETE-002: current bilingual delete copy names the operation, assignment release and retained recordings\",()=>{\n",
+          "after": "import assert from \"node:assert/strict\";\nimport {execFileSync} from \"node:child_process\";\nimport {readFileSync} from \"node:fs\";\nimport {fileURLToPath} from \"node:url\";\nimport { createStreamCreateCurrentAdapter } from \"./stream-create-current-source-delta.mts\";\nimport test from \"node:test\";\nimport {deleteCopyDeltas,historicalR4DeleteCopySource} from \"./ui188-r4-delete-delta.mts\";\nimport {translate} from \"../../src/lib/i18n.ts\";\nconst root=new URL(\"../../..\",import.meta.url);\nconst object=(ref:string,path:string)=>execFileSync(\"git\",[\"show\",ref+\":\"+path],{cwd:root});\nconst currentSource=createStreamCreateCurrentAdapter(fileURLToPath(root),{object});\ntest(\"UI188-R4-DELETE-001: three finite presentation paths preserve history and reject extra current bytes\",()=>{\n for(const row of deleteCopyDeltas){const before=object(row.beforeCommit,row.path),current=currentSource.inverse(row.path,readFileSync(new URL(row.path,root.href+\"/\")));assert.deepEqual(historicalR4DeleteCopySource(row.path,current,object),before);assert.throws(()=>historicalR4DeleteCopySource(row.path,Buffer.concat([current,Buffer.from(\"\\n\")]),object),row.path===\"web/src/lib/i18n.ts\"?/R9 unreviewed current finalization bytes/:/R4 unreviewed current delete copy/);assert.throws(()=>historicalR4DeleteCopySource(row.path,current,()=>Buffer.concat([before,Buffer.from(\"wrong\")])),row.path===\"web/src/lib/i18n.ts\"?/R9 fixed original hash mismatch/:/R4 fixed delete-copy original mismatch/)}\n const unrelated=Buffer.from(\"actual unrelated source\");assert.equal(historicalR4DeleteCopySource(\"unrelated\",unrelated,()=>{throw Error(\"unknown must not read history\")}),unrelated);\n});\ntest(\"UI188-R4-DELETE-002: current bilingual delete copy names the operation, assignment release and retained recordings\",()=>{\n"
+        }
+      ]
+    },
+    {
+      "path": "web/tests/ui-regression/ui188-r5-readiness-delta.test.mts",
+      "before": {
+        "mode": "100644",
+        "blob": "089218876ed50c4721d5ad724f894954ca4f64da",
+        "sha256": "e5bcbf5eb9464401268495454f3ac0f86c9b3ce513f390be626a596426603322"
+      },
+      "after": {
+        "mode": "100644",
+        "blob": "3bf01dc834e263b3e659e7751fd429c79fc67b9e",
+        "sha256": "7693af8f3df4784040a511d9e5eb037ad1cad1c9045a86e37f36c3f205dc1fa3"
+      },
+      "hunks": [
+        {
+          "offsetBefore": 0,
+          "offsetAfter": 0,
+          "before": "import assert from \"node:assert/strict\";\nimport { execFileSync } from \"node:child_process\";\nimport { readFileSync } from \"node:fs\";\nimport test from \"node:test\";\nimport { readinessCopyDeltas, historicalR5ReadinessSource } from \"./ui188-r5-readiness-delta.mts\";\nconst root = new URL(\"../../..\", import.meta.url);\nconst object = (ref: string, path: string) => execFileSync(\"git\", [\"show\", ref + \":\" + path], { cwd: root });\ntest(\"UI188-R5-COPY-001: four fixed Japanese copy differences preserve all history and reject unrelated edits\", () => {\n  for (const row of readinessCopyDeltas) {\n    const before = object(row.beforeCommit, row.path), current = readFileSync(new URL(row.path, root.href + \"/\"));\n    assert.deepEqual(historicalR5ReadinessSource(row.path, current, object), before);\n    assert.throws(() => historicalR5ReadinessSource(row.path, Buffer.concat([current, Buffer.from(\"\\n\")]), object), /unapproved readiness source change/);\n    assert.throws(() => historicalR5ReadinessSource(row.path, current, () => Buffer.concat([before, Buffer.from(\"wrong\")])), /fixed readiness original mismatch/);\n",
+          "after": "import assert from \"node:assert/strict\";\nimport { execFileSync } from \"node:child_process\";\nimport { readFileSync } from \"node:fs\";\nimport { fileURLToPath } from \"node:url\";\nimport { createStreamCreateCurrentAdapter } from \"./stream-create-current-source-delta.mts\";\nimport test from \"node:test\";\nimport { readinessCopyDeltas, historicalR5ReadinessSource } from \"./ui188-r5-readiness-delta.mts\";\nconst root = new URL(\"../../..\", import.meta.url);\nconst object = (ref: string, path: string) => execFileSync(\"git\", [\"show\", ref + \":\" + path], { cwd: root });\nconst currentSource = createStreamCreateCurrentAdapter(fileURLToPath(root), { object });\ntest(\"UI188-R5-COPY-001: four fixed Japanese copy differences preserve all history and reject unrelated edits\", () => {\n  for (const row of readinessCopyDeltas) {\n    const before = object(row.beforeCommit, row.path), current = currentSource.inverse(row.path, readFileSync(new URL(row.path, root.href + \"/\")));\n    assert.deepEqual(historicalR5ReadinessSource(row.path, current, object), before);\n    assert.throws(() => historicalR5ReadinessSource(row.path, Buffer.concat([current, Buffer.from(\"\\n\")]), object), /unapproved readiness source change/);\n    assert.throws(() => historicalR5ReadinessSource(row.path, current, () => Buffer.concat([before, Buffer.from(\"wrong\")])), /fixed readiness original mismatch/);\n"
+        }
+      ]
+    }
+  ]
+}

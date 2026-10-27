@@ -9,12 +9,14 @@ import { historicalR5ReadinessSource } from "./ui188-r5-readiness-delta.mts";
 import { historicalR9FinalizationSource, inverseR9FinalizationSource, r9Deltas, inverseR9ArchiveGuardSource, r9ArchiveDeltas, inverseR9ArchiveProcessingSource, historicalR9OwnerMap } from "./ui188-r9-finalization-deltas.mts";
 import { assertUI188ContractRegistration, assertUI188CurrentContract, historicalUI188Source, inverseUI188CurrentSource, ui188CurrentContract } from "./ui188-current-source-deltas.mts";
 import { createContainmentAdapter } from "./ui188-cp-containment-source-delta.mts";
+import { createStreamCreateCurrentAdapter } from "./stream-create-current-source-delta.mts";
 
 const root = fileURLToPath(new URL("../../..", import.meta.url));
 const object = (commit: string, path: string) => execFileSync("git", ["show", commit + ":" + path], { cwd: root, maxBuffer: 32 * 1024 * 1024 });
 const raw = (path: string) => readFileSync(resolve(root, path));
 const containment = createContainmentAdapter(root, { raw, object });
-const currentRaw = (path: string) => containment.inverse(path, raw(path));
+const currentSource = createStreamCreateCurrentAdapter(root, { raw, object });
+const currentRaw = (path: string) => containment.inverse(path, currentSource.inverse(path, raw(path)));
 const r9Presenter = (path: string, bytes: Buffer) => path !== "web/src/lib/i18n.ts" ? historicalR9FinalizationSource(path, bytes, object) : bytes;
 
 test("UI188-CONTRACT-001: every finite path binds immutable historical source and actual current bytes to existing behavior tests", () => {
@@ -41,7 +43,7 @@ test("UI188-CONTRACT-002: missing, reverted, truncated, extra, unauthorized and 
 
 test("UI188-R9-CONTRACT-001: only the independently specified bilingual refusal and pending insertion preserve history", () => {
   for (const row of r9Deltas) {
-    const before = object("a9efbed3e058bf016b171e50c22650075f20ef50", row.path), current = raw(row.path);
+    const before = object("a9efbed3e058bf016b171e50c22650075f20ef50", row.path), current = currentRaw(row.path);
     assert.deepEqual(historicalR9FinalizationSource(row.path, current, object), before);
     for (const mutant of [Buffer.alloc(0), before, current.subarray(0, current.length - 1), Buffer.concat([current, Buffer.from("\n")]), Buffer.from(current.toString().replace(row.additions[0][1], row.additions[0][1] + row.additions[0][1]))]) {
       assert.throws(() => inverseR9FinalizationSource(row.path, before, mutant), /unreviewed current finalization bytes/);

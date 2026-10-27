@@ -12,9 +12,12 @@ import {
 import { createNormalizedReader } from "./source-normalization.mts";
 import { historicalUI188Source } from "./ui188-current-source-deltas.mts";
 import { historicalSessionRefreshSource } from "./ui188-r3-session-delta.mts";
+import { createStreamCreateCurrentAdapter } from "./stream-create-current-source-delta.mts";
 
 const root = fileURLToPath(new URL("../../..", import.meta.url));
-const real = containmentIO(root);
+const actual = containmentIO(root);
+const currentSource = createStreamCreateCurrentAdapter(root, actual);
+const real = { ...actual, raw: (path: string) => currentSource.inverse(path, actual.raw(path)) };
 const hash = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
 const blob = (bytes: Buffer) => createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
 const contract = () => assertContainmentContract(real.raw(containmentFixturePath));
@@ -43,7 +46,7 @@ let snapshot: ContainmentIO | undefined;
 const fixed = () => snapshot ??= captured();
 
 test("UI188-CONTAINMENT-001: all nine actual current paths, additions, registration and four existing owners are mandatory", () => {
-  assert.deepEqual(assertContainmentGroup(root), { records: 9, modified: 7, additions: 2, owners: 51, unchangedOwners: 47, supportSources: 6 });
+  assert.deepEqual(assertContainmentGroup(root, real), { records: 9, modified: 7, additions: 2, owners: 51, unchangedOwners: 47, supportSources: 6 });
   const value = contract();
   assert.equal(value.beforeCommit, containmentBeforeCommit);
   assert.equal(value.beforeTree, containmentBeforeTree);
@@ -184,7 +187,7 @@ test("UI188-CONTAINMENT-008: raw stays current, one inverse precedes the old cha
   const path = containmentPaths[1], ownerPath = containmentPaths[0], current = real.raw(path);
   const adapter = createContainmentAdapter(root), reader = createNormalizedReader(root);
   const before = real.object(containmentBeforeCommit, path);
-  assert.deepEqual(reader.raw(path), current, "raw never becomes historical source");
+  assert.deepEqual(reader.raw(path), actual.raw(path), "raw never becomes historical source");
   assert.deepEqual(adapter.inverse(path, current), before);
   assert.deepEqual(reader.historicalRaw(path), historicalUI188Source(path, before, real.object), "new inverse enters the old UI188 chain exactly once");
   const beforeOwner = real.object(containmentBeforeCommit, ownerPath);

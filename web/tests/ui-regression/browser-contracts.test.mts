@@ -24,6 +24,7 @@ import { accountAppearanceDiagnostics, accountAppearanceDiagnosticExpression, ac
 import { deferred, setStoredDisplay } from "../ui-browser-navigation-helpers.mts";
 import { clickVisible } from "./visible-trigger.mts";
 import { assertBootstrapWitness, installBootstrapInput, readBootstrapWitness, type BootstrapWitness } from "../ui-browser-bootstrap-input.mts";
+import * as uaDiagnostic from "../helpers/browser-ua-diagnostic.mts";
 
 type AccountCallerFault = "assertion" | "registration" | "navigate" | "read" | "writer" | "unregister" | "pointer";
 async function runAccountCallerGuard(fault: AccountCallerFault, source: string, diagnostics = accountAppearanceDiagnostics) {
@@ -172,13 +173,15 @@ test('UI-NODE-FOCUS-013: actual runner waits for cleanup on its exact remembered
 });
 function diagnosticOutput(lines:string[],code:string){assert.equal(lines.length,1);assert.ok(lines[0].startsWith('UI_BROWSER_DIAGNOSTIC_013 '));const json=lines[0].slice('UI_BROWSER_DIAGNOSTIC_013 '.length);assert.ok(Buffer.byteLength(json)<=4096);assert.doesNotMatch(json,/PRIVATE|https:|password|stack|query=|inputValue/);const result=JSON.parse(json);assert.equal(result.code,code);return result;}
 test('UI-D013-MOBILE: actual close helper records phases only on failure and preserves original and diagnostic causes',async()=>{
+ let cases=0;
  for(const fault of ['none','focus','observation','output'])for(const route of ['same-route','cross-route'] as const){
-   const dom=observerDOM(),dialog=dom.body.add(new Element('DIV'));dialog.setAttribute('role','dialog');dom.document.activeElement=dialog;dom.button.setAttribute('aria-label','Menu');Object.assign(dom.context,{__uiReturnTrigger:dom.button});
-   const original=new Error('PRIVATE primary',{cause:Error('PRIVATE cause')}),diagnostic=Error('PRIVATE diagnostic'),lines:string[]=[];let escape=0;
-   const browser={evaluate:async(e:string)=>{if(e===mobileFocusDiagnosticExpression&&fault==='observation')throw diagnostic;return dom.run(e);},pressKey:async(key:string)=>{assert.equal(key,'Escape');escape++;dom.body.children=dom.body.children.filter(e=>e!==dialog);dialog.parentElement=null;},waitFor:async(e:string,p:(v:unknown)=>boolean)=>{if(e.includes('document.activeElement===')){if(fault!=='none')throw original;await Promise.resolve();dom.document.activeElement=dom.button;}assert.ok(p(dom.run(e)));}} as unknown as BrowserHarness;
+   const dom=observerDOM(),create=dom.main.add(new Element('SECTION'));create.setAttribute('data-stream-create-view','');dom.document.activeElement=create;dom.button.setAttribute('aria-label','Menu');Object.assign(dom.context,{__uiReturnTrigger:dom.button});
+   const original=new Error('PRIVATE primary',{cause:Error('PRIVATE cause')}),diagnostic=Error('PRIVATE diagnostic'),lines:string[]=[];let backClicks=0,closedChecks=0;
+   const browser={evaluate:async(e:string)=>{if(e===mobileFocusDiagnosticExpression&&fault==='observation')throw diagnostic;return dom.run(e);},clickSelector:async(selector:string)=>{assert.equal(selector,'button[aria-label="配信枠の一覧へ戻る"]');assert.equal(dom.document.querySelector('[data-stream-create-view]'),create);assert.equal(create.isConnected,true);backClicks++;dom.main.children=dom.main.children.filter(e=>e!==create);create.parentElement=null;},pressKey:async()=>{assert.fail('full-page create must close through its Back control');},waitFor:async(e:string,p:(v:unknown)=>boolean)=>{if(e==="!document.querySelector('[data-stream-create-view]')"){closedChecks++;assert.equal(backClicks,1);assert.equal(create.isConnected,false);}if(e.includes('document.activeElement===')){if(fault!=='none')throw original;await Promise.resolve();dom.document.activeElement=dom.button;}assert.ok(p(dom.run(e)));}} as unknown as BrowserHarness;
    let caught:unknown;try{await closeCreateAndAssertFocusReturn(browser,'Menu',route,line=>{if(fault==='output')throw diagnostic;lines.push(line);});}catch(error){caught=error;}
-   assert.equal(escape,1);if(fault==='none'){assert.equal(caught,undefined);assert.equal(lines.length,0);}else if(fault==='focus'){assert.equal(caught,original);assert.equal((caught as Error).cause,original.cause);const value=diagnosticOutput(lines,'D013-MOBILE');assert.equal(value.route,route);assert.equal(value.phase,'dialog-closed');assert.deepEqual(value.observations.map((v:{dialogs:number})=>v.dialogs),[1,0,0]);}else{assert.ok(caught instanceof AggregateError);assert.equal(caught.cause,original);assert.ok(caught.errors.includes(diagnostic));if(fault==='observation')assert.equal(diagnosticOutput(lines,'D013-MOBILE').diagnosticFailed,true);}
+   assert.equal(backClicks,1);assert.equal(closedChecks,1);assert.equal(create.isConnected,false);if(fault==='none'){assert.equal(caught,undefined);assert.equal(lines.length,0);assert.equal(dom.document.activeElement,dom.button);}else if(fault==='focus'){assert.equal(caught,original);assert.equal((caught as Error).cause,original.cause);const value=diagnosticOutput(lines,'D013-MOBILE');assert.equal(value.route,route);assert.equal(value.phase,'dialog-closed');assert.deepEqual(value.observations.map((v:{dialogs:number})=>v.dialogs),[0,0,0]);}else{assert.ok(caught instanceof AggregateError);assert.equal(caught.cause,original);assert.ok(caught.errors.includes(diagnostic));if(fault==='observation')assert.equal(diagnosticOutput(lines,'D013-MOBILE').diagnosticFailed,true);}cases++;
  }
+ assert.equal(cases,8);
  const navigation=readFileSync(new URL('../ui-browser-navigation-scenarios.mts',import.meta.url),'utf8');for(const route of ['same-route','cross-route'])assert.equal(navigation.split('"'+route+'"').length-1,1,'one actual phase for each unchanged scenario section');
 });
 test('UI-D013-ACCOUNT: actual English scenario uses one real tab operation and bounded DOM/request-settlement diagnostics',async()=>{
@@ -416,4 +419,72 @@ test('UI-D017-ACCOUNT: actual marked target and one native call retain finite hi
     if(fault==='capture-failure')assert.equal(value.pointer,null);else{const p=value.pointer;assert.deepEqual(p.planned,[80,22]);assert.equal(p.sameTarget,fault!=='replacement');assert.equal(p.events.length,fault==='missing-events'?0:3);for(const e of p.events){assert.equal(e.trusted,fault!=='untrusted');assert.equal(e.hitInside,fault!=='off-target');assert.equal(e.eventInside,fault!=='off-target');}}
   }
  }
+});
+
+test('UI-UA-SECONDARY-001: owned immediate rejection metadata is closed, passive and preserves original errors and diagnostic limits',async()=>{
+ type Secondary={code:string;ctor:string};
+ const physical=()=>new assert.AssertionError({message:'UA subtree identity replaced during traversal'});
+ const pair=(second:unknown,first:unknown=physical())=>new AggregateError([first,second],'UA identity and complete observation rejected',{cause:first});
+ const locked=new assert.AssertionError({message:'unknown/control/owner or required ancestor changed'}),original=pair(locked);
+ const record=(delta=0):uaDiagnostic.UADiagnostic=>({boundary:'between',baseline:true,total:121,delta:[delta,0,0],classes:[[],[],[]],same:Array(11).fill(true),mediaStates:['error','error'],focusable:1,focused:2,unknown:79,overflow:false});
+ const emitted=async(error:unknown,delta=0)=>{
+  const diagnostic=new uaDiagnostic.UAConditionDiagnostic(),values:unknown[]=[];
+  uaDiagnostic.bindUADiagnostic(error,record(delta));
+  await assert.rejects(diagnostic.observe('negative-space-return',async()=>{throw error;}),caught=>caught===error);
+  diagnostic.write('accessibility--public-archive-share--ready--autostream--light--ja--390--keyboard',value=>values.push(value));
+  assert.equal(values.length,1);
+  return values[0] as {observations:{secondary?:Secondary;phase:string;failed:boolean}[]};
+ };
+ const compact=await emitted(original);
+ assert.deepEqual(compact.observations[0].secondary,{code:'LOCKED_CHANGED',ctor:'ASSERTION'});
+ assert.equal(compact.observations[0].phase,'negative-space-return');assert.equal(compact.observations[0].failed,true);
+ assert.equal(original.cause,original.errors[0]);assert.equal(original.errors[1],locked);
+ const full=await emitted(original,1);assert.deepEqual(full.observations[0].secondary,compact.observations[0].secondary);
+ const classify=(uaDiagnostic as unknown as {closedUASecondary:(error:unknown)=>Secondary}).closedUASecondary;
+ assert.equal(typeof classify,'function');
+ const known:[string,string][]=[
+  ['unknown/control/owner or required ancestor changed','LOCKED_CHANGED'],['delta touches unproven or operational UA node','UNPROVEN_DELTA'],
+  ['unproven AX facts changed','UNPROVEN_AX_FACTS'],['unproven AX node removed','UNPROVEN_AX_REMOVED'],['unproven AX node added','UNPROVEN_AX_ADDED'],
+  ['UA AX topology changed inside observation','AX_WITHIN_CHANGED'],['UA DOM/AX changed inside semantic observation','DOM_AX_WITHIN_CHANGED'],
+  ['original UA owner/media scope changed','OWNER_MEDIA_SCOPE_CHANGED'],['UA observation scope race','SCOPE_RACE'],
+ ];
+ for(const [message,code]of known)for(const suffix of ['', '\nPRIVATE assertion suffix']){
+  assert.deepEqual(classify(pair(new assert.AssertionError({message:message+suffix}))),{code,ctor:'ASSERTION'});
+ }
+ assert.deepEqual(classify(pair(new assert.AssertionError({message:'complete UA control/focused ancestry changed PRIVATE dynamic details'}))),{code:'OPERATIONAL_CHANGED',ctor:'ASSERTION'});
+ for(const [value,ctor]of [[new TypeError('PRIVATE type'),'TYPE'],[new RangeError('PRIVATE range'),'RANGE'],[new Error('PRIVATE error'),'ERROR'],[new AggregateError([Error('PRIVATE nested')],'PRIVATE aggregate'),'AGGREGATE'],[null,'OTHER']]as const){
+  assert.deepEqual(classify(pair(value)),{code:'OTHER',ctor});
+ }
+ const unknown={code:'UNKNOWN',ctor:'UNKNOWN'};
+ const wrongCause=pair(locked);Object.defineProperty(wrongCause,'cause',{value:physical()});
+ const wrongLength=pair(locked);Object.defineProperty(wrongLength,'errors',{value:[physical(),locked,Error('PRIVATE third')]});
+ const wrongWrapper=pair(locked);Object.defineProperty(wrongWrapper,'message',{value:'PRIVATE wrapper https://fixture.invalid/private?token=synthetic'});
+ const cyclic=Error('PRIVATE cyclic');cyclic.cause=cyclic;
+ for(const value of [cyclic,wrongCause,wrongLength,wrongWrapper,new AggregateError([],'PRIVATE empty'),pair(locked,Error('UA subtree identity replaced during traversal'))])assert.deepEqual(classify(value),unknown);
+ let getterReads=0;
+ const poison=()=>{getterReads++;throw Error('PRIVATE getter must not execute');};
+ const getterErrors=pair(locked);Object.defineProperty(getterErrors,'errors',{get:poison});
+ const getterCause=pair(locked);Object.defineProperty(getterCause,'cause',{get:poison});
+ const getterMessage=pair(locked);Object.defineProperty(getterMessage,'message',{get:poison});
+ const getterFirst=physical();Object.defineProperty(getterFirst,'message',{get:poison});
+ const getterSlot=pair(locked);Object.defineProperty(getterSlot.errors,'1',{get:poison});
+ const sparse=pair(locked);delete sparse.errors[1];
+ for(const value of [getterErrors,getterCause,getterMessage,pair(locked,getterFirst),getterSlot,sparse])assert.deepEqual(classify(value),unknown);
+ const secondaryGetter=new assert.AssertionError({message:'PRIVATE secondary'});Object.defineProperty(secondaryGetter,'message',{get:poison});
+ assert.deepEqual(classify(pair(secondaryGetter)),unknown);
+ const spoof=Error('PRIVATE spoof');Object.defineProperty(spoof,'name',{get:poison});Object.defineProperty(spoof,'constructor',{get:poison});
+ assert.deepEqual(classify(pair(spoof)),{code:'OTHER',ctor:'ERROR'});assert.equal(getterReads,0);
+ const hidden=pair(new assert.AssertionError({message:'PRIVATE https://fixture.invalid/private?token=synthetic'}));
+ const hiddenOutput=await emitted(hidden);
+ assert.deepEqual(hiddenOutput.observations[0].secondary,{code:'OTHER',ctor:'ASSERTION'});
+ assert.doesNotMatch(JSON.stringify(hiddenOutput),/PRIVATE|https:|token=|stack|message|Hash|constructor/);
+ const writerFailure=Error('PRIVATE writer');const output=new uaDiagnostic.UAConditionDiagnostic();
+ await assert.rejects(output.observe('negative-space-return',async()=>{throw original;}),caught=>caught===original);
+ assert.throws(()=>output.write('condition',()=>{throw writerFailure;}),caught=>caught instanceof uaDiagnostic.UAOutputFailure&&caught.cause===writerFailure);
+ const oversized=new uaDiagnostic.UAConditionDiagnostic(),huge=record(1);huge.classes=[[{classification:'x'.repeat(5000),count:1}],[],[]];
+ uaDiagnostic.bindUADiagnostic(original,huge);
+ await assert.rejects(oversized.observe('negative-space-return',async()=>{throw original;}),caught=>caught===original);
+ const overflow:unknown[]=[];assert.throws(()=>oversized.write('condition',value=>overflow.push(value)),uaDiagnostic.UAOutputFailure);
+ assert.equal((overflow[0]as {code:string}).code,'UA_OBSERVATION_STABILITY_OVERFLOW');
+ assert.equal(original.cause,original.errors[0]);assert.equal(original.errors[1],locked);
 });

@@ -8,11 +8,13 @@ import { inverseReleaseAssembly, releaseAssemblyBase, releaseAssemblyPaths, rele
 import { cp174Paths, inverseCP174Source } from "./cp174-source-deltas.mts";
 import { createNormalizedReader } from "./source-normalization.mts";
 import { historicalUI188Source } from "./ui188-current-source-deltas.mts";
+import { createStreamCreateCurrentAdapter } from "./stream-create-current-source-delta.mts";
 
 const root = fileURLToPath(new URL("../../..", import.meta.url));
 const object = (commit: string, path: string) => execFileSync("git", ["show", commit + ":" + path], { cwd: root, maxBuffer: 32 * 1024 * 1024 });
 const raw = (path: string) => readFileSync(resolve(root, path));
-const historicalRaw = (path: string) => historicalUI188Source(path, raw(path), object);
+const currentSource = createStreamCreateCurrentAdapter(root, { raw, object });
+const historicalRaw = (path: string) => historicalUI188Source(path, currentSource.inverse(path, raw(path)), object);
 const assemblyRaw = (path: string) => cp174Paths.includes(path) ? inverseCP174Source(path, historicalRaw(path)) : historicalRaw(path);
 const io = { raw, object, exists: (path: string) => existsSync(resolve(root, path)) };
 const expectedPaths = [
@@ -62,7 +64,7 @@ test("UI-RELEASE-ASSEMBLY-003: the reader cannot replace missing or changed curr
     const absent = createNormalizedReader(root, { ...io, raw: p => { if (p === path) throw missing; return raw(p); } });
     assert.throws(() => absent.read(path), error => error === missing);
     const changed = createNormalizedReader(root, { ...io, raw: p => p === path ? Buffer.concat([raw(p), Buffer.from("drift")]) : raw(p) });
-    assert.throws(() => changed.read(path), path === ".github/workflows/ci.yml" ? /R9 unreviewed current finalization bytes/ : /exact specified name edits/);
+    assert.throws(() => changed.read(path), path === ".github/workflows/ci.yml" ? /stream-create unreviewed current source bytes/ : /exact specified name edits/);
   }
   const badOriginal = createNormalizedReader(root, { ...io, object: (commit, path) => path === "go.mod" ? Buffer.alloc(0) : object(commit, path) });
   assert.throws(() => badOriginal.read("go.mod"), /fixed original hash/);

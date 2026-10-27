@@ -17,6 +17,7 @@ import "./ui188-r4-delete-delta.test.mts";
 import "./ui188-r5-readiness-delta.test.mts";
 import "./ui188-cb15-cb16-runtime-delta.test.mts";
 import "./ui188-cp-containment-source-delta.test.mts";
+import "./stream-create-current-source-delta.test.mts";
 import { cp174ProtectedPaths } from "./cp174-source-deltas.mts";
 import { currentBindingProtectedPaths, historicalCB15CB16RuntimeSource } from "./ui188-cb15-cb16-runtime-delta.mts";
 import ts from "typescript";

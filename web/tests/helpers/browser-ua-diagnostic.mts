@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import {AssertionError} from "node:assert";
 import {classifyUANode,type UADOM} from "./browser-ua-identity.mts";
 
 type DOM = UADOM;
@@ -58,25 +59,62 @@ export function readUADiagnostic(value:unknown):UADiagnostic|undefined{
  return records.get(value)||(value instanceof Error?readUADiagnostic(value.cause):undefined);
 }
 export type UAPhase="tab-forward"|"tab-backward"|"restore"|"negative-enter"|"negative-space-return";
+type SecondaryCode="UNKNOWN"|"OTHER"|"LOCKED_CHANGED"|"UNPROVEN_DELTA"|"UNPROVEN_AX_FACTS"|"UNPROVEN_AX_REMOVED"|"UNPROVEN_AX_ADDED"|"AX_WITHIN_CHANGED"|"DOM_AX_WITHIN_CHANGED"|"OWNER_MEDIA_SCOPE_CHANGED"|"SCOPE_RACE"|"OPERATIONAL_CHANGED";
+type ClosedCtor="ASSERTION"|"AGGREGATE"|"TYPE"|"RANGE"|"ERROR"|"OTHER"|"UNKNOWN";
+type Secondary=Readonly<{code:SecondaryCode;ctor:ClosedCtor}>;
+const unknownSecondary:Secondary=Object.freeze({code:"UNKNOWN",ctor:"UNKNOWN"});
+const assertionCodes:readonly(readonly[string,SecondaryCode])[]=[
+ ["unknown/control/owner or required ancestor changed","LOCKED_CHANGED"],
+ ["delta touches unproven or operational UA node","UNPROVEN_DELTA"],
+ ["unproven AX facts changed","UNPROVEN_AX_FACTS"],
+ ["unproven AX node removed","UNPROVEN_AX_REMOVED"],
+ ["unproven AX node added","UNPROVEN_AX_ADDED"],
+ ["UA AX topology changed inside observation","AX_WITHIN_CHANGED"],
+ ["UA DOM/AX changed inside semantic observation","DOM_AX_WITHIN_CHANGED"],
+ ["original UA owner/media scope changed","OWNER_MEDIA_SCOPE_CHANGED"],
+ ["UA observation scope race","SCOPE_RACE"],
+];
+function ownData(value:object,key:PropertyKey):unknown{
+ const descriptor=Object.getOwnPropertyDescriptor(value,key);
+ if(!descriptor||!("value"in descriptor))throw new TypeError("UA diagnostic requires an own data descriptor");
+ return descriptor.value;
+}
+const knownAssertion=(value:unknown,expected:string)=>typeof value==="string"&&(value===expected||value.startsWith(expected+"\n"));
+const closedCtor=(value:unknown):ClosedCtor=>value instanceof AssertionError?"ASSERTION":value instanceof AggregateError?"AGGREGATE":value instanceof TypeError?"TYPE":value instanceof RangeError?"RANGE":value instanceof Error?"ERROR":"OTHER";
+// Only our explicit physical-mismatch/completion pair is read, one level deep.
+// Data descriptors avoid getters; no names, messages, hashes or graphs escape.
+export function closedUASecondary(error:unknown):Secondary{
+ try{
+  if(!(error instanceof AggregateError)||ownData(error,"message")!=="UA identity and complete observation rejected")return unknownSecondary;
+  const pair=ownData(error,"errors");
+  if(!Array.isArray(pair)||ownData(pair,"length")!==2)return unknownSecondary;
+  const first=ownData(pair,"0"),second=ownData(pair,"1");
+  if(ownData(error,"cause")!==first||!(first instanceof AssertionError)||!knownAssertion(ownData(first,"message"),"UA subtree identity replaced during traversal"))return unknownSecondary;
+  const message=second instanceof AssertionError?ownData(second,"message"):undefined;
+  const code:SecondaryCode=typeof message!=="string"?"OTHER":assertionCodes.find(([expected])=>knownAssertion(message,expected))?.[1]
+   ||(message.startsWith("complete UA control/focused ancestry changed ")?"OPERATIONAL_CHANGED":"OTHER");
+  return {code,ctor:closedCtor(second)};
+ }catch{return unknownSecondary;}
+}
 export class UAOutputFailure extends Error{}
 export function isUAOutputFailure(error:unknown):boolean{
  return error instanceof UAOutputFailure||error instanceof AggregateError&&error.errors.some(isUAOutputFailure);
 }
 export class UAConditionDiagnostic{
- private readonly rows:{phase:UAPhase;record:UADiagnostic|null;failed:boolean}[]=[];
+ private readonly rows:{phase:UAPhase;record:UADiagnostic|null;failed:boolean;secondary?:Secondary}[]=[];
  private overflow=false;private changed=false;private failed=false;
  async observe<T>(phase:UAPhase,action:()=>Promise<T>):Promise<T>{
-  let value:unknown,failed=false;
-  try{const result=await action();value=result;return result;}catch(error){value=error;failed=true;this.failed=true;throw error;}
+  let value:unknown,failed=false,secondary:Secondary|undefined;
+  try{const result=await action();value=result;return result;}catch(error){secondary=closedUASecondary(error);value=error;failed=true;this.failed=true;throw error;}
   finally{const record=readUADiagnostic(value);this.changed ||=!!record?.delta.some(n=>n>0);this.overflow ||=!!record?.overflow;
-   if(this.rows.length<128)this.rows.push({phase,record:record||null,failed});else this.overflow=true;}
+   if(this.rows.length<128)this.rows.push({phase,record:record||null,failed,...(secondary?{secondary}:{})});else this.overflow=true;}
  }
  fail(){if(this.rows.length)this.failed=true;}
  write(condition:string,writer:(value:unknown)=>void){
   if(!this.changed&&!this.failed&&!this.overflow)return;
   if(condition.length>256||!/^[A-Za-z0-9-]+$/.test(condition))throw new UAOutputFailure("UA diagnostic condition outside closed ID contract");
   const emit=(value:unknown)=>{try{writer(value);}catch(error){throw new UAOutputFailure("UA diagnostic writer failed",{cause:error});}};
-  const record={schemaVersion:1,condition,code:"UA_OBSERVATION_STABILITY",changed:this.changed,failed:this.failed,overflow:this.overflow,observations:this.rows.map(r=>r.record&&!r.record.delta.some(n=>n>0)?{phase:r.phase,failed:r.failed,total:r.record.total,focusable:r.record.focusable,focused:r.record.focused,delta:r.record.delta}:r)};
+  const record={schemaVersion:1,condition,code:"UA_OBSERVATION_STABILITY",changed:this.changed,failed:this.failed,overflow:this.overflow,observations:this.rows.map(r=>r.record&&!r.record.delta.some(n=>n>0)?{phase:r.phase,failed:r.failed,total:r.record.total,focusable:r.record.focusable,focused:r.record.focused,delta:r.record.delta,...(r.secondary?{secondary:r.secondary}:{})}:r)};
   if(Buffer.byteLength(JSON.stringify(record,null,2)+"\n")>4096){emit({schemaVersion:1,condition,code:"UA_OBSERVATION_STABILITY_OVERFLOW",overflow:true,changed:this.changed,failed:this.failed,observationsUnavailable:true});throw new UAOutputFailure("UA diagnostic output bound exceeded");}
   emit(record);assert.equal(this.overflow,false,"UA diagnostic incomplete/overflow");
  }

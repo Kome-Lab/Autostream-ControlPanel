@@ -8,12 +8,14 @@ import { ciClosureBase, ciClosurePaths, inverseCIClosure } from "./ci-closure-de
 import { createNormalizedReader } from "./source-normalization.mts";
 import { historicalUI188Source } from "./ui188-current-source-deltas.mts";
 import { createContainmentAdapter } from "./ui188-cp-containment-source-delta.mts";
+import { createStreamCreateCurrentAdapter, streamCreateCurrentPaths } from "./stream-create-current-source-delta.mts";
 
 const root = fileURLToPath(new URL("../../..", import.meta.url));
 const object = (commit: string, path: string) => execFileSync("git", ["show", commit + ":" + path], { cwd: root, maxBuffer: 32 * 1024 * 1024 });
 const raw = (path: string) => readFileSync(resolve(root, path));
 const containment = createContainmentAdapter(root, { raw, object });
-const historicalRaw = (path: string) => historicalUI188Source(path, containment.inverse(path, raw(path)), object);
+const currentSource = createStreamCreateCurrentAdapter(root, { raw, object });
+const historicalRaw = (path: string) => historicalUI188Source(path, containment.inverse(path, currentSource.inverse(path, raw(path))), object);
 const io = { raw, object, exists: (path: string) => existsSync(resolve(root, path)) };
 const expectedPaths = [
   "internal/httpapi/server_start_preparation_claim_test.go",
@@ -56,6 +58,6 @@ test("UI-CI-CLOSURE-003: current-source absence or mutation cannot be replaced w
     const absent = createNormalizedReader(root, { ...io, raw: p => { if (p === path) throw missing; return raw(p); } });
     assert.throws(() => absent.read(mapped), error => error === missing);
     const changed = createNormalizedReader(root, { ...io, raw: p => p === path ? Buffer.concat([raw(p), Buffer.from("drift")]) : raw(p) });
-    assert.throws(() => changed.read(mapped), /exact specified name edits/);
+    assert.throws(() => changed.read(mapped), streamCreateCurrentPaths.some(listed => listed === path) ? /stream-create unreviewed current source bytes/ : /exact specified name edits/);
   }
 });
