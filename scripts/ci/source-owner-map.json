@@ -208,9 +208,9 @@
       },
       {
         "path": "web/tests/helpers/browser-fetch-settlement-cases.mts",
-        "sha256": "3ab79254478215ad0c5088c00881e942a2d4907138902fe0be214c61ce941c8a",
+        "sha256": "be13a59709bfc67a9cde5646b94669510ed195d6391fbba9380fc870a6815dac",
         "symbols": [],
-        "physical_lines": 194
+        "physical_lines": 208
       },
       {
         "path": "web/tests/helpers/browser-harness.mts",
@@ -1461,9 +1461,9 @@
       },
       {
         "path": "web/tests/ui-browser-query-auth-scenarios.mts",
-        "sha256": "915dfb34de4bd8e697daa7cad699ad381d65bdada1f68876af4284b93d3ff938",
+        "sha256": "4cfb602b9f07e068264b73e7886f898aab646d26711b974acb66eb96692b8c28",
         "symbols": [],
-        "physical_lines": 395
+        "physical_lines": 403
       },
       {
         "path": "web/tests/ui-browser-start-readiness-scenarios.mts",
@@ -1720,7 +1720,7 @@
       },
       {
         "path": "internal/httpapi/server_stream_lifecycle_test.go",
-        "sha256": "cdfd1bd2e74de904769d1e46f5878b1db453e8d3f013e841828ff580c4595868",
+        "sha256": "7bcf3bf9b0e04af2f078348e4defaef8671eb76140c1e90de9979d797041478a",
         "symbols": [
           "TestApplyEncoderVideoProfileRejectsUnsupportedWorkerSceneGeometry",
           "TestStartStreamCompensatesPartialDispatchFailure",
@@ -1728,7 +1728,7 @@
           "TestStreamStartPersistsNegotiatedWorkerVideoOverlayBurnIn",
           "TestStreamStartStopDispatchesAssignedServices"
         ],
-        "physical_lines": 371
+        "physical_lines": 380
       },
       {
         "path": "internal/httpapi/server_stream_media_proxy_test.go",

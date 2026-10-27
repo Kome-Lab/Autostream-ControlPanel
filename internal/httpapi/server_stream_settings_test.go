@@ -343,10 +343,8 @@ func TestCreateStreamRejectsInvalidAutoStartSettings(t *testing.T) {
 	}
 	streams := store.NewMemoryStreamStore()
 	profiles := store.NewMemoryProfileStore()
-	discordProfile, err := profiles.CreateProfile(t.Context(), store.ProfileDiscordConfig, "discord", map[string]any{"guild_id": "guild-01", "voice_channel_id": "voice-01"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	registerServiceInstance(t, auth, "invalid-autostart-bot", "discord_bot")
+	discordProfile := createDiscordConfigForTest(t, profiles, "discord", "invalid-autostart-bot", "", "", "")
 	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithProfileStore(profiles))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
 
@@ -373,6 +371,14 @@ func TestCreateStreamRejectsInvalidAutoStartSettings(t *testing.T) {
 		handler.ServeHTTP(res, req)
 		if res.Code != http.StatusBadRequest || !strings.Contains(res.Body.String(), tc.code) {
 			t.Fatalf("%s status = %d body = %s", tc.name, res.Code, res.Body.String())
+		}
+		rows, err := streams.ListStreams(t.Context())
+		if err != nil || len(rows) != 0 {
+			t.Fatalf("%s rejection persisted a partial stream", tc.name)
+		}
+		bot, err := auth.GetService(t.Context(), "invalid-autostart-bot")
+		if err != nil || bot.CurrentStreamID != "" {
+			t.Fatalf("%s rejection reserved the selected Bot", tc.name)
 		}
 	}
 }

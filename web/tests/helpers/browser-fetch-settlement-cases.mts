@@ -31,6 +31,20 @@ test("required current interception cancellation fails the scenario", () => {
   );
 });
 
+test("non-required current interception cancellation remains fatal", () => {
+  const lifecycle = new FetchRequestLifecycle();
+  lifecycle.beginNavigation("navigate");
+  lifecycle.register({ requestId: "optional-current-1", method: "GET", pathname: "/setup/status", requiredResponse: false });
+  const attempt = lifecycle.beginSettlement("optional-current-1", "Fetch.fulfillRequest");
+
+  assert.throws(
+    () => lifecycle.handleSettlementError(attempt, new Error(invalidInterceptionIdMessage)),
+    /Invalid InterceptionId\./,
+  );
+  assert.equal(lifecycle.safeCancellationCount, 0, "an optional current-generation response must not be accepted as cancelled");
+  assert.equal(lifecycle.activeCount, 1, "the failed current-generation response must remain unsettled");
+});
+
 test("required stale interception cancellation remains fatal", () => {
   const lifecycle = new FetchRequestLifecycle();
   lifecycle.register({ requestId: "required-stale-1", method: "POST", pathname: actionPath, requiredResponse: true });

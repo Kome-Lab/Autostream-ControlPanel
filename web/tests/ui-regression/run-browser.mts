@@ -181,12 +181,12 @@ export async function main() {
           await waitForLivePreview(target, fixture.detailStream(), condition);
         }
         if (surface.stage === "form") {
-          await target.waitFor("document.querySelectorAll('[role=dialog]').length", value => value === 1, "deep-link stream creation form");
-          await settleRender(target, "open", reportRender);
-          await closeOverlay(target, reportRender);
-          await target.waitFor("document.querySelectorAll('[role=dialog]').length", value => value === 0, "close deep-link form");
+          await target.waitFor("(() => {const owners=[...document.querySelectorAll('main [data-stream-create-view]')];if(document.querySelector('[role=dialog],[role=alertdialog]'))throw Error('stream creation is a page owner');return owners.length===1&&owners[0].querySelectorAll('#create-stream').length===1;})()", Boolean, "deep-link stream creation page");
+          await settleRender(target, "page", reportRender);
+          await clickNamed(target, /^(配信枠の一覧へ戻る|Back to stream list)$/, "main [data-stream-create-view]");
+          await target.waitFor("document.querySelectorAll('main [data-stream-create-view],[role=dialog],[role=alertdialog]').length===0", Boolean, "close deep-link form through its Back action");
           await clickNamed(target, condition.locale === "ja" ? /^配信枠を作成$/ : /^Create stream$/, "main", true);
-          await target.waitFor("document.querySelectorAll('[role=dialog]').length", value => value === 1, "creation form with real focus-return trigger");
+          await target.waitFor("(() => {const owners=[...document.querySelectorAll('main [data-stream-create-view]')];if(document.querySelector('[role=dialog],[role=alertdialog]'))throw Error('stream creation is a page owner');return owners.length===1&&owners[0].querySelectorAll('#create-stream').length===1;})()", Boolean, "creation page with real focus-return trigger");
         }
         if (condition.exercise === "Confirmation") {
           await clickWorkerRestart(target, fixture.workerRestartTarget());
@@ -234,8 +234,14 @@ export async function main() {
         if (condition.state === "ready") assert.equal(target.consoleErrorCount, 0, "ready console errors");
         await restoreOnce();
         if (nodeContent || condition.exercise === "Confirmation" || surface.stage === "detail" || surface.stage === "form" || condition.family === "roles" && condition.state === "partial") {
-          await closeOverlay(target, reportRender);
-          await target.waitFor("document.querySelectorAll('[role=dialog],[role=alertdialog]').length", value => value === 0, "dialog closes without duplicate owner");
+          if (surface.stage === "form") {
+            await clickNamed(target, /^(配信枠の一覧へ戻る|Back to stream list)$/, "main [data-stream-create-view]");
+            await target.waitFor("document.querySelectorAll('main [data-stream-create-view],[role=dialog],[role=alertdialog]').length===0", Boolean, "creation page closes without duplicate owner");
+            await settleRender(target, "page", reportRender);
+          } else {
+            await closeOverlay(target, reportRender);
+            await target.waitFor("document.querySelectorAll('[role=dialog],[role=alertdialog]').length", value => value === 0, "dialog closes without duplicate owner");
+          }
           await target.waitFor("(() => { const trigger=globalThis.__uiReturnTrigger; if(!trigger?.isConnected)throw Error('opening trigger lost'); return document.activeElement===trigger && trigger!==document.body && !trigger.disabled && trigger.getAttribute('aria-disabled')!=='true' && !trigger.closest('[inert]') && trigger.getClientRects().length>0; })()", Boolean, "focus returns to the exact opening trigger after focus cleanup");
           await target.evaluate("delete globalThis.__uiReturnTrigger;true");
         }

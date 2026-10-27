@@ -242,7 +242,12 @@ test("magnified stream visual controls remain reachable with the original layout
     await browser.navigate(server.baseUrl + condition.route);
     await waitForShell(browser, condition.locale === "ja" ? "アカウントメニュー" : "Account menu");
     await browser.waitForResponseCount(surface.primary, 1);
-    await browser.waitFor(`document.querySelectorAll('[role="dialog"]').length`, value => value === 1, "the actual stream creation dialog");
+    await browser.waitFor(`document.querySelectorAll('main [data-stream-create-view] #create-stream-visual').length`, value => value === 1, "the full-page stream creation form");
+    assert.deepEqual(await browser.evaluate(`({
+      owners: document.querySelectorAll('main [data-stream-create-view]').length,
+      dialogs: document.querySelectorAll('[role="dialog"],[role="alertdialog"]').length,
+      visualOwner: document.querySelector('#create-stream-visual')?.closest('[data-stream-create-view]') === document.querySelector('main [data-stream-create-view]')
+    })`), { owners: 1, dialogs: 0, visualOwner: true }, "creation owns the main page rather than an overlay");
     await browser.waitForRequestHandlersIdle();
     await paint(browser);
     assert.equal(await browser.evaluate("document.documentElement.style.zoom='2';true"), true);

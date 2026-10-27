@@ -51,10 +51,11 @@ export async function driveFormContent(browser: BrowserHarness, condition: Condi
     assert.equal(await browser.evaluate(String.raw`(() => {
       if(document.querySelector('[data-ui-content-field]')||globalThis.__uiContentDraft||globalThis.__uiContentState)throw Error('unique synthetic marker');
       const node=${node},description=${description},defaults=${JSON.stringify(nodeDraftDefaults)};
-      const dialogs=[...document.querySelectorAll('[role=dialog]')],owner=dialogs[0];
-      if(dialogs.length!==1)throw Error('unique registration dialog owner required');
-      if(node&&(location.pathname!=='/admin/nodes/'||globalThis.__uiFreshNodeDraft?.document!==document||!globalThis.__uiFreshNodeDraft.root.isConnected||!/^(ノード登録|Node registration)$/i.test(owner.querySelector('[data-slot=dialog-title]')?.textContent.trim()||'')))throw Error('actual fresh registration dialog owner required');
       const visible=e=>{if(!e?.isConnected||!e.getClientRects().length||e.disabled||e.closest('[hidden],[inert]'))return false;for(let p=e;p;p=p.parentElement){const s=getComputedStyle(p);if(s.display==='none'||s.visibility==='hidden'||s.visibility==='collapse'||s.opacity==='0')return false;}return true;};
+      const dialogs=[...document.querySelectorAll('[role=dialog],[role=alertdialog]')],pages=[...document.querySelectorAll('main [data-stream-create-view]')],owner=node?dialogs[0]:pages[0];
+      if(node){
+        if(dialogs.length!==1||location.pathname!=='/admin/nodes/'||globalThis.__uiFreshNodeDraft?.document!==document||!globalThis.__uiFreshNodeDraft.root.isConnected||!/^(ノード登録|Node registration)$/i.test(owner.querySelector('[data-slot=dialog-title]')?.textContent.trim()||''))throw Error('actual fresh registration dialog owner required');
+      }else if(location.pathname!=='/admin/streams/'||pages.length!==1||dialogs.length||!visible(owner)||owner.querySelectorAll('#create-stream').length!==1)throw Error('unique stream creation page owner required');
       const labelled=(e,name)=>{const labels=[...(e.labels||[])];return visible(e)&&labels.length===1&&visible(labels[0])&&name.test(labels[0].textContent.trim())&&(!node||!!e.id&&labels[0].htmlFor===e.id&&[...document.querySelectorAll('[id]')].filter(x=>x.id===e.id).length===1);};
       const select=(selector,name)=>{const inputs=[...owner.querySelectorAll(selector)].filter(e=>labelled(e,name));if(inputs.length!==1)throw Error('unique non-secret form field');return inputs[0];};
       const nameField=select('input',node?/^(名称|Name)$/:/^(配信枠名|Stream name)\s*\*?$/);

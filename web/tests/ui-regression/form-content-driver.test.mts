@@ -25,11 +25,13 @@ class InputBoundary extends Element {
 Object.defineProperty(InputBoundary.prototype,"value",{get(this:InputBoundary){return this.currentValue;},set(this:InputBoundary,value:string){this.currentValue=value;this.onSet(value);},configurable:true});
 function boundary(inputs:InputBoundary[],failFirstFill=false,node=false){
   const dom=observerDOM();dom.main.children=[];dom.context.location.pathname=node?"/admin/nodes/":"/admin/streams/";
-  const root=dom.main.add(new Element("DIV"));root.setAttribute("data-screen-family","nodes");
-  const dialog=new Element("DIV");dialog.setAttribute("role","dialog");const title=dialog.add(new Element("H2","Node Registration"));title.setAttribute("data-slot","dialog-title");
+  const root=dom.main.add(new Element("DIV"));root.setAttribute("data-screen-family",node?"nodes":"streams");
+  const dialog=new Element("DIV");if(node)dialog.setAttribute("role","dialog");else dialog.setAttribute("data-stream-create-view","");
+  const title=dialog.add(new Element("H2",node?"Node Registration":"Create stream"));title.setAttribute("data-slot","dialog-title");
+  const form=node?dialog:dialog.add(new Element("DIV"));if(!node)form.id="create-stream";
   const expressions:string[]=[],fills:string[]=[];let failed=false;
   const attach=(input:InputBoundary)=>{
-    const row=dialog.add(new Element("DIV")),label=row.add(new Element("LABEL",input.label));label.htmlFor=input.id;input.labels=[label];row.add(input);
+    const row=form.add(new Element("DIV")),label=row.add(new Element("LABEL",input.label));label.htmlFor=input.id;input.labels=[label];row.add(input);
     input.onSet=value=>{fills.push(value);};
     const dispatch=input.dispatchEvent.bind(input);
     input.dispatchEvent=event=>{if(failFirstFill&&!failed&&event.type==="input"){failed=true;throw Error("partial fill failed");}return dispatch(event);};
@@ -37,7 +39,7 @@ function boundary(inputs:InputBoundary[],failFirstFill=false,node=false){
   inputs.forEach(attach);
   const type=dialog.add(new Element("BUTTON","Worker Node Agent"));type.id="node-type";type.setAttribute("role","combobox");
   const typeLabel=dialog.add(new Element("LABEL","Node type"));typeLabel.htmlFor=type.id;type.labels=[typeLabel];
-  const open=()=>dom.body.add(dialog);if(!node)open();
+  const open=()=>node?dom.body.add(dialog):root.add(dialog);if(!node)open();
   const context={...dom.context,HTMLInputElement:InputBoundary,HTMLTextAreaElement:InputBoundary,Event};
   const evaluate=async(expression:string)=>{expressions.push(expression);return runInNewContext(expression,context);};
   const browser={
@@ -75,6 +77,20 @@ test("UI-FORM-CONTENT-002: actual selector rejects hidden disabled duplicate cre
 });
 test("UI-FORM-CONTENT-003: partial fill failure restores input and marker before propagating failure",async()=>{
   const input=new InputBoundary(),b=boundary([input],true);await assert.rejects(driveFormContent(b.browser,condition("long-id")),/partial fill failed/);assert.equal(input.value,"");assert.equal(input.hasAttribute("data-ui-content-field"),false);
+});
+
+test("UI-FORM-CONTENT-PAGE: stream input rejects a legacy dialog, duplicate or unavailable page and a wrong route before mutation",async()=>{
+  for(const fault of ["legacy-dialog","duplicate-page","foreign-dialog","hidden-page","wrong-route","missing-form"]){
+    const input=new InputBoundary(),b=boundary([input]);
+    if(fault==="legacy-dialog"){b.dialog.removeAttribute("data-stream-create-view");b.dialog.setAttribute("role","dialog");}
+    if(fault==="duplicate-page")b.root.add(new Element("SECTION")).setAttribute("data-stream-create-view","");
+    if(fault==="foreign-dialog")b.dom.body.add(new Element("DIV")).setAttribute("role","dialog");
+    if(fault==="hidden-page")b.dialog.hidden=true;
+    if(fault==="wrong-route")b.context.location.pathname="/admin/nodes/";
+    if(fault==="missing-form")b.dialog.querySelector('#create-stream')!.id="other-form";
+    await assert.rejects(driveFormContent(b.browser,condition("long-text")),/stream creation page owner/);
+    assert.equal(input.value,"");assert.equal(b.fills.length,0);assert.equal(input.hasAttribute("data-ui-content-field"),false);
+  }
 });
 test("UI-FORM-CONTENT-004: removing the real raw-template boundary reproduces the 003 syntax failure",async()=>{
   const source=readFileSync(new URL("./form-content-driver.mts",import.meta.url),"utf8");

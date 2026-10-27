@@ -26,7 +26,10 @@ export const renderedDOM = String.raw`
     if(!['INPUT','SELECT'].includes(e.tagName)||e.getAttribute('aria-hidden')!=='true'||e.tabIndex!==-1)return false;
     const s=getComputedStyle(e),r=e.getBoundingClientRect();
     const w=parseFloat(s.width),h=parseFloat(s.height),zeroClip=/^rect\(0px,?\s*0px,?\s*0px,?\s*0px\)$/.test(s.clip);
-    const cssPixelClip=w>0&&w<=1&&h>0&&h<=1&&zeroClip&&/(hidden|clip)/.test(s.overflow||s.overflowX)&&[r.width/w,r.height/h].every(v=>Number.isFinite(v)&&v>0);
+    // Chromium may report native SELECT overflow as visible despite its authored
+    // hidden overflow. Its computed zero clip and every other proxy guard still apply.
+    const clippedOverflow=/(hidden|clip)/.test(s.overflow||s.overflowX)||e.tagName==='SELECT'&&e.style.overflow==='hidden'&&s.overflow==='visible';
+    const cssPixelClip=w>0&&w<=1&&h>0&&h<=1&&zeroClip&&clippedOverflow&&[r.width/w,r.height/h].every(v=>Number.isFinite(v)&&v>0);
     return s.position==='absolute'&&(cssPixelClip||s.opacity==='0'&&s.pointerEvents==='none');
   };
   const uiProxyPeer = e => {

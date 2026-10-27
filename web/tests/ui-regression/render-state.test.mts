@@ -76,6 +76,31 @@ test('UI-RENDER-009: one CSS pixel proxy keeps its labelled visible peer at 1x/2
   }
 });
 
+test('UI-RENDER-011: native SELECT computed overflow may differ only with the complete authored clipping and peer contract',()=>{
+  for(const scale of [1,2])for(const fault of ['none','no-clip','nonzero-clip','no-authored-hidden','wrong-tag','wrong-peer','unlabelled-peer','duplicate-peer','hidden-peer','tabbable','real-size']){
+    const dom=observerDOM(),field=dom.main.add(new Element('DIV')),peer=field.add(new Element('BUTTON','Choice')),proxy=field.add(new Element(fault==='wrong-tag'?'INPUT':'SELECT'));
+    peer.setAttribute('role',fault==='wrong-peer'?'button':'combobox');peer.setAttribute('aria-label','Choice');
+    proxy.setAttribute('aria-hidden','true');proxy.setAttribute('tabindex',fault==='tabbable'?'0':'-1');
+    Object.assign(proxy.style,{width:'1px',height:'1px',position:'absolute',overflow:'hidden',clip:'rect(0px, 0px, 0px, 0px)'});
+    Object.assign(proxy.rect,{width:scale,height:scale});
+    if(fault==='no-clip')proxy.style.clip='auto';
+    if(fault==='nonzero-clip')proxy.style.clip='rect(0px, 1px, 0px, 0px)';
+    if(fault==='no-authored-hidden')proxy.style.overflow='visible';
+    if(fault==='unlabelled-peer')peer.removeAttribute('aria-label');
+    if(fault==='duplicate-peer'){const extra=field.add(new Element('BUTTON','Other'));extra.setAttribute('role','combobox');extra.setAttribute('aria-label','Other');}
+    if(fault==='hidden-peer')peer.hidden=true;
+    if(fault==='real-size')Object.assign(proxy.style,{width:'100px',height:'40px'});
+    const computed=dom.context.getComputedStyle;
+    dom.context.getComputedStyle=e=>e===proxy?{...computed(e),overflow:'visible',overflowX:'visible'}:computed(e);
+    const classify=()=>dom.run<boolean>(`(()=>{${renderedDOM}return uiProxy(document.querySelector('select,input[aria-hidden=true]'));})()`);
+    assert.equal(classify(),fault==='none',`${scale}x/${fault}`);
+    if(fault==='none'){
+      const value=dom.run<UIObservation>(observationExpression);assertObservation(value,condition);
+      assert.equal(value.controls.filter(c=>c.tag==='SELECT').length,0);
+    }else assert.throws(()=>assertObservation(dom.run(observationExpression),condition),fault);
+  }
+});
+
 test("UI-RENDER-003: finite completion and stable geometry are both required; infinite child motion is not awaited", async () => {
   const dom = overlay(), finite = finiteAnimation(); dom.dialog.animations = [finite.animation];
   const skeleton = dom.dialog.add(new Element("SPAN")); skeleton.animations = [{ ...finite.animation, effect: { getComputedTiming: () => ({ endTime: Infinity }) } }];

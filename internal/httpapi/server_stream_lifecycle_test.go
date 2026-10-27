@@ -22,6 +22,7 @@ func TestStreamLifecycleEndpoints(t *testing.T) {
 	}
 	streams := store.NewMemoryStreamStore()
 	profiles := store.NewMemoryProfileStore()
+	registerServiceInstance(t, auth, "discord_bot-01", "discord_bot")
 	config := createDiscordConfigForTest(t, profiles, "lifecycle discord", "discord_bot-01", "guild-life", "voice-life", "")
 	dispatcher := &fakeServiceDispatcher{}
 	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithServiceDispatcher(dispatcher))
@@ -43,7 +44,15 @@ func TestStreamLifecycleEndpoints(t *testing.T) {
 	if created.Status != "created" || created.ID == "" {
 		t.Fatalf("bad created stream: %#v", created)
 	}
-	registerAssignedServices(t, auth, created.ID, requiredStartServiceTypes...)
+	bot, err := auth.GetService(t.Context(), "discord_bot-01")
+	if err != nil || bot.CurrentStreamID != created.ID || bot.AssignmentRole != "primary" {
+		t.Fatal("create did not reserve the selected Bot as the primary owner")
+	}
+	for _, serviceType := range requiredStartServiceTypes {
+		if serviceType != "discord_bot" {
+			registerAssignedServices(t, auth, created.ID, serviceType)
+		}
+	}
 
 	startReq := httptest.NewRequest(http.MethodPost, "/streams/"+created.ID+"/start", nil)
 	startReq.AddCookie(cookie)

@@ -145,14 +145,24 @@ export function prepareKeyboardExpression(contract: KeyboardContract) {
   return `(() => {${renderedDOM}
     const contract=${JSON.stringify(contract)},root=uiRoot();if(!root)throw Error('keyboard root missing');
     const name=e=>e.getAttribute('aria-label')||e.textContent?.trim()||'';
-    const targets=contract.required.map(spec=>{const candidates=[...document.querySelectorAll(spec.selector)].filter(e=>uiAX(e)&&!e.disabled&&(!spec.name||new RegExp(spec.name).test(name(e))));if(candidates.length!==1)throw Error('required keyboard target missing, disabled or ambiguous');return candidates[0];});
     const modal=uiDialogs().at(-1)||null;
+    const pages=[...document.querySelectorAll('main [data-stream-create-view]')].filter(uiAX);
+    const completePage=contract.activationTarget?.sectionId==='create-stream-basic'&&pages.length>0;
+    if(completePage&&(pages.length!==1||modal||!root.contains(pages[0])||pages[0].querySelectorAll('#create-stream').length!==1))throw Error('unique stream creation keyboard page required');
+    // Keep the historical target inventory immutable. Only the semantic exit
+    // maps to the current page's Back button; every current form control must
+    // still be traversed in both directions, without imposing a modal wrap.
+    const targets=contract.required.map(spec=>{
+      const pageExit=completePage&&spec.selector==='[role=dialog] button'&&spec.name==='^(Close|閉じる)$';
+      const candidates=[...(pageExit?pages[0].querySelectorAll('button'):document.querySelectorAll(spec.selector))].filter(e=>uiAX(e)&&!e.disabled&&(pageExit?/^(配信枠の一覧へ戻る|Back to stream list)$/.test(name(e)):!spec.name||new RegExp(spec.name).test(name(e))));
+      if(candidates.length!==1)throw Error('required keyboard target missing, disabled or ambiguous');return candidates[0];
+    });
     const medias=[...root.querySelectorAll('video[controls],audio[controls]')].filter(uiAX).map(element=>({element,paused:element.paused,time:element.currentTime,volume:element.volume,muted:element.muted}));
-    const ordinaryOrder=modal?uiControls(modal).filter(e=>!e.disabled&&e.tabIndex>=0):[];
+    const ordinaryOrder=modal||completePage?uiControls(modal||pages[0]).filter(e=>!e.disabled&&e.tabIndex>=0):[];
     const order=modal&&medias.length?[...ordinaryOrder,...medias.map(v=>v.element)].sort((a,b)=>a.compareDocumentPosition(b)&2?1:-1):ordinaryOrder;
     if(modal&&(!order.length||targets.some(e=>!modal.contains(e))))throw Error('modal keyboard inventory missing');
     const datetimes=uiControls(root).filter(e=>e.tagName==='INPUT'&&e.type==='datetime-local'&&!e.disabled&&e.tabIndex>=0).map(element=>({element,value:element.value}));
-    globalThis.__uiKeyboardPlan={targets,order,modal,root,datetimes,medias};return {required:targets.length,modal:!!modal,order:order.map(uiIdentity),native:!!(contract.native&&document.querySelector(contract.native))};
+    globalThis.__uiKeyboardPlan={targets,order,modal,root,datetimes,medias};return {required:targets.length,modal:!!modal,completePage,order:order.map(uiIdentity),native:!!(contract.native&&document.querySelector(contract.native))};
   })()`;
 }
 type KeyTrace = { direction: "forward" | "backward"; stage: "seek" | "path" | "reverse" | "boundary" | "restore"; focus: FocusObservation };
@@ -235,7 +245,7 @@ export async function exerciseKeyboardPath(browser: BrowserHarness, condition: C
       }
     };
     try {
-    const plan = await browser.evaluate<{required:number;modal:boolean;order:string[];native:boolean}>(prepareKeyboardExpression(contract));
+    const plan = await browser.evaluate<{required:number;modal:boolean;completePage?:boolean;order:string[];native:boolean}>(prepareKeyboardExpression(contract));
       const order: string[] = [], seenRequired = new Set<number>(); let required=0, cycle=false;
       // A fixed maximum bounds broken navigation; it is not an expected count.
       for(let step=0;step<128;step++) {
@@ -243,25 +253,28 @@ export async function exerciseKeyboardPath(browser: BrowserHarness, condition: C
         if(focus.native&&!observer){mediaPending=true;pending.push("UA_KEYBOARD_IDENTITY_PENDING: native media internals cannot be observed");break;}
         if(focus.boundary&&!plan.modal){assert.equal(required,plan.required,"document ended before required keyboard path");break;}
         assertFocus(focus,previous);previous=focus.id;
-        if(plan.modal){
+        if(plan.modal||plan.completePage){
           assert.ok(plan.order.includes(focus.id),"modal focus left its pre-observed control inventory");
-          if(order.length){assert.equal(focus.id,plan.order[(plan.order.indexOf(order[0])+order.length)%plan.order.length],"modal Tab skipped or reordered a control");if(focus.id===order[0]){cycle=true;break;}}
+          if(plan.completePage)assert.equal(focus.id,plan.order[order.length],"creation page Tab skipped or reordered a control");
+          else if(order.length){assert.equal(focus.id,plan.order[(plan.order.indexOf(order[0])+order.length)%plan.order.length],"modal Tab skipped or reordered a control");if(focus.id===order[0]){cycle=true;break;}}
           if(focus.required>=0)seenRequired.add(focus.required);required=seenRequired.size;
         } else if(focus.required>=0&&focus.required===required)required++;
         else if(focus.required>=required)assert.fail("required keyboard trigger was skipped");
-        if(required||plan.modal||order.length||focus.datetime||focus.native)order.push(focus.id);
-        if(!plan.modal&&required===plan.required&&!focus.datetime&&!focus.native)break;
+        if(required||plan.modal||plan.completePage||order.length||focus.datetime||focus.native)order.push(focus.id);
+        if(plan.completePage&&order.length===plan.order.length&&!focus.datetime&&!focus.native)break;
+        if(!plan.modal&&!plan.completePage&&required===plan.required&&!focus.datetime&&!focus.native)break;
       }
       if(!mediaPending) {
         assert.equal(required,plan.required,"required keyboard path not reached within bound");
         if(plan.modal){assert.equal(cycle,true,"modal first/last focus wrap missing");assert.deepEqual(new Set(order),new Set(plan.order),"modal skipped a tabbable control");}
+        if(plan.completePage)assert.deepEqual(order,plan.order,"creation page skipped a tabbable control");
         assert.ok(order.length,"zero keyboard path observations");
         const reverse=plan.modal?[...order].reverse():order.slice(0,-1).reverse();
         for(const id of reverse){const focus=await press("backward","reverse");assertFocus(focus,previous);assert.equal(focus.id,id,"reverse Tab must revisit actual forward focus order");previous=focus.id;}
         if(plan.modal){const focus=await press("backward","boundary");assertFocus(focus,previous);assert.equal(focus.id,order.at(-1),"Shift+Tab must wrap to modal last control");}
         // A one-control page still proves reverse movement through its preceding
         // document control/boundary, without asserting a nonexistent 13th item.
-        if(!plan.modal&&order.length===1){const focus=await press("backward","boundary");if(!focus.boundary)assertFocus(focus,previous);const restored=await press("forward","boundary");assertFocus(restored);assert.equal(restored.id,order[0],"reverse boundary must restore the actual page target");}
+        if(plan.completePage||!plan.modal&&order.length===1){const focus=await press("backward","boundary");if(!focus.boundary)assertFocus(focus,previous);const restored=await press("forward","boundary");assertFocus(restored);assert.equal(restored.id,order[0],"reverse boundary must restore the actual page target");}
         if(!plan.modal&&observer&&(last?.native||last?.datetime)){
           const anchor=last.id,escaped=await press("backward","boundary");if(!escaped.boundary)assertFocus(escaped);
           const restored=await press("forward","restore");assertFocus(restored);assert.equal(restored.id,anchor,"UA reverse boundary restores exact entry host");

@@ -219,6 +219,10 @@ export async function runAuthMeExpiryScenario(t: TestContext, browser: BrowserHa
 
     await browser.evaluate("document.dispatchEvent(new Event('visibilitychange')); window.dispatchEvent(new Event('focus')); true");
     await waitForAnimationFrames(browser);
+    // LoginCard starts its own setup query after the expiry navigation. Settle it
+    // before the next scenario leaves this document and cancels that request.
+    await browser.waitForResponseCount("/setup/status", 1);
+    await browser.waitForRequestHandlersIdle({ pathname: "/setup/status", method: "GET" });
     assertAuthMeExpiryOutcome({
       ...outcome,
       authMeRequestCount: browser.requests.get("/auth/me") || 0,
@@ -276,6 +280,10 @@ export async function runRefreshGenerationScenario(t: TestContext, browser: Brow
         Boolean,
         "new-session login form did not become interactive",
       );
+      // Form readiness depends on app settings, so it does not prove that the
+      // separate setup query has settled before submitting this new session.
+      await browser.waitForResponseCount("/setup/status", 1);
+      await browser.waitForRequestHandlersIdle({ pathname: "/setup/status", method: "GET" });
       await browser.fillSelector('input[autocomplete="username"]', "newer-operator");
       await browser.fillSelector('input[autocomplete="current-password"]', "browser-fixture-password");
       await browser.clickSelector('form button[type="submit"]:not([disabled])');
