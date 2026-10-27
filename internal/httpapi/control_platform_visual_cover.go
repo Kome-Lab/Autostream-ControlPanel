@@ -78,6 +78,8 @@ func writeStreamVisualError(w http.ResponseWriter, err error) {
 		status, code = http.StatusConflict, "revision_conflict"
 	case errors.Is(err, streamvisual.ErrStreamStateLocked):
 		status, code = http.StatusConflict, "stream_state_locked"
+	case errors.Is(err, mediaassets.ErrCoverUploadLimit):
+		status, code = http.StatusConflict, "cover_upload_limit"
 	case errors.Is(err, mediaassets.ErrForbidden):
 		status, code = http.StatusForbidden, "asset_claim_forbidden"
 	case errors.Is(err, streamvisual.ErrAssetClaim):

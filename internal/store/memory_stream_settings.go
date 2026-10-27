@@ -39,6 +39,11 @@ func (s *MemoryStreamStore) UpdateStreamSettings(ctx context.Context, id string,
 	if err := ctx.Err(); err != nil {
 		return Stream{}, err
 	}
+	unlockDiscord, err := s.lockExpectedDiscordSettings(ctx, id, settings)
+	if err != nil {
+		return Stream{}, err
+	}
+	defer unlockDiscord()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	stream, ok := s.streams[id]

@@ -11,6 +11,7 @@ import { useI18n } from "@/components/admin/i18n-provider";
 import { ConfirmationDialogFrame } from "@/components/foundation/confirmation/confirmation-dialog-frame";
 import { Button } from "@/components/ui/button";
 import { useCurrentUser, useServiceHealth } from "@/features/queries";
+import { CoverCandidateGrid } from "@/features/streams/cover-candidate-grid";
 import {
   buildVideoCoverAction,
   coverActionAvailability,
@@ -149,6 +150,7 @@ export function StreamControlPlatformPanel({ stream }: { stream: Stream }) {
       </dl>
       {mismatch || reconcileRequired ? <p role="status" className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:bg-amber-950/30 dark:text-amber-200">{locale === "ja" ? "要求した状態の反映は未確認です。現在の画像を保持し、再送せずEncoderの状態を読み取ります。" : "Desired and applied differ. Desired is not shown as applied; refresh the confirmed Encoder state without resending."}</p> : null}
       {notice ? <p role="status" aria-live="polite" className="text-sm text-muted-foreground">{notice}</p> : null}
+      {candidates.length ? <CoverCandidateGrid candidates={candidates} locale={locale} imageURL={(candidate) => mediaURL(candidate.variant_id)} startVariantID={visual.data?.cover_variant_id} selectedVariantID={candidateID} appliedVariantID={cover.data?.applied_active ? cover.data.applied_asset_variant_id : undefined} actions={(candidate) => <Button type="button" variant="outline" size="sm" className="h-auto min-h-10 min-w-0 whitespace-normal [overflow-wrap:anywhere]" disabled={action.isPending || reconcileRequired || candidateID === candidate.variant_id} onClick={() => setSelectedCandidate(candidate.variant_id)}>{candidateID === candidate.variant_id ? locale === "ja" ? "切替対象" : "Selected for switching" : locale === "ja" ? "切替対象にする" : "Select for switching"}</Button>} /> : null}
       {candidates.length ? <label className="block space-y-2 text-sm"><span>{locale==="ja"?"表示・切替するフタ画像":"Cover image to display"}</span><select aria-label={locale==="ja"?"切替するフタ画像":"Cover image to switch"} className="w-full rounded border bg-background p-2" value={candidateID} onChange={(event)=>setSelectedCandidate(event.target.value)} disabled={action.isPending||reconcileRequired}>{candidates.map((candidate)=><option key={candidate.variant_id} value={candidate.variant_id}>{candidate.name}</option>)}</select></label> : null}
       {cover.data?.applied_active && cover.data.applied_asset_variant_id ? <figure className="space-y-1"><NextImage unoptimized loading="eager" width={1920} height={1080} src={mediaURL(cover.data.applied_asset_variant_id)} alt={locale==="ja"?"Encoderで反映確認済みのフタ画像":"Encoder confirmed cover"} className="aspect-video w-full rounded border object-contain"/><figcaption className="text-xs text-muted-foreground">{locale==="ja"?"Encoderが反映を確認した画像（実映像の取得結果ではありません）":"Encoder confirmed image; this is not a captured video frame"}</figcaption></figure> : null}
       <div className="flex flex-wrap gap-2">

@@ -52,7 +52,7 @@ func (r *SQLRepository) CreateUploadSession(ctx context.Context, userID string, 
 	return session, nil
 }
 
-func (r *SQLRepository) Upload(ctx context.Context, in UploadInput) (Asset, error) {
+func (r *SQLRepository) Upload(ctx context.Context, in UploadInput) (result Asset, err error) {
 	in.SessionID = strings.TrimSpace(in.SessionID)
 	in.UserID = strings.TrimSpace(in.UserID)
 	in.UsageType = strings.TrimSpace(in.UsageType)
@@ -62,10 +62,17 @@ func (r *SQLRepository) Upload(ctx context.Context, in UploadInput) (Asset, erro
 	if err := r.validateDraft(ctx, r.db, in.SessionID, in.UserID, r.now(), false); err != nil {
 		return Asset{}, err
 	}
+	if in.UsageType == "video_cover" {
+		if err := validateDraftCoverLimit(ctx, r.db, in.SessionID, true); err != nil {
+			return Asset{}, err
+		}
+	}
 	processed, err := r.processor.ProcessUpload(in.Filename, in.ContentType, in.Body)
 	if err != nil {
 		return Asset{}, err
 	}
+	published := false
+	defer r.queueUnpublishedFile(ctx, processed.StorageKey, &published, &err)
 	now := r.now()
 	id, err := newID()
 	if err != nil {
@@ -89,6 +96,17 @@ func (r *SQLRepository) Upload(ctx context.Context, in UploadInput) (Asset, erro
 	if err := r.validateDraft(ctx, tx, in.SessionID, in.UserID, now, true); err != nil {
 		return Asset{}, err
 	}
+	if in.UsageType == "video_cover" {
+		if err := validateDraftCoverLimit(ctx, tx, in.SessionID, true); err != nil {
+			return Asset{}, err
+		}
+	}
+	if err := queueFileDeletionsTx(ctx, tx, []string{processed.StorageKey}, now); err != nil {
+		return Asset{}, err
+	}
+	if err := r.processor.Verify(processed); err != nil {
+		return Asset{}, err
+	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO media_assets
       (id,owner_user_id,owner_type,owner_id,upload_session_id,usage_type,storage_key,sha256,
        media_type,byte_size,width,height,opaque,processor_revision,deleted_at,retention_until,created_at,updated_at)
@@ -99,14 +117,34 @@ func (r *SQLRepository) Upload(ctx context.Context, in UploadInput) (Asset, erro
 	if err != nil {
 		return Asset{}, err
 	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM media_asset_file_deletions WHERE storage_key=?`, processed.StorageKey); err != nil {
+		return Asset{}, err
+	}
 	if err := tx.Commit(); err != nil {
 		return Asset{}, err
 	}
+	published = true
 	return asset, nil
 }
 
 type rowQuerier interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+// Upload and claim both hold the upload-session row before their final check.
+// Count original assets, never generated variants or scene backgrounds.
+func validateDraftCoverLimit(ctx context.Context, q rowQuerier, sessionID string, adding bool) error {
+	var count int
+	if err := q.QueryRowContext(ctx, `SELECT COUNT(*) FROM media_assets WHERE upload_session_id=? AND usage_type='video_cover' AND deleted_at IS NULL FOR UPDATE`, sessionID).Scan(&count); err != nil {
+		return err
+	}
+	if adding {
+		count++
+	}
+	if count > MaxStreamCoverUploads {
+		return ErrCoverUploadLimit
+	}
+	return nil
 }
 
 func (r *SQLRepository) validateDraft(ctx context.Context, q rowQuerier, sessionID, userID string, now time.Time, lock bool) error {
@@ -154,7 +192,7 @@ func (r *SQLRepository) GetAsset(ctx context.Context, userID, assetID string) (A
 	return asset, nil
 }
 
-func (r *SQLRepository) EnsureVariant(ctx context.Context, userID, assetID string, width, height int, opaque bool) (Variant, error) {
+func (r *SQLRepository) EnsureVariant(ctx context.Context, userID, assetID string, width, height int, opaque bool) (result Variant, err error) {
 	asset, err := r.GetAsset(ctx, userID, assetID)
 	if err != nil {
 		return Variant{}, err
@@ -198,14 +236,43 @@ func (r *SQLRepository) EnsureVariant(ctx context.Context, userID, assetID strin
 		_, _ = r.db.ExecContext(ctx, `UPDATE media_asset_variants SET status='failed',last_error_code=?,updated_at=? WHERE id=?`, safeProcessorErrorCode(processErr), r.now(), id)
 		return Variant{}, processErr
 	}
+	published := false
+	defer r.queueUnpublishedFile(ctx, processed.StorageKey, &published, &err)
 	now = r.now()
-	_, err = r.db.ExecContext(ctx, `UPDATE media_asset_variants SET
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Variant{}, err
+	}
+	defer tx.Rollback()
+	var liveAssetID string
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM media_assets WHERE id=? AND deleted_at IS NULL FOR UPDATE`, asset.ID).Scan(&liveAssetID); errors.Is(err, sql.ErrNoRows) {
+		return Variant{}, ErrNotFound
+	} else if err != nil {
+		return Variant{}, err
+	}
+	if err := queueFileDeletionsTx(ctx, tx, []string{processed.StorageKey}, now); err != nil {
+		return Variant{}, err
+	}
+	if err := r.processor.Verify(processed); err != nil {
+		return Variant{}, err
+	}
+	update, err := tx.ExecContext(ctx, `UPDATE media_asset_variants SET
       status='ready',storage_key=?,sha256=?,media_type=?,byte_size=?,width=?,height=?,opaque=?,last_error_code=NULL,updated_at=?
       WHERE id=? AND status='processing'`, processed.StorageKey, processed.SHA256, processed.MediaType,
 		processed.ByteSize, processed.Width, processed.Height, processed.Opaque, now, id)
 	if err != nil {
 		return Variant{}, err
 	}
+	if affected, err := update.RowsAffected(); err != nil || affected != 1 {
+		return Variant{}, ErrIntegrity
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM media_asset_file_deletions WHERE storage_key=?`, processed.StorageKey); err != nil {
+		return Variant{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Variant{}, err
+	}
+	published = true
 	variant, err := r.getVariantBySpec(ctx, asset.ID, width, height, cropMode)
 	if err != nil {
 		return Variant{}, err
@@ -342,10 +409,13 @@ func (r *SQLRepository) ClaimDraftTx(ctx context.Context, tx *sql.Tx, userID, se
 	if foreignAssets != 0 {
 		return ErrForbidden
 	}
+	if err := validateDraftCoverLimit(ctx, tx, sessionID, false); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `UPDATE media_upload_sessions SET owner_type='stream',claimed_stream_id=?,updated_at=? WHERE id=?`, streamID, now, sessionID); err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `UPDATE media_assets SET owner_type='stream',owner_id=?,updated_at=? WHERE upload_session_id=? AND owner_user_id=? AND owner_type='upload_draft'`, streamID, now, sessionID, userID)
+	_, err = tx.ExecContext(ctx, `UPDATE media_assets SET owner_type='stream',owner_id=?,updated_at=? WHERE upload_session_id=? AND owner_user_id=? AND owner_type='upload_draft' AND deleted_at IS NULL`, streamID, now, sessionID, userID)
 	return err
 }
 
@@ -378,6 +448,10 @@ func (r *SQLRepository) GarbageCollect(ctx context.Context, now time.Time, limit
 		}
 		ids = append(ids, id)
 	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return 0, err
+	}
 	if err := rows.Close(); err != nil {
 		return 0, err
 	}
@@ -389,6 +463,9 @@ func (r *SQLRepository) GarbageCollect(ctx context.Context, now time.Time, limit
 		}
 		removed += count
 	}
+	if err := r.collectFileDeletions(ctx, now, limit); err != nil {
+		return removed, err
+	}
 	_, _ = r.db.ExecContext(ctx, `DELETE us FROM media_upload_sessions us
       WHERE us.expires_at<=? AND (
         us.owner_type='stream' OR
@@ -398,16 +475,39 @@ func (r *SQLRepository) GarbageCollect(ctx context.Context, now time.Time, limit
 }
 
 func (r *SQLRepository) deleteUnreferencedAsset(ctx context.Context, id string, now time.Time) (int, error) {
+	// Draft cleanup, stream/preset claims and upload publication all lock the
+	// session before its assets. The final DELETE also reads session ownership
+	// to revalidate expiry; acquire that session first rather than inverting
+	// their lock order after taking the asset lock.
+	var observedSession string
+	if err := r.db.QueryRowContext(ctx, `SELECT COALESCE(upload_session_id,'') FROM media_assets WHERE id=?`, id).Scan(&observedSession); errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	} else if err != nil {
+		return 0, err
+	}
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
 	}
 	defer tx.Rollback()
-	var assetKey string
-	if err := tx.QueryRowContext(ctx, `SELECT storage_key FROM media_assets WHERE id=? FOR UPDATE`, id).Scan(&assetKey); errors.Is(err, sql.ErrNoRows) {
+	if observedSession != "" {
+		var lockedSession string
+		if err := tx.QueryRowContext(ctx, `SELECT id FROM media_upload_sessions WHERE id=? FOR UPDATE`, observedSession).Scan(&lockedSession); errors.Is(err, sql.ErrNoRows) {
+			return 0, nil
+		} else if err != nil {
+			return 0, err
+		}
+	}
+	var assetKey, currentSession string
+	if err := tx.QueryRowContext(ctx, `SELECT storage_key,COALESCE(upload_session_id,'') FROM media_assets WHERE id=? FOR UPDATE`, id).Scan(&assetKey, &currentSession); errors.Is(err, sql.ErrNoRows) {
 		return 0, nil
 	} else if err != nil {
 		return 0, err
+	}
+	if currentSession != observedSession {
+		// A preset claim or session expiry changed the discovered lock set.
+		// Retry in a later sweep instead of acquiring a new parent lock late.
+		return 0, nil
 	}
 	rows, err := tx.QueryContext(ctx, `SELECT storage_key FROM media_asset_variants WHERE asset_id=? AND storage_key IS NOT NULL`, id)
 	if err != nil {
@@ -422,7 +522,13 @@ func (r *SQLRepository) deleteUnreferencedAsset(ctx context.Context, id string, 
 		}
 		keys = append(keys, key)
 	}
-	_ = rows.Close()
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return 0, err
+	}
+	if err := rows.Close(); err != nil {
+		return 0, err
+	}
 	// A deleted preset is a retention tombstone, not a permanent asset
 	// reference. Purge it only after the asset itself is eligible and only when
 	// no saved stream still points at that preset. The final asset DELETE keeps
@@ -434,11 +540,13 @@ func (r *SQLRepository) deleteUnreferencedAsset(ctx context.Context, id string, 
 		return 0, err
 	}
 	result, err := tx.ExecContext(ctx, `DELETE FROM media_assets WHERE id=?
+	  AND ((deleted_at IS NOT NULL AND retention_until IS NOT NULL AND retention_until<=?)
+	    OR (owner_type='upload_draft' AND EXISTS (SELECT 1 FROM media_upload_sessions us WHERE us.id=media_assets.upload_session_id AND us.owner_type='upload_draft' AND us.expires_at<=?)))
       AND NOT EXISTS (SELECT 1 FROM stream_visual_settings sv WHERE sv.background_asset_id=media_assets.id OR sv.cover_asset_id=media_assets.id)
       AND NOT EXISTS (SELECT 1 FROM video_cover_presets p WHERE p.asset_id=media_assets.id)
       AND NOT EXISTS (SELECT 1 FROM stream_video_cover_candidates c WHERE c.asset_id=media_assets.id)
       AND NOT EXISTS (SELECT 1 FROM stream_video_cover_runtime vr JOIN media_asset_variants v ON v.id=vr.asset_variant_id OR v.id=vr.applied_asset_variant_id WHERE v.asset_id=media_assets.id)
-      AND NOT EXISTS (SELECT 1 FROM stream_video_cover_actions ca JOIN media_asset_variants v ON v.id=ca.requested_asset_variant_id WHERE v.asset_id=media_assets.id)`, id)
+      AND NOT EXISTS (SELECT 1 FROM stream_video_cover_actions ca JOIN media_asset_variants v ON v.id=ca.requested_asset_variant_id WHERE v.asset_id=media_assets.id)`, id, now, now)
 	if err != nil {
 		return 0, err
 	}
@@ -446,16 +554,11 @@ func (r *SQLRepository) deleteUnreferencedAsset(ctx context.Context, id string, 
 	if affected == 0 {
 		return 0, nil
 	}
-	if err := tx.Commit(); err != nil {
+	if err := queueFileDeletionsTx(ctx, tx, keys, now); err != nil {
 		return 0, err
 	}
-	for _, key := range keys {
-		var references int
-		if err := r.db.QueryRowContext(ctx, `SELECT
-          (SELECT COUNT(*) FROM media_assets WHERE storage_key=?) +
-          (SELECT COUNT(*) FROM media_asset_variants WHERE storage_key=?)`, key, key).Scan(&references); err == nil && references == 0 {
-			_ = r.storage.Remove(key)
-		}
+	if err := tx.Commit(); err != nil {
+		return 0, err
 	}
 	return 1, nil
 }

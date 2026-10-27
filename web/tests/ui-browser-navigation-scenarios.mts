@@ -120,13 +120,13 @@ export async function runNavigationCreateFocusScenario(t: TestContext, browser: 
     await clickVisible(browser, '.mobile-navigation-sheet a[href="/admin/streams/#create-stream"]');
     const sameRoute = await browser.waitFor(
       createSnapshotExpression,
-      (value: CreateSnapshot) => value.dialogCount === 1 && value.createOpen && !value.navigationOpen && value.focusInsideCreate,
+      (value: CreateSnapshot) => value.dialogCount === 0 && value.createOpen && !value.navigationOpen && value.focusInsideCreate,
       "same-route create retained two focus owners",
     );
     assertCreateOutcome(sameRoute);
     assert.throws(
       () => assertCreateOutcome({ ...sameRoute, dialogCount: 2, navigationOpen: true }),
-      /exactly one dialog/,
+      /must not create a dialog/,
       "negative fixture: an unclosed navigation Sheet must fail",
     );
     await closeCreateAndAssertFocusReturn(browser, "ナビゲーションを開く", "same-route");
@@ -139,8 +139,8 @@ export async function runNavigationCreateFocusScenario(t: TestContext, browser: 
     await clickVisible(browser, '.mobile-navigation-sheet a[href="/admin/streams/#create-stream"]');
     const crossRoute = await browser.waitFor(
       createSnapshotExpression,
-      (value: CreateSnapshot) => value.dialogCount === 1 && value.createOpen && !value.navigationOpen && value.focusInsideCreate && value.url.includes("/admin/streams/#create-stream"),
-      "cross-route create navigation did not settle on one dialog",
+      (value: CreateSnapshot) => value.dialogCount === 0 && value.createOpen && !value.navigationOpen && value.focusInsideCreate && value.url.includes("/admin/streams/#create-stream"),
+      "cross-route create navigation did not settle on the dedicated create view",
       10_000,
     );
     assertCreateOutcome(crossRoute);
@@ -152,13 +152,13 @@ export async function runNavigationCreateFocusScenario(t: TestContext, browser: 
     await clickVisible(browser, 'header a[href="/admin/streams/#create-stream"]');
     const desktop = await browser.waitFor(
       createSnapshotExpression,
-      (value: CreateSnapshot) => value.dialogCount === 1 && value.createOpen && value.focusInsideCreate,
+      (value: CreateSnapshot) => value.dialogCount === 0 && value.createOpen && value.focusInsideCreate,
       "desktop create behavior regressed",
     );
     assert.equal(desktop.navigationOpen, false);
     assertCreateOutcome(desktop);
-    await browser.pressKey("Escape");
-    await browser.waitFor("document.querySelectorAll('[role=dialog]').length", (value: number) => value === 0, "desktop create did not close");
+    await clickVisible(browser, 'button[aria-label="配信枠の一覧へ戻る"]');
+    await browser.waitFor("!document.querySelector('[data-stream-create-view]')", Boolean, "desktop create did not close");
   });
 }
 

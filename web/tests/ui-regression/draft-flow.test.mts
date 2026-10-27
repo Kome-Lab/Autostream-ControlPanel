@@ -95,8 +95,10 @@ function createFlow(editing = false, slotSource = slot, handoff: StreamCreateFoc
   controller.register({ isDirty: () => editing ? dirtySections.size > 0 : currentCreateRevision.current !== savedCreateRevision.current, saved() {} });
   const visualState = () => actualCallback(visualSource, "createState", { useMemo: (callback: () => unknown) => callback(), editing, draft, validation: { ready: true }, presetSelectionsReady: true, uploading: "", createRevision: revision, currentCreateRevision, savedCreateRevision, setDirtySections, buildStreamCreateVisualExtension: (value: typeof draft) => ({ visual_settings: { header_title_value: value.headerTitleValue } }) });
   const saveAcknowledgements = { current: new WeakMap<object, () => boolean>() };
-  const bindings = { setMessage() {}, onActionResult() {}, liveEditing: false, editing, uiText: (key: string) => key, t: (key: string) => key, streamActionBlockedMessage: () => "blocked", isStreamValue: (value: unknown) => Boolean(value && typeof value === "object" && "id" in value), saveAcknowledgements, draft: basic };
-  const focusCallback = jsxAt(streams, "SheetContent", "onCloseAutoFocus", editing ? 1 : 0, { createFocus: { current: handoff }, createTrigger: { current: { focus() { focus++; } } }, editTrigger: { current: { focus() { focus++; } } } });
+  let outcomeUnresolved = false;
+  const bindings = { setMessage() {}, setSaveOutcomeUnresolved(value: boolean) { outcomeUnresolved = value; }, onActionResult() {}, liveEditing: false, editing, uiText: (key: string) => key, t: (key: string) => key, streamActionBlockedMessage: () => "blocked", isStreamValue: (value: unknown) => Boolean(value && typeof value === "object" && "id" in value), saveAcknowledgements, draft: basic };
+  const focusBindings = { createFocus: { current: handoff }, createTrigger: { current: { focus() { focus++; } } }, editTrigger: { current: { focus() { focus++; } } } };
+  const focusCallback = editing ? jsxAt(streams, "SheetContent", "onCloseAutoFocus", 0, focusBindings) : actualCallback(streams, "restoreCreateFocus", focusBindings);
   const setCreateOpen=()=>{closes++;focusCallback({preventDefault(){}});};
   const requestCreateClose=actualCallback(streams,"requestCreateClose",{createDraftExit:controller,setCreateOpen,createGeneration:{current:0},createCloseIntent:{current:null},window:{location:{hash:""}}});
   const parent = parentOwner?.onSaved || jsxAt(streams, "StreamSlotForm", "onSaved", editing ? 1 : 0, { ...bindings, requestCreateClose, createDraftExit: controller, editDraftExit: controller, setCreatedStreams() {}, setActionNotice() {}, setCreateOpen, setEditingStream() { closes++; focusCallback({ preventDefault() {} }); } });
@@ -106,7 +108,7 @@ function createFlow(editing = false, slotSource = slot, handoff: StreamCreateFoc
     actualEffect(slotSource, "saveAcknowledgements.current.set", { actionIntent, createVisualState, draft: basic, saveAcknowledgements }, "useLayoutEffect")();
     return actionIntent;
   };
-  return { controller, state, update, prepare, result, renderBasic, setDirtySections, get dirtySections() { return dirtySections; }, get closes() { return closes; }, get focus() { return focus; } };
+  return { controller, state, update, prepare, result, renderBasic, setDirtySections, get outcomeUnresolved() { return outcomeUnresolved; }, get dirtySections() { return dirtySections; }, get closes() { return closes; }, get focus() { return focus; } };
 }
 test("UI-DRAFT-FLOW-004: actual form/visual/parent callbacks ack only successful submitted create once and return focus", () => {
   for (const withVisual of [false, true]) {
@@ -132,22 +134,56 @@ test("UI-DRAFT-FLOW-006: real action control delayed success keeps later basic a
   for (const changed of ["basic", "visual"]) {
     const flow = createFlow(); flow.update("title", { headerTitleValue: "Submitted" }); const intent = flow.prepare();
     let complete!: (value: unknown) => void; const pending = new Promise(resolve => { complete = resolve; });
-    const submit = actualCallback(source("features/streams/stream-action-control.tsx"), "submit", { setDialogState() {}, setOpened() {}, controller: { submit: async (allowed: { intent: object }) => { assert.equal(allowed.intent, intent); return pending; } }, onResult: flow.result });
+    const submit = actualCallback(source("features/streams/stream-action-control.tsx"), "submit", { onPendingChange() {}, setDialogState() {}, setOpened() {}, controller: { submit: async (allowed: { intent: object }) => { assert.equal(allowed.intent, intent); return pending; } }, onResult: flow.result });
     const work = submit({ intent, descriptor: { retry: { kind: "never" } } });
     if (changed === "basic") flow.renderBasic(["New edit after request"]); else flow.update("title", { headerTitleValue: "New edit after request" });
     complete({ kind: "succeeded", value: { id: "created", name: "Submitted" } }); await work;
     assert.equal(flow.controller.dirty(), true); assert.equal(flow.state.prompts, 1); assert.equal(flow.closes, 0);
   }
 });
+
+test("pending creation and an unknown receipt retain the draft and block media mutations", async () => {
+  const flow = createFlow();
+  flow.update("title", { headerTitleValue: "Retained draft" });
+  const intent = flow.prepare();
+  let complete!: (result: unknown) => void;
+  const response = new Promise((resolve) => { complete = resolve; });
+  const busy: boolean[] = [];
+  const submit = actualCallback(source("features/streams/stream-action-control.tsx"), "submit", {
+    setDialogState() {}, setOpened() {}, onPendingChange: (value: boolean) => busy.push(value),
+    controller: { submit: async () => response }, onResult: flow.result,
+    dialogStateForResult: () => ({ kind: "outcome-unknown" }),
+  });
+  const operation = submit({ intent, descriptor: { retry: { kind: "never" } } });
+  await Promise.resolve();
+  assert.deepEqual(busy, [true], "the existing action exposes its pending request to the media owner");
+  complete({ kind: "outcome_unknown" });
+  await operation;
+  assert.deepEqual(busy, [true, false]);
+  assert.equal(flow.outcomeUnresolved, true);
+  assert.equal(flow.controller.dirty(), true);
+  assert.equal(flow.closes, 0);
+
+  let writes = 0;
+  const candidate = { source: "upload", asset_id: "asset", variant_id: "variant" };
+  const remove = actualCallback(visualSource, "removeCoverCandidate", { controlsDisabled: true, uploadPending: { current: false }, draft: { coverVariantID: "other" }, apiDelete: async () => { writes++; } });
+  await remove(candidate);
+  for (const [mutationBlocked, needsRefresh] of [[true, false], [false, true]]) {
+    const upload = actualCallback(visualSource, "upload", { mutationBlocked, needsRefresh, uploadPending: { current: false }, uploading: "", uploadLimitReached: false, draft: { coverCandidates: [] }, uploadDraftMediaAsset: async () => { writes++; } });
+    await upload("cover", {});
+  }
+  assert.equal(writes, 0, "blocked or unknown requests must not upload or delete candidate files");
+});
 test("UI-DRAFT-FLOW-007: basic edit leaves visual dirty; only existing independent visual success clears it", async () => {
   const flow = createFlow(true); flow.update("title", { headerTitleValue: "Independent" }); flow.result({ kind: "succeeded", value: { id: "edited", name: "Edited" } }, flow.prepare());
   assert.equal(flow.controller.dirty(), true); assert.equal(flow.closes, 0); assert.equal(flow.state.prompts, 1);
   const revoked: string[] = [], coverURLs = { current: new Map([["cover-a", "blob:a"], ["cover-b", "blob:b"]]) };
+  const draftCoverAssets = { current: new Map([["asset-a", { owner_type: "upload_draft" }]]) };
   let preview = "blob:a";
-  const releaseCoverURLs = actualCallback(visualSource, "releaseCoverURLs", { coverURLs, URL: { revokeObjectURL: (url: string) => revoked.push(url) } });
-  const save = actualCallback(visualSource, "save", { visual: { data: { revision: 4 } }, draftRevision: 4, validation: { ready: true }, presetSelectionsReady: true, saving: false, uploading: "", needsRefresh: false, serverSettingsChanged: false, editing: true, coverSelectionDirty: false, draft: {}, dirtySections: flow.dirtySections, setSaving() {}, setMessage() {}, controller: { issue: async (_fields: unknown, revision: number) => { assert.equal(revision, 4); return { kind: "succeeded", value: { revision: 5 } }; } }, buildStreamVisualSaveFields: () => ({}), queryClient: { setQueryData() {} }, queryKey: [], setDraft() {}, setDraftRevision() {}, setCoverPresetRevision() {}, setCoverSelectionDirty() {}, streamVisualDraftFromSettings: () => ({}), setDirtySections: flow.setDirtySections, setUploadedBackground() {}, releaseCoverURLs, setCoverPreview: (value: string) => { preview = value; }, locale: "en" });
+  const releaseCoverURLs = actualCallback(visualSource, "releaseCoverURLs", { coverURLs, draftCoverAssets, URL: { revokeObjectURL: (url: string) => revoked.push(url) } });
+  const save = actualCallback(visualSource, "save", { visual: { data: { revision: 4 } }, draftRevision: 4, validation: { ready: true }, presetSelectionsReady: true, saving: false, uploading: "", mutationBlocked: false, needsRefresh: false, serverSettingsChanged: false, editing: true, coverSelectionDirty: false, draft: {}, dirtySections: flow.dirtySections, setSaving() {}, setMessage() {}, controller: { issue: async (_fields: unknown, revision: number) => { assert.equal(revision, 4); return { kind: "succeeded", value: { revision: 5 } }; } }, buildStreamVisualSaveFields: () => ({}), queryClient: { setQueryData() {} }, queryKey: [], setDraft() {}, setDraftRevision() {}, setCoverPresetRevision() {}, setCoverSelectionDirty() {}, streamVisualDraftFromSettings: () => ({}), setDirtySections: flow.setDirtySections, setUploadedBackground() {}, releaseCoverURLs, setCoverPreview: (value: string) => { preview = value; }, locale: "en" });
   await save(); assert.equal(flow.controller.dirty(), false);
-  assert.deepEqual(revoked, ["blob:a", "blob:b"]); assert.equal(coverURLs.current.size, 0); assert.equal(preview, "");
+  assert.deepEqual(revoked, ["blob:a", "blob:b"]); assert.equal(coverURLs.current.size, 0); assert.equal(draftCoverAssets.current.size, 0); assert.equal(preview, "");
 });
 class SessionError extends Error { status = 401; code = "unauthorized"; }
 async function sessionCase(kind: string, removeNotice = false) {
@@ -229,7 +265,8 @@ function mobileFocusCase(sameRoute: boolean, sourceText=streams, api=true, hookT
   const mobile=source('components/shell/mobile-navigation.tsx'),action=source('components/shell/stream-create-action.tsx');
   const pendingNavigationRef={current:null as (()=>void)|null},createFocusRef={current:null as StreamCreateFocus|null},createFocus={current:null as StreamCreateFocus|null},createTrigger={current:null as Element|null};
   const createGeneration={current:0},createCloseIntent:{current:unknown}={current:null},createCloseSession={current:null as ReturnType<typeof subscribeDraftSessionExit>|null};
-  let focusCalls=0,scopeActive=false,open=false,scheduled:boolean|undefined,guard:DraftExitController|undefined,canCreate=true,mounted=false;
+  const scopeActive=false;
+  let focusCalls=0,open=false,scheduled:boolean|undefined,guard:DraftExitController|undefined,canCreate=true,mounted=false;
   let hookCleanup:(()=>void)|undefined,sessionCleanup:(()=>void)|undefined,previousEnabled:boolean|undefined;
   const layouts:Array<()=>void>=[],passives:Array<()=>void>=[];
   const hook=currentFunction(hookText,'useDraftExit',{
@@ -238,10 +275,10 @@ function mobileFocusCase(sameRoute: boolean, sourceText=streams, api=true, hookT
     useEffect(callback:()=>void|(()=>void),deps:unknown[]){const enabled=Boolean(deps[0]);if(enabled!==previousEnabled){previousEnabled=enabled;passives.push(()=>{hookCleanup?.();hookCleanup=callback()||undefined;});}},
     createDraftExitController,createDraftNavigationGuard,subscribeDraftSessionExit,window:surface,document,
   });
-  const renderGuard=()=>hook({enabled:open&&canCreate,pending:()=>state.pending}) as DraftExitController;
+  const renderGuard=()=>hook({enabled:open,pending:()=>state.pending}) as DraftExitController;
   const createDraftExit=renderGuard();layouts.length=0;passives.length=0;previousEnabled=undefined;
   target.focus=()=>{assert.equal(scopeActive,false,'target focus must follow the current focus scope cleanup');focusCalls++;dom.document.activeElement=target;};
-  const closeFocus=jsxAt(sourceText,'SheetContent','onCloseAutoFocus',0,{createFocus,createTrigger});
+  const closeFocus=actualCallback(sourceText,'restoreCreateFocus',{createFocus,createTrigger});
   // Setters only reserve state. Actual hook layout/options and the view layout
   // run in source order after the event stack, before passive listener cleanup.
   const commit=()=>{
@@ -250,13 +287,13 @@ function mobileFocusCase(sameRoute: boolean, sourceText=streams, api=true, hookT
     if(open&&!wasOpen)stats.opens++;
     assert.equal(renderGuard(),createDraftExit);for(const layout of layouts.splice(0))layout();
     actualLayout(sourceText,'const intent = createCloseIntent.current',{createCloseIntent,createGeneration,createCloseSession,createOpen:open,canCreate,document,window:surface})();
-    if(wasOpen&&!open){scopeActive=true;closeFocus({preventDefault(){}});scopeActive=false;}
+    if(wasOpen&&!open)closeFocus();
     for(const passive of passives.splice(0))passive();
     if(!canCreate)actualEffect(sourceText,'if (!canCreate)',{canCreate,createFocus,createTrigger})();
   };
   const setCreateOpen=(value:boolean)=>{scheduled=value;if(eagerSetter)commit();else queueMicrotask(()=>{if(scheduled!==undefined)commit();});};
   const refs={createGeneration,createCloseIntent,createCloseSession};
-  const requestCreateOpen=actualCallback(sourceText,'requestCreateOpen',{...refs,setCreateOpen});
+  const requestCreateOpen=actualCallback(sourceText,'requestCreateOpen',{...refs,setCreateOpen,canCreate});
   const createBindings={...refs,document,window:surface,canCreate,createFocus,createTrigger,takeStreamCreateFocus:focus.takeStreamCreateFocus,setCreateOpen,requestCreateOpen,createDraftExit};
   let hashCleanup:undefined|(()=>void);
   const mount=()=>{assert.equal(stats.mounts,0,'same route cannot rerun sync effect');stats.mounts++;mounted=true;
@@ -270,7 +307,7 @@ function mobileFocusCase(sameRoute: boolean, sourceText=streams, api=true, hookT
   const menuClose=jsxAt(mobile,'SheetContent','onCloseAutoFocus',0,{pendingNavigationRef,createFocusRef});
   const menuOpen=jsxAt(mobile,'Sheet','onOpenChange',0,{pendingNavigationRef,createFocusRef,setOpen(){}});
   const requestCreateClose=actualCallback(sourceText,'requestCreateClose',{...refs,document,createDraftExit,setCreateOpen,window:surface});
-  const requestClose=jsxAt(sourceText,'Sheet','onOpenChange',0,{setCreateOpen,requestCreateOpen,requestCreateClose});
+  const requestClose=jsxAt(sourceText,'Button','onClick',3,{requestCreateClose});
   const onSaved=jsxAt(sourceText,'StreamSlotForm','onSaved',0,{requestCreateClose,createDraftExit,setCreateOpen,setCreatedStreams(update:(rows:unknown[])=>unknown[]){stats.created++;update([]);},setActionNotice(){stats.notices++;},uiText:(s:string)=>s});
   const pageOpen=jsxAt(sourceText,'Button','onClick',0,{cancelStreamCreateFocus:focus.cancelStreamCreateFocus,createFocus,createTrigger,setCreateOpen,requestCreateOpen});
   const menuCleanup=actualEffect(mobile,'() => { pendingNavigationRef.current = null;', {pendingNavigationRef,createFocusRef})();
@@ -279,6 +316,11 @@ function mobileFocusCase(sameRoute: boolean, sourceText=streams, api=true, hookT
   return {dom,target,surface,focus,events,createFocus,createFocusRef,pendingNavigationRef,state,createDraftExit,stats,onSaved,historyState,commit,createCloseIntent,createGeneration,historyError,
     begin:()=>linkClick({preventDefault(){}}),menuClose:()=>menuClose({preventDefault(){}}),menuOpen:()=>menuOpen(true),close:()=>requestClose(false),pageOpen:(target:Element)=>pageOpen({currentTarget:target}),
     losePermission:()=>{canCreate=false;commit();},allowPermission:()=>{canCreate=true;commit();},
+    refreshPermission(value:boolean){
+      canCreate=value;commit();createBindings.canCreate=canCreate;
+      createBindings.requestCreateOpen=actualCallback(sourceText,'requestCreateOpen',{...refs,setCreateOpen,canCreate});
+      hashCleanup?.();hashCleanup=actualEffect(sourceText,'const syncFromHash',createBindings)();
+    },
     setHistoryMode:(mode:typeof historyMode)=>{historyMode=mode;},
     move:(path:string)=>{url=new URL(path,url);},menuCleanup,createCleanup,get open(){return open;},get focusCalls(){return focusCalls;},
     replay(){const stale=hashCleanup;hashCleanup?.();cancelFocus?.();hashCleanup=actualEffect(sourceText,'const syncFromHash',createBindings)();return stale;},
@@ -377,6 +419,27 @@ test('UI-CREATE-REENTRY-013: normal Page close preserves a foreign fragment and 
     flow.surface.history.replaceState(flow.historyState,'','/admin/streams/?view=retained#other-section');
     flow.pageOpen(page);await settleEvents();assert.equal(flow.open,true);flow.close();await settleEvents();assert.equal(flow.open,false);assert.equal(flow.surface.location.hash,'#other-section');assert.equal(flow.surface.location.search,'?view=retained');assert.equal(flow.stats.replaces,1);assert.equal(flow.surface.history.state,flow.historyState);assert.equal(pageFocus,1);assert.equal(flow.focusCalls,0);assert.equal(flow.dom.document.activeElement,page);
   } finally {flow.dispose();}
+});
+
+test('UI-CREATE-REENTRY-014: authority refresh preserves a dirty page-button draft without prompting; real hash navigation still requests its guard',async()=>{
+  for(const hash of ['', '#other-section']){
+    const flow=mobileFocusCase(true),page=flow.dom.main.add(new Element('BUTTON','Create stream'));
+    try {
+      flow.move('/admin/streams/?view=retained'+hash);flow.pageOpen(page);await settleEvents();
+      const form=createFlow(false,slot,null,{controller:flow.createDraftExit,state:flow.state,onSaved:flow.onSaved});
+      form.update('title',{headerTitleValue:'Retained dirty title'});
+      assert.equal(form.controller.dirty(),true);assert.equal(flow.open,true);
+      for(const permission of [false,true]){
+        flow.refreshPermission(permission);await settleEvents();
+        assert.equal(flow.open,true);assert.equal(flow.state.prompts,0);
+        assert.equal(form.controller.dirty(),true);assert.equal(flow.surface.location.hash,hash);
+      }
+      flow.surface.location.hash='#navigated-section';await settleEvents();
+      assert.equal(flow.state.prompts,1);assert.equal(flow.open,true,'Stay retains the current draft');
+      flow.state.discard=true;flow.surface.location.hash='#accepted-section';await settleEvents();
+      assert.equal(flow.state.prompts,2);assert.equal(flow.open,false,'an accepted real navigation closes the draft');
+    } finally {flow.dispose();}
+  }
 });
 
 test('UI-CREATE-NAVIGATION-011: actual listeners see synchronous replace only after committed disabled options, for both close callers and APIs',async()=>{

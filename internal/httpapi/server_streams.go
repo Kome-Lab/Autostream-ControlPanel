@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/example/autostream-control-panel/internal/store"
 	"github.com/example/autostream-control-panel/internal/streamvisual"
@@ -143,6 +144,10 @@ type streamSettingsRequest struct {
 	// existing assignment, while an explicit empty string unassigns that role.
 	EncoderServiceID *string `json:"encoder_service_id,omitempty"`
 	WorkerServiceID  *string `json:"worker_service_id,omitempty"`
+	// Derived only from the selected authentication profile, never from a
+	// client field or the independent Discord destination preset.
+	discordServiceID         *string
+	expectedDiscordServiceID *string
 }
 
 func archiveRequestString(value *string) string {
@@ -266,6 +271,14 @@ func (s *Server) createStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	assignments := store.StreamCreateAssignments{EncoderServiceID: assignmentRequestServiceID(body.EncoderServiceID), WorkerServiceID: assignmentRequestServiceID(body.WorkerServiceID)}
+	if settings.DiscordConfigID != "" {
+		serviceID, code, status := s.selectedDiscordServiceID(r.Context(), "", settings.DiscordConfigID)
+		if code != "" {
+			writeJSON(w, status, map[string]string{"code": code})
+			return
+		}
+		assignments.DiscordConfigID, assignments.DiscordServiceID = settings.DiscordConfigID, serviceID
+	}
 	stream, _, err = creator.CreateStream(r.Context(), current.User.ID, streamvisual.Create{Name: body.Name, UploadSessionID: envelope.UploadSessionID, Settings: visualUpdate, StreamSettings: settings, Assignments: assignments})
 	if err != nil {
 		if code, status, handled := serviceAssignmentHTTPError(err, false); handled {
@@ -279,6 +292,9 @@ func (s *Server) createStream(w http.ResponseWriter, r *http.Request) {
 	// committed together. Creation never transfers another stream's services.
 	for _, assignment := range []struct{ id, serviceType string }{{assignments.EncoderServiceID, "encoder_recorder"}, {assignments.WorkerServiceID, "worker"}} {
 		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "services.assign", ResourceType: "service", ResourceID: assignment.id, Result: "success", Metadata: map[string]any{"stream_id": stream.ID, "service_type": assignment.serviceType, "assignment_role": "primary", "source": "stream_create"}})
+	}
+	if assignments.DiscordServiceID != "" {
+		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "services.assign", ResourceType: "service", ResourceID: assignments.DiscordServiceID, Result: "success", Metadata: map[string]any{"stream_id": stream.ID, "service_type": "discord_bot", "assignment_role": "primary", "assignment_epoch": stream.CreatedAt.UTC().Format(time.RFC3339Nano), "source": "stream_create"}})
 	}
 	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.create", ResourceType: "stream", ResourceID: stream.ID, Result: "success", Metadata: streamSettingsAuditMetadata(stream)})
 	writeJSON(w, http.StatusCreated, stream)
@@ -350,6 +366,7 @@ func (s *Server) deleteStream(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "delete_stream_failed"})
 		return
 	}
+	s.collectDeletedStreamMediaAssets(r.Context(), stream.ID)
 	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.delete", ResourceType: "stream", ResourceID: stream.ID, Result: "success", Metadata: map[string]any{"name": stream.Name, "status": stream.Status}})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted", "stream_id": stream.ID})
 }

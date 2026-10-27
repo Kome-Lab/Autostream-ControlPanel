@@ -197,11 +197,13 @@ func TestStreamSettingsCanBeSavedAndReturned(t *testing.T) {
 	}
 	streams := store.NewMemoryStreamStore()
 	profiles := store.NewMemoryProfileStore()
-	discordOne, err := profiles.CreateProfile(t.Context(), store.ProfileDiscordConfig, "discord one", map[string]any{"guild_id": "guild-01", "voice_channel_id": "voice-01"})
+	registerServiceInstance(t, auth, "settings-bot-one", "discord_bot")
+	registerServiceInstance(t, auth, "settings-bot-two", "discord_bot")
+	discordOne, err := profiles.CreateProfile(t.Context(), store.ProfileDiscordConfig, "discord one", map[string]any{"service_id": "settings-bot-one"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	discordTwo, err := profiles.CreateProfile(t.Context(), store.ProfileDiscordConfig, "discord two", map[string]any{"guild_id": "guild-02", "voice_channel_id": "voice-02"})
+	discordTwo, err := profiles.CreateProfile(t.Context(), store.ProfileDiscordConfig, "discord two", map[string]any{"service_id": "settings-bot-two"})
 	if err != nil {
 		t.Fatal(err)
 	}

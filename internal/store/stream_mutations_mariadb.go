@@ -151,6 +151,9 @@ func (s MariaDBStreamStore) DeleteStream(ctx context.Context, id string) (err er
 	if affected == 0 {
 		return ErrNotFound
 	}
+	if err := retireStreamCoverAssetsTx(ctx, tx, id, now); err != nil {
+		return err
+	}
 	if err := tx.Commit(); err != nil {
 		return err
 	}
@@ -184,6 +187,9 @@ func (s MariaDBStreamStore) UpdateStreamSettings(ctx context.Context, id string,
 		return Stream{}, ErrNotFound
 	}
 	if err != nil {
+		return Stream{}, err
+	}
+	if err := validateExpectedDiscordSettingsTx(ctx, tx, id, settings); err != nil {
 		return Stream{}, err
 	}
 	var claimOutputID string

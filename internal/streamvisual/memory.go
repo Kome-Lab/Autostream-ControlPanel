@@ -53,6 +53,12 @@ func (r *MemoryRepository) Get(ctx context.Context, streamID string) (Settings, 
 }
 
 func (r *MemoryRepository) Update(ctx context.Context, streamID, _ string, update Update) (Settings, error) {
+	if r.streams == nil {
+		return Settings{}, ErrNotFound
+	}
+	if stream, err := r.streams.GetStream(ctx, strings.TrimSpace(streamID)); err != nil || stream.DeletedAt != nil {
+		return Settings{}, ErrNotFound
+	}
 	current, err := r.Get(ctx, streamID)
 	if err != nil {
 		return Settings{}, err
@@ -119,6 +125,9 @@ func (r *MemoryRepository) CreateStream(ctx context.Context, userID string, inpu
 }
 
 func validateMemoryCandidates(current, next Settings, update Update) error {
+	if err := validateCoverUploadLimit(current, next); err != nil {
+		return err
+	}
 	if update.CoverCandidates == nil {
 		return nil
 	}

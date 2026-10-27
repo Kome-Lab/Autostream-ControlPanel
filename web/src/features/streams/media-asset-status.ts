@@ -1,8 +1,12 @@
 export type MediaAssetUsage = "scene_background" | "video_cover";
 
 export type MediaUploadSession = { id: string; owner_type: "upload_draft"; expires_at: string };
-export type MediaAsset = { id: string; usage_type: MediaAssetUsage; media_type: string; width: number; height: number; sha256: string };
+export type MediaAsset = { id: string; usage_type: MediaAssetUsage; media_type: string; width: number; height: number; sha256: string; owner_type?: string; owner_id?: string; upload_session_id?: string };
 export type MediaAssetVariant = { id: string; asset_id: string; status: "queued" | "processing" | "ready" | "failed"; width: number; height: number; opaque: boolean; last_error_code?: string };
+
+export function mediaAssetBelongsToDraft(asset: MediaAsset, sessionID: string) {
+  return Boolean(sessionID) && asset.owner_type === "upload_draft" && asset.owner_id === sessionID && asset.upload_session_id === sessionID;
+}
 
 const safeVariantErrorCodes = new Set([
   "upload_too_large",

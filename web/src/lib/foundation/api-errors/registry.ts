@@ -144,6 +144,11 @@ export function filterAPIErrorFieldErrors(
 
 export const defaultAPIErrorRegistry = defineAPIErrorRegistry({
   codes: {
+    cover_upload_limit: {
+      kind: "conflict",
+      messageKey: "apiErrorCoverUploadLimit",
+      statuses: [409],
+    },
     invalid_json_response: {
       kind: "protocol",
       messageKey: "apiErrorProtocol",

@@ -251,7 +251,10 @@ export class BrowserHarness {
     const width = Math.ceil(view?.clientWidth ?? 0), height = Math.ceil(view?.clientHeight ?? 0);
     const pageX = view?.pageX, pageY = view?.pageY, scale = view?.scale;
     if (![width, height, pageX, pageY, scale].every(value => typeof value === "number" && Number.isFinite(value)) || width <= 0 || height <= 0 || width > 30_000 || height > 30_000 || Math.abs(pageX!) > 30_000 || Math.abs(pageY!) > 30_000 || scale !== 1) throw new Error("Invalid bounded viewport evidence geometry");
-    const screenshot = await this.send("Page.captureScreenshot", { format: "png", fromSurface: true, captureBeyondViewport: false });
+    const screenshot = await this.send("Page.captureScreenshot", {
+      format: "png", fromSurface: true, captureBeyondViewport: false,
+      clip: { x: pageX, y: pageY, width, height, scale: 1 },
+    });
     if (typeof screenshot.data !== "string" || !screenshot.data) throw new Error("Viewport evidence was empty");
     const png = Buffer.from(screenshot.data, "base64");
     if (png.length < 24 || !png.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) || png.readUInt32BE(16) !== width || png.readUInt32BE(20) !== height) throw new Error("Viewport evidence dimensions mismatch");

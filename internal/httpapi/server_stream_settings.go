@@ -71,6 +71,11 @@ func (s *Server) updateStreamSettings(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": streamSettingsReferenceCode(err)})
 		return
 	}
+	if code, status := s.prepareStreamDiscordAssignment(r.Context(), streamID, settings.DiscordConfigID, &body, current.Permissions); code != "" {
+		writeJSON(w, status, map[string]string{"code": code})
+		return
+	}
+	settings.ExpectedDiscordServiceID = body.expectedDiscordServiceID
 	preserveOmittedLegacyArchiveSettings(&settings, existing, body)
 	if strings.TrimSpace(existing.YouTubeOutputID) != strings.TrimSpace(settings.YouTubeOutputID) {
 		if claimed, err := s.youtubeRelayBindingStreamClaimActive(r.Context(), existing.ID); err != nil {
@@ -99,10 +104,6 @@ func (s *Server) updateStreamSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	stream, err := s.streams.UpdateStreamSettings(r.Context(), streamID, settings)
-	if errors.Is(err, store.ErrNotFound) {
-		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
-		return
-	}
 	if errors.Is(err, store.ErrYouTubeRelayBindingClaimActive) {
 		if rollbackErr := assignments.Rollback(r.Context(), s.services, current.User.ID); rollbackErr != nil {
 			log.Printf("stream settings assignment rollback failed after relay binding claim error: stream_id=%s error=%v", streamID, rollbackErr)
@@ -116,6 +117,14 @@ func (s *Server) updateStreamSettings(w http.ResponseWriter, r *http.Request) {
 		if rollbackErr := assignments.Rollback(r.Context(), s.services, current.User.ID); rollbackErr != nil {
 			log.Printf("stream settings assignment rollback failed after settings update error: stream_id=%s error=%v", streamID, rollbackErr)
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "assign_service_rollback_failed"})
+			return
+		}
+		if errors.Is(err, store.ErrNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
+			return
+		}
+		if code, status, handled := serviceAssignmentHTTPError(err, false); handled {
+			writeJSON(w, status, map[string]string{"code": code})
 			return
 		}
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "update_stream_settings_failed"})

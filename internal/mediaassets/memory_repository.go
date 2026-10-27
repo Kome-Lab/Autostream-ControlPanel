@@ -77,6 +77,10 @@ func (r *MemoryRepository) Upload(_ context.Context, in UploadInput) (Asset, err
 		r.mu.Unlock()
 		return Asset{}, ErrDraftExpired
 	}
+	if in.UsageType == "video_cover" && r.draftCoverCountLocked(in.SessionID) >= MaxStreamCoverUploads {
+		r.mu.Unlock()
+		return Asset{}, ErrCoverUploadLimit
+	}
 	r.mu.Unlock()
 	processed, err := r.processor.ProcessUpload(in.Filename, in.ContentType, in.Body)
 	if err != nil {
@@ -90,6 +94,9 @@ func (r *MemoryRepository) Upload(_ context.Context, in UploadInput) (Asset, err
 	}
 	if session.OwnerType != "upload_draft" || !session.ExpiresAt.After(r.now()) {
 		return Asset{}, ErrDraftClaimed
+	}
+	if in.UsageType == "video_cover" && r.draftCoverCountLocked(in.SessionID) >= MaxStreamCoverUploads {
+		return Asset{}, ErrCoverUploadLimit
 	}
 	id, err := newID()
 	if err != nil {
@@ -187,6 +194,14 @@ func (r *MemoryRepository) ClaimDraft(_ context.Context, userID, sessionID, stre
 	if !session.ExpiresAt.After(now) {
 		return ErrDraftExpired
 	}
+	if r.draftCoverCountLocked(sessionID) > MaxStreamCoverUploads {
+		return ErrCoverUploadLimit
+	}
+	for _, asset := range r.assets {
+		if asset.UploadSessionID == sessionID && asset.OwnerUserID != userID {
+			return ErrForbidden
+		}
+	}
 	session.OwnerType = "stream"
 	session.ClaimedStreamID = streamID
 	session.UpdatedAt = now
@@ -194,10 +209,7 @@ func (r *MemoryRepository) ClaimDraft(_ context.Context, userID, sessionID, stre
 	session.ClaimedAt = &claimedAt
 	r.sessions[sessionID] = session
 	for id, asset := range r.assets {
-		if asset.UploadSessionID == sessionID {
-			if asset.OwnerUserID != userID {
-				return ErrForbidden
-			}
+		if asset.UploadSessionID == sessionID && asset.DeletedAt == nil {
 			asset.OwnerType = "stream"
 			asset.OwnerID = streamID
 			asset.UpdatedAt = now
@@ -205,6 +217,16 @@ func (r *MemoryRepository) ClaimDraft(_ context.Context, userID, sessionID, stre
 		}
 	}
 	return nil
+}
+
+func (r *MemoryRepository) draftCoverCountLocked(sessionID string) int {
+	count := 0
+	for _, asset := range r.assets {
+		if asset.UploadSessionID == sessionID && asset.UsageType == "video_cover" && asset.DeletedAt == nil {
+			count++
+		}
+	}
+	return count
 }
 
 func (r *MemoryRepository) ReferenceVariant(streamID, variantID string) {
@@ -280,18 +302,26 @@ func (r *MemoryRepository) GarbageCollect(_ context.Context, now time.Time, limi
 			continue
 		}
 		storageKeys := map[string]bool{asset.StorageKey: true}
-		for variantID, v := range r.variants {
+		for _, v := range r.variants {
 			if v.AssetID == id {
 				storageKeys[v.StorageKey] = true
+			}
+		}
+		for storageKey := range storageKeys {
+			if !r.storageKeyReferencedExceptAssetLocked(storageKey, id) {
+				if err := r.storage.Remove(storageKey); err != nil {
+					// Retain tombstone metadata and every variant until all
+					// removals succeed. A retry tolerates already missing files.
+					return removed, err
+				}
+			}
+		}
+		for variantID, variant := range r.variants {
+			if variant.AssetID == id {
 				delete(r.variants, variantID)
 			}
 		}
 		delete(r.assets, id)
-		for storageKey := range storageKeys {
-			if !r.storageKeyReferencedLocked(storageKey) {
-				_ = r.storage.Remove(storageKey)
-			}
-		}
 		removed++
 	}
 	for sessionID, session := range r.sessions {
@@ -315,13 +345,17 @@ func (r *MemoryRepository) sessionHasAssetsLocked(sessionID string) bool {
 }
 
 func (r *MemoryRepository) storageKeyReferencedLocked(storageKey string) bool {
+	return r.storageKeyReferencedExceptAssetLocked(storageKey, "")
+}
+
+func (r *MemoryRepository) storageKeyReferencedExceptAssetLocked(storageKey, excludedAssetID string) bool {
 	for _, asset := range r.assets {
-		if asset.StorageKey == storageKey {
+		if asset.ID != excludedAssetID && asset.StorageKey == storageKey {
 			return true
 		}
 	}
 	for _, variant := range r.variants {
-		if variant.StorageKey == storageKey {
+		if variant.AssetID != excludedAssetID && variant.StorageKey == storageKey {
 			return true
 		}
 	}

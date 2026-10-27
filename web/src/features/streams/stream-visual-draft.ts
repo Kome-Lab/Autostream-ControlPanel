@@ -34,6 +34,21 @@ export type StreamVisualValidation = Readonly<{
 export type StreamVisualSection = "background" | "title" | "discord" | "cover";
 export type StreamVisualPreviewKind = "background" | "cover";
 
+export const maximumUploadedCovers = 4;
+
+export function uploadedCoverCount(candidates: readonly CoverCandidate[]) {
+  return new Set(candidates.filter((candidate) => candidate.source === "upload").map((candidate) => candidate.asset_id)).size;
+}
+
+export function coverCandidatePreviewURL(candidate: CoverCandidate, streamID: string | undefined, saved: StreamVisualSettings | undefined, localURL = "") {
+  if (localURL) return localURL;
+  const savedReference = saved?.cover_candidates?.some((item) => item.variant_id === candidate.variant_id && item.asset_id === candidate.asset_id)
+    || saved?.cover_variant_id === candidate.variant_id && saved?.cover_asset_id === candidate.asset_id;
+  if (streamID && savedReference) return `/streams/${encodeURIComponent(streamID)}/media-assets/${encodeURIComponent(candidate.variant_id)}`;
+  if (candidate.source === "preset" && candidate.preset_id) return `/video-cover-presets/${encodeURIComponent(candidate.preset_id)}/media-assets/${encodeURIComponent(candidate.variant_id)}`;
+  return "";
+}
+
 export function createStreamVisualPreviewOwner(revoke: (url: string) => void) {
   const current: Record<StreamVisualPreviewKind, string> = { background: "", cover: "" };
   return Object.freeze({

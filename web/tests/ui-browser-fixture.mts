@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
-import { BrowserHarness, type StubResponse } from "./helpers/browser-harness.mts";
+import { BrowserHarness, type RouteResolver, type StubResponse } from "./helpers/browser-harness.mts";
 import { loginPathForLocation } from "../src/lib/auth/post-login-redirect.ts";
 
 
@@ -145,7 +145,7 @@ export type BrowserRouteFixture = {
   controlPlatformCoverBodies: unknown[];
 };
 
-export function createBrowserRouteFixture(browser: BrowserHarness): BrowserRouteFixture {
+export function createBrowserRouteFixture(browser: BrowserHarness, resolveAdditionalRoute?: RouteResolver): BrowserRouteFixture {
   const fixture: BrowserRouteFixture = {
     authResponse: { body: currentUser },
     setupResponse: { body: { setup_enabled: true, setup_required: false } },
@@ -191,6 +191,8 @@ export function createBrowserRouteFixture(browser: BrowserHarness): BrowserRoute
     controlPlatformCoverBodies: [],
   };
   browser.setRouteResolver(({ method, url, postData }) => {
+    const additional = resolveAdditionalRoute?.({ method, url, postData });
+    if (additional) return additional;
     const pathname = normalizePath(new URL(url).pathname);
     if (pathname === "/auth/me" && method === "GET") return { ...fixture.authResponse, requiredResponse: fixture.authResponse.requiredResponse ?? false };
     if (pathname === "/setup/status" && method === "GET") return { ...fixture.setupResponse, requiredResponse: fixture.setupResponse.requiredResponse ?? false };

@@ -24,8 +24,10 @@ register(`data:text/javascript,${encodeURIComponent(resolverSource)}`, {
 const {
   buildStreamCreateVisualExtension,
   buildStreamVisualFields,
+  coverCandidatePreviewURL,
   createStreamVisualPreviewOwner,
   defaultStreamVisualDraft,
+  uploadedCoverCount,
   validateStreamVisualDraft,
   visualCapabilityWarnings,
 } = await import("../src/features/streams/stream-visual-draft.ts");
@@ -36,6 +38,50 @@ const {
 
 const editorSource = readFileSync(new URL("../src/features/streams/stream-visual-settings-section.tsx", import.meta.url), "utf8");
 const panelSource = readFileSync(new URL("../src/features/streams/stream-control-platform-panel.tsx", import.meta.url), "utf8");
+const { mediaAssetBelongsToDraft } = await import("../src/features/streams/media-asset-status.ts");
+const { adaptAPIError } = await import("../src/lib/foundation/api-errors/adapter.ts");
+
+test("new preset candidates use their preset authority until the stream snapshot is saved", () => {
+  const candidate = { name: "Shared", source: "preset" as const, preset_id: "preset-one", preset_revision: 7, asset_id: "shared-asset", variant_id: "shared-variant" };
+  const saved = { stream_id: "stream-one", cover_source: "none", cover_candidates: [], cover_asset_id: "", cover_variant_id: "" } as unknown as import("../src/features/streams/control-platform.ts").StreamVisualSettings;
+  assert.equal(coverCandidatePreviewURL(candidate, "stream-one", saved), "/video-cover-presets/preset-one/media-assets/shared-variant");
+  assert.equal(coverCandidatePreviewURL(candidate, "stream-one", { ...saved, cover_candidates: [candidate] }), "/streams/stream-one/media-assets/shared-variant");
+  assert.equal(coverCandidatePreviewURL(candidate, "stream-one", { ...saved, cover_asset_id: candidate.asset_id, cover_variant_id: candidate.variant_id }), "/streams/stream-one/media-assets/shared-variant");
+  assert.equal(coverCandidatePreviewURL(candidate, "stream-one", saved, "blob:local-image"), "blob:local-image");
+  assert.equal(coverCandidatePreviewURL({ ...candidate, source: "upload", preset_id: undefined }, "stream-one", saved), "", "unclaimed uploads must never select a stream preview route");
+});
+
+test("draft image cleanup requires the exact upload owner and session", () => {
+  const asset = { id: "asset", usage_type: "video_cover" as const, media_type: "image/png", width: 1920, height: 1080, sha256: "test", owner_type: "upload_draft", owner_id: "draft-one", upload_session_id: "draft-one" };
+  assert.equal(mediaAssetBelongsToDraft(asset, "draft-one"), true);
+  for (const changed of [{ owner_type: "stream" }, { owner_id: "other-draft" }, { upload_session_id: "other-draft" }, { owner_type: undefined }]) {
+    assert.equal(mediaAssetBelongsToDraft({ ...asset, ...changed }, "draft-one"), false);
+  }
+  assert.equal(mediaAssetBelongsToDraft(asset, ""), false);
+  assert.equal(mediaAssetBelongsToDraft(asset, "other-draft"), false);
+});
+
+test("the server upload limit has a specific reason while authorization remains authoritative", () => {
+  const error = { name: "APIError", status: 409, code: "cover_upload_limit" };
+  assert.equal(adaptAPIError(error).messageKey, "apiErrorCoverUploadLimit");
+  assert.equal(adaptAPIError({ ...error, status: 403 }).kind, "forbidden");
+});
+
+test("cover upload allowance counts original uploaded assets independently of presets and variants", () => {
+  const candidates = [
+    { name: "first.png", source: "upload" as const, asset_id: "asset-one", variant_id: "variant-one" },
+    { name: "first-small.png", source: "upload" as const, asset_id: "asset-one", variant_id: "variant-two" },
+    { name: "preset", source: "preset" as const, asset_id: "asset-shared", variant_id: "variant-preset" },
+    ...[2, 3, 4, 5].map((id) => ({ name: `${id}.png`, source: "upload" as const, asset_id: `asset-${id}`, variant_id: `variant-${id}` })),
+  ];
+  assert.equal(uploadedCoverCount(candidates), 5);
+  assert.equal(uploadedCoverCount(candidates.filter((candidate) => candidate.asset_id !== "asset-5")), 4);
+  assert.equal(uploadedCoverCount(candidates.filter((candidate) => candidate.source === "preset")), 0);
+  const draft = defaultStreamVisualDraft();
+  draft.coverCandidates = candidates;
+  assert.equal(validateStreamVisualDraft(draft).ready, true, "legacy sets remain editable without implicit truncation");
+  assert.deepEqual(buildStreamVisualFields(draft).cover_candidates, candidates);
+});
 
 test("default create sends the complete v2 visual snapshot and edits retain explicit defaults", () => {
   const draft = defaultStreamVisualDraft();

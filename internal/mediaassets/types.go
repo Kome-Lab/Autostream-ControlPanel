@@ -14,6 +14,7 @@ const (
 	MaxImageSide            = 8192
 	ProcessorRevision       = 1
 	DraftRetention          = 24 * time.Hour
+	MaxStreamCoverUploads   = 4
 )
 
 var (
@@ -28,6 +29,7 @@ var (
 	ErrDraftExpired        = errors.New("upload draft expired")
 	ErrDraftClaimed        = errors.New("upload draft already claimed")
 	ErrIntegrity           = errors.New("media asset integrity failure")
+	ErrCoverUploadLimit    = errors.New("cover upload limit exceeded")
 )
 
 type UploadSession struct {

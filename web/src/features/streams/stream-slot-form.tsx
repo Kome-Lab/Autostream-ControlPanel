@@ -79,6 +79,8 @@ export function StreamSlotForm({ stream, className, actionController, onActionRe
   const [scheduledStartAt, setScheduledStartAt] = useState(() => streamScheduleInputValue(stream?.scheduled_start_at));
   const [createVisualState, setCreateVisualState] = useState<StreamCreateVisualState>({ extension: {}, ready: false, discordTargetReady: false });
   const [message, setMessage] = useState("");
+  const [savePending, setSavePending] = useState(false);
+  const [saveOutcomeUnresolved, setSaveOutcomeUnresolved] = useState(false);
   const effectiveEncoderServiceID = encoderServiceID ?? optionOrNone(stream?.assigned_encoder_id);
   const effectiveWorkerServiceID = workerServiceID ?? optionOrNone(stream?.assigned_worker_id);
 
@@ -144,6 +146,7 @@ export function StreamSlotForm({ stream, className, actionController, onActionRe
     });
   }, [actionIntent, createVisualState, draft]);
   const handleSaveResult = useCallback((result: StreamActionExecutionResult, intent: StreamActionIntent) => {
+    if (result.kind === "outcome_unknown" || result.kind === "blocked" && result.reason === "reconciliation-required") setSaveOutcomeUnresolved(true);
     onActionResult(result, intent);
     if (result.kind === "succeeded" && isStreamValue(result.value)) {
       setMessage(liveEditing ? uiText("{0} のライブ設定を停止せず反映しました。", result.value.name) : editing ? uiText("{0} の設定を更新しました。", result.value.name) : uiText("{0} を配信枠として作成しました。", result.value.name));
@@ -178,7 +181,7 @@ export function StreamSlotForm({ stream, className, actionController, onActionRe
             </FormSection>
             {!editing ? <div className="flex gap-2 rounded-md border bg-muted/30 p-3 text-sm text-muted-foreground"><AlertCircle className="mt-0.5 size-4 shrink-0" />{uiText("別の枠で使用中のNodeは選択できません。オフラインのNodeを選んだ場合は、開始前に稼働状態を確認してください。")}</div> : null}
             <FormSection id={`${sectionPrefix}-output`} title={uiText("出力と録画")} description={uiText("視聴先と事前登録した録画設定")}><div className="grid gap-3 md:grid-cols-2"><SelectField label={uiText("YouTube出力")} value={youtubeOutputID} onChange={setYouTubeOutputID} options={[{ value: noneValue, label: uiText("未選択") }, ...youtubeOutputs]} /><SelectField label={uiText("録画プロファイル")} value={archiveProfileID} onChange={setArchiveProfileID} options={[{ value: noneValue, label: uiText("録画しない") }, ...archiveProfiles]} /></div>{archiveProfiles.length === 0 ? <p className="mt-3 text-sm text-muted-foreground">{uiText("録画する場合は、先に")}<Link href="/admin/archive/" className="mx-1 underline underline-offset-2">{uiText("録画・アーカイブ")}</Link>{uiText("で録画プロファイルと保存先を作成してください。")}</p> : null}</FormSection>
-            <section id={`${sectionPrefix}-visual`} tabIndex={-1} aria-label={uiText("ビジュアル設定")} className="min-w-0 scroll-mt-24"><StreamVisualSettingsSection stream={stream} canUpdate={editing ? canUpdate : canCreate} onCreateState={setCreateVisualState} /></section>
+            <section id={`${sectionPrefix}-visual`} tabIndex={-1} aria-label={uiText("ビジュアル設定")} className="min-w-0 scroll-mt-24"><StreamVisualSettingsSection stream={stream} canUpdate={editing ? canUpdate : canCreate} mutationBlocked={savePending || saveOutcomeUnresolved} onCreateState={setCreateVisualState} /></section>
           </> : null}
           <FormSection id={`${sectionPrefix}-encoder`} title={uiText("Encoderライブ調整")} description={uiText("音量とウォーターマークは配信中でも停止せず反映されます。")}><div className="grid gap-3 md:grid-cols-2">{!liveEditing ? <SelectField label={uiText("エンコード設定")} value={encoderProfileID} onChange={setEncoderProfileID} options={[{ value: noneValue, label: uiText("未選択") }, ...encoderProfiles]} /> : null}{!liveEditing ? <SelectField label={uiText("字幕設定")} value={captionProfileID} onChange={setCaptionProfileID} options={[{ value: noneValue, label: uiText("未選択") }, ...captionProfiles]} /> : null}<TextField label={uiText("Encoder音量（dB）")} type="number" value={encoderAudioGainDB} onChange={setEncoderAudioGainDB} min="-60" max="24" step="0.1" /><label className="flex min-h-10 items-center gap-2 rounded-md border bg-muted/20 px-3 text-sm"><Checkbox checked={watermarkEnabled} onCheckedChange={(value) => setWatermarkEnabled(value === true)} />{uiText("ウォーターマークを使用")}</label><SelectField label={uiText("ウォーターマーク設定")} value={overlayProfileID} onChange={setOverlayProfileID} options={[{ value: noneValue, label: uiText("未選択") }, ...overlayProfiles]} disabled={!watermarkEnabled} /></div></FormSection>
           {!encoderAudioGainReady ? <Warning>{uiText("Encoder音量は -60 dB から +24 dB の範囲で指定してください。")}</Warning> : null}
@@ -187,7 +190,7 @@ export function StreamSlotForm({ stream, className, actionController, onActionRe
           {!liveEditing && autoStartFromDiscord && canAssignEncoder && canAssignWorker && !nodeAssignmentReady ? <Warning>{uiText("自動開始する配信枠には、担当Encoder Nodeと担当Worker Nodeを選択してください。")}</Warning> : null}
           {!liveEditing && nodeAssignmentPermissionLimited ? <Warning>{uiText("Nodeを割り当てる権限がありません。管理者に依頼し、サービス稼働画面で割り当てを確認してください。")}</Warning> : null}
           {editing && !canUpdate ? <p className="text-sm text-red-600">{uiText("配信枠を更新する権限がありません。")}</p> : null}{!editing && !canCreate ? <p className="text-sm text-red-600">{uiText("配信枠を作成する権限がありません。")}</p> : null}
-          <FormFooter feedback={message}><StreamActionControl ref={saveControl} controller={actionController} intent={actionIntent} label={liveEditing ? uiText("ライブ設定を反映") : editing ? uiText("設定を保存") : uiText("配信枠を作成")} buttonProps={{ type: "submit" }} disabled={!formReady} onResult={handleSaveResult}>{editing ? <Pencil className="size-4" /> : <Plus className="size-4" />}{liveEditing ? uiText("ライブ設定を反映") : editing ? uiText("設定を保存") : uiText("配信枠を作成")}</StreamActionControl></FormFooter>
+          <FormFooter feedback={message}><StreamActionControl ref={saveControl} controller={actionController} intent={actionIntent} label={liveEditing ? uiText("ライブ設定を反映") : editing ? uiText("設定を保存") : uiText("配信枠を作成")} buttonProps={{ type: "submit" }} disabled={!formReady || savePending || saveOutcomeUnresolved} onPendingChange={setSavePending} onResult={handleSaveResult}>{editing ? <Pencil className="size-4" /> : <Plus className="size-4" />}{liveEditing ? uiText("ライブ設定を反映") : editing ? uiText("設定を保存") : uiText("配信枠を作成")}</StreamActionControl></FormFooter>
         </form>
       </CardContent>
     </Card>

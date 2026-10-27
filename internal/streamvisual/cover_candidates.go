@@ -6,6 +6,8 @@ import (
 	"sort"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/example/autostream-control-panel/internal/mediaassets"
 )
 
 type rowsQueryer interface {
@@ -50,6 +52,9 @@ func (r *SQLRepository) resolveCoverCandidates(ctx context.Context, tx *sql.Tx, 
 			if _, found := SelectCoverCandidate(*next, next.CoverVariantID); !found {
 				next.CoverCandidates = append(next.CoverCandidates, candidateFromSettings(*next))
 			}
+		}
+		if err := validateCoverUploadLimit(current, *next); err != nil {
+			return err
 		}
 		return saveCoverCandidates(ctx, tx, *next)
 	}
@@ -113,6 +118,9 @@ func (r *SQLRepository) resolveCoverCandidates(ctx context.Context, tx *sql.Tx, 
 		}
 		*next = selected
 	}
+	if err := validateCoverUploadLimit(current, *next); err != nil {
+		return err
+	}
 	// Pending/confirmed output remains protected even after a later settings edit.
 	for _, old := range current.CoverCandidates {
 		if seen[old.VariantID] {
@@ -127,6 +135,37 @@ func (r *SQLRepository) resolveCoverCandidates(ctx context.Context, tx *sql.Tx, 
 		}
 	}
 	return saveCoverCandidates(ctx, tx, *next)
+}
+
+// Existing over-limit collections may be retained or reduced without losing
+// data. Any addition or replacement must converge to the four-upload limit.
+// Multiple variants of one original upload consume one slot; presets consume
+// none. Include the selected descriptor for the candidate-omitted API path.
+func validateCoverUploadLimit(current, next Settings) error {
+	oldAssets := coverUploadAssets(current)
+	nextAssets := coverUploadAssets(next)
+	if len(nextAssets) <= mediaassets.MaxStreamCoverUploads {
+		return nil
+	}
+	for id := range nextAssets {
+		if !oldAssets[id] {
+			return mediaassets.ErrCoverUploadLimit
+		}
+	}
+	return nil
+}
+
+func coverUploadAssets(settings Settings) map[string]bool {
+	assets := map[string]bool{}
+	for _, candidate := range settings.CoverCandidates {
+		if candidate.Source == "upload" && strings.TrimSpace(candidate.AssetID) != "" {
+			assets[strings.TrimSpace(candidate.AssetID)] = true
+		}
+	}
+	if settings.CoverSource == "upload" && strings.TrimSpace(settings.CoverAssetID) != "" {
+		assets[strings.TrimSpace(settings.CoverAssetID)] = true
+	}
+	return assets
 }
 
 func saveCoverCandidates(ctx context.Context, tx *sql.Tx, s Settings) error {

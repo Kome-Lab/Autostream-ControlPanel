@@ -120,6 +120,7 @@ test("preset fetch failure is distinct from an empty list and management preserv
 test("preset option refresh keeps missing references and displays the selected snapshot revision", () => {
   const rows = [{ id: "preset-1", name: "Main stage", revision: 7 }];
   assert.deepEqual(visualPresetOptions(rows, "preset-1", "Saved selection", 4), [["preset-1", "Main stage (r4)"]]);
+  assert.deepEqual(visualPresetOptions(rows, "preset-1", "Saved selection", 4, false), [["preset-1", "Main stage"]], "Discord labels hide the revision while cover labels retain it");
   assert.deepEqual(visualPresetOptions([], "preset-1", "Saved selection", 4), [["preset-1", "Saved selection", true]]);
   assert.deepEqual(rows, [{ id: "preset-1", name: "Main stage", revision: 7 }]);
 });

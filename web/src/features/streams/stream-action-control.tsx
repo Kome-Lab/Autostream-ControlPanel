@@ -28,6 +28,7 @@ type Props = Readonly<{
   context?: HighRiskConfirmationContext;
   buttonProps?: Omit<ComponentProps<typeof Button>, "children" | "onClick">;
   disabled?: boolean;
+  onPendingChange?: (pending: boolean) => void;
   onResult: (result: StreamActionExecutionResult, intent: StreamActionIntent) => boolean | void | Promise<boolean | void>;
 }>;
 
@@ -39,6 +40,7 @@ export const StreamActionControl = forwardRef<StreamActionControlHandle, Props>(
   context,
   buttonProps,
   disabled = false,
+  onPendingChange,
   onResult,
 }, ref) {
   const { t } = useI18n();
@@ -59,10 +61,16 @@ export const StreamActionControl = forwardRef<StreamActionControlHandle, Props>(
     setDialogState({ kind: "revalidating" });
     await Promise.resolve();
     setDialogState({ kind: "submitting" });
-    const result = await controller.submit(allowed, {
-      confirmed: true,
-      ...(allowed.typedToken === undefined ? {} : { typedValue: allowed.typedToken }),
-    });
+    onPendingChange?.(true);
+    let result: StreamActionExecutionResult;
+    try {
+      result = await controller.submit(allowed, {
+        confirmed: true,
+        ...(allowed.typedToken === undefined ? {} : { typedValue: allowed.typedToken }),
+      });
+    } finally {
+      onPendingChange?.(false);
+    }
     const authorityRefreshed = await onResult(result, allowed.intent);
     if (result.kind === "succeeded") {
       setOpened(null);
@@ -78,7 +86,7 @@ export const StreamActionControl = forwardRef<StreamActionControlHandle, Props>(
       return;
     }
     setDialogState(dialogStateForResult(result));
-  }, [controller, onResult]);
+  }, [controller, onPendingChange, onResult]);
 
   const open = useCallback(() => {
     if (disabled || opening.current) return;

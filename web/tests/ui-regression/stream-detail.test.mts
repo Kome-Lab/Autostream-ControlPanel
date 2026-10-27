@@ -108,7 +108,7 @@ test("UI-STREAM-DETAIL-006: actual control submit reports 409, unavailable and a
     const controller=createStreamActionController({getPermissions:()=>({kind:"ready",permissions:["*"]}),getState:()=>({kind:"ready",freshness:"fresh",fingerprint:"same"}),mutate:async()=>{mutations++;throw error;}});
     const opened=await controller.open({id:"STR-08",stream});assert.equal(opened.kind,"allowed");
     if(opened.kind!=="allowed")throw Error("unreached");
-    const submit=actualCallback(source,"submit",{controller,onResult:(value:unknown)=>{outcomes.push(value);return false;},setDialogState:(value:{kind:string})=>states.push(value),setOpened(){},dialogStateForResult});
+    const submit=actualCallback(source,"submit",{controller,onPendingChange(){},onResult:(value:unknown)=>{outcomes.push(value);return false;},setDialogState:(value:{kind:string})=>states.push(value),setOpened(){},dialogStateForResult});
     await submit(opened);assert.equal(mutations,1);assert.equal((outcomes[0] as {kind:string}).kind,expected);
     assert.equal(states.at(-1)?.kind,expected==="failed"?"conflict":"outcome-unknown");
     if(expected==="outcome_unknown") {const retry=await controller.open({id:"STR-08",stream});assert.equal(retry.kind,"blocked");assert.equal(mutations,1);}

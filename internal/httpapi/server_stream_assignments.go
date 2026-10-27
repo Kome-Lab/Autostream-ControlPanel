@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/example/autostream-control-panel/internal/security"
 	"github.com/example/autostream-control-panel/internal/store"
@@ -26,6 +27,7 @@ func streamServiceAssignmentOperations(body streamSettingsRequest) []streamServi
 	return []streamServiceAssignmentOperation{
 		{serviceID: body.EncoderServiceID, serviceType: "encoder_recorder", permission: "services.assign", notFound: "encoder_service_not_found", wrongType: "encoder_service_type_invalid"},
 		{serviceID: body.WorkerServiceID, serviceType: "worker", permission: "workers.assign", notFound: "worker_service_not_found", wrongType: "worker_service_type_invalid"},
+		{serviceID: body.discordServiceID, serviceType: "discord_bot", permission: "services.assign", notFound: "service_not_found", wrongType: "discord_config_service_mismatch"},
 	}
 }
 
@@ -116,6 +118,13 @@ func (s *Server) applyStreamServiceAssignments(r *http.Request, streamID string,
 		return result, "list_stream_assignments_failed", http.StatusInternalServerError
 	}
 	result.Snapshots = snapshots
+	if body.discordServiceID != nil && assignmentRequestServiceID(body.discordServiceID) != "" {
+		for _, snapshot := range snapshots {
+			if snapshot.ServiceID == assignmentRequestServiceID(body.discordServiceID) && snapshot.CurrentStream != "" && snapshot.CurrentStream != streamID {
+				return result, "service_assignment_conflict", http.StatusConflict
+			}
+		}
+	}
 	for _, operation := range operations {
 		if operation.serviceID == nil {
 			continue
@@ -258,7 +267,7 @@ func (assignments appliedStreamServiceAssignments) Rollback(ctx context.Context,
 
 func (assignments appliedStreamServiceAssignments) WriteAudit(r *http.Request, s *Server, current currentUser) {
 	for _, applied := range assignments.Applied {
-		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "services.assign", ResourceType: "service", ResourceID: applied.Service.ServiceID, Result: "success", Metadata: map[string]any{"stream_id": assignments.StreamID, "service_type": applied.ServiceType, "assignment_role": "primary", "source": "stream_settings"}})
+		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "services.assign", ResourceType: "service", ResourceID: applied.Service.ServiceID, Result: "success", Metadata: map[string]any{"stream_id": assignments.StreamID, "service_type": applied.ServiceType, "assignment_role": "primary", "assignment_epoch": applied.Service.UpdatedAt.UTC().Format(time.RFC3339Nano), "source": "stream_settings"}})
 	}
 	for _, cleared := range assignments.Cleared {
 		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "services.unassign", ResourceType: "service", ResourceID: cleared.ServiceID, Result: "success", Metadata: map[string]any{"stream_id": assignments.StreamID, "service_type": cleared.ServiceType, "assignment_role": cleared.AssignmentRole, "source": "stream_settings"}})

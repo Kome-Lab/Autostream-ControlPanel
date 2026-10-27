@@ -9,6 +9,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -344,7 +345,27 @@ func (s *Server) deleteMediaAsset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	current := currentFromContext(r.Context())
-	if err := s.mediaAssets.SoftDeleteAsset(r.Context(), current.User.ID, r.PathValue("id"), time.Now().UTC()); err != nil {
+	var err error
+	parameters, parseErr := url.ParseQuery(r.URL.RawQuery)
+	if parseErr != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
+		return
+	}
+	if expected, scoped := parameters["expected_upload_session_id"]; scoped {
+		if len(expected) != 1 || strings.TrimSpace(expected[0]) == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
+			return
+		}
+		deleter, ok := s.mediaAssets.(mediaassets.DraftAssetDeleter)
+		if !ok {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "media_assets_unavailable"})
+			return
+		}
+		err = deleter.SoftDeleteDraftAsset(r.Context(), current.User.ID, r.PathValue("id"), expected[0], time.Now().UTC())
+	} else {
+		err = s.mediaAssets.SoftDeleteAsset(r.Context(), current.User.ID, r.PathValue("id"), time.Now().UTC())
+	}
+	if err != nil {
 		writeMediaAssetError(w, err)
 		return
 	}
@@ -373,6 +394,8 @@ func writeMediaAssetError(w http.ResponseWriter, err error) {
 		status, code = http.StatusConflict, "upload_session_expired"
 	case errors.Is(err, mediaassets.ErrDraftClaimed):
 		status, code = http.StatusConflict, "upload_session_claimed"
+	case errors.Is(err, mediaassets.ErrCoverUploadLimit):
+		status, code = http.StatusConflict, "cover_upload_limit"
 	case errors.Is(err, mediaassets.ErrIntegrity):
 		status, code = http.StatusConflict, "media_asset_integrity"
 	}
@@ -480,19 +503,45 @@ func (s *Server) RunMediaAssetGarbageCollector(ctx context.Context, interval tim
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	// A restart resumes durable file-removal attempts immediately.
+	s.collectMediaAssets(ctx, time.Now().UTC())
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case now := <-ticker.C:
-			removed, err := s.mediaAssets.GarbageCollect(ctx, now.UTC(), 100)
-			if err != nil {
-				s.writeSystemAudit(ctx, store.AuditEvent{Action: "media_assets.gc", ResourceType: "media_asset", Result: "failure", Metadata: map[string]any{"error_code": "media_asset_gc_failed", "limit": 100}})
-				continue
-			}
-			if removed > 0 {
-				s.writeSystemAudit(ctx, store.AuditEvent{Action: "media_assets.gc", ResourceType: "media_asset", Result: "success", Metadata: map[string]any{"removed_count": removed, "limit": 100}})
-			}
+			s.collectMediaAssets(ctx, now.UTC())
 		}
 	}
+}
+
+func (s *Server) collectMediaAssets(ctx context.Context, now time.Time) {
+	removed, err := s.mediaAssets.GarbageCollect(ctx, now, 100)
+	if err != nil {
+		s.writeSystemAudit(ctx, store.AuditEvent{Action: "media_assets.gc", ResourceType: "media_asset", Result: "failure", Metadata: map[string]any{"error_code": "media_asset_gc_failed", "metadata_removed_count": removed, "file_removal_retry": "pending", "limit": 100}})
+		return
+	}
+	if removed > 0 {
+		s.writeSystemAudit(ctx, store.AuditEvent{Action: "media_assets.gc", ResourceType: "media_asset", Result: "success", Metadata: map[string]any{"metadata_removed_count": removed, "limit": 100}})
+	}
+}
+
+func (s *Server) collectDeletedStreamMediaAssets(ctx context.Context, streamID string) {
+	if s.mediaAssets == nil {
+		return
+	}
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if memory, ok := s.mediaAssets.(interface {
+		RetireStreamCoverAssets(context.Context, string, time.Time) error
+	}); ok {
+		if err := memory.RetireStreamCoverAssets(cleanupCtx, streamID, time.Now().UTC()); err != nil {
+			s.writeSystemAudit(cleanupCtx, store.AuditEvent{Action: "media_assets.gc", ResourceType: "stream", ResourceID: streamID, Result: "failure", Metadata: map[string]any{"error_code": "media_asset_retirement_failed"}})
+			return
+		}
+	}
+	// SQL retirement already committed inside the guarded DeleteStream
+	// transaction. Collection failure cannot undo that successful deletion;
+	// pending metadata and file keys remain for the next tick or process.
+	s.collectMediaAssets(cleanupCtx, time.Now().UTC())
 }

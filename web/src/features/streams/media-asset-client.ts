@@ -1,5 +1,5 @@
-import { apiPost, apiPostForm } from "@/lib/api/client";
-import { requireReadyMediaVariant, type MediaAsset, type MediaAssetUsage, type MediaAssetVariant, type MediaUploadSession } from "./media-asset-status";
+import { apiDelete, apiPost, apiPostForm } from "@/lib/api/client";
+import { mediaAssetBelongsToDraft, requireReadyMediaVariant, type MediaAsset, type MediaAssetUsage, type MediaAssetVariant, type MediaUploadSession } from "./media-asset-status";
 
 export { requireReadyMediaVariant } from "./media-asset-status";
 export type { MediaAsset, MediaAssetUsage, MediaAssetVariant, MediaUploadSession } from "./media-asset-status";
@@ -16,6 +16,15 @@ export async function uploadDraftMediaAsset(
   form.append("usage_type", usage);
   form.append("file", file, file.name);
   const asset = await apiPostForm<MediaAsset>("/media-assets", form);
-  const variant = await apiPost<MediaAssetVariant>(`/media-assets/${encodeURIComponent(asset.id)}/variants`, { width: 1920, height: 1080, opaque: true });
-  return { session, asset, variant: requireReadyMediaVariant(asset, variant) };
+  try {
+    const variant = await apiPost<MediaAssetVariant>(`/media-assets/${encodeURIComponent(asset.id)}/variants`, { width: 1920, height: 1080, opaque: true });
+    return { session, asset, variant: requireReadyMediaVariant(asset, variant) };
+  } catch (error) {
+    if (mediaAssetBelongsToDraft(asset, session.id)) {
+      // A failed processing attempt must release its draft allowance. If the
+      // bounded deletion fails, normal draft retention still owns cleanup.
+      await apiDelete(`/media-assets/${encodeURIComponent(asset.id)}?expected_upload_session_id=${encodeURIComponent(session.id)}`).catch(() => undefined);
+    }
+    throw error;
+  }
 }

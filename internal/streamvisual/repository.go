@@ -91,7 +91,7 @@ func (r *SQLRepository) Update(ctx context.Context, streamID, userID string, upd
 	}
 	defer tx.Rollback()
 	var status string
-	if err := tx.QueryRowContext(ctx, `SELECT status FROM streams WHERE id=? FOR UPDATE`, streamID).Scan(&status); errors.Is(err, sql.ErrNoRows) {
+	if err := tx.QueryRowContext(ctx, `SELECT status FROM streams WHERE id=? AND deleted_at IS NULL FOR UPDATE`, streamID).Scan(&status); errors.Is(err, sql.ErrNoRows) {
 		return Settings{}, ErrNotFound
 	} else if err != nil {
 		return Settings{}, err
@@ -114,6 +114,9 @@ func (r *SQLRepository) Update(ctx context.Context, streamID, userID string, upd
 	if err != nil {
 		return Settings{}, err
 	}
+	if err := validateCoverUploadLimit(current, next); err != nil {
+		return Settings{}, err
+	}
 	if sessionID := strings.TrimSpace(update.UploadSessionID); sessionID != "" {
 		selectedAssetIDs := selectedUploadAssetIDs(next, changes)
 		if len(selectedAssetIDs) == 0 {
@@ -123,6 +126,9 @@ func (r *SQLRepository) Update(ctx context.Context, streamID, userID string, upd
 			return Settings{}, ErrAssetClaim
 		}
 		if err := r.draftClaimer.ClaimDraftTx(ctx, tx, userID, sessionID, streamID, r.now()); err != nil {
+			if errors.Is(err, mediaassets.ErrCoverUploadLimit) {
+				return Settings{}, err
+			}
 			return Settings{}, fmt.Errorf("%w: %v", ErrAssetClaim, err)
 		}
 		if err := validateClaimedDraftSelection(ctx, tx, userID, sessionID, streamID, selectedAssetIDs); err != nil {
@@ -177,6 +183,9 @@ func (r *SQLRepository) CreateStream(ctx context.Context, userID string, input C
 	if err != nil {
 		return store.Stream{}, Settings{}, err
 	}
+	if err := validateCoverUploadLimit(settingsBase, settings); err != nil {
+		return store.Stream{}, Settings{}, err
+	}
 	// Creation has no prior persisted snapshot. Any selected media must therefore
 	// be resolved and validated from the canonical visual input.
 	changes.backgroundSelection = settings.BackgroundMode == "image"
@@ -201,6 +210,9 @@ func (r *SQLRepository) CreateStream(ctx context.Context, userID string, input C
 			return store.Stream{}, Settings{}, ErrAssetClaim
 		}
 		if err = r.draftClaimer.ClaimDraftTx(ctx, tx, userID, sessionID, stream.ID, now); err != nil {
+			if errors.Is(err, mediaassets.ErrCoverUploadLimit) {
+				return store.Stream{}, Settings{}, err
+			}
 			return store.Stream{}, Settings{}, fmt.Errorf("%w: %v", ErrAssetClaim, err)
 		}
 		if err = validateClaimedDraftSelection(ctx, tx, userID, sessionID, stream.ID, selectedAssetIDs); err != nil {
@@ -264,7 +276,7 @@ func validateClaimedDraftSelection(ctx context.Context, tx *sql.Tx, userID, sess
 	for _, id := range expectedIDs {
 		expected[strings.TrimSpace(id)] = true
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT id,owner_user_id,owner_type,owner_id FROM media_assets WHERE upload_session_id=? FOR UPDATE`, sessionID)
+	rows, err := tx.QueryContext(ctx, `SELECT id,owner_user_id,owner_type,owner_id FROM media_assets WHERE upload_session_id=? AND deleted_at IS NULL FOR UPDATE`, sessionID)
 	if err != nil {
 		return err
 	}

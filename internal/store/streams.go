@@ -41,6 +41,9 @@ type Stream struct {
 }
 
 type StreamSettings struct {
+	// Set by the Panel after resolving the authentication selection. The
+	// settings commit revalidates this owner; it is never a client wire field.
+	ExpectedDiscordServiceID  *string    `json:"-"`
 	Name                      string     `json:"name,omitempty"`
 	ScheduledStartAt          *time.Time `json:"scheduled_start_at,omitempty"`
 	ScheduledEndAt            *time.Time `json:"scheduled_end_at,omitempty"`

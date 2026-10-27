@@ -47,7 +47,7 @@ export const statusSnapshotExpression = `(() => {
 })()`;
 
 export const createSnapshotExpression = `(() => {
-  const create = document.querySelector('#create-stream')?.closest('[role="dialog"]');
+  const create = document.querySelector('[data-stream-create-view]');
   return {
     dialogCount: document.querySelectorAll('[role="dialog"]').length,
     navigationOpen: Boolean(document.querySelector('.mobile-navigation-sheet')),
@@ -143,11 +143,11 @@ export function assertStatusSnapshot(actual: StatusSnapshot, expected: StatusSna
 }
 
 export function assertCreateOutcome(snapshot: CreateSnapshot) {
-  assert.equal(snapshot.dialogCount, 1, "create flow must leave exactly one dialog");
+  assert.equal(snapshot.dialogCount, 0, "create flow must not create a dialog");
   assert.equal(snapshot.navigationOpen, false, "navigation Sheet must release its focus owner");
-  assert.equal(snapshot.createOpen, true, "create dialog must be open");
-  assert.equal(snapshot.focusInsideCreate, true, "focus must enter the create dialog");
-  assert.match(snapshot.activeTag, /^(?:INPUT|BUTTON|TEXTAREA|SELECT)$/);
+  assert.equal(snapshot.createOpen, true, "dedicated create view must be open");
+  assert.equal(snapshot.focusInsideCreate, true, "focus must enter the create view");
+  assert.match(snapshot.activeTag, /^(?:H1|H2|INPUT|BUTTON|TEXTAREA|SELECT)$/);
 }
 
 export const mobileFocusDiagnosticExpression = `(() => {
@@ -165,8 +165,8 @@ export async function closeCreateAndAssertFocusReturn(browser: BrowserHarness, t
   try {
   await observe();
   assert.equal(await browser.evaluate("globalThis.__uiReturnTrigger?.isConnected===true"), true, "actual initiating Menu target must remain connected");
-  await browser.pressKey("Escape");
-  await browser.waitFor("document.querySelectorAll('[role=dialog]').length", (value: number) => value === 0, "Escape did not close create dialog");
+  await browser.clickSelector('button[aria-label="配信枠の一覧へ戻る"]');
+  await browser.waitFor("!document.querySelector('[data-stream-create-view]')", Boolean, "Back did not close create view");
   phase="dialog-closed";await observe();
   await browser.waitFor(
     `document.activeElement===globalThis.__uiReturnTrigger && document.activeElement?.getAttribute('aria-label')===${JSON.stringify(triggerLabel)} && document.activeElement.getClientRects().length>0`,

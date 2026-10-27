@@ -214,7 +214,7 @@
       },
       {
         "path": "web/tests/helpers/browser-harness.mts",
-        "sha256": "a9c285cf94e218adde4cf259ee8e31801e872986d8fbafa6ec8534b3c1b51671",
+        "sha256": "84cd6803955b7b6e266518d13f6fd582842fbeb512b3cd449a8d4143e803b95c",
         "symbols": [
           "BrowserHarness",
           "removeOwnedBrowserDirectory",
@@ -223,7 +223,7 @@
           "waitForChildExit",
           "waitForMapCount"
         ],
-        "physical_lines": 790
+        "physical_lines": 793
       },
       {
         "path": "web/tests/helpers/browser-command-deadline.mts",
@@ -1346,7 +1346,7 @@
     "destinations": [
       {
         "path": "web/tests/helpers/browser-harness.mts",
-        "sha256": "a9c285cf94e218adde4cf259ee8e31801e872986d8fbafa6ec8534b3c1b51671",
+        "sha256": "84cd6803955b7b6e266518d13f6fd582842fbeb512b3cd449a8d4143e803b95c",
         "symbols": [
           "BrowserHarness",
           "removeOwnedBrowserDirectory",
@@ -1355,7 +1355,7 @@
           "waitForChildExit",
           "waitForMapCount"
         ],
-        "physical_lines": 790
+        "physical_lines": 793
       },
       {
         "path": "web/tests/helpers/browser-command-deadline.mts",
@@ -1401,7 +1401,7 @@
       },
       {
         "path": "web/tests/ui-browser-fixture.mts",
-        "sha256": "d662ffb7b1cedc4f3cc7997778c08dfc948249dff2f6798816ad55ddcbd9f20e",
+        "sha256": "7cfcc8587b79b496486430c4cfd1bde4ea83d489ee18378974a55074a909893e",
         "symbols": [
           "controlPlatformCoverState",
           "createBrowserRouteFixture",
@@ -1412,7 +1412,7 @@
           "versionResponse",
           "workerConfiguration"
         ],
-        "physical_lines": 253
+        "physical_lines": 255
       },
       {
         "path": "web/tests/ui-browser-navigation-helpers.mts",
@@ -1431,7 +1431,7 @@
       },
       {
         "path": "web/tests/ui-browser-navigation-scenarios.mts",
-        "sha256": "7a6ad6983327c78c240610be2959945e5b1ec31e13fb7e8d71deb02b98d59a9a",
+        "sha256": "41f98efed8026ee4b44942ee4ae099ae6fafd600878a63bdba137ae4897a0d85",
         "symbols": [],
         "physical_lines": 255
       },
@@ -1443,7 +1443,7 @@
       },
       {
         "path": "web/tests/ui-browser-query-auth-helpers.mts",
-        "sha256": "a945f201133e61f9a57c97d094b3e7feb62236e5ed45ae6a5b3aed13758ab8c1",
+        "sha256": "913d20b67f4fec2158194b2fd71ab4609fb00d1bb701657be2c1b231a0fc2afd",
         "symbols": [
           "assertCreateOutcome",
           "assertStatusSnapshot",
@@ -3153,7 +3153,7 @@
       },
       {
         "path": "internal/store/stream_mutations_mariadb.go",
-        "sha256": "5e99fb304adaa2c5785ada3efbbdd6ebf8100d4f066d14431f36c6cd3cf928b9",
+        "sha256": "7ddef8744211386f9a91a7e6f6a4d3dc485b38c628d51101e1ccfe9ca818ae6a",
         "symbols": [
           "MariaDBStreamStore.DeleteStream",
           "MariaDBStreamStore.GetStream",
@@ -3163,7 +3163,7 @@
           "MariaDBStreamStore.UpdateStreamStatus",
           "UpsertStreamSettingsTx"
         ],
-        "physical_lines": 290
+        "physical_lines": 296
       },
       {
         "path": "internal/store/stream_queries_mariadb.go",
@@ -3203,7 +3203,7 @@
       },
       {
         "path": "internal/store/streams.go",
-        "sha256": "23f400d1ec2e2aae4092a0291b80f4851fb19d6972307b28f71e6f8c815e5b40",
+        "sha256": "be50f5278b57cb5c80f6927b188d93ccec2081d6ee61faaf2c5483e681c85e43",
         "symbols": [
           "ActiveStreamStore",
           "ArchiveProcessingStreamStore",
@@ -3228,7 +3228,7 @@
           "StreamYouTubeRuntime",
           "StreamYouTubeRuntimeStore"
         ],
-        "physical_lines": 220
+        "physical_lines": 223
       }
     ]
   },
@@ -4755,7 +4755,7 @@
       },
       {
         "path": "internal/store/memory_stream_settings.go",
-        "sha256": "9eae7ccad568ae943d4ebdbf734c1badc86c653d8b60a0f17050cbe794cbd582",
+        "sha256": "5e8868168a0b3194d877861136c08cc18acbc6cb8033746dda7b58e4eb4a9225",
         "symbols": [
           "*MemoryStreamStore.GetStreamMediaRuntime",
           "*MemoryStreamStore.SetStreamVideoOverlayBurnIn",
@@ -4763,7 +4763,7 @@
           "*MemoryStreamStore.UpdateStreamSettings",
           "cloneTimePtr"
         ],
-        "physical_lines": 106
+        "physical_lines": 111
       },
       {
         "path": "internal/store/memory_stream_start_claim.go",
@@ -5118,7 +5118,7 @@
     "destinations": [
       {
         "path": "web/tests/helpers/browser-harness.mts",
-        "sha256": "a9c285cf94e218adde4cf259ee8e31801e872986d8fbafa6ec8534b3c1b51671",
+        "sha256": "84cd6803955b7b6e266518d13f6fd582842fbeb512b3cd449a8d4143e803b95c",
         "symbols": [
           "BrowserHarness",
           "assertNoFatalError",
@@ -5171,7 +5171,7 @@
           "waitForRequestHandlersIdle",
           "waitForResponseCount"
         ],
-        "physical_lines": 790
+        "physical_lines": 793
       },
       {
         "path": "web/tests/helpers/browser-command-deadline.mts",
@@ -5317,7 +5317,7 @@
       },
       {
         "path": "web/tests/helpers/browser-harness.mts",
-        "sha256": "a9c285cf94e218adde4cf259ee8e31801e872986d8fbafa6ec8534b3c1b51671",
+        "sha256": "84cd6803955b7b6e266518d13f6fd582842fbeb512b3cd449a8d4143e803b95c",
         "symbols": [
           "BrowserHarness",
           "removeOwnedBrowserDirectory",
@@ -5326,7 +5326,7 @@
           "waitForChildExit",
           "waitForMapCount"
         ],
-        "physical_lines": 790
+        "physical_lines": 793
       },
       {
         "path": "web/tests/helpers/browser-command-deadline.mts",

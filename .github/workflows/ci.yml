@@ -773,6 +773,19 @@ jobs:
         env:
           AUTOSTREAM_BROWSER_PATH: /usr/bin/google-chrome
         run: npm run test:ui-foundation-browser
+      - name: Test full-page stream creation and all cover previews
+        timeout-minutes: 6
+        env:
+          AUTOSTREAM_BROWSER_PATH: /usr/bin/google-chrome
+          AUTOSTREAM_STREAM_CREATE_EVIDENCE_DIR: ${{ runner.temp }}/stream-create-cover-evidence
+        run: node --no-warnings --test --test-concurrency=1 tests/helpers/browser-viewport-capture.test.mts tests/stream-create-covers-browser.test.mts
+      - name: Upload stream creation and cover browser evidence
+        if: always() && !cancelled()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: stream-create-cover-evidence-${{ github.sha }}
+          path: ${{ runner.temp }}/stream-create-cover-evidence
+          if-no-files-found: warn
       - name: Test Observability and Updater UI operation witnesses
         run: npm run test:operation-witnesses
       - name: Test foundation migration action denominator

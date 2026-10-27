@@ -8,7 +8,7 @@ import { DraftExitContext, useDraftExit } from "@/components/forms/draft-exit";
 import { subscribeDraftSessionExit } from "@/lib/ui-v2/draft-navigation-lifecycle";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { AlertCircle, Plus, RadioTower, RotateCw } from "lucide-react";
+import { AlertCircle, ArrowLeft, Plus, RadioTower, RotateCw } from "lucide-react";
 
 import { DomainStatusBadge } from "@/components/foundation/status/domain-status-badge";
 import { streamStatusAllowsDelete, streamStatusAllowsEdit, streamStatusAllowsForceStop, streamStatusAllowsStart, streamStatusAllowsStop } from "@/features/streams/stream-lifecycle";
@@ -54,6 +54,8 @@ export function StreamsView() {
   const [selectedStream, setSelectedStream] = useState<Stream | null>(null);
   const detailTrigger = useRef<HTMLButtonElement | null>(null);
   const createTrigger = useRef<HTMLButtonElement | null>(null);
+  const createHeading = useRef<HTMLHeadingElement | null>(null);
+  const wasCreateOpen = useRef(false);
   const createFocus = useRef<StreamCreateFocus | null>(null);
   const createGeneration = useRef(0);
   const createCloseIntent = useRef<{ generation: number; document: Document; pathname: string; search: string } | null>(null);
@@ -73,13 +75,14 @@ export function StreamsView() {
   const can = (permission: string) => hasPermission(currentUser.data, permission);
   const canCreate = can("streams.create");
   const canUpdate = can("streams.update");
-  const createDraftExit = useDraftExit({ enabled: createOpen && canCreate, pending: false });
+  const createDraftExit = useDraftExit({ enabled: createOpen, pending: false });
   const editDraftExit = useDraftExit({ enabled: editingStream !== null && canUpdate, pending: false });
   const requestCreateOpen = useCallback(() => {
+    if (!canCreate) return;
     createGeneration.current++;
     createCloseIntent.current = null;
     setCreateOpen(true);
-  }, []);
+  }, [canCreate]);
   const requestCreateClose = useCallback(() => {
     const generation = createGeneration.current;
     return createDraftExit.request(() => {
@@ -88,6 +91,17 @@ export function StreamsView() {
       setCreateOpen(false);
     });
   }, [createDraftExit]);
+  const restoreCreateFocus = useCallback(() => {
+    const handoff = createFocus.current;
+    createFocus.current = null;
+    if (handoff) handoff.restoreAfterClose();
+    else createTrigger.current?.focus();
+  }, []);
+  useLayoutEffect(() => {
+    if (createOpen && canCreate) createHeading.current?.focus();
+    else if (wasCreateOpen.current && canCreate) restoreCreateFocus();
+    wasCreateOpen.current = createOpen;
+  }, [canCreate, createOpen, restoreCreateFocus]);
   useLayoutEffect(() => {
     const session = subscribeDraftSessionExit(window);
     createCloseSession.current = session;
@@ -106,7 +120,7 @@ export function StreamsView() {
   useEffect(() => {
     let connectedFocus: StreamCreateFocus | null = null;
     let releaseFocus: (() => void) | undefined;
-    const syncFromHash = () => {
+    const syncFromHash = (event?: HashChangeEvent) => {
       createCloseIntent.current = null;
       if (window.location.hash === "#create-stream") {
         if (canCreate && !createFocus.current) { createFocus.current = takeStreamCreateFocus(); if (createFocus.current) createTrigger.current = null; }
@@ -115,7 +129,9 @@ export function StreamsView() {
           releaseFocus = connectedFocus.connect({ document, pathname: window.location.pathname, search: window.location.search });
         }
         requestCreateOpen();
-      } else createDraftExit.request(() => setCreateOpen(false));
+      // Re-running this effect after an authority refresh is not navigation.
+      // A page-button draft has no create hash and must keep its current owner.
+      } else if (event) createDraftExit.request(() => setCreateOpen(false));
     };
     const navigation = (window as unknown as { navigation?: EventTarget }).navigation;
     const invalidateClose = () => { createCloseIntent.current = null; };
@@ -196,6 +212,7 @@ export function StreamsView() {
 
   return (
     <div className="space-y-5" data-screen-family="streams">
+      <div hidden={createOpen} className="space-y-5">
       <PageHeader title={ja ? "配信枠" : "Streams"}
         description={ja ? "担当EncoderとWorkerを選んで枠を作成し、開始条件と稼働状態を確認します。" : "Create a slot with its Encoder and Worker, then check start conditions and service readiness."}
         breadcrumbs={[{ label: ja ? "管理" : "Admin", href: "/admin/" }, { label: ja ? "配信枠" : "Streams" }]}
@@ -212,9 +229,16 @@ export function StreamsView() {
           filters={[{ id: "status", label: t("status"), options: streamTableURL.filters.status.map((value) => ({ value, label: t(presentStreamLifecycleStatus(value).labelKey) })) }]}
           filterPlaceholder={ja ? "取得済みの配信枠を検索" : "Search loaded streams"} getRowId={streamRowID} responsive /></StreamTableContext.Provider>
       </DetailSection>
-      <DraftExitContext.Provider value={createDraftExit}><Sheet open={createOpen} onOpenChange={(open) => { if (open) requestCreateOpen(); else requestCreateClose(); }}>
-        <SheetContent onCloseAutoFocus={(event) => { event.preventDefault(); const handoff = createFocus.current; createFocus.current = null; if (handoff) handoff.restoreAfterClose(); else createTrigger.current?.focus(); }} side="right" className="w-full overflow-y-auto p-0 sm:max-w-3xl"><SheetHeader className="sr-only"><SheetTitle>{uiText("配信枠を作成")}</SheetTitle><SheetDescription>{uiText("Discord VCの開始条件、入力、出力、録画を設定します。")}</SheetDescription></SheetHeader><StreamSlotForm className="min-h-full rounded-none border-0 shadow-none" actionController={actionController} onActionResult={handleStreamActionResult} canCreate={canCreate} canUpdate={canUpdate} canAssignEncoder={can("services.assign")} canAssignWorker={can("workers.assign")} onSaved={(stream) => { setCreatedStreams((current) => [stream, ...current.filter((item) => item.id !== stream.id)]); setActionNotice({ tone: "success", message: uiText("{0} を作成し、EncoderとWorkerを割り当てました。開始前に出力先と開始準備を確認してください。", stream.name) }); requestCreateClose(); }} /></SheetContent>
-      </Sheet></DraftExitContext.Provider>
+      </div>
+      {createOpen ? <DraftExitContext.Provider value={createDraftExit}>
+        <section data-stream-create-view aria-labelledby="stream-create-heading" className="min-w-0 space-y-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
+          <div className="flex min-w-0 flex-col gap-3 border-b pb-4 sm:flex-row sm:items-center sm:justify-between">
+            <h1 id="stream-create-heading" ref={createHeading} tabIndex={-1} className="text-xl font-semibold focus:outline-none">{uiText("配信枠を作成")}</h1>
+            <Button type="button" variant="outline" aria-label={ja ? "配信枠の一覧へ戻る" : "Back to stream list"} onClick={() => requestCreateClose()}><ArrowLeft aria-hidden="true" />{ja ? "戻る / キャンセル" : "Back / Cancel"}</Button>
+          </div>
+          <StreamSlotForm className="w-full min-w-0 shadow-none" actionController={actionController} onActionResult={handleStreamActionResult} canCreate={canCreate} canUpdate={canUpdate} canAssignEncoder={can("services.assign")} canAssignWorker={can("workers.assign")} onSaved={(stream) => { setCreatedStreams((current) => [stream, ...current.filter((item) => item.id !== stream.id)]); setActionNotice({ tone: "success", message: uiText("{0} を作成し、EncoderとWorkerを割り当てました。開始前に出力先と開始準備を確認してください。", stream.name) }); requestCreateClose(); }} />
+        </section>
+      </DraftExitContext.Provider> : null}
       <DraftExitContext.Provider value={editDraftExit}><Sheet open={editingStream !== null} onOpenChange={(open) => { if (!open) editDraftExit.request(() => setEditingStream(null)); }}>
         <SheetContent onCloseAutoFocus={(event) => { event.preventDefault(); editTrigger.current?.focus(); }} side="right" className="w-full overflow-y-auto p-0 sm:max-w-3xl"><SheetHeader className="sr-only"><SheetTitle>{uiText("配信枠を編集")}</SheetTitle><SheetDescription>{uiText("待機中または終了済みの配信枠の設定を変更します。")}</SheetDescription></SheetHeader>{editingStream ? <StreamSlotForm key={editingStream.id} stream={editingStream} className="min-h-full rounded-none border-0 shadow-none" actionController={actionController} onActionResult={handleStreamActionResult} canCreate={canCreate} canUpdate={canUpdate} canAssignEncoder={can("services.assign")} canAssignWorker={can("workers.assign")} onSaved={(stream) => { setCreatedStreams((current) => [stream, ...current.filter((item) => item.id !== stream.id)]); setActionNotice({ tone: "success", message: uiText("{0} の設定を更新しました。開始前に担当Nodeと出力先を確認してください。", stream.name) }); editDraftExit.request(() => setEditingStream(null)); }} /> : null}</SheetContent>
       </Sheet></DraftExitContext.Provider>
