@@ -32,14 +32,17 @@ test("UI-STREAM-IDENTITY-001: actual primary cell and dialog close callbacks ret
 });
 
 test("UI-STREAM-DETAIL-001: actual operation surface consumes the same controller for readiness/start/stop in ja/en", () => {
-  for (const locale of ["ja", "en"]) {
+  for (const locale of ["ja", "en"] as const) {
     const evaluated: string[] = [];
     const base = createStreamActionController({ getPermissions: () => ({ kind: "ready", permissions: ["streams.start", "streams.stop"] }),
       getState: () => ({ kind: "ready", freshness: "fresh", fingerprint: "current" }), mutate: async () => { throw new Error("render must never mutate"); } });
     const controller = { ...base, evaluate(intent: Parameters<typeof base.evaluate>[0]) { evaluated.push(intent.id); return base.evaluate(intent); } };
-    Object.defineProperty(globalThis, "window", { configurable: true, value: { localStorage: { getItem: () => locale } } });
+    const storedLocale = locale === "ja" ? "en" : "ja";
+    let storageReads = 0;
+    Object.defineProperty(globalThis, "window", { configurable: true, value: { localStorage: { getItem: () => { storageReads++; return storedLocale; } } } });
     try {
-      const html = renderToStaticMarkup(createElement(I18nProvider, null, createElement(StreamDetailOperations, { stream, controller, onResult() {}, notice: null })));
+      const html = renderToStaticMarkup(createElement(I18nProvider, { initialLocale: locale }, createElement(StreamDetailOperations, { stream, controller, onResult() {}, notice: null })));
+      assert.equal(storageReads, 0, "SSR locale uses initialLocale without reading the opposite browser mirror");
       assert.ok(evaluated.includes("STR-04") && evaluated.includes("STR-05") && evaluated.includes("STR-08"));
       assert.match(html, locale === "ja" ? /開始準備を再確認/ : /Check Readiness/);
       assert.match(html, /data-readiness="unknown"/);

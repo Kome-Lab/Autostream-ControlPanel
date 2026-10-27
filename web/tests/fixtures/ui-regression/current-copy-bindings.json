@@ -5,7 +5,6 @@
       "path": "web/src/features/streams/streams-view.tsx",
       "binding": {
         "keys": [
-          "Discord VCの開始条件、入力、出力、録画を設定します。",
           "{0} の設定を更新しました。開始前に担当Nodeと出力先を確認してください。",
           "{0} を作成し、EncoderとWorkerを割り当てました。開始前に出力先と開始準備を確認してください。",
           "{0} 再送せず、最新状態を確認してください。",
