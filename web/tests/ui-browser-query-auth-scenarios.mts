@@ -1,6 +1,7 @@
 import type { TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { BrowserHarness } from "./helpers/browser-harness.mts";
+import { waitForMinimumMapCount } from "./helpers/browser-response-count.mts";
 import { assertAuthMeExpiryOutcome, assertLoginNavigationOutcome, assertLogoutOutcome, assertNoBrowserConsoleErrors, authMeExpiryScenarioName } from "./helpers/ui-foundation-assertions.mts";
 import { type BrowserRouteFixture, currentUser, healthyRows, availableVersion, currentVersion, versionResponse, csrfStorageKey, expectedAuthMeExpiryReturnURL, loginReturnParameterName } from "./ui-browser-fixture.mts";
 import { statusSnapshotExpression, type StatusSnapshot, assertStatusSnapshot, waitForStatus, triggerReconnect, waitForShell, type LogoutBrowserSnapshot, logoutSnapshotExpression, type SessionExpirySnapshot, sessionExpirySnapshotExpression, type AuthMeExpiryBrowserSnapshot, authMeExpirySnapshotExpression } from "./ui-browser-query-auth-helpers.mts";
@@ -11,11 +12,27 @@ import { deferred, setStoredDisplay, waitForAnimationFrames } from "./ui-browser
 export async function runQueryStatesScenario(t: TestContext, browser: BrowserHarness, server: { baseUrl: string }, fixture: Pick<BrowserRouteFixture, "authResponse" | "healthResponse" | "versionFixture">) {
 
   await t.test("query states distinguish loading, empty, unhealthy, error, stale, recovery, and update variants", async () => {
+    const paths = ["/auth/me", "/settings/app", "/service-health", "/version"];
+    const nextDocument = async () => {
+      await browser.waitForRequestHandlersIdle({ method: "GET" });
+      return new Map(paths.map(path => [path, browser.responses.get(path) || 0]));
+    };
+    const completedRead = async (path: string, minimum: number, status: number) => {
+      await waitForMinimumMapCount(browser.responses, path, minimum, `completed query-state GET ${path}`, 15_000, () => browser.assertNoFatalError());
+      await browser.waitForRequestHandlersIdle({ pathname: path, method: "GET" });
+      assert.equal(browser.responseStatuses.get(path)?.at(-1), status, `${path}: intended query-state response completed`);
+    };
+    const completedState = async (baseline: ReadonlyMap<string, number>, healthStatus: number, versionStatus: number) => {
+      for (const path of paths) await completedRead(path, baseline.get(path)! + 1,
+        path === "/service-health" ? healthStatus : path === "/version" ? versionStatus : 200);
+      await browser.waitForRequestHandlersIdle({ method: "GET" });
+    };
     try {
       fixture.authResponse = { body: currentUser };
       await browser.setViewport(1440, 900);
       fixture.healthResponse = { body: healthyRows, delayMs: 1_200 };
       fixture.versionFixture = { body: availableVersion, delayMs: 1_200 };
+      const initialReads = await nextDocument();
       await browser.navigate(`${server.baseUrl}/admin/streams/`);
       const initial = await browser.waitFor(
         statusSnapshotExpression,
@@ -28,19 +45,24 @@ export async function runQueryStatesScenario(t: TestContext, browser: BrowserHar
         (value: StatusSnapshot) => value.health === "1/2 サービス稼働" && value.update === "更新 v1.3.0 を利用できます",
         "ready states did not replace loading",
       );
+      await completedState(initialReads, 200, 200);
 
       fixture.healthResponse = { body: [] };
       fixture.versionFixture = { body: currentVersion };
+      const emptyReads = await nextDocument();
       await browser.reload();
       const empty = await waitForStatus(browser, "登録済みサービスなし", "最新版です");
       assertStatusSnapshot(empty, { health: "登録済みサービスなし", update: "最新版です" });
+      await completedState(emptyReads, 200, 200);
 
       fixture.healthResponse = { status: 503, body: { code: "service_health_unavailable" } };
       fixture.versionFixture = { status: 503, body: { code: "version_unavailable" } };
+      await browser.waitForRequestHandlersIdle({ method: "GET" });
       browser.clearRequestCounts();
+      const failedReads = await nextDocument();
       await browser.reload();
-      await browser.waitForResponseCount("/service-health", 1);
-      await browser.waitForResponseCount("/version", 1);
+      await waitForMinimumMapCount(browser.responses, "/service-health", 1, "first 503 health response", 10_000, () => browser.assertNoFatalError());
+      await waitForMinimumMapCount(browser.responses, "/version", 1, "first 503 version response", 10_000, () => browser.assertNoFatalError());
       const failed = await browser.waitFor(
         statusSnapshotExpression,
         (value: StatusSnapshot) => value.health === "稼働状況を取得できません" && value.update === "更新情報を取得できません",
@@ -56,12 +78,16 @@ export async function runQueryStatesScenario(t: TestContext, browser: BrowserHar
         /health status/,
         "negative fixture: projecting a 503 as loading must fail",
       );
+      await completedState(failedReads, 503, 503);
 
       fixture.healthResponse = { body: healthyRows };
       fixture.versionFixture = { body: availableVersion };
+      const recoveredReads = await nextDocument();
       await browser.reload();
       await waitForStatus(browser, "1/2 サービス稼働", "更新 v1.3.0 を利用できます");
+      await completedState(recoveredReads, 200, 200);
       fixture.healthResponse = { status: 503, body: { code: "service_health_unavailable" } };
+      const staleResponse = browser.responses.get("/service-health") || 0;
       await triggerReconnect(browser);
       const stale = await browser.waitFor(
         statusSnapshotExpression,
@@ -70,8 +96,11 @@ export async function runQueryStatesScenario(t: TestContext, browser: BrowserHar
         15_000,
       );
       assert.equal(stale.health, "1/2 サービス稼働（更新失敗）");
+      await completedRead("/service-health", staleResponse + 1, 503);
+      await browser.waitForRequestHandlersIdle({ method: "GET" });
 
       fixture.healthResponse = { body: healthyRows };
+      const healthyResponse = browser.responses.get("/service-health") || 0;
       await triggerReconnect(browser);
       await browser.waitFor(
         statusSnapshotExpression,
@@ -79,16 +108,23 @@ export async function runQueryStatesScenario(t: TestContext, browser: BrowserHar
         "health status did not recover without a page reload",
         5_000,
       );
+      await completedRead("/service-health", healthyResponse + 1, 200);
+      await browser.waitForRequestHandlersIdle({ method: "GET" });
 
       fixture.versionFixture = { body: versionResponse({ source: "disabled" }) };
+      const disabledReads = await nextDocument();
       await browser.reload();
       await waitForStatus(browser, "1/2 サービス稼働", "更新情報は未確認です");
+      await completedState(disabledReads, 200, 200);
 
       fixture.healthResponse = { body: healthyRows };
       fixture.versionFixture = { body: currentVersion };
+      await browser.waitForRequestHandlersIdle({ method: "GET" });
       browser.clearRequestCounts();
+      const dashboardReads = await nextDocument();
       await browser.navigate(`${server.baseUrl}/admin/`);
       await waitForStatus(browser, "1/2 サービス稼働", "最新版です");
+      await completedState(dashboardReads, 200, 200);
       assert.equal(browser.requests.get("/service-health"), 1, "Shell and Dashboard must share the service-health request");
     } finally {
       fixture.authResponse = { body: currentUser };

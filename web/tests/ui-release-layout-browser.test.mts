@@ -3,6 +3,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { BrowserHarness, ensureWebServer, type RouteResolver } from "./helpers/browser-harness.mts";
+import { waitForMinimumMapCount } from "./helpers/browser-response-count.mts";
 import { createBrowserRouteFixture, localeStorageKey, requestedBaseUrl, webRoot } from "./ui-browser-fixture.mts";
 import { waitForShell } from "./ui-browser-query-auth-helpers.mts";
 import { scrollSelectorIntoView, waitForAnimationFrames } from "./ui-browser-navigation-helpers.mts";
@@ -24,6 +25,12 @@ const auditTarget = "update_agent_long_recording_target_for_layout_verification"
 const oauthName = "録画アーカイブと配信に使用する接続アカウント_174";
 const videoCoverName = "配信準備中の蓋画像プリセット 174";
 const widths = [1440, 390, 768] as const;
+const tabReadPaths: Readonly<Record<string, readonly [string, string]>> = {
+  "/admin/discord/": ["/discord/configs", "/discord/target-presets"],
+  "/admin/integrations/": ["/integrations/oauth-providers", "/integrations/oauth-accounts"],
+  "/admin/roles/": ["/roles", "/permissions"],
+  "/admin/security/": ["/security/settings", "/secrets/status"],
+};
 const nodeRow = "main .node-data-table tbody tr";
 const endpointButton = nodeRow + ' td[headers$="-endpoint"] button';
 
@@ -63,7 +70,20 @@ async function tabSnapshot(browser: BrowserHarness, activePanelOnly = false) {
   })()`);
 }
 
-async function checkTabs(browser: BrowserHarness, route: string, expected: readonly string[], width: number) {
+async function settledLayoutRead(browser: BrowserHarness, path: string, minimum: number) {
+  await waitForMinimumMapCount(browser.responses, path, minimum, `completed layout GET ${path}`, 10_000, () => browser.assertNoFatalError());
+  await browser.waitForRequestHandlersIdle({ pathname: path, method: "GET" });
+  assert.equal(browser.responseStatuses.get(path)?.at(-1), 200, `${path}: layout GET succeeds before leaving its UI owner`);
+}
+
+async function checkTabs(browser: BrowserHarness, route: string, expected: readonly string[], width: number, baseline: ReadonlyMap<string, number>) {
+  const [firstRead, secondRead] = tabReadPaths[route];
+  const settledPanel = async (path: string) => {
+    await settledLayoutRead(browser, path, (baseline.get(path) || 0) + 1);
+    await browser.waitFor(`(() => { const panel=document.querySelector('main [role="tabpanel"][data-state="active"]');return !!panel&&!panel.querySelector('[role="status"][aria-label="読込中"],[role="status"][aria-label="Loading"],button[aria-busy="true"]'); })()`, Boolean, `${route}: selected data panel has completed its GET`, 5_000);
+    await browser.waitForRequestHandlersIdle({ method: "GET" });
+  };
+  await settledPanel(firstRead);
   const snapshot = await tabSnapshot(browser);
   assert.deepEqual(snapshot.issues, [], `${route} at ${width}px`);
   assert.deepEqual(snapshot.tabs.map(tab => tab.name), expected);
@@ -74,10 +94,12 @@ async function checkTabs(browser: BrowserHarness, route: string, expected: reado
     const tab = document.getElementById(${JSON.stringify(second.id)}), panel = document.getElementById(${JSON.stringify(second.panel)});
     return document.activeElement === tab && tab?.getAttribute('aria-selected') === 'true' && panel?.getClientRects().length > 0;
   })()`, Boolean, `${route}: native ArrowRight selects the second tab`, 5_000);
+  await settledPanel(secondRead);
   await paint(browser);
   assert.deepEqual((await tabSnapshot(browser)).issues, [], `${route}: selected panel must not disturb tab geometry`);
   await browser.pressKey("ArrowLeft");
   await browser.waitFor(`document.activeElement?.id === ${JSON.stringify(first.id)} && document.activeElement?.getAttribute('aria-selected') === 'true'`, Boolean, `${route}: native ArrowLeft restores the first tab`, 5_000);
+  await settledPanel(firstRead);
 }
 
 async function expandRow(browser: BrowserHarness, row: string) {
@@ -236,10 +258,16 @@ test("CP174 release layouts retain readable records and keyboard-operable Japane
   const capture = async (name: string) => { if (evidenceDirectory) screenshots.push({ name, png: await browser.captureScreenshot() }); };
   const navigate = async (path: string) => {
     t.signal.throwIfAborted();
+    await browser.waitForRequestHandlersIdle({ method: "GET" });
+    const reads = ["/auth/me", "/settings/app", "/version", ...(tabReadPaths[path] || [])];
+    const baseline = new Map(reads.map(route => [route, browser.responses.get(route) || 0]));
     await browser.setViewport(1440, 900);
     await browser.navigate(server.baseUrl + path);
     await waitForShell(browser, "アカウントメニュー");
+    for (const route of reads.slice(0, 3)) await settledLayoutRead(browser, route, baseline.get(route)! + 1);
+    await browser.waitForRequestHandlersIdle({ method: "GET" });
     await paint(browser);
+    return baseline;
   };
   const resize = async (width: number) => {
     t.signal.throwIfAborted();
@@ -254,11 +282,11 @@ test("CP174 release layouts retain readable records and keyboard-operable Japane
     ["/admin/security/", ["セキュリティ設定", "シークレット登録状況"]],
   ] as const) {
     t.diagnostic(`${route}: start tab layout checks`);
-    await navigate(route);
+    const baseline = await navigate(route);
     await browser.waitFor("document.querySelectorAll('main [role=tab]').length", value => value === 2, `${route}: product tabs loaded`, 5_000);
     for (const width of widths) {
       await resize(width);
-      await checkTabs(browser, route, labels, width);
+      await checkTabs(browser, route, labels, width, baseline);
       if (route === "/admin/discord/" && width === 1440) await capture("discord-1440.png");
     }
     if (route === "/admin/integrations/") {
@@ -333,6 +361,7 @@ test("CP174 release layouts retain readable records and keyboard-operable Japane
 
   assert.deepEqual(unexpectedWrites, [], "layout checks cannot issue application mutations");
   assert.equal(browser.consoleErrorCount, 0, "no application console errors");
+  await browser.waitForRequestHandlersIdle({ method: "GET" });
   browser.assertNoFatalError();
   if (evidenceDirectory) {
     const directory = resolve(evidenceDirectory);

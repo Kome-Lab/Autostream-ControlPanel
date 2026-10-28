@@ -6,6 +6,7 @@ import {MediaIdentityLedger,readUAAXComparison,readUAOperationalComparison,readU
 import {readUADiagnostic,UAConditionDiagnostic,UAOutputFailure} from "../helpers/browser-ua-diagnostic.mts";
 import {exerciseUnavailableMedia} from "./media-keyboard-contract.mts";
 import {conditions} from "./matrix.mts";
+import {settleNativeMediaLoading} from "../helpers/browser-native-media-settlement.mts";
 
 const p=(name:string,value:boolean)=>({name,value:{value}});
 function reading(removed=false):UARead {
@@ -16,6 +17,74 @@ function reading(removed=false):UARead {
   return {host:{backendNodeId:10,nodeName:"VIDEO",nodeType:1,childNodeCount:0,attributes:[],shadowRoots:[{backendNodeId:20,nodeName:"#document-fragment",nodeType:11,childNodeCount:removed?0:2,shadowRootType:"user-agent",children:removed?[]:decoration}]},nodes,frame:{id:"frame",loaderId:"loader"},document:"frame:loader:1",media:{ready:0,network:3,error:4,source:true,currentSource:true,paused:true,atStart:true}};
 }
 const paint={visible:true,indicator:true};
+
+test("UI-UA-LOADING-SETTLEMENT: prebaseline observes only owned native loading completion without changing strict identity",async t=>{
+  const plan=(fault="natural-end")=>{
+    let step=0,releases=0,barriers=0,frames=0,mediaReads=0;
+    const methods:string[]=[],fatal=Error("owned transport fatal"),cleanup=Error("owned release failed");
+    const active=()=>!["initial-absent","initial-hidden","initial-inactive"].includes(fault)&&(fault!=="natural-end"||step<2);
+    const send=async(method:string,params:Record<string,unknown>={}):Promise<Record<string,unknown>>=>{
+      methods.push(method);
+      if(method==="DOM.enable")return {};
+      if(method==="Page.getFrameTree")return {frameTree:{frame:{id:"PRIVATE-FRAME",loaderId:fault==="frame-within"&&++frames>1||fault==="frame-between"&&step>0?"PRIVATE-REPLACED":"PRIVATE-LOADER"}}};
+      if(method==="Runtime.evaluate"){
+        if(String(params.expression).includes("requestAnimationFrame")){assert.equal(params.awaitPromise,true);step++;barriers++;return {result:{value:fault!=="bad-render-boundary"}};}
+        return {result:{objectId:"PRIVATE-HOST"}};
+      }
+      if(method==="DOM.describeNode"){
+        if(["fatal","fatal-cleanup"].includes(fault))throw fatal;
+        const hidden=fault==="initial-hidden"||fault==="natural-end"&&step>=2;
+        const spinner:UADOM={backendNodeId:50,nodeName:"DIV",nodeType:1,childNodeCount:0,attributes:["pseudo","-internal-media-controls-loading-panel-spinner-frame"]};
+        const panel:UADOM={backendNodeId:fault==="panel-replaced"&&step>0?31:30,nodeName:"DIV",nodeType:1,childNodeCount:0,attributes:["pseudo","-internal-media-controls-loading-panel"],shadowRoots:[{backendNodeId:40,nodeName:"#document-fragment",nodeType:11,shadowRootType:"user-agent",childNodeCount:hidden?0:1,children:hidden?[]:[spinner]}]};
+        const children=fault==="initial-absent"||fault==="panel-removed"&&step>0?[]:[panel];
+        if(fault==="multiple-panel")children.push({backendNodeId:99,nodeName:"DIV",nodeType:1,childNodeCount:0,attributes:["pseudo","-internal-media-controls-loading-panel"]});
+        if(fault==="orphan-spinner"){panel.shadowRoots![0].children=[];panel.shadowRoots![0].childNodeCount=0;children.push(spinner);}
+        if(fault==="spinner-removed"&&step>0){panel.shadowRoots![0].children=[];panel.shadowRoots![0].childNodeCount=0;}
+        return {node:{backendNodeId:fault==="host-replaced"&&step>0?11:10,nodeName:"VIDEO",nodeType:1,childNodeCount:0,shadowRoots:[{backendNodeId:fault==="root-replaced"&&step>0?21:20,nodeName:"#document-fragment",nodeType:11,shadowRootType:fault==="wrong-shadow"?"open":"user-agent",childNodeCount:fault==="partial-dom"?children.length+1:children.length,children}]}};
+      }
+      if(method==="DOM.resolveNode")return {object:{objectId:"PRIVATE-PART-"+String(params.backendNodeId)}};
+      if(method==="Runtime.callFunctionOn"){
+        const fn=String(params.functionDeclaration);
+        if(fn.startsWith("function(source)")){mediaReads++;return {result:{value:{owned:fault!=="wrong-source"&&!(fault==="source-within"&&mediaReads>1),ready:0,network:3,error:fault==="error-regressed"&&step>0?0:4,paused:true,atStart:true}}};}
+        if(fn.includes("getAnimations")){
+          const spinner=params.objectId==="PRIVATE-PART-50",running=spinner&&active()&&fault!=="paused"?4:0;
+          return {result:{value:{owned:fault!=="wrong-runtime-owner",display:fault==="initial-hidden"||fault==="natural-end"&&step>=2||fault==="hidden-not-empty"&&step>0?"none":"block",running,pending:spinner&&step===0&&running?4:0,paused:spinner&&fault==="paused"?4:0,total:spinner&&(running||fault==="paused")?4:0,unknown:fault==="unknown-animation"?1:0}}};
+        }
+        return {result:{value:true}};
+      }
+      if(method==="Runtime.releaseObjectGroup"){releases++;if(["cleanup","fatal-cleanup"].includes(fault))throw cleanup;return {};}
+      throw Error("unexpected pure-read method");
+    };
+    return {send,methods,fatal,cleanup,get releases(){return releases;},get barriers(){return barriers;}};
+  };
+  for(const status of ["initial-absent","initial-hidden","initial-inactive","natural-end"])await t.test(status,async()=>{
+    const owner=plan(status),actual=await settleNativeMediaLoading(owner.send,"independent-fixture",()=>0);
+    assert.deepEqual(actual,{status:status==="natural-end"?"observed-natural-end":status,reads:status==="natural-end"?3:1});
+    assert.equal(owner.releases,actual.reads);assert.equal(owner.barriers,status==="natural-end"?2:0);
+    assert.ok(owner.methods.every(method=>["DOM.enable","Page.getFrameTree","Runtime.evaluate","Runtime.callFunctionOn","DOM.describeNode","DOM.resolveNode","Runtime.releaseObjectGroup"].includes(method)),"no input, animation, media or AX mutation method");
+    assert.doesNotMatch(JSON.stringify(actual),/PRIVATE|FRAME|LOADER|HOST|PART|backend|nodeId|objectId|source/);
+  });
+  for(const fault of ["wrong-source","source-within","wrong-shadow","partial-dom","multiple-panel","orphan-spinner","wrong-runtime-owner","unknown-animation","paused","frame-within","frame-between","host-replaced","root-replaced","panel-replaced","panel-removed","spinner-removed","error-regressed","bad-render-boundary"])await t.test("reject-"+fault,async()=>{
+    const owner=plan(fault);await assert.rejects(settleNativeMediaLoading(owner.send,"independent-fixture",()=>0),error=>{
+      assert.ok(error instanceof Error);assert.doesNotMatch(error.message,/PRIVATE|https:|backend|nodeId|objectId/);return true;
+    });assert.ok(owner.releases>=1,"failed pure read always releases its group");
+  });
+  for(const fault of ["active-forever","hidden-not-empty"])await t.test("bounded-"+fault,async()=>{
+    const owner=plan(fault);await assert.rejects(settleNativeMediaLoading(owner.send,"independent-fixture",()=>0),/read bound/);assert.equal(owner.releases,128);
+    const timed=plan(fault);let tick=0;await assert.rejects(settleNativeMediaLoading(timed.send,"independent-fixture",()=>tick++*5000),/timed out/);assert.equal(timed.releases,1);
+  });
+  for(const fault of ["fatal","cleanup","fatal-cleanup"])await t.test("preserves-"+fault,async()=>{
+    const owner=plan(fault);await assert.rejects(settleNativeMediaLoading(owner.send,"independent-fixture",()=>0),error=>{
+      if(fault==="fatal-cleanup"){assert.ok(error instanceof AggregateError);assert.equal(error.cause,owner.fatal);assert.deepEqual(error.errors,[owner.fatal,owner.cleanup]);}
+      else assert.equal(error,fault==="fatal"?owner.fatal:owner.cleanup);return true;
+    });assert.equal(owner.releases,1);
+  });
+  await t.test("actual-harness-fatal-is-never-replaced-by-settlement",async()=>{
+    const {harness,socket}=createHarnessFixture(),fatal=Error("owned fatal before settlement");Reflect.set(harness,"fatalError",fatal);
+    try{await assert.rejects(harness.settleNativePublicMedia("independent-fixture"),error=>error===fatal);assert.equal(socket.commandsFor("DOM.enable").length,0);}
+    finally{await harness.close();}
+  });
+});
 
 test("UI-UA-PROPERTY-ORDER-044: actual observer normalizes property entry order only, preserving operational rejection",async t=>{
   for(const change of ["order","value","positive"]as const)await t.test(change,async()=>{

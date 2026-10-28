@@ -45,6 +45,21 @@ test("CP live polling preserves OAuth drafts, node confirmation and Workers page
     await mkdir(directory, { recursive: true });
     await writeFile(join(directory, name), await browser.captureScreenshot());
   };
+  const settledRead = async (path: string, minimum: number) => {
+    await waitForMinimumMapCount(browser.responses, path, minimum, `completed baseline GET ${path}`, 10_000, () => browser.assertNoFatalError());
+    await browser.waitForRequestHandlersIdle({ pathname: path, method: "GET" });
+    assert.equal(browser.responseStatuses.get(path)?.at(-1), 200, `${path}: baseline GET succeeds before the next UI phase`);
+  };
+  const navigateReady = async (route: string, resource: string) => {
+    await browser.waitForRequestHandlersIdle({ method: "GET" });
+    const reads = ["/auth/me", "/settings/app", "/version", resource];
+    const baseline = new Map(reads.map(path => [path, browser.responses.get(path) || 0]));
+    await browser.navigate(server.baseUrl + route);
+    await waitForShell(browser, "Account menu");
+    for (const path of reads) await settledRead(path, baseline.get(path)! + 1);
+    await browser.waitForRequestHandlersIdle({ method: "GET" });
+    await waitForAnimationFrames(browser);
+  };
 
   // Compose only the public route registration. The original fixture, live query
   // timers, browser process, Fetch lifecycle and failure guards are unchanged.
@@ -76,9 +91,10 @@ test("CP live polling preserves OAuth drafts, node confirmation and Workers page
 
   // The UI edits a synthetic label only; neither this case nor the other cases
   // confirms a write. Wait for real scheduled GETs, without manual refetch/events.
-  await browser.navigate(`${server.baseUrl}/admin/integrations/`);
-  await waitForShell(browser, "Account menu");
+  const initialOAuthResponses = browser.responses.get(oauthPath) || 0;
+  await navigateReady("/admin/integrations/", "/integrations/oauth-providers");
   await clickVisible(browser, 'main [role="tab"]', /^YouTube and Drive connections$/);
+  await settledRead(oauthPath, initialOAuthResponses + 1);
   await clickVisible(browser, 'main button', /^Edit Poll OAuth account$/);
   await clickVisible(browser, editInput);
   await browser.fillSelector(editInput, "Unsaved polling draft");
@@ -116,8 +132,7 @@ test("CP live polling preserves OAuth drafts, node confirmation and Workers page
   await browser.waitFor(`document.querySelector('[role="dialog"]') === null`, Boolean, "the fresh-baseline editor closes without mutation");
 
   fixture.nodesResponse = { body: [node], delayMs: 150 };
-  await browser.navigate(`${server.baseUrl}/admin/registered-nodes/`);
-  await waitForShell(browser, "Account menu");
+  await navigateReady("/admin/registered-nodes/", "/nodes");
   await clickVisible(browser, 'main button', /^Regenerate runtime token$/);
   await browser.waitFor(`document.querySelector('[role="alertdialog"]')?.textContent.includes('Poll Worker 00')`, Boolean, "confirmation targets the registered node");
   assert.equal(await browser.evaluate(`(() => {
@@ -148,8 +163,7 @@ test("CP live polling preserves OAuth drafts, node confirmation and Workers page
   }));
   fixture.nodesResponse = { body: [] };
   fixture.workersResponse = { body: rows, delayMs: 800 };
-  await browser.navigate(`${server.baseUrl}/admin/workers/`);
-  await waitForShell(browser, "Account menu");
+  await navigateReady("/admin/workers/", "/workers");
   await browser.waitFor(pageText, value => value === "Page 1 of 3", "17 Workers produce three pages");
   await clickVisible(browser, '[data-screen-family="workers"] [data-slot="table-pagination"] button', /^Next page$/);
   await browser.waitFor(pageText, value => value === "Page 2 of 3", "second page selected");
@@ -196,6 +210,7 @@ test("CP live polling preserves OAuth drafts, node confirmation and Workers page
   }
   assert.deepEqual(requestMethods.filter(request => request.method !== "GET" && request.method !== "HEAD" && request.path !== "/auth/session/refresh"), [], "no application or token mutation may be sent");
   assert.equal(browser.consoleErrorCount, 0, "no application console errors");
+  await browser.waitForRequestHandlersIdle({ method: "GET" });
   browser.assertNoFatalError();
 });
 

@@ -17,6 +17,7 @@ import { exerciseTable } from "./table-browser.mts";
 import { layoutExpression, assertLayout, type LayoutObservation } from "./layout-observation.mts";
 import { captureObservation } from "./capture.mts";
 import { staticExportServer } from "./static-server.mts";
+import { publicFixtureMedia } from "./media-keyboard-contract.mts";
 
 const web = fileURLToPath(new URL("../..", import.meta.url));
 const repository = resolve(web, "..");
@@ -207,6 +208,9 @@ export async function main() {
           await settleRender(target, "open", reportRender);
         }
         restoreForm = await driveFormContent(target, condition, freshNodeDraft);
+        if (condition.family === "public-archive-share" && condition.state === "ready" && ["keyboard", "forced-colors"].includes(condition.exercise || "")) {
+          write(condition.id + ".native-media-settlement.json", await target.settleNativePublicMedia(publicFixtureMedia));
+        }
         await paint(target);
         await settleRender(target, undefined, reportRender);
         const accessibility = await exerciseAccessibility(target, condition, value => write(condition.id + ".keyboard-trace.json", value),value=>write(condition.id+".ua-stability.json",value));

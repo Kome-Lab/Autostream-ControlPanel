@@ -198,6 +198,13 @@ export class BrowserHarness {
     return this.nativeFocusObserver.observe();
   }
 
+  async settleNativePublicMedia(source: string) {
+    this.assertNoFatalError();
+    if (this.closed) throw new Error("Browser harness closed");
+    const { settleNativeMediaLoading } = await import("./browser-native-media-settlement.mts");
+    return settleNativeMediaLoading((method, params) => this.send(method, params), source);
+  }
+
   ownedLaunchFacts(): BrowserOwnedLaunchFacts {
     this.assertNoFatalError();
     if (this.closed) throw new Error("Browser harness closed");

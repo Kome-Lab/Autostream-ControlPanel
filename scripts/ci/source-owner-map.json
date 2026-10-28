@@ -214,14 +214,14 @@
       },
       {
         "path": "web/tests/helpers/browser-harness.mts",
-        "sha256": "1b2b1a8a9495a86ca11bdb1a44d3cd14e516110b14c9c1adf3d6fe5d56b66bc5",
+        "sha256": "85ac70a2be852cddff808932a2e129fef4e1401c9bec30b3473b4977859b7eda",
         "symbols": [
           "BrowserHarness",
           "removeOwnedBrowserDirectory",
           "terminateChildProcess",
           "waitForChildExit"
         ],
-        "physical_lines": 782
+        "physical_lines": 789
       },
       {
         "path": "web/tests/helpers/browser-command-deadline.mts",
@@ -1384,14 +1384,14 @@
     "destinations": [
       {
         "path": "web/tests/helpers/browser-harness.mts",
-        "sha256": "1b2b1a8a9495a86ca11bdb1a44d3cd14e516110b14c9c1adf3d6fe5d56b66bc5",
+        "sha256": "85ac70a2be852cddff808932a2e129fef4e1401c9bec30b3473b4977859b7eda",
         "symbols": [
           "BrowserHarness",
           "removeOwnedBrowserDirectory",
           "terminateChildProcess",
           "waitForChildExit"
         ],
-        "physical_lines": 782
+        "physical_lines": 789
       },
       {
         "path": "web/tests/helpers/browser-command-deadline.mts",
@@ -1497,9 +1497,9 @@
       },
       {
         "path": "web/tests/ui-browser-query-auth-scenarios.mts",
-        "sha256": "4cfb602b9f07e068264b73e7886f898aab646d26711b974acb66eb96692b8c28",
+        "sha256": "6d11dfbe23c5bf66849c2f09b1e4c9f9a0453388c202cd58dd4ded6e814b47e4",
         "symbols": [],
-        "physical_lines": 403
+        "physical_lines": 439
       },
       {
         "path": "web/tests/ui-browser-start-readiness-scenarios.mts",
@@ -5196,7 +5196,7 @@
     "destinations": [
       {
         "path": "web/tests/helpers/browser-harness.mts",
-        "sha256": "1b2b1a8a9495a86ca11bdb1a44d3cd14e516110b14c9c1adf3d6fe5d56b66bc5",
+        "sha256": "85ac70a2be852cddff808932a2e129fef4e1401c9bec30b3473b4977859b7eda",
         "symbols": [
           "BrowserHarness",
           "assertNoFatalError",
@@ -5247,7 +5247,7 @@
           "waitForRequestHandlersIdle",
           "waitForResponseCount"
         ],
-        "physical_lines": 782
+        "physical_lines": 789
       },
       {
         "path": "web/tests/helpers/browser-command-deadline.mts",
@@ -5432,14 +5432,14 @@
       },
       {
         "path": "web/tests/helpers/browser-harness.mts",
-        "sha256": "1b2b1a8a9495a86ca11bdb1a44d3cd14e516110b14c9c1adf3d6fe5d56b66bc5",
+        "sha256": "85ac70a2be852cddff808932a2e129fef4e1401c9bec30b3473b4977859b7eda",
         "symbols": [
           "BrowserHarness",
           "removeOwnedBrowserDirectory",
           "terminateChildProcess",
           "waitForChildExit"
         ],
-        "physical_lines": 782
+        "physical_lines": 789
       },
       {
         "path": "web/tests/helpers/browser-command-deadline.mts",
