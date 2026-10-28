@@ -3,6 +3,9 @@ import { readFileSync } from "node:fs";
 import { register } from "node:module";
 import test from "node:test";
 
+import { registerSourceResolution } from "./helpers/moved-source.mts";
+
+registerSourceResolution();
 const resolverSource = [
   "let webRootURL;",
   "export function initialize(data) { webRootURL = data.webRootURL; }",

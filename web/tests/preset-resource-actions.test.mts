@@ -163,7 +163,7 @@ for (const preset of presets) {
 function intentFor(preset: Preset, operation: "create" | "update" | "delete"): ResourceActionIntent {
   return Object.freeze({
     id: preset[operation],
-    ...(operation === "create" ? {} : { row: Object.freeze({ id: "preset/one", name: preset.payload.name, revision: 7 }) }),
+    ...(operation === "create" ? {} : { row: Object.freeze({ id: "preset/one", ...preset.payload, revision: 7 }) }),
     ...(operation === "delete" ? {} : { payload: Object.freeze({ ...preset.payload, ...(operation === "update" ? { expected_revision: 7 } : {}) }) }),
     publicLabel: preset.payload.name,
   });

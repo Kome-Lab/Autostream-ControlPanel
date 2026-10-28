@@ -222,6 +222,8 @@ jobs:
         shell: bash
         env:
           AUTOSTREAM_MARIADB_TEST_DSN: autostream_ci:autostream-ci-password@tcp(127.0.0.1:3306)/autostream_ci?parseTime=true
+          # Only the system-settings fixture uses this to create its disposable UUID schema.
+          AUTOSTREAM_MARIADB_ISOLATED_TEST_DSN: root:autostream-ci-root-password@tcp(127.0.0.1:3306)/autostream_ci?parseTime=true
           # Existing disposable service administrator; never used by mutation transactions.
           AUTOSTREAM_MARIADB_LOCK_DIAGNOSTIC_DSN: root:autostream-ci-root-password@tcp(127.0.0.1:3306)/autostream_ci?parseTime=true
         run: |

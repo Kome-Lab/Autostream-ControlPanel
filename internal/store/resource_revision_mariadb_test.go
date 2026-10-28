@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -8,6 +9,15 @@ import (
 
 	"github.com/example/autostream-control-panel/internal/security"
 )
+
+func revisionFixtureCleanup(t *testing.T, run func(context.Context)) {
+	t.Helper()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 5*time.Second)
+		defer cancel()
+		run(ctx)
+	})
+}
 
 func TestMariaDBProfileRevisionAtomicSecretAndMonotonicAuthority(t *testing.T) {
 	db := cb15TestDB(t)
@@ -25,12 +35,12 @@ func TestMariaDBProfileRevisionAtomicSecretAndMonotonicAuthority(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _, _ = secrets.UpdateSecret(t.Context(), name, "") })
+	revisionFixtureCleanup(t, func(ctx context.Context) { _, _ = secrets.UpdateSecret(ctx, name, "") })
 	profile, err := profiles.CreateProfile(t.Context(), ProfileDiscordConfig, "SQL profile "+newUUID(), map[string]any{"service_id": "selected-bot", "bot_token_secret_name": name, "bot_token_fingerprint": status.Fingerprint})
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = profiles.DeleteProfile(t.Context(), ProfileDiscordConfig, profile.ID) })
+	revisionFixtureCleanup(t, func(ctx context.Context) { _ = profiles.DeleteProfile(ctx, ProfileDiscordConfig, profile.ID) })
 	baseline := resourceUpdatedAt(profile.UpdatedAt)
 	fresh := "synthetic-fresh-value"
 	input := ProfileUpdate{Name: profile.Name, Config: map[string]any{"service_id": "selected-bot", "bot_token_secret_name": name, "bot_token_fingerprint": security.SecretFingerprint(fresh)}, ExpectedUpdatedAt: &baseline, SecretChanges: []SecretWrite{{Name: name, Value: fresh}}}
@@ -106,13 +116,23 @@ func TestMariaDBProfileRevisionAtomicSecretAndMonotonicAuthority(t *testing.T) {
 func TestMariaDBDriveDestinationRevisionKeepsEncryptedFolderAtomic(t *testing.T) {
 	db := cb15TestDB(t)
 	integrations := NewMariaDBIntegrationStore(db, "synthetic-drive-cas-key")
-	created, err := integrations.CreateDriveDestination(t.Context(), DriveDestination{Name: "SQL destination " + newUUID(), AuthMode: "service_account", FolderID: "synthetic-initial-folder"})
+	provider, err := integrations.CreateOAuthProvider(t.Context(), OAuthProvider{ProviderType: "google", Name: "SQL Drive CAS " + newUUID(), Enabled: true, ClientID: "synthetic-drive-client", RedirectURI: "https://control.example.com/auth/oauth/callback"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = integrations.DeleteDriveDestination(t.Context(), created.ID) })
+	revisionFixtureCleanup(t, func(ctx context.Context) { _ = integrations.DeleteOAuthProvider(ctx, provider.ID) })
+	account, err := integrations.CreateOAuthAccount(t.Context(), OAuthAccount{ProviderID: provider.ID, ProviderType: provider.ProviderType, AccountLabel: "SQL Drive CAS account", Subject: newUUID(), Scopes: []string{"https://www.googleapis.com/auth/drive.file"}, RefreshToken: "synthetic-drive-refresh"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	revisionFixtureCleanup(t, func(ctx context.Context) { _ = integrations.DeleteOAuthAccount(ctx, account.ID) })
+	created, err := integrations.CreateDriveDestination(t.Context(), DriveDestination{Name: "SQL destination " + newUUID(), AuthMode: "oauth2", OAuthAccountID: account.ID, FolderID: "synthetic-initial-folder"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	revisionFixtureCleanup(t, func(ctx context.Context) { _ = integrations.DeleteDriveDestination(ctx, created.ID) })
 	baseline := created.UpdatedAt
-	mutation := DriveDestination{ID: created.ID, Name: created.Name, AuthMode: created.AuthMode, FolderID: "synthetic-fresh-folder", ExpectedUpdatedAt: &baseline}
+	mutation := DriveDestination{ID: created.ID, Name: created.Name, AuthMode: created.AuthMode, OAuthAccountID: created.OAuthAccountID, FolderID: "synthetic-fresh-folder", ExpectedUpdatedAt: &baseline}
 	saved, err := integrations.UpdateDriveDestination(t.Context(), mutation)
 	if err != nil || saved.UpdatedAt == baseline {
 		t.Fatal("fresh Drive CAS did not advance")

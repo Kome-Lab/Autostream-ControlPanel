@@ -6,6 +6,7 @@ import { execFileSync } from "node:child_process";
 import type { StatusAuthority, StatusVocabulary } from "./status-authority-types.mts";
 import { verifyStatusAuthoritySourceLocators } from "./status-authority-locators.mts";
 import { inverseR9ArchiveProcessingSource } from "../ui-regression/ui188-r9-finalization-deltas.mts";
+import { createPollingCurrentAdapter } from "../ui-regression/polling-current-source-delta.mts";
 
 export function readStatusAuthority(webRoot: string) {
   const authority: unknown = JSON.parse(readFileSync(
@@ -155,7 +156,28 @@ export function verifyStatusAuthoritySources(webRoot: string, authority: StatusA
       unavailableSources.push(`${source.repository}:${source.path}`);
       continue;
     }
-    const bytes = readFileSync(path);
+    const currentBytes = readFileSync(path);
+    let bytes: Buffer = currentBytes;
+    if (source.repository === "Autostream-ControlPanel" && source.id === "control-panel-domain" && source.path === "web/src/types/domain.ts") {
+      const historical = (() => {
+        try { return createPollingCurrentAdapter(controlPanelRoot).inverse(source.path, currentBytes); }
+        catch (cause) { throw new Error(`${source.repository}:${source.path} source digest`, { cause }); }
+      })();
+      assert.ok(historical, "status domain must have its immutable pre-polling source");
+      // Independently permit only these two optional metadata lines. A refreshed
+      // outer fixture cannot conceal any status vocabulary or other source edit.
+      let withoutMetadata = normalizeNewlines(currentBytes.toString("utf8"));
+      for (const property of ["settings_revision", "metadata_revision"]) {
+        const line = `  ${property}?: string;\n`;
+        assert.equal(withoutMetadata.split(line).length, 2, `${property}: exactly one optional metadata field is permitted`);
+        withoutMetadata = withoutMetadata.replace(line, "");
+      }
+      assert.equal(withoutMetadata, normalizeNewlines(historical.toString("utf8")), "status domain may differ only by the two optional polling metadata fields");
+      for (const vocabulary of authority.vocabularies.filter((entry) => entry.authorityId === source.id)) {
+        assert.ok(normalizeNewlines(currentBytes.toString("utf8")).includes(normalizeNewlines(vocabulary.excerpt)), `${vocabulary.id}: actual current status vocabulary changed`);
+      }
+      bytes = historical;
+    }
     assert.equal(sha256(bytes), source.sourceSha256, `${source.repository}:${source.path} source digest`);
     const normalizedSource = normalizeNewlines(bytes.toString("utf8"));
     for (const vocabulary of authority.vocabularies.filter((entry) => entry.authorityId === source.id)) {

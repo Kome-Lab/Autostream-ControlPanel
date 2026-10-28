@@ -20,9 +20,13 @@ func systemSettingsTestDB(t *testing.T) *sql.DB {
 	if dsn == "" {
 		t.Skip("real MariaDB not configured; no database PASS claimed")
 	}
-	cfg, err := mysql.ParseDSN(strings.TrimPrefix(dsn, "mysql://"))
+	isolatedDSN := os.Getenv("AUTOSTREAM_MARIADB_ISOLATED_TEST_DSN")
+	if strings.TrimSpace(isolatedDSN) == "" {
+		t.Fatal("isolated MariaDB test configuration is required when database validation is enabled")
+	}
+	cfg, err := mysql.ParseDSN(strings.TrimPrefix(isolatedDSN, "mysql://"))
 	if err != nil {
-		t.Fatal("invalid test DSN")
+		t.Fatal("invalid isolated test DSN")
 	}
 	cfg.DBName, cfg.ParseTime = "", true
 	admin, err := sql.Open("mysql", cfg.FormatDSN())

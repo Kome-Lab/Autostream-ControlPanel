@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 
 import {
   acceptedJobDOMExpression,
@@ -25,7 +26,13 @@ test(stPortGetBrowserParentName, { timeout: 300_000 }, async (t) => {
         browser.clearConsoleErrors();
         const requests = installStPortGetRoutes(browser, entry);
         await browser.navigate(`${baseUrl}/admin/application/?st_port_case=${expected.scenario_id}`);
-        await browser.waitForResponseCount("/system-updates", 1, 45_000);
+        const firstResponseDeadline = Date.now() + 45_000;
+        while ((browser.responses.get("/system-updates") || 0) < 1 && Date.now() < firstResponseDeadline) {
+          browser.assertNoFatalError();
+          await delay(20);
+        }
+        browser.assertNoFatalError();
+        assert.ok((browser.responses.get("/system-updates") || 0) >= 1, "actual CP GET response must settle within 45 seconds");
         await browser.waitFor<AcceptedJobDOM>(
           acceptedJobDOMExpression(entry),
           acceptedJobDOMMatches,
@@ -34,6 +41,8 @@ test(stPortGetBrowserParentName, { timeout: 300_000 }, async (t) => {
         );
         await browser.waitForRequestHandlersIdle({ pathname: "/system-updates", method: "GET" });
         assert.ok((browser.requests.get("/system-updates") || 0) >= 1, "production query must consume the actual GET response");
+        assert.ok((browser.responses.get("/system-updates") || 0) >= 1, "production query must complete an actual GET response");
+        assert.ok((browser.responseStatuses.get("/system-updates")?.length || 0) >= 1, "actual GET response status must be observed");
         assert.ok(browser.responseStatuses.get("/system-updates")?.every((status) => status === 200), "GET response status changed");
         assert.equal(requests.portMutationCount(), 0, "viewing accepted results must not mutate jobs");
         assert.equal(browser.consoleErrorCount, 0, "production view must not emit console errors");
