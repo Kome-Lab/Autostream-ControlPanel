@@ -2,12 +2,15 @@ package database
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/example/autostream-control-panel/internal/store"
+	"github.com/go-sql-driver/mysql"
 )
 
 func TestMariaDBStreamSettingsRevisionConcurrentWritersAndLifecycleIsolation(t *testing.T) {
@@ -51,6 +54,13 @@ func TestMariaDBStreamSettingsRevisionConcurrentWritersAndLifecycleIsolation(t *
 	if err = blocker.QueryRowContext(ctx, `SELECT id FROM streams WHERE id=? FOR UPDATE`, stream.ID).Scan(&locked); err != nil {
 		t.Fatal(err)
 	}
+	var blockerID uint64
+	var schema string
+	if err = blocker.QueryRowContext(ctx, `SELECT CONNECTION_ID(),DATABASE()`).Scan(&blockerID, &schema); err != nil || blockerID == 0 || schema == "" {
+		t.Fatal("held stream lock has no verified connection/database identity")
+	}
+	diagnostic, closeDiagnostic := streamSettingsLockDiagnosticPool(t, db, schema)
+	defer closeDiagnostic()
 	results := make(chan error, 2)
 	for _, name := range []string{"first contender", "second contender"} {
 		go func() {
@@ -58,20 +68,40 @@ func TestMariaDBStreamSettingsRevisionConcurrentWritersAndLifecycleIsolation(t *
 			results <- updateErr
 		}()
 	}
-	deadline := time.Now().Add(5 * time.Second)
+	// Bind the actual wait graph to this transaction's one held PRIMARY row.
+	// Prepared-statement INFO can retain '?' rather than the stream ID.
+	const waitQuery = `SELECT COUNT(DISTINCT requesting.trx_mysql_thread_id)
+FROM information_schema.INNODB_LOCK_WAITS waits
+JOIN information_schema.INNODB_TRX requesting ON requesting.trx_id = waits.requesting_trx_id
+JOIN information_schema.INNODB_TRX blocking ON blocking.trx_id = waits.blocking_trx_id
+JOIN information_schema.INNODB_LOCKS requested ON requested.lock_id = waits.requested_lock_id AND requested.lock_trx_id = waits.requesting_trx_id
+JOIN information_schema.INNODB_LOCKS held ON held.lock_id = waits.blocking_lock_id AND held.lock_trx_id = waits.blocking_trx_id
+WHERE blocking.trx_mysql_thread_id = ? AND requesting.trx_mysql_thread_id <> ?
+  AND requested.lock_table = ? AND held.lock_table = ?
+  AND requested.lock_index = 'PRIMARY' AND held.lock_index = 'PRIMARY'
+  AND requested.lock_type = 'RECORD' AND held.lock_type = 'RECORD'
+  AND requested.lock_space = held.lock_space
+  AND requested.lock_page = held.lock_page AND requested.lock_rec = held.lock_rec`
+	observeCtx, cancelObservation := context.WithTimeout(ctx, 5*time.Second)
+	defer cancelObservation()
+	table := "`" + schema + "`.`streams`"
+	waiting := 0
 	for {
-		var waiting int
-		pattern := "SELECT id FROM streams WHERE id = %" + stream.ID + "%FOR UPDATE%"
-		if err = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE ID<>CONNECTION_ID() AND DB=DATABASE() AND INFO LIKE ?`, pattern).Scan(&waiting); err != nil {
-			t.Fatalf("cannot observe the real competing settings reads: %v", err)
+		if err = diagnostic.QueryRowContext(observeCtx, waitQuery, blockerID, blockerID, table, table).Scan(&waiting); err != nil {
+			if observeCtx.Err() != nil {
+				t.Fatalf("both writers did not actually reach the held stream lock: waiting=%d", waiting)
+			}
+			t.Fatal("cannot observe the real competing settings row-lock waits")
 		}
 		if waiting == 2 {
+			t.Log("observed two distinct settings writers waiting on the held stream PRIMARY row")
 			break
 		}
-		if time.Now().After(deadline) {
+		select {
+		case <-observeCtx.Done():
 			t.Fatalf("both writers did not actually reach the held stream lock: waiting=%d", waiting)
+		case <-time.After(10 * time.Millisecond):
 		}
-		time.Sleep(10 * time.Millisecond)
 	}
 	if err = blocker.Commit(); err != nil {
 		t.Fatal(err)
@@ -114,4 +144,33 @@ func TestMariaDBStreamSettingsRevisionConcurrentWritersAndLifecycleIsolation(t *
 	if err != nil || after.Name != stream.Name || after.EncoderAudioGainDB != -3 || after.SettingsRevision != stream.SettingsRevision {
 		t.Fatalf("rejected writer changed retained settings: gain=%v revision=%q error=%v", after.EncoderAudioGainDB, after.SettingsRevision, err)
 	}
+}
+
+func streamSettingsLockDiagnosticPool(t *testing.T, application *sql.DB, schema string) (*sql.DB, func()) {
+	t.Helper()
+	dsn := strings.TrimSpace(os.Getenv("AUTOSTREAM_MARIADB_LOCK_DIAGNOSTIC_DSN"))
+	if dsn == "" {
+		// Local fixtures may already have PROCESS authority. Missing authority
+		// still fails the observation; it never skips or weakens the proof.
+		return application, func() {}
+	}
+	management, managementErr := mysql.ParseDSN(strings.TrimPrefix(dsn, "mysql://"))
+	mutation, mutationErr := mysql.ParseDSN(strings.TrimPrefix(strings.TrimSpace(os.Getenv("AUTOSTREAM_MARIADB_TEST_DSN")), "mysql://"))
+	if managementErr != nil || mutationErr != nil || management.Net != mutation.Net || management.Addr != mutation.Addr || management.DBName != schema || mutation.DBName != schema {
+		t.Fatal("settings lock diagnostic endpoint/database authority does not match the application")
+	}
+	management.Logger = &mysql.NopLogger{}
+	for _, duration := range []*time.Duration{&management.Timeout, &management.ReadTimeout, &management.WriteTimeout} {
+		if *duration <= 0 || *duration > 2*time.Second {
+			*duration = 2 * time.Second
+		}
+	}
+	connector, err := mysql.NewConnector(management)
+	if err != nil {
+		t.Fatal("cannot open the settings lock diagnostic connection")
+	}
+	diagnostic := sql.OpenDB(connector)
+	diagnostic.SetMaxOpenConns(1)
+	diagnostic.SetMaxIdleConns(1)
+	return diagnostic, func() { _ = diagnostic.Close() }
 }

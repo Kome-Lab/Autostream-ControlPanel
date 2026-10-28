@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {runInNewContext} from "node:vm";
 import {createHarnessFixture} from "../helpers/browser-cdp-socket-fixture.mts";
-import {MediaIdentityLedger,readUAAXComparison,readUAOperationalComparison,inheritUAAXComparison,type UARead,type UAAX,type UADOM,type UAOperationalComparison} from "../helpers/browser-ua-identity.mts";
+import {MediaIdentityLedger,readUAAXComparison,readUAOperationalComparison,readUAOperationalWitness,inheritUAAXComparison,type UARead,type UAAX,type UADOM,type UAOperationalComparison} from "../helpers/browser-ua-identity.mts";
 import {readUADiagnostic,UAConditionDiagnostic,UAOutputFailure} from "../helpers/browser-ua-diagnostic.mts";
 import {exerciseUnavailableMedia} from "./media-keyboard-contract.mts";
 import {conditions} from "./matrix.mts";
@@ -104,6 +104,51 @@ test("UI-UA-PROPERTY-ORDER-044: actual observer normalizes property entry order 
     const diagnostic=new UAConditionDiagnostic();await assert.rejects(diagnostic.observe("restore",async()=>{throw actual;}),error=>error===actual);
     const saved:unknown[]=[];assert.throws(()=>diagnostic.write("owned-operational-record",value=>saved.push(value)),/incomplete\/overflow/);
     assert.equal((saved[0]as {overflow:boolean}).overflow,true);assert.doesNotMatch(JSON.stringify(saved),/SECRET|ancestor[0-9]|nodeId|backendDOM/);
+  });
+  for(const fault of ["same-AX-passive","AX-gone-DOM-survives","same-DOM-new-AX"]as const)await t.test("first-membership-witness-"+fault,async()=>{
+    const before=reading();before.nodes[2].role={value:"group"};before.nodes[2].ignored=false;
+    const next=structuredClone(before),owner=protocolOwner(),diagnostic=new UAConditionDiagnostic();
+    if(fault==="same-AX-passive"){next.nodes[2].role={value:"none"};next.nodes[2].ignored=true;}
+    else{next.nodes.pop();next.nodes[1].childIds=[];if(fault==="same-DOM-new-AX"){next.nodes.push({nodeId:"SECRET-replacement",backendDOMNodeId:32,role:{value:"none"},ignored:true,properties:[],childIds:[]});next.nodes[1].childIds=["SECRET-replacement"];}}
+    try{
+      await owner.observe(before);let caught:unknown;
+      await assert.rejects(diagnostic.observe("negative-space-return",async()=>{try{return await owner.observe(next);}catch(error){caught=error;throw error;}}),error=>error===caught);
+      assert.ok(caught instanceof assert.AssertionError);assert.match(caught.message,/complete UA control\/focused ancestry changed/);
+      const witness=readUAOperationalWitness(caught);assert.ok(witness);
+      const same=fault==="same-AX-passive",unique=fault!=="AX-gone-DOM-survives";
+      assert.deepEqual(witness,{ax:same?"present":"absent",dom:"present",match:unique?"unique":"none",roles:["group",same?"none":"absent",unique?"none":"absent"],tags:["DIV","DIV"],ignored:[false,same?true:null,unique?true:null],mapping:["owned",same?"owned":"absent",unique?"owned":"absent"],reasons:[[0,0,0,1,0],same?[0,0,0,0,0]:null,unique?[0,0,0,0,0]:null]});
+      assert.ok(Object.isFrozen(witness)&&Object.isFrozen(witness.reasons)&&Object.isFrozen(witness.reasons[0]!));
+      const wrapped=new AggregateError([caught,Error("SECRET cleanup")],"UA observation and cleanup failed",{cause:caught});inheritUAAXComparison(caught,wrapped);assert.equal(readUAOperationalWitness(wrapped),witness);
+      const saved:unknown[]=[];diagnostic.write("owned-first-witness",value=>saved.push(value));assert.deepEqual((saved[0]as {observations:{witness:unknown}[]}).observations[0].witness,witness);
+      assert.ok(Buffer.byteLength(JSON.stringify(saved,null,2)+"\n")<=4096);assert.doesNotMatch(JSON.stringify(saved),/SECRET|backendDOM|nodeId|objectId/);
+      assert.equal((await owner.observe(before)).stable,true,"witness generation must not commit the rejected membership change");
+    }finally{await owner.harness.close();}
+  });
+  await t.test("first-membership-witness-unknown-boundaries",()=>{
+    for(const fault of ["unknown-role","unmapped-ancestor","multiple-next-mappings"]as const){
+      const before=reading();before.nodes[2].role={value:fault==="unknown-role"?"SECRET-ROLE":"group"};before.nodes[2].ignored=false;
+      let next=structuredClone(before);
+      if(fault==="unknown-role"){before.host.shadowRoots![0].children![1].nodeName="SECRET-TAG";next=structuredClone(before);next.nodes[2].role={value:"none"};next.nodes[2].ignored=true;}
+      if(fault==="unmapped-ancestor"){delete before.nodes[0].backendDOMNodeId;before.nodes[0].properties!.push({name:"SECRET-property",value:{value:"SECRET-before"}});next=structuredClone(before);next.nodes[0].properties!.at(-1)!.value.value="SECRET-after";}
+      if(fault==="multiple-next-mappings"){next=reading(true);next.nodes[0].childIds!.push("decoration","SECRET-duplicate");for(const id of ["decoration","SECRET-duplicate"])next.nodes.push({nodeId:id,backendDOMNodeId:32,role:{value:"none"},ignored:true,properties:[],childIds:[]});}
+      const ledger=new MediaIdentityLedger(before),first=ledger.first;let caught:unknown;try{ledger.prepare(next,next,paint);}catch(error){caught=error;}
+      assert.ok(caught instanceof assert.AssertionError);assert.match(caught.message,/complete UA control\/focused ancestry changed/);const witness=readUAOperationalWitness(caught);assert.ok(witness);assert.deepEqual(ledger.first,first);
+      if(fault==="unknown-role"){assert.equal(witness.roles[0],"unknown");assert.deepEqual(witness.tags,["unknown","unknown"]);}
+      if(fault==="unmapped-ancestor"){assert.equal(witness.ax,"present");assert.equal(witness.dom,"unmapped");assert.equal(witness.match,"unmapped");assert.equal(witness.mapping[0],"unmapped");assert.equal(witness.roles[2],"unknown");assert.equal(witness.reasons[2],null);}
+      if(fault==="multiple-next-mappings"){assert.equal(witness.ax,"present");assert.equal(witness.dom,"not-in-owned-read");assert.equal(witness.match,"multiple");assert.equal(witness.roles[2],"unknown");assert.equal(witness.mapping[2],"unknown");assert.equal(witness.reasons[2],null);}
+      assert.doesNotMatch(JSON.stringify(witness),/SECRET|backendDOM|nodeId|objectId/);
+    }
+    let reads=0;const poison=Object.create(null);Object.defineProperty(poison,"cause",{get(){reads++;throw Error("SECRET");}});assert.equal(readUAOperationalWitness(poison),undefined);const target=Error("SECRET");inheritUAAXComparison(poison,target);assert.equal(readUAOperationalWitness(target),undefined);assert.equal(reads,0);
+    assert.equal(readUAOperationalWitness(new assert.AssertionError({message:"complete UA control/focused ancestry changed"})),undefined);
+  });
+  await t.test("first-membership-witness-compact-error-and-byte-bound",async()=>{
+    const before=reading(),next=reading(),owner=protocolOwner(),diagnostic=new UAConditionDiagnostic();before.nodes[0].properties!.push({name:"SECRET-property",value:{value:"SECRET-before"}});next.nodes[0].properties!.push({name:"SECRET-property",value:{value:"SECRET-after"}});
+    try{
+      await owner.observe(before);let caught:unknown;await assert.rejects(diagnostic.observe("restore",async()=>{try{return await owner.observe(next);}catch(error){caught=error;throw error;}}),error=>error===caught);
+      assert.ok(caught instanceof assert.AssertionError);const witness=readUAOperationalWitness(caught);assert.ok(witness);const saved:unknown[]=[];diagnostic.write("owned-compact-witness",value=>saved.push(value));const row=(saved[0]as {observations:{delta:number[];witness:unknown}[]}).observations[0];assert.deepEqual(row.delta,[0,0,0]);assert.deepEqual(row.witness,witness);
+      const bounded=new UAConditionDiagnostic();for(let i=0;i<16;i++)await assert.rejects(bounded.observe("restore",async()=>{throw caught;}),error=>error===caught);const overflow:unknown[]=[];assert.throws(()=>bounded.write("owned-compact-witness",value=>overflow.push(value)),UAOutputFailure);assert.equal((overflow[0]as {code:string}).code,"UA_OBSERVATION_STABILITY_OVERFLOW");
+      assert.doesNotMatch(JSON.stringify(saved),/SECRET|backendDOM|nodeId|objectId/);
+    }finally{await owner.harness.close();}
   });
 });
 const children=(r:UARead)=>r.host.shadowRoots![0].children!;

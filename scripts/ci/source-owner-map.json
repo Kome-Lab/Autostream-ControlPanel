@@ -461,7 +461,7 @@
       },
       {
         "path": "web/tests/helpers/browser-network-cancel-proof.mts",
-        "sha256": "a5b1adac5f8473cac2c5f333431caa2bf313e604ea0707fb776e6b7fce2f9a89",
+        "sha256": "69af109d721e666c0883c93ecd9ba09740ca2fc0b24a7f56c9943806dc35dd72",
         "symbols": [
           "requestURL",
           "takeNetworkCancellationTicket"
@@ -470,7 +470,7 @@
       },
       {
         "path": "web/tests/helpers/browser-network-cancel-proof.test.mts",
-        "sha256": "569e1ed664c28572bd4385a88c9700d69cb4d52bca3001b6257a7259f59c064e",
+        "sha256": "1ad65dfaa8beb8207ad54fbb8b7240e44ce30eb78e73fe38e1cb0a9642c518af",
         "symbols": [
           "changeEvent",
           "fixture",
@@ -479,7 +479,7 @@
           "request",
           "steps"
         ],
-        "physical_lines": 662
+        "physical_lines": 760
       },
       {
         "path": "web/tests/helpers/browser-response-count.mts",
@@ -1563,7 +1563,7 @@
       },
       {
         "path": "web/tests/helpers/browser-network-cancel-proof.mts",
-        "sha256": "a5b1adac5f8473cac2c5f333431caa2bf313e604ea0707fb776e6b7fce2f9a89",
+        "sha256": "69af109d721e666c0883c93ecd9ba09740ca2fc0b24a7f56c9943806dc35dd72",
         "symbols": [
           "requestURL",
           "takeNetworkCancellationTicket"
@@ -1572,7 +1572,7 @@
       },
       {
         "path": "web/tests/helpers/browser-network-cancel-proof.test.mts",
-        "sha256": "569e1ed664c28572bd4385a88c9700d69cb4d52bca3001b6257a7259f59c064e",
+        "sha256": "1ad65dfaa8beb8207ad54fbb8b7240e44ce30eb78e73fe38e1cb0a9642c518af",
         "symbols": [
           "changeEvent",
           "fixture",
@@ -1581,7 +1581,7 @@
           "request",
           "steps"
         ],
-        "physical_lines": 662
+        "physical_lines": 760
       },
       {
         "path": "web/tests/helpers/browser-response-count.mts",
@@ -5305,7 +5305,7 @@
       },
       {
         "path": "web/tests/helpers/browser-network-cancel-proof.mts",
-        "sha256": "a5b1adac5f8473cac2c5f333431caa2bf313e604ea0707fb776e6b7fce2f9a89",
+        "sha256": "69af109d721e666c0883c93ecd9ba09740ca2fc0b24a7f56c9943806dc35dd72",
         "symbols": [
           "requestURL",
           "takeNetworkCancellationTicket"
@@ -5314,7 +5314,7 @@
       },
       {
         "path": "web/tests/helpers/browser-network-cancel-proof.test.mts",
-        "sha256": "569e1ed664c28572bd4385a88c9700d69cb4d52bca3001b6257a7259f59c064e",
+        "sha256": "1ad65dfaa8beb8207ad54fbb8b7240e44ce30eb78e73fe38e1cb0a9642c518af",
         "symbols": [
           "changeEvent",
           "fixture",
@@ -5323,7 +5323,7 @@
           "request",
           "steps"
         ],
-        "physical_lines": 662
+        "physical_lines": 760
       },
       {
         "path": "web/tests/helpers/browser-response-count.mts",
@@ -5474,7 +5474,7 @@
       },
       {
         "path": "web/tests/helpers/browser-network-cancel-proof.mts",
-        "sha256": "a5b1adac5f8473cac2c5f333431caa2bf313e604ea0707fb776e6b7fce2f9a89",
+        "sha256": "69af109d721e666c0883c93ecd9ba09740ca2fc0b24a7f56c9943806dc35dd72",
         "symbols": [
           "requestURL",
           "takeNetworkCancellationTicket"
@@ -5483,7 +5483,7 @@
       },
       {
         "path": "web/tests/helpers/browser-network-cancel-proof.test.mts",
-        "sha256": "569e1ed664c28572bd4385a88c9700d69cb4d52bca3001b6257a7259f59c064e",
+        "sha256": "1ad65dfaa8beb8207ad54fbb8b7240e44ce30eb78e73fe38e1cb0a9642c518af",
         "symbols": [
           "changeEvent",
           "fixture",
@@ -5492,7 +5492,7 @@
           "request",
           "steps"
         ],
-        "physical_lines": 662
+        "physical_lines": 760
       },
       {
         "path": "web/tests/helpers/browser-response-count.mts",

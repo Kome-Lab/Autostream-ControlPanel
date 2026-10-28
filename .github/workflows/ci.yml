@@ -343,6 +343,8 @@ jobs:
         shell: bash
         env:
           AUTOSTREAM_MARIADB_TEST_DSN: autostream_ci:autostream-ci-password@tcp(127.0.0.1:3306)/autostream_ci?parseTime=true
+          # Observe held locks only; mutation transactions retain the application connection.
+          AUTOSTREAM_MARIADB_LOCK_DIAGNOSTIC_DSN: root:autostream-ci-root-password@tcp(127.0.0.1:3306)/autostream_ci?parseTime=true
         run: |
           set -euo pipefail
           mapfile -t migration_tests < <(

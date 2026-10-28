@@ -86,13 +86,61 @@ export type UAOperationalComparison=Readonly<{
   rows:readonly Readonly<{role:string;relation:string;fields:readonly string[]}>[];
 }>;
 const operationalComparisonFailures=new WeakMap<object,UAOperationalComparison>();
+type RequiredBits=readonly[number,number,number,number,number];
+export type UAOperationalWitness=Readonly<{
+  ax:"present"|"absent"|"unknown";dom:"present"|"not-in-owned-read"|"unmapped"|"unknown";match:"unique"|"none"|"multiple"|"unmapped"|"unknown";
+  roles:readonly[string,string,string];tags:readonly[string,string];ignored:readonly[boolean|null,boolean|null,boolean|null];
+  mapping:readonly[string,string,string];reasons:readonly[RequiredBits|null,RequiredBits|null,RequiredBits|null];
+}>;
+const operationalWitnessFailures=new WeakMap<object,UAOperationalWitness>();
+const witnessRoles=new Set(["Video","Audio","button","slider","spinbutton","RootWebArea","generic","none","group","StaticText","InlineTextBox","tooltip","Tooltip","status","alert","DateTime","paragraph","LabelText","image","progressbar"]);
+const witnessTags=new Set(["VIDEO","AUDIO","DIV","SPAN","INPUT","BUTTON","STYLE","#text","#document-fragment"]);
+const unknownOperationalWitness:UAOperationalWitness=Object.freeze({ax:"unknown",dom:"unknown",match:"unknown",roles:Object.freeze(["unknown","unknown","unknown"]as const),tags:Object.freeze(["unknown","unknown"]as const),ignored:Object.freeze([null,null,null]as const),mapping:Object.freeze(["unknown","unknown","unknown"]as const),reasons:Object.freeze([null,null,null]as const)});
+// Slots: original AX, same AX in the next full tree, unique next AX on old DOM.
+// Bits: focused/focusable/disabled/non-passive-role/extra-properties. DOM/tag
+// membership is only in the complete owned UA DOM read, never global deletion.
+function operationalWitness(before:Proof,next:Proof,record:UAOperationalComparison):UAOperationalWitness{
+  const controls=(p:Proof)=>p.axis.related.filter(p.axis.required);
+  const relevant=(p:Proof)=>new Map(controls(p).flatMap(n=>p.axis.chains.get(n.nodeId)!).map(n=>[n.nodeId,n]));
+  const old=relevant(before),now=relevant(next);
+  for(const id of new Set([...old.keys(),...now.keys()])){
+    const a=old.get(id),b=now.get(id),fields:string[]=[];
+    if(!a||!b)fields.push(a?"removed":"added");
+    else{
+      for(const key of ["backendDOMNodeId","frameId","role","ignored"]as const)if(encode(a[key])!==encode(b[key]))fields.push(key==="backendDOMNodeId"?"DOM-mapping":key==="frameId"?"frame":key);
+      for(const key of ["focusable","focused","disabled"])if(flag(a,key)!==flag(b,key))fields.push(key);
+      if(encode(a.properties)!==encode(b.properties))fields.push(encode(sort(a.properties||[]))===encode(sort(b.properties||[]))?"property-order":"property-value-or-set");
+      if(before.axis.parents.get(id)!==next.axis.parents.get(id))fields.push("parent");
+    }
+    if(!fields.length)continue;
+    if(!a||encode(fields)!==encode(record.rows[0]?.fields))return unknownOperationalWitness;
+    const same=next.axis.byID.get(id),backend=a.backendDOMNodeId,valid=Number.isSafeInteger(backend)&&backend!>0;
+    const matches=valid?[...next.axis.byID.values()].filter(n=>n.backendDOMNodeId===backend):[],unique=matches.length===1?matches[0]:undefined;
+    const nodeRole=(n:UAAX|undefined,absent=false)=>n?witnessRoles.has(n.role?.value||"")?n.role!.value!:"unknown":absent?"absent":"unknown";
+    const mapping=(p:Proof,n:UAAX|undefined,absent=false)=>!n?absent?"absent":"unknown":!Number.isSafeInteger(n.backendDOMNodeId)||n.backendDOMNodeId!<=0?"unmapped":p.rows.has(n.backendDOMNodeId!)?"owned":"outside-owner";
+    const reasons=(p:Proof,n:UAAX|undefined):RequiredBits|null=>{
+      if(!n)return null;
+      const bits=[Number(flag(n,"focused")),Number(flag(n,"focusable")),Number(flag(n,"disabled")),Number(!passiveRoles.has(n.role?.value||"")),Number((n.properties||[]).some(v=>!["focusable","focused","disabled"].includes(v.name)))]as const;
+      if(bits.some(Boolean)!==p.axis.required(n))throw Error("UA witness predicate unavailable");return Object.freeze(bits);
+    };
+    const tag=(p:Proof)=>{const value=valid?p.rows.get(backend!)?.tag:undefined;return value&&witnessTags.has(value)?value:"unknown";};
+    return Object.freeze({ax:same?"present":"absent",dom:valid?next.rows.has(backend!)?"present":"not-in-owned-read":"unmapped",match:!valid?"unmapped":matches.length===1?"unique":matches.length===0?"none":"multiple",
+      roles:Object.freeze([nodeRole(a),nodeRole(same,!same),nodeRole(unique,valid&&matches.length===0)]as const),tags:Object.freeze([tag(before),tag(next)]as const),
+      ignored:Object.freeze([a.ignored??null,same?.ignored??null,unique?.ignored??null]as const),mapping:Object.freeze([mapping(before,a),mapping(next,same,!same),mapping(next,unique,valid&&matches.length===0)]as const),reasons:Object.freeze([reasons(before,a),reasons(next,same),reasons(next,unique)]as const)});
+  }
+  return unknownOperationalWitness;
+}
 function bindUAOperationalComparison(error:unknown,before:Proof,next:Proof){
   if(!(error instanceof assert.AssertionError))return;
   const record=operationalDifference(before,next);
   operationalComparisonFailures.set(error,Object.freeze({...record,rows:Object.freeze(record.rows.map(row=>Object.freeze({...row,fields:Object.freeze(row.fields.slice())})))}));
+  try{operationalWitnessFailures.set(error,operationalWitness(before,next,record));}catch{operationalWitnessFailures.set(error,unknownOperationalWitness);}
 }
 export function readUAOperationalComparison(value:unknown):UAOperationalComparison|undefined{
   return value!==null&&(typeof value==="object"||typeof value==="function")?operationalComparisonFailures.get(value):undefined;
+}
+export function readUAOperationalWitness(value:unknown):UAOperationalWitness|undefined{
+  return value!==null&&(typeof value==="object"||typeof value==="function")?operationalWitnessFailures.get(value):undefined;
 }
 // The actual failed comparison owns this finite record. It contains neither
 // protocol identities nor property names/values and cannot authorize a delta.
@@ -120,6 +168,8 @@ export function inheritUAAXComparison(source:unknown,target:unknown){
   if(record&&target!==null&&(typeof target==="object"||typeof target==="function"))axComparisonFailures.set(target,record);
   const operational=readUAOperationalComparison(source);
   if(operational&&target!==null&&(typeof target==="object"||typeof target==="function"))operationalComparisonFailures.set(target,operational);
+  const witness=readUAOperationalWitness(source);
+  if(witness&&target!==null&&(typeof target==="object"||typeof target==="function"))operationalWitnessFailures.set(target,witness);
 }
 
 export function classifyUANode(node:UADOM, matches:UAAX[]):"stylesheet"|"text"|"container"|"interactive-or-unknown" {

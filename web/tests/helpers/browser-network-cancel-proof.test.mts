@@ -549,7 +549,7 @@ test("closed Network route diagnostics classify fixed reads without expanding ca
     ["/admin/private-tree.json", "ADMIN_JSON"], ["/admin/private-stream", "ADMIN_ROUTE"],
     ["/favicon.ico", "FAVICON"], ["/streams/private-id", "OTHER"], ["/auth/me/private-id", "OTHER"],
   ];
-  const allowed = new Set([path, "/auth/me", "/workers", "/nodes"]);
+  const allowed = new Set([path, "/auth/me", "/workers", "/nodes", "/version"]);
   for (const [pathname, route] of routes) {
     const { lifecycle, proof, claim } = fixture(steps(pathname), { pathname });
     const ticket = claim(), metadata = proof.failureDiagnostic(id, lifecycle, session, current);
@@ -659,4 +659,102 @@ test("extra diagnostic capture, serialization, size and print failures cannot re
     assert.ok(metadata.generation_diagnostic, "the established failure diagnostic is retained");
     if (mode === "oversized") assert.equal(metadata.network_cancellation_diagnostic_unavailable, "oversized");
   }
+});
+
+test("actual optional Version harness cancellation retains its prior response and completes once without CDP send", async () => {
+  const pathname = "/version";
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const lifecycle = new FetchRequestLifecycle(), proof = new BrowserNetworkCancelProof(lifecycle, session), sends: string[] = [];
+  const browser = Object.assign(Object.create(BrowserHarness.prototype), {
+    sessionId: session, requestLifecycle: lifecycle, networkCancellation: proof,
+    requests: new Map([[pathname, 1]]), responses: new Map([[pathname, 1]]), responseStatuses: new Map([[pathname, [200]]]),
+    eventWaiters: new RejectableEventWaiters(), pendingCommands: new Map(), topLevelNavigationEvents: 0,
+    topLevelNavigationPending: false, closed: false, fatalError: undefined,
+    routeResolver: () => ({ body: { service: "control-panel", version: "v2.0.0" }, requiredResponse: false, waitUntil: gate }),
+    send: async (command: string) => { sends.push(command); return {}; },
+  }) as BrowserHarness;
+  const receive = (value: Event) => (browser as unknown as { receive(raw: string): void }).receive(JSON.stringify(value));
+  receive(doc()); receive(pause(pathname)); receive(start(pathname)); receive(cancelled());
+  const idle = browser.waitForRequestHandlersIdle({ pathname, timeoutMs: 100 });
+  release(); await idle;
+  browser.assertNoFatalError();
+  assert.deepEqual(sends, []);
+  assert.equal(browser.requests.get(pathname), 2);
+  assert.equal(browser.responses.get(pathname), 1);
+  assert.deepEqual(browser.responseStatuses.get(pathname), [200]);
+  assert.equal(lifecycle.activeCount, 0);
+  assert.equal(lifecycle.safeCancellationCount, 1);
+  assert.equal(lifecycle.preSettlementCancellationCount, 1);
+  assert.equal(proof.claimBeforeSettlement(id, fulfill, current), undefined, "the same Version request cannot claim again");
+});
+
+test("Version cancellation preserves every existing tuple rejection and the original fatal identity", () => {
+  const pathname = "/version";
+  for (const [name, mutate] of negatives) {
+    const input = steps(pathname); mutate(input);
+    for (const step of input) {
+      if (isEvent(step)) {
+        const value = step.params.request as Record<string, unknown> | undefined;
+        if (typeof value?.url === "string") value.url = value.url.replace(path, pathname);
+      } else if (step.contract.pathname === path) step.contract.pathname = pathname;
+    }
+    const { lifecycle, claim } = fixture(input, { pathname });
+    assert.equal(claim(), undefined, name);
+    const original = new Error(invalidInterceptionIdMessage);
+    assert.throws(() => lifecycle.handleSettlementError(lifecycle.beginSettlement(id, fulfill), original), error => error === original, name);
+    assert.equal(lifecycle.activeCount, 1);
+    assert.equal(lifecycle.safeCancellationCount, 0);
+    assert.equal(lifecycle.preSettlementCancellationCount, 0);
+  }
+});
+
+test("Version required reads, writes, unknown routes, continue, and late cancellation remain fatal", () => {
+  const pathname = "/version", requiredInput = steps(pathname);
+  (requiredInput[2] as { contract: Contract }).contract.optionalFixture = false;
+  const required = fixture(requiredInput, { pathname, required: true });
+  assert.equal(required.claim(), undefined);
+  const requiredError = new Error(invalidInterceptionIdMessage);
+  assert.throws(() => required.lifecycle.handleSettlementError(required.lifecycle.beginSettlement(id, fulfill), requiredError), error => error === requiredError);
+  assert.equal(required.lifecycle.safeCancellationCount, 0);
+
+  // The actual ST-PORT failure is a required Version read with neither a
+  // Network start nor a cancellation. Exact path membership cannot repair it.
+  const missingInput = [doc(), pause(pathname), contract(pathname)];
+  (missingInput[2] as { contract: Contract }).contract.optionalFixture = false;
+  const missing = fixture(missingInput, { pathname, required: true });
+  assert.equal(missing.claim(), undefined);
+  const observed = missing.proof.failureDiagnostic(id, missing.lifecycle, session, current);
+  assert.deepEqual(observed?.first?.counts, [0, 1]);
+  assert.equal(observed?.first?.present[4], 0);
+  assert.equal(observed?.first?.flags[4], 0);
+  const missingError = new Error(invalidInterceptionIdMessage);
+  assert.throws(() => missing.lifecycle.handleSettlementError(missing.lifecycle.beginSettlement(id, fulfill), missingError), error => error === missingError);
+  assert.equal(missing.lifecycle.preSettlementCancellationCount, 0);
+
+  for (const method of ["HEAD", "POST", "PUT", "PATCH", "DELETE"]) {
+    const input = steps(pathname);
+    for (const eventName of ["Fetch.requestPaused", "Network.requestWillBeSent"]) changeEvent(input, eventName, value => { request(value).method = method; });
+    const { lifecycle, claim } = fixture(input, { pathname, method });
+    assert.equal(claim(), undefined, method);
+    const original = new Error(invalidInterceptionIdMessage);
+    assert.throws(() => lifecycle.handleSettlementError(lifecycle.beginSettlement(id, fulfill), original), error => error === original);
+    assert.equal(lifecycle.preSettlementCancellationCount, 0);
+  }
+  for (const unknownPath of ["/versions", "/version/private", "/version-other"]) {
+    const { lifecycle, claim } = fixture(steps(unknownPath), { pathname: unknownPath });
+    assert.equal(claim(), undefined);
+    const original = new Error(invalidInterceptionIdMessage);
+    assert.throws(() => lifecycle.handleSettlementError(lifecycle.beginSettlement(id, fulfill), original), error => error === original);
+    assert.equal(lifecycle.safeCancellationCount, 0);
+  }
+  const continuing = fixture(steps(pathname), { pathname });
+  assert.equal(continuing.proof.claimBeforeSettlement(id, "Fetch.continueRequest", current), undefined);
+  const late = fixture(steps(pathname).slice(0, -1), { pathname });
+  assert.equal(late.claim(), undefined);
+  late.proof.observe(cancelled(), 0);
+  assert.equal(late.claim(), undefined);
+  const lateError = new Error(invalidInterceptionIdMessage);
+  assert.throws(() => late.lifecycle.handleSettlementError(late.lifecycle.beginSettlement(id, fulfill), lateError), error => error === lateError);
+  assert.equal(late.lifecycle.safeCancellationCount, 0);
 });

@@ -3,7 +3,7 @@
 export const pollingCurrentBase = "65a601fc9d4f15c93083e9be4ab9e71586fdba69";
 export const pollingCurrentTree = "2624414bc4e1cb4bd304faccf82e5d22e3201dd2";
 export const pollingCurrentFixturePath = "web/tests/fixtures/ui-regression/polling-current-source-delta.json";
-export const pollingCurrentFixtureSHA256 = "41005a7bca46f314db01b5494bc2e79d079b44b29b43b702e8006253686f9cda";
+export const pollingCurrentFixtureSHA256 = "e0d90042d61b8a687fff492f2a3e5fdd6947abaf770b3565216f6b8146348e9b";
 export const pollingLegacyFixturePath = "web/tests/fixtures/ui-regression/polling-legacy-parity.json";
 export const pollingLegacyFixtureSHA256 = "b2df0a26ef1f77a08a0ddbfe8762b7e77a583c21ba8ed03d22373e4ebce764a8";
 export const pollingCurrentPaths = Object.freeze([
@@ -98,6 +98,7 @@ export const pollingCurrentPaths = Object.freeze([
   "scripts/ci/source-owner-map.json",
   "scripts/ci/test-polling-create-upload-mariadb.sh",
   "scripts/ci/test-polling-create-upload-web.sh",
+  "scripts/ci/ui-regression/matrix.mjs",
   "scripts/ci/verify-polling-create-upload-evidence.py",
   "web/package.json",
   "web/src/features/application/application-action-renderers.tsx",
