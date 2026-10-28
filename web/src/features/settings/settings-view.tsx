@@ -3,7 +3,7 @@ import { useUICopy } from "@/lib/i18n/ui-v2/use-ui-copy";
 
 
 import { useDraftExit, useNonSecretDraft } from "@/components/forms/draft-exit";
-import { type ReactNode, useCallback, useMemo, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Save, Send } from "lucide-react";
 import { RemoteStateBoundary } from "@/components/foundation/remote-state/remote-state-boundary";
@@ -20,7 +20,7 @@ import { useI18n } from "@/components/admin/i18n-provider";
 import { useCurrentUser, useManagedAppSettings } from "@/features/queries";
 import { AppSettingsActionConfirmationHost } from "@/features/settings/app-settings-action-control";
 import { createAppSettingsActionController, type AppSettingsActionIntent, type AppSettingsActionResult } from "@/features/settings/app-settings-action-policy";
-import { appSettingsIntent, appSettingsPermissionSnapshot, appSettingsStateSnapshot, managedAppSettingsRemoteState, mutateAppSettingsAction, refreshAppSettingsAction } from "@/features/settings/app-settings-action-runtime";
+import { appSettingsIntent, appSettingsPermissionSnapshot, appSettingsStateSnapshot, managedAppSettingsRemoteState, mutateAppSettingsAction, refreshAppSettingsAction, settingsFingerprint } from "@/features/settings/app-settings-action-runtime";
 import { hasPermission } from "@/lib/auth/permissions";
 import type { ManagedAppSettings } from "@/types/domain";
 
@@ -78,6 +78,9 @@ function AppSettingsForm({ initialSettings }: { initialSettings?: ManagedAppSett
   const [message, setMessage] = useState("");
   const [pending, setPending] = useState<AppSettingsActionIntent | null>(null);
   const [dispatching, setDispatching] = useState(false);
+  const [baselineFingerprint, setBaselineFingerprint] = useState(() => initialSettings ? settingsFingerprint(initialSettings) : undefined);
+  const [baselineUpdatedAt, setBaselineUpdatedAt] = useState(initialSettings?.updated_at);
+  const discardedDraft = useRef(false);
   const trimmedTimezone = timezone.trim();
   const effectiveTimezone = trimmedTimezone || defaultTimeZone;
   const timezoneValid = trimmedTimezone === "" || isValidTimeZone(trimmedTimezone);
@@ -88,10 +91,12 @@ function AppSettingsForm({ initialSettings }: { initialSettings?: ManagedAppSett
   const actionController = useMemo(() => createAppSettingsActionController({
     getPermissions: () => appSettingsPermissionSnapshot(queryClient),
     getState: () => appSettingsStateSnapshot(queryClient),
-    refresh: () => refreshAppSettingsAction(queryClient),
+    revalidate: (_intent, signal) => refreshAppSettingsAction(queryClient, signal),
     mutate: mutateAppSettingsAction,
   }), [queryClient]);
+  useEffect(() => () => actionController.cancel(), [actionController]);
   const savePayload = {
+    expected_updated_at: baselineUpdatedAt,
     app_name: appName,
     timezone: normalizedTimezone,
     smtp_enabled: smtpEnabled,
@@ -107,17 +112,51 @@ function AppSettingsForm({ initialSettings }: { initialSettings?: ManagedAppSett
     google_analytics_enabled: googleAnalyticsEnabled,
     google_analytics_measurement_id: googleAnalyticsMeasurementID,
   };
-  const saveIntent = appSettingsIntent("APP-01", savePayload);
+  const saveIntent = appSettingsIntent("APP-01", savePayload, baselineFingerprint);
   const testEmailIntent = appSettingsIntent("APP-02", { to: testEmailTo.trim() });
   const saveEvaluation = actionController.evaluate(saveIntent);
   const testEvaluation = actionController.evaluate(testEmailIntent);
   const canUpdate = hasPermission(currentUser.data, "system_settings.update");
+  const baselineVersionAvailable = typeof baselineUpdatedAt === "string" && baselineUpdatedAt.length > 0;
   const draftExit = useDraftExit({ enabled: canUpdate, pending: Boolean(pending) || dispatching });
   const draft = useNonSecretDraft([appName, timezone, smtpEnabled, smtpHost, smtpPort, smtpStartTLS, smtpFrom, smtpUsername, turnstileEnabled, turnstileSiteKey, googleAnalyticsEnabled, googleAnalyticsMeasurementID], draftExit);
-  const handleActionResult = useCallback((result: AppSettingsActionResult, intent: AppSettingsActionIntent) => {
-    setDispatching(false);
+  useEffect(() => {
+    if (discardedDraft.current) {
+      draft.saved();
+      discardedDraft.current = false;
+    }
+  }, [baselineFingerprint, draft]);
+  const settingsChanged = Boolean(initialSettings && baselineFingerprint && settingsFingerprint(initialSettings) !== baselineFingerprint);
+  const discardAndReload = () => {
+    if (!initialSettings || dispatching || pending) return;
+    discardedDraft.current = true;
+    setAppName(initialSettings.app_name);
+    setTimezone(initialSettings.timezone);
+    setSMTPEnabled(Boolean(initialSettings.smtp_enabled));
+    setSMTPHost(initialSettings.smtp_host || "");
+    setSMTPPort(String(initialSettings.smtp_port || 587));
+    setSMTPStartTLS(initialSettings.smtp_starttls ?? true);
+    setSMTPFrom(initialSettings.smtp_from || "");
+    setSMTPUsername(initialSettings.smtp_username || "");
+    setSMTPPassword("");
+    setTurnstileEnabled(Boolean(initialSettings.turnstile_enabled));
+    setTurnstileSiteKey(initialSettings.turnstile_site_key || "");
+    setTurnstileSecret("");
+    setGoogleAnalyticsEnabled(Boolean(initialSettings.google_analytics_enabled));
+    setGoogleAnalyticsMeasurementID(initialSettings.google_analytics_measurement_id || "");
+    setBaselineFingerprint(settingsFingerprint(initialSettings));
+    setBaselineUpdatedAt(initialSettings.updated_at);
+    setMessage("");
+  };
+  const handleActionResult = useCallback(async (result: AppSettingsActionResult, intent: AppSettingsActionIntent) => {
     if (result.kind === "succeeded") {
       if (intent.id === "APP-01") {
+        if (typeof result.value === "object" && result.value !== null && "app_name" in result.value && "timezone" in result.value) {
+          await queryClient.cancelQueries({ queryKey: ["settings", "app", "manage"], exact: true });
+          queryClient.setQueryData(["settings", "app", "manage"], result.value);
+          setBaselineFingerprint(settingsFingerprint(result.value as ManagedAppSettings));
+          setBaselineUpdatedAt((result.value as ManagedAppSettings).updated_at);
+        }
         draft.saved();
         setMessage(uiText("保存しました。"));
         void queryClient.invalidateQueries({ queryKey: ["settings", "app"] });
@@ -126,8 +165,10 @@ function AppSettingsForm({ initialSettings }: { initialSettings?: ManagedAppSett
         setMessage(uiText("テストメールを送信しました。"));
       }
       setPending(null);
+      setDispatching(false);
       return;
     }
+    setDispatching(false);
     setMessage(appSettingsActionResultMessage(result, t));
     if (result.kind === "blocked") setPending(null);
   }, [draft, queryClient, t, uiText]);
@@ -137,6 +178,12 @@ function AppSettingsForm({ initialSettings }: { initialSettings?: ManagedAppSett
 
   return (
     <div className="space-y-4">
+      {settingsChanged ? <div role="status" className="space-y-2 rounded-md border border-warning/40 bg-warning/10 p-3 text-sm">
+        <p>{uiText("設定が更新されています。編集中の入力は保持しています。")}</p>
+        <Button type="button" variant="outline" disabled={Boolean(pending) || dispatching} onClick={discardAndReload}>
+          {uiText("入力を破棄して最新の設定を読み込む")}
+        </Button>
+      </div> : null}
       <div className="grid gap-4 xl:grid-cols-2">
         <SettingsSection title={uiText("基本設定")} description={uiText("管理画面の名前と、システム内の時刻表示に使う基準タイムゾーンです。")}>
           <div className="grid gap-3 lg:grid-cols-2">
@@ -282,11 +329,12 @@ function AppSettingsForm({ initialSettings }: { initialSettings?: ManagedAppSett
       <Button onClick={() => {
         setMessage("");
         setPending(saveIntent);
-      }} disabled={Boolean(pending) || dispatching || !canUpdate || saveEvaluation.availability.kind !== "allowed" || !appName.trim() || !timezoneValid || smtpRequiredMissing || turnstileRequiredMissing || !googleAnalyticsIDValid}>
+      }} disabled={Boolean(pending) || dispatching || !canUpdate || !baselineVersionAvailable || saveEvaluation.availability.kind !== "allowed" || !appName.trim() || !timezoneValid || smtpRequiredMissing || turnstileRequiredMissing || !googleAnalyticsIDValid}>
         <Save className="size-4" />
         {t("save")}
       </Button>
       </FormFooter>
+      {!baselineVersionAvailable ? <p role="status" className="text-sm text-muted-foreground">{t("confirmationRevalidationUnavailable")}</p> : null}
       {pending ? (
         <AppSettingsActionConfirmationHost
           key={pending.id}

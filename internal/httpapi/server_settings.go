@@ -51,18 +51,28 @@ func (s *Server) securitySettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) updateSecuritySettings(w http.ResponseWriter, r *http.Request) {
-	var body store.SecuritySettings
+	var body struct {
+		store.SecuritySettings
+		ExpectedUpdatedAt json.RawMessage `json:"expected_updated_at,omitempty"`
+	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
 		return
 	}
+	expected, err := parseExpectedUpdatedAt(body.ExpectedUpdatedAt)
+	if writeResourceUpdateRevisionError(w, err) {
+		return
+	}
 	current := currentFromContext(r.Context())
-	if productionEnvironment() && !productionMFASettingsAllowed(body) {
+	if productionEnvironment() && !productionMFASettingsAllowed(body.SecuritySettings) {
 		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "security.settings.update", ResourceType: "security_settings", Result: "failure", Metadata: map[string]any{"reason": "production_mfa_required"}})
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "production_mfa_required"})
 		return
 	}
-	settings, err := s.settings.UpdateSecuritySettings(r.Context(), body)
+	settings, err := store.UpdateSecuritySettingsWithRevision(r.Context(), s.settings, body.SecuritySettings, expected)
+	if writeResourceUpdateRevisionError(w, err) {
+		return
+	}
 	if errors.Is(err, store.ErrInvalidSettings) {
 		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "security.settings.update", ResourceType: "security_settings", Result: "failure", Metadata: map[string]any{"reason": "invalid_settings"}})
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_security_settings"})
@@ -117,11 +127,16 @@ func (s *Server) managedAppSettingsView(w http.ResponseWriter, r *http.Request) 
 func (s *Server) updateAppSettings(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		store.AppSettings
-		SMTPPassword    string `json:"smtp_password"`
-		TurnstileSecret string `json:"turnstile_secret"`
+		ExpectedUpdatedAt json.RawMessage `json:"expected_updated_at,omitempty"`
+		SMTPPassword      string          `json:"smtp_password"`
+		TurnstileSecret   string          `json:"turnstile_secret"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
+		return
+	}
+	expected, err := parseExpectedUpdatedAt(body.ExpectedUpdatedAt)
+	if writeResourceUpdateRevisionError(w, err) {
 		return
 	}
 	current := currentFromContext(r.Context())
@@ -151,35 +166,17 @@ func (s *Server) updateAppSettings(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "app_settings_update_failed"})
 		return
 	}
+	changes := []store.SecretWrite{}
 	if smtpPassword != "" || !normalized.SMTPEnabled {
-		status, err := s.secrets.UpdateSecret(r.Context(), store.AppSMTPPasswordSecretName, smtpPassword)
-		if errors.Is(err, store.ErrSecretKeyRequired) {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "secret_encryption_key_required"})
-			return
-		}
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "smtp_password_update_failed"})
-			return
-		}
-		normalized.SMTPPasswordConfigured = status.Configured
-	} else {
-		normalized.SMTPPasswordConfigured = s.secretConfigured(r.Context(), store.AppSMTPPasswordSecretName)
+		changes = append(changes, store.SecretWrite{Name: store.AppSMTPPasswordSecretName, Value: smtpPassword})
 	}
 	if turnstileSecret != "" || !normalized.TurnstileEnabled {
-		status, err := s.secrets.UpdateSecret(r.Context(), store.AppTurnstileSecretName, turnstileSecret)
-		if errors.Is(err, store.ErrSecretKeyRequired) {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "secret_encryption_key_required"})
-			return
-		}
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "turnstile_secret_update_failed"})
-			return
-		}
-		normalized.TurnstileConfigured = status.Configured
-	} else {
-		normalized.TurnstileConfigured = s.secretConfigured(r.Context(), store.AppTurnstileSecretName)
+		changes = append(changes, store.SecretWrite{Name: store.AppTurnstileSecretName, Value: turnstileSecret})
 	}
-	settings, err := s.appSettings.UpdateAppSettings(r.Context(), normalized)
+	settings, err := store.UpdateAppSettingsWithRevision(r.Context(), s.appSettings, s.secrets, store.AppSettingsMutation{Settings: normalized, ExpectedUpdatedAt: expected, SecretChanges: changes})
+	if writeResourceUpdateRevisionError(w, err) {
+		return
+	}
 	if errors.Is(err, store.ErrInvalidSettings) {
 		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "app.settings.update", ResourceType: "app_settings", Result: "failure", Metadata: map[string]any{"reason": "invalid_settings"}})
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_app_settings"})
@@ -190,7 +187,7 @@ func (s *Server) updateAppSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "app.settings.update", ResourceType: "app_settings", Result: "success"})
-	writeJSON(w, http.StatusOK, s.appSettingsWithSecretStatus(r.Context(), settings))
+	writeJSON(w, http.StatusOK, settings)
 }
 
 func (s *Server) sendAppSettingsTestEmail(w http.ResponseWriter, r *http.Request) {

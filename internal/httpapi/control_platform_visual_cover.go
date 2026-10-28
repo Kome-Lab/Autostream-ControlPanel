@@ -70,8 +70,13 @@ func visualChangedFields(update streamvisual.Update) []string {
 }
 
 func writeStreamVisualError(w http.ResponseWriter, err error) {
-	status, code := http.StatusBadRequest, "invalid_visual_settings"
+	// A repository error may be an ambiguous commit failure. Only explicit
+	// domain rejections are input errors; never invite a retry after an unknown
+	// database/transport failure or disclose its raw details.
+	status, code := http.StatusInternalServerError, "stream_visual_operation_failed"
 	switch {
+	case errors.Is(err, streamvisual.ErrInvalidSettings), errors.Is(err, mediaassets.ErrIntegrity):
+		status, code = http.StatusBadRequest, "invalid_visual_settings"
 	case errors.Is(err, streamvisual.ErrNotFound), errors.Is(err, store.ErrNotFound), errors.Is(err, mediaassets.ErrNotFound):
 		status, code = http.StatusNotFound, "not_found"
 	case errors.Is(err, streamvisual.ErrRevisionConflict):

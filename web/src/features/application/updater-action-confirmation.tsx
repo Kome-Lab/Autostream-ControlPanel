@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { useI18n } from "@/components/admin/i18n-provider";
 import { HighRiskConfirmation, type ConfirmationDialogState } from "@/components/foundation/confirmation/high-risk-confirmation";
@@ -8,6 +8,7 @@ import { ActionAvailabilityBoundary } from "@/components/foundation/permissions/
 import { Button } from "@/components/ui/button";
 import {
   buildUpdaterActionDescriptor,
+  updaterActionCanRevalidate,
   updaterActionTypedValue,
   type UpdaterActionAuthority,
   type UpdaterActionController,
@@ -35,7 +36,7 @@ export function UpdaterActionConfirmation({
   controller: UpdaterActionController;
   intent: UpdaterActionIntent;
   authority: UpdaterActionAuthority;
-  refreshAuthority: () => Promise<UpdaterActionAuthority>;
+  refreshAuthority: (signal?: AbortSignal) => Promise<UpdaterActionAuthority>;
   handler: () => Promise<unknown>;
   label: string;
   icon?: ReactNode;
@@ -50,10 +51,12 @@ export function UpdaterActionConfirmation({
   const { t } = useI18n();
   const [opened, setOpened] = useState<Readonly<{
     intent: UpdaterActionIntent;
-    refreshAuthority: () => Promise<UpdaterActionAuthority>;
+    refreshAuthority: (signal?: AbortSignal) => Promise<UpdaterActionAuthority>;
     handler: () => Promise<unknown>;
   }>>();
   const [state, setState] = useState<ConfirmationDialogState>({ kind: "ready" });
+  const activeRead = useRef<AbortController | null>(null);
+  useEffect(() => () => activeRead.current?.abort(), []);
   const triggerDescriptor = buildUpdaterActionDescriptor(intent);
   const descriptor = opened
     ? buildUpdaterActionDescriptor(opened.intent)
@@ -62,14 +65,19 @@ export function UpdaterActionConfirmation({
   const evaluation = updaterEvaluation(authority);
 
   const submit = async () => {
-    if (!opened) return;
+    if (!opened || activeRead.current) return;
+    const operation = new AbortController();
+    activeRead.current = operation;
     setState({ kind: "revalidating" });
     const result = await controller.execute(
       opened.intent,
       { confirmed: true, typedValue: updaterActionTypedValue(opened.intent) },
       opened.refreshAuthority,
       opened.handler,
+      operation.signal,
     );
+    if (activeRead.current === operation) activeRead.current = null;
+    if (operation.signal.aborted) return;
     await onResult?.(result);
     if (result.kind === "succeeded") {
       setOpened(undefined);
@@ -100,7 +108,7 @@ export function UpdaterActionConfirmation({
             </Button>
           )}
           onOpenIntent={() => {
-            if (authority.permission !== "allowed" || authority.freshness !== "fresh" || authority.applicability !== "applicable") {
+            if (!updaterActionCanRevalidate(authority)) {
               setState({ kind: "revalidation-unavailable" });
               return;
             }
@@ -111,7 +119,7 @@ export function UpdaterActionConfirmation({
               handler,
             }));
           }}
-          onCloseIntent={() => { setOpened(undefined); setState({ kind: "ready" }); }}
+          onCloseIntent={() => { activeRead.current?.abort(); activeRead.current = null; setOpened(undefined); setState({ kind: "ready" }); }}
           onConfirmIntent={() => { void submit(); }}
         />
       )}
@@ -126,7 +134,7 @@ function updaterEvaluation(authority: UpdaterActionAuthority): ActionEvaluation 
   if (authority.permission === "denied") {
     return Object.freeze({ visibility: Object.freeze({ kind: "visible" as const }), availability: Object.freeze({ kind: "denied" as const, reasonKey: "actionPermissionDenied" as const }) });
   }
-  if (authority.permission === "allowed" && authority.freshness === "fresh" && authority.applicability === "applicable") {
+  if (updaterActionCanRevalidate(authority)) {
     return Object.freeze({ visibility: Object.freeze({ kind: "visible" as const }), availability: Object.freeze({ kind: "allowed" as const }) });
   }
   return Object.freeze({ visibility: Object.freeze({ kind: "visible" as const }), availability: Object.freeze({ kind: "unknown" as const, reasonKey: "actionPermissionUnknown" as const }) });

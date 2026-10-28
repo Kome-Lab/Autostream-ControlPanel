@@ -16,6 +16,7 @@ import { historicalR4DeleteCopySource } from "./ui188-r4-delete-delta.mts";
 import { historicalR5ReadinessSource } from "./ui188-r5-readiness-delta.mts";
 import { createContainmentAdapter } from "./ui188-cp-containment-source-delta.mts";
 import { createStreamCreateCurrentAdapter } from "./stream-create-current-source-delta.mts";
+import { createPollingCurrentAdapter } from "./polling-current-source-delta.mts";
 
 type Replacement = { position: number; count: number; before: string; after: string };
 type Mapping = { oldPath: string; newPath: string; acceptedSha256: string; currentSha256: string; replacements: Replacement[] };
@@ -83,7 +84,8 @@ export function createNormalizedReader(root: string, io: SourceIO = {
   const object = io.object;
   const containment = createContainmentAdapter(root, { raw, object });
   const currentSource = createStreamCreateCurrentAdapter(root, { raw, object });
-  const historicalRaw = (path: string) => historicalUI188Source(path, historicalProfileUpdateSource(path, historicalSessionRefreshSource(path, historicalR4DeleteCopySource(path, historicalR5ReadinessSource(path, containment.inverse(path, currentSource.inverse(path, raw(path))), object), object), object), object), object);
+  const pollingSource = createPollingCurrentAdapter(root, { raw, object });
+  const historicalRaw = (path: string) => historicalUI188Source(path, historicalProfileUpdateSource(path, historicalSessionRefreshSource(path, historicalR4DeleteCopySource(path, historicalR5ReadinessSource(path, containment.inverse(path, currentSource.inverse(path, pollingSource.inverse(path, raw(path)))), object), object), object), object), object);
   const dependencies = (path: string, current: Buffer) => cp176Paths.includes(path)
     ? inverseCP176DependencyRepair(path, object(cp176Base, path), current) : current;
   const read = (path: string): Buffer => {

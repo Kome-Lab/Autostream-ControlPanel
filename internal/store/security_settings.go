@@ -88,22 +88,13 @@ func (s *MemorySecuritySettingsStore) GetSecuritySettings(ctx context.Context) (
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.settings, nil
+	settings := s.settings
+	settings.UpdatedAt = systemSettingsRevision(settings.UpdatedAt)
+	return settings, nil
 }
 
 func (s *MemorySecuritySettingsStore) UpdateSecuritySettings(ctx context.Context, settings SecuritySettings) (SecuritySettings, error) {
-	if err := ctx.Err(); err != nil {
-		return SecuritySettings{}, err
-	}
-	normalized, err := normalizeSecuritySettings(settings)
-	if err != nil {
-		return SecuritySettings{}, err
-	}
-	normalized.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-	s.mu.Lock()
-	s.settings = normalized
-	s.mu.Unlock()
-	return normalized, nil
+	return s.UpdateSecuritySettingsRevision(ctx, settings, nil)
 }
 
 type MemorySecretStore struct {
@@ -190,7 +181,9 @@ func (s MariaDBSecuritySettingsStore) GetSecuritySettings(ctx context.Context) (
 	var updatedAt time.Time
 	err := s.db.QueryRowContext(ctx, `SELECT value_json, updated_at FROM system_settings WHERE name = 'security'`).Scan(&body, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
-		return defaultSecurityConfig, nil
+		settings := defaultSecurityConfig
+		settings.UpdatedAt = UnconfiguredSystemSettingsRevision
+		return settings, nil
 	}
 	if err != nil {
 		return SecuritySettings{}, err
@@ -199,26 +192,12 @@ func (s MariaDBSecuritySettingsStore) GetSecuritySettings(ctx context.Context) (
 	if err := json.Unmarshal([]byte(body), &settings); err != nil {
 		return SecuritySettings{}, err
 	}
-	settings.UpdatedAt = updatedAt.UTC().Format(time.RFC3339)
+	settings.UpdatedAt = resourceUpdatedAt(updatedAt)
 	return settings, nil
 }
 
 func (s MariaDBSecuritySettingsStore) UpdateSecuritySettings(ctx context.Context, settings SecuritySettings) (SecuritySettings, error) {
-	normalized, err := normalizeSecuritySettings(settings)
-	if err != nil {
-		return SecuritySettings{}, err
-	}
-	now := time.Now().UTC()
-	body, err := json.Marshal(normalized)
-	if err != nil {
-		return SecuritySettings{}, err
-	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO system_settings (name, value_json, updated_at) VALUES ('security', ?, ?) ON DUPLICATE KEY UPDATE value_json = VALUES(value_json), updated_at = VALUES(updated_at)`, string(body), now)
-	if err != nil {
-		return SecuritySettings{}, err
-	}
-	normalized.UpdatedAt = now.Format(time.RFC3339)
-	return normalized, nil
+	return s.UpdateSecuritySettingsRevision(ctx, settings, nil)
 }
 
 type MariaDBSecretStore struct {

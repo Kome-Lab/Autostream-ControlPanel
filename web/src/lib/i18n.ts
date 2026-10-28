@@ -1,10 +1,12 @@
 import type { Locale } from "@/types/domain";
+import { streamCreateMessages } from "@/lib/stream-create-messages";
 
 export const supportedLocales: Locale[] = ["ja", "en"];
 export const localeStorageKey = "autostream.controlPanel.locale";
 
 export const translations = {
   ja: {
+    ...streamCreateMessages.ja,
     appName: "AutoStream",
     dashboard: "ダッシュボード",
     streams: "配信枠",
@@ -290,6 +292,7 @@ export const translations = {
     updateUnknown: "更新情報は未確認です",
   },
   en: {
+    ...streamCreateMessages.en,
     appName: "AutoStream",
     dashboard: "Dashboard",
     streams: "Stream Slots",

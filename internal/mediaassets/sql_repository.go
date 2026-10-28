@@ -56,11 +56,17 @@ func (r *SQLRepository) Upload(ctx context.Context, in UploadInput) (result Asse
 	in.SessionID = strings.TrimSpace(in.SessionID)
 	in.UserID = strings.TrimSpace(in.UserID)
 	in.UsageType = strings.TrimSpace(in.UsageType)
+	if in.ClientOperationID != "" && !ValidUploadOperationID(in.ClientOperationID) {
+		return Asset{}, ErrForbidden
+	}
 	if in.SessionID == "" || in.UserID == "" || (in.UsageType != "scene_background" && in.UsageType != "video_cover") {
 		return Asset{}, ErrForbidden
 	}
 	if err := r.validateDraft(ctx, r.db, in.SessionID, in.UserID, r.now(), false); err != nil {
 		return Asset{}, err
+	}
+	if asset, exists, err := sqlUploadOperation(ctx, r.db, in); exists || err != nil {
+		return asset, err
 	}
 	if in.UsageType == "video_cover" {
 		if err := validateDraftCoverLimit(ctx, r.db, in.SessionID, true); err != nil {
@@ -81,9 +87,13 @@ func (r *SQLRepository) Upload(ctx context.Context, in UploadInput) (result Asse
 	asset := Asset{
 		ID: id, OwnerUserID: in.UserID, OwnerType: "upload_draft", OwnerID: in.SessionID,
 		UploadSessionID: in.SessionID, UsageType: in.UsageType, StorageKey: processed.StorageKey,
-		SHA256: processed.SHA256, MediaType: processed.MediaType, ByteSize: processed.ByteSize,
+		ClientOperationID: in.ClientOperationID,
+		SHA256:            processed.SHA256, MediaType: processed.MediaType, ByteSize: processed.ByteSize,
 		Width: processed.Width, Height: processed.Height, Opaque: processed.Opaque,
 		ProcessorRevision: ProcessorRevision, CreatedAt: now, UpdatedAt: now,
+	}
+	if in.ClientOperationID != "" {
+		asset.ClientOperationSessionID = in.SessionID
 	}
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -95,6 +105,9 @@ func (r *SQLRepository) Upload(ctx context.Context, in UploadInput) (result Asse
 	// draft after the session has already been claimed by a stream.
 	if err := r.validateDraft(ctx, tx, in.SessionID, in.UserID, now, true); err != nil {
 		return Asset{}, err
+	}
+	if asset, exists, err := sqlUploadOperation(ctx, tx, in); exists || err != nil {
+		return asset, err
 	}
 	if in.UsageType == "video_cover" {
 		if err := validateDraftCoverLimit(ctx, tx, in.SessionID, true); err != nil {
@@ -108,10 +121,10 @@ func (r *SQLRepository) Upload(ctx context.Context, in UploadInput) (result Asse
 		return Asset{}, err
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO media_assets
-      (id,owner_user_id,owner_type,owner_id,upload_session_id,usage_type,storage_key,sha256,
+      (id,owner_user_id,owner_type,owner_id,upload_session_id,client_operation_id,client_operation_session_id,usage_type,storage_key,sha256,
        media_type,byte_size,width,height,opaque,processor_revision,deleted_at,retention_until,created_at,updated_at)
-      VALUES (?,?, 'upload_draft', ?,?,?, ?,?,?, ?,?,?,?, ?,NULL,NULL,?,?)`,
-		asset.ID, asset.OwnerUserID, asset.OwnerID, asset.UploadSessionID, asset.UsageType,
+      VALUES (?,?, 'upload_draft', ?,?,NULLIF(?,''),NULLIF(?,''),?, ?,?,?, ?,?,?,?, ?,NULL,NULL,?,?)`,
+		asset.ID, asset.OwnerUserID, asset.OwnerID, asset.UploadSessionID, asset.ClientOperationID, asset.ClientOperationSessionID, asset.UsageType,
 		asset.StorageKey, asset.SHA256, asset.MediaType, asset.ByteSize, asset.Width, asset.Height,
 		asset.Opaque, asset.ProcessorRevision, now, now)
 	if err != nil {
@@ -148,19 +161,24 @@ func validateDraftCoverLimit(ctx context.Context, q rowQuerier, sessionID string
 }
 
 func (r *SQLRepository) validateDraft(ctx context.Context, q rowQuerier, sessionID, userID string, now time.Time, lock bool) error {
-	var ownerType, ownerUser, claimed string
+	var storedID, ownerType, ownerUser, claimed string
 	var expires time.Time
 	var claimedNull sql.NullString
-	query := `SELECT user_id,owner_type,claimed_stream_id,expires_at FROM media_upload_sessions WHERE id=?`
+	query := `SELECT id,user_id,owner_type,claimed_stream_id,expires_at FROM media_upload_sessions WHERE id=?`
 	if lock {
 		query += ` FOR UPDATE`
 	}
-	err := q.QueryRowContext(ctx, query, sessionID).Scan(&ownerUser, &ownerType, &claimedNull, &expires)
+	err := q.QueryRowContext(ctx, query, sessionID).Scan(&storedID, &ownerUser, &ownerType, &claimedNull, &expires)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
 	}
 	if err != nil {
 		return err
+	}
+	// Existing databases may compare session IDs case-insensitively. A caller
+	// must use the exact issued ID so immutable operation origins cannot alias it.
+	if storedID != sessionID {
+		return ErrNotFound
 	}
 	if claimedNull.Valid {
 		claimed = claimedNull.String
@@ -563,7 +581,7 @@ func (r *SQLRepository) deleteUnreferencedAsset(ctx context.Context, id string, 
 	return 1, nil
 }
 
-const assetSelect = `SELECT id,owner_user_id,owner_type,owner_id,COALESCE(upload_session_id,''),usage_type,
+const assetSelect = `SELECT id,owner_user_id,owner_type,owner_id,COALESCE(upload_session_id,''),COALESCE(client_operation_id,''),COALESCE(client_operation_session_id,''),usage_type,
   storage_key,sha256,media_type,byte_size,width,height,opaque,processor_revision,deleted_at,retention_until,created_at,updated_at
   FROM media_assets`
 
@@ -573,7 +591,7 @@ func scanAsset(row scanner) (Asset, error) {
 	var asset Asset
 	var deleted, retention sql.NullTime
 	err := row.Scan(&asset.ID, &asset.OwnerUserID, &asset.OwnerType, &asset.OwnerID, &asset.UploadSessionID,
-		&asset.UsageType, &asset.StorageKey, &asset.SHA256, &asset.MediaType, &asset.ByteSize, &asset.Width,
+		&asset.ClientOperationID, &asset.ClientOperationSessionID, &asset.UsageType, &asset.StorageKey, &asset.SHA256, &asset.MediaType, &asset.ByteSize, &asset.Width,
 		&asset.Height, &asset.Opaque, &asset.ProcessorRevision, &deleted, &retention, &asset.CreatedAt, &asset.UpdatedAt)
 	if deleted.Valid {
 		asset.DeletedAt = &deleted.Time

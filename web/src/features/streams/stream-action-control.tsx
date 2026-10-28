@@ -47,26 +47,29 @@ export const StreamActionControl = forwardRef<StreamActionControlHandle, Props>(
   const [opened, setOpened] = useState<AllowedStreamActionOpen | null>(null);
   const [dialogState, setDialogState] = useState<ConfirmationDialogState>({ kind: "ready" });
   const opening = useRef(false);
+  const cancellationIntent = useRef(intent);
+  cancellationIntent.current = intent;
   const scope = streamActionScope(intent) || "invalid";
   const descriptor = opened?.descriptor ?? buildStreamActionDescriptor(intent);
   const evaluation = controller.evaluate(opened?.intent ?? intent);
 
   useEffect(() => {
+    const ownedIntent = cancellationIntent.current;
     setOpened(null);
     setDialogState({ kind: "ready" });
     opening.current = false;
-  }, [scope]);
+    return () => controller.cancel(ownedIntent);
+  }, [controller, scope]);
 
   const submit = useCallback(async (allowed: AllowedStreamActionOpen) => {
     setDialogState({ kind: "revalidating" });
-    await Promise.resolve();
-    setDialogState({ kind: "submitting" });
     onPendingChange?.(true);
     let result: StreamActionExecutionResult;
     try {
       result = await controller.submit(allowed, {
         confirmed: true,
         ...(allowed.typedToken === undefined ? {} : { typedValue: allowed.typedToken }),
+        onRevalidated: () => setDialogState({ kind: "submitting" }),
       });
     } finally {
       onPendingChange?.(false);

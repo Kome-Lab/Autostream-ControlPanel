@@ -1,0 +1,168 @@
+{
+  "schemaVersion": 1,
+  "commit": "65a601fc9d4f15c93083e9be4ab9e71586fdba69",
+  "entry": "web/tests/ui-regression/parity.test.mts",
+  "topLevelCount": 58,
+  "nestedCount": 1,
+  "executionCount": 59,
+  "requiredPlatform": "linux",
+  "nestedTests": [
+    "Linux native overall shell; Windows never discovers or launches a Bash/WSL alias"
+  ],
+  "sources": [
+    {
+      "path": "web/tests/ui-regression/parity.test.mts",
+      "mode": "100644",
+      "blob": "4a8334dc0558929e1ee0c407c8b963d79b18861f",
+      "sha256": "3fde5780602e9c4b7de3e7cb6ddcce6e952198e8c56b6f549f5dd27ea95ebf85",
+      "tests": [
+        "UI-PARITY-001: all 59 actual static entries and redirects retain fixed source",
+        "UI-PARITY-002: 100 actions keep original permission, payload, duplicate and secret contracts",
+        "UI-PARITY-002-V2: current parity includes all 106 actions and the six preset mutation owners",
+        "UI-PARITY-003: original 733 records retain 728 current owners and five fixed-history-only sources with prior bounded deltas and one CP174 backend delta",
+        "UI-PARITY-004: navigation groups retain every exact route and permission binding",
+        "UI-PARITY-005: runtime dependencies and original browser registration stay fixed with the exact type-only closure",
+        "UI-PARITY-006: only role names register the new suites and the CI job blocks overall",
+        "UI-PARITY-007: exact supplement rejects missing, unknown, wrong original, added API and changed old behavior",
+        "UI-PARITY-008: finite name inverse binds accepted Git bytes and rejects source, registration and historical authority drift"
+      ]
+    },
+    {
+      "path": "web/tests/ui-regression/release-assembly-deltas.test.mts",
+      "mode": "100644",
+      "blob": "ebace32b27016aab44aca10186b742c00e297c4d",
+      "sha256": "49d8496d73db59b16fea2d3303f09bdd793a72e08c34ade77e35ed8f1c938598",
+      "tests": [
+        "UI-RELEASE-ASSEMBLY-001: exactly eleven existing sources bind both fixed Git sides while prior UI authority stays unchanged",
+        "UI-RELEASE-ASSEMBLY-002: missing, extra, truncated, reverted and wrong-original source bytes fail closed",
+        "UI-RELEASE-ASSEMBLY-003: the reader cannot replace missing or changed current files with historical bytes",
+        "UI-RELEASE-ASSEMBLY-004: unlisted application sources retain their actual bytes without assembly substitution"
+      ]
+    },
+    {
+      "path": "web/tests/ui-regression/ci-closure-deltas.test.mts",
+      "mode": "100644",
+      "blob": "b6a5cfd0bd4801ecafdf97e4ba0781243ed67dec",
+      "sha256": "5ca20b4f0f8935cb1c99f86d58d65b867a3670fbf486a5c28ee2535806367a62",
+      "tests": [
+        "UI-CI-CLOSURE-001: exactly five changed sources bind fixed before and actual after bytes",
+        "UI-CI-CLOSURE-002: omitted, truncated, extra, reverted and wrong-original bytes fail closed",
+        "UI-CI-CLOSURE-003: current-source absence or mutation cannot be replaced with historical bytes"
+      ]
+    },
+    {
+      "path": "web/tests/ui-regression/cp174-source-deltas.test.mts",
+      "mode": "100644",
+      "blob": "49743c15fa520ad8d8f8d05dd41b2246eedcd546",
+      "sha256": "2916f8965962b8ca890ee1ae0b084a3253ee9dcccd70b232a85f0a1704859420",
+      "tests": [
+        "UI-CP174-001: exactly three finite deltas restore the actual fixed CP174 base and historical authority",
+        "UI-CP174-002: missing, reverted, truncated, extra and wrong-original bytes cannot use a historical fallback",
+        "UI-CP174-003: current raw package and workflow independently require both suites and every successful job result",
+        "UI-CP174-004: required browser witnesses cannot be omitted, skipped, returned early or weakened"
+      ]
+    },
+    {
+      "path": "web/tests/ui-regression/ui188-current-source-deltas.test.mts",
+      "mode": "100644",
+      "blob": "26b93795346b03025667415b663571378a87ba15",
+      "sha256": "69077902d0d8564ebd8f691006665a84ad7b0311eec04afef6d121d456965c9a",
+      "tests": [
+        "UI188-CONTRACT-001: every finite path binds immutable historical source and actual current bytes to existing behavior tests",
+        "UI188-CONTRACT-002: missing, reverted, truncated, extra, unauthorized and wrong-original bytes cannot fall back to history",
+        "UI188-R9-CONTRACT-001: only the independently specified bilingual refusal and pending insertion preserve history",
+        "UI188-R9-CONTRACT-002: finite archive guard and list changes reject reverted, extra and wrong authority bytes",
+        "UI188-CONTRACT-003: independent path/specification/witness registration cannot be removed, duplicated or retargeted"
+      ]
+    },
+    {
+      "path": "web/tests/ui-regression/ui188-r3-profile-delta.test.mts",
+      "mode": "100644",
+      "blob": "f149898ab5ded34c0fbe6177962bcf0020eb4e1b",
+      "sha256": "ef5527103f3327b14f4643a729859fbacd6f2f111308d905a00c239d5e6f68a6",
+      "tests": [
+        "UI188-R3-PROFILE-001: one reviewed profile path preserves historical bytes and current behavior witnesses",
+        "UI188-R3-PROFILE-002: changed originals and unreviewed current edits fail closed"
+      ]
+    },
+    {
+      "path": "web/tests/ui-regression/ui188-r3-session-delta.test.mts",
+      "mode": "100644",
+      "blob": "be5c64b8b45bdc178953931c0f6c2c79483a16b9",
+      "sha256": "c7e45c6e093fb1e7a7bca94225306219ac2469d42783491398d880594ab3552e",
+      "tests": [
+        "UI188-R3-SESSION-001: finite current session repair preserves frozen history and strict authority witnesses",
+        "UI188-R3-SESSION-002: unknown paths, wrong originals, expiry weakening and extra current changes fail for intended reasons"
+      ]
+    },
+    {
+      "path": "web/tests/ui-regression/ui188-r4-delete-delta.test.mts",
+      "mode": "100644",
+      "blob": "920dc66278f5b13bbacaa08ff2919622834dea9e",
+      "sha256": "0f957c1f97b1068aaf0617c2fdc1f97a48b442558e8bdba572e6d693258c3678",
+      "tests": [
+        "UI188-R4-DELETE-001: three finite presentation paths preserve history and reject extra current bytes",
+        "UI188-R4-DELETE-002: current bilingual delete copy names the operation, assignment release and retained recordings"
+      ]
+    },
+    {
+      "path": "web/tests/ui-regression/ui188-r5-readiness-delta.test.mts",
+      "mode": "100644",
+      "blob": "3bf01dc834e263b3e659e7751fd429c79fc67b9e",
+      "sha256": "7693af8f3df4784040a511d9e5eb037ad1cad1c9045a86e37f36c3f205dc1fa3",
+      "tests": [
+        "UI188-R5-COPY-001: four fixed Japanese copy differences preserve all history and reject unrelated edits"
+      ]
+    },
+    {
+      "path": "web/tests/ui-regression/ui188-cb15-cb16-runtime-delta.test.mts",
+      "mode": "100644",
+      "blob": "b634fbd89986659c1b4e9da008961a8a6a3b00c8",
+      "sha256": "8d8d5d38f68fdaddcb6379172496e81fafb22cc7525298b85da804096e8d2261",
+      "tests": [
+        "UI188-CB15-CB16-001: the exact adopted two-stage runtime delta restores the original 733-record authority",
+        "UI188-CB15-CB16-002: empty, truncated, extra, unauthorized API, tampered, reverted, CRLF and BOM runtime bytes fail closed",
+        "UI188-CB15-CB16-003: wrong original, altered adopted Git objects and unavailable history cannot supply replacement authority",
+        "UI188-CB15-CB16-004: current-path absence and tampering cannot fall back to Git, and the required parity command registers the new checks",
+        "UI188-CB15-CB16-005: the second protected CB15 lease path uses its exact transaction edits and the same immutable historical authority",
+        "UI188-CB15-CB16-006: the lease delta rejects mutation, extra API, revert, encoding drift, wrong or missing history and missing current bytes"
+      ]
+    },
+    {
+      "path": "web/tests/ui-regression/ui188-cp-containment-source-delta.test.mts",
+      "mode": "100644",
+      "blob": "d1685a1f3d1714b8be64e8d5c910f2517e6e4712",
+      "sha256": "17b3cb9d7b07aa53abc11e60de392c5e39d9dbe35c823780d64d055695ba4b0f",
+      "tests": [
+        "UI188-CONTAINMENT-001: all nine actual current paths, additions, registration and four existing owners are mandatory",
+        "UI188-CONTAINMENT-002: every behavior/test/metadata file rejects missing, empty, truncated, appended and reverted source",
+        "UI188-CONTAINMENT-003: independently pinned closed fixture rejects identity, path, hash, blob, mode and hunk mutations",
+        "UI188-CONTAINMENT-004: coordinated current-source, after-hash and inverse-hunk forgery cannot update the independent validator pin",
+        "UI188-CONTAINMENT-005: immutable before objects, fixed tree and absence are real checks; read errors retain original identity",
+        "UI188-CONTAINMENT-006: actual top-level test registration rejects absent, duplicate, commented, dynamic and skipped variants",
+        "UI188-CONTAINMENT-007: owner denominator, all other 47 targets, identity, actual symbol and physical lines remain enforced",
+        "UI188-CONTAINMENT-008: raw stays current, one inverse precedes the old chain, bypass and double inverse are rejected",
+        "UI188-CONTAINMENT-009: reader construction and unrelated current I/O remain lazy and never substitute history",
+        "UI188-CONTAINMENT-010: all six authority support sources reject mutation independently of the behavior fixture",
+        "UI188-CONTAINMENT-011: the actual inverse checks unique literals, offsets and complete before reconstruction below the independent fixture pin"
+      ]
+    },
+    {
+      "path": "web/tests/ui-regression/stream-create-current-source-delta.test.mts",
+      "mode": "100644",
+      "blob": "c1f38b98c6bcfdd00eedbfbdd7b6fec48e4abc5d",
+      "sha256": "4b169500a2b92a286d0d76e6079b113139fc3ad3ef83c377b53c0540d54b6b32",
+      "tests": [
+        "UI-STREAM-CURRENT-001: exactly 39 actual changed sources invert to immutable f64 bytes through finite bidirectional contexts",
+        "UI-STREAM-CURRENT-002: every listed current path rejects missing, empty, truncated, appended, reverted and wrong-mode input",
+        "UI-STREAM-CURRENT-003: the independently pinned closed contract rejects path, identity, snapshot, hunk and coordinated source forgery",
+        "UI-STREAM-CURRENT-004: wrong immutable tree, entry, original bytes and original read failure cannot substitute source",
+        "UI-STREAM-CURRENT-005: the real inverse checks unique contexts, byte offsets and complete source reconstruction below the fixture pin",
+        "UI-STREAM-CURRENT-006: actual raw is preserved, one current inverse precedes history and bypass, reversion and double application fail",
+        "UI-STREAM-CURRENT-007: registration is exactly one unconditional top-level side-effect import",
+        "UI-STREAM-CURRENT-008: unlisted input remains identical and construction does not read the fixture, source or Git",
+        "UI-STREAM-CURRENT-009: all frozen fixture bytes and prior historical validators remain unchanged"
+      ]
+    }
+  ]
+}

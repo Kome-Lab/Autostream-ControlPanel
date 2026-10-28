@@ -4,10 +4,10 @@ import { useUICopy } from "@/lib/i18n/ui-v2/use-ui-copy";
 
 import { useNonSecretDraft } from "@/components/forms/draft-exit";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Textarea } from "@/components/ui/textarea";
 import { buildDiscordTargetPresetPayload, validDiscordTargetPreset } from "@/features/resources/discord-target-preset";
-import { type SubmitResource, type ResourceRow, noneValue } from "./resource-form-types";
+import { type SubmitResource, type ResourceRow, type SelectOption, noneValue } from "./resource-form-types";
 import { rowString, numberValue, compactRecord, rowValue } from "./resource-values";
 import { TextField, NumberField, FormActions, SelectField, Field, SwitchField } from "./resource-input-fields";
 import { useRegisteredNodeOptions, useOAuthAccountOptions } from "./resource-form-queries";
@@ -59,12 +59,11 @@ export function DiscordConfigForm({ disabled, submit, initial, submitLabel }: { 
   const row = initial || {};
   const discordNodes = useRegisteredNodeOptions("discord_bot");
   const [name, setName] = useState(() => rowString(row, ["name"]) || "main-discord-bot");
-  const [serviceID, setServiceID] = useState(() => rowString(row, ["service_id", "config.service_id"]) || noneValue);
+  const [serviceID, setServiceID, serviceDraftValue] = useDraftDefaultOption(rowString(row, ["service_id", "config.service_id"]), discordNodes[0]?.value);
   const [botToken, setBotToken] = useState("");
   const [reconnectMaxAttempts, setReconnectMaxAttempts] = useState(() => rowString(row, ["reconnect_max_attempts", "config.reconnect_max_attempts"]) || "5");
-  const effectiveServiceID = serviceID === noneValue && discordNodes[0]?.value ? discordNodes[0].value : serviceID;
 
-  useNonSecretDraft([name, serviceID, reconnectMaxAttempts]);
+  useNonSecretDraft([name, serviceDraftValue, reconnectMaxAttempts]);
 
   return (
     <form
@@ -74,7 +73,7 @@ export function DiscordConfigForm({ disabled, submit, initial, submitLabel }: { 
         submit(
           compactRecord({
             name,
-            service_id: effectiveServiceID === noneValue ? "" : effectiveServiceID,
+            service_id: serviceID === noneValue ? "" : serviceID,
             bot_token: botToken,
             reconnect_enabled: true,
             reconnect_max_attempts: numberValue(reconnectMaxAttempts, 5),
@@ -89,18 +88,17 @@ export function DiscordConfigForm({ disabled, submit, initial, submitLabel }: { 
       <div className="grid gap-3 md:grid-cols-2">
         <TextField label={uiText("BOT設定名")} value={name} onChange={setName} required />
         <SelectField
-          key={discordNodes.map((node) => node.value).join("|") || "no-discord-nodes"}
           label="Discord BOT Node"
-          value={effectiveServiceID}
+          value={serviceID}
           onChange={setServiceID}
-          options={[{ value: noneValue, label: uiText("未選択") }, ...discordNodes]}
+          options={[{ value: noneValue, label: uiText("未選択") }, ...retainedDraftOptions(discordNodes, serviceID)]}
         />
         <TextField label="Bot Token" value={botToken} onChange={setBotToken} type="password" description={uiText("入力した場合のみ保存します。")} />
         <NumberField label={uiText("再接続最大回数")} value={reconnectMaxAttempts} onChange={setReconnectMaxAttempts} min={0} />
       </div>
       {discordNodes.length === 0 ? <p className="text-sm text-muted-foreground">{uiText("先にNode登録でDiscord Bot Nodeを登録してください。")}</p> : null}
       <div className="rounded-md border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">{uiText("音声転送と自動再接続は常に有効です。")}</div>
-      <FormActions label={submitLabel} disabled={disabled || effectiveServiceID === noneValue} />
+      <FormActions label={submitLabel} disabled={disabled || serviceID === noneValue} />
     </form>
   );
 }
@@ -145,10 +143,11 @@ export function YouTubeOutputForm({ disabled, submit, initial, submitLabel }: { 
   const oauthAccounts = useOAuthAccountOptions("youtube");
   const [name, setName] = useState(() => rowString(row, ["name"]) || "public-live");
   const [mode, setMode] = useState(() => rowString(row, ["mode", "config.mode"]) || "live_api");
+  const requiresOAuth = mode === "live_api" || mode === "live_api_dry_run" || mode === "live_api_relay_static";
   const [rtmpURL, setRTMPURL] = useState(() => rowString(row, ["rtmp_url", "config.rtmp_url"]) || "rtmps://a.rtmps.youtube.com/live2");
   const [streamKey, setStreamKey] = useState("");
   const [watchURL, setWatchURL] = useState(() => rowString(row, ["watch_url", "config.watch_url"]));
-  const [oauthAccountID, setOAuthAccountID] = useState(() => rowString(row, ["oauth_account_id", "config.oauth_account_id"]) || noneValue);
+  const [oauthAccountID, setOAuthAccountID, oauthAccountDraftValue] = useDraftDefaultOption(rowString(row, ["oauth_account_id", "config.oauth_account_id"]), oauthAccounts[0]?.value, requiresOAuth);
   const [privacyStatus, setPrivacyStatus] = useState(() => rowString(row, ["privacy_status", "config.privacy_status"]) || "public");
   const [latencyPreference, setLatencyPreference] = useState(() => rowString(row, ["latency_preference", "config.latency_preference"]) || "low");
   const [titleTemplate, setTitleTemplate] = useState(() => rowString(row, ["broadcast_title_template", "title_template", "config.broadcast_title_template", "config.title_template"]) || "{{program_title}}");
@@ -169,11 +168,9 @@ export function YouTubeOutputForm({ disabled, submit, initial, submitLabel }: { 
       ? [{ value: "live_api_relay_static", label: uiText("YouTube Live API（固定Relay・既存互換）"), description: uiText("既存の固定Relay設定を編集する場合だけ使用します。新規作成では選択できません。") }]
       : []),
   ];
-  const requiresOAuth = mode === "live_api" || mode === "live_api_dry_run" || staticRelayMode;
-  const effectiveOAuthAccountID = requiresOAuth && oauthAccountID === noneValue && oauthAccounts[0]?.value ? oauthAccounts[0].value : oauthAccountID;
   const staticRelayReady = relayBindingID.trim() !== "" && reusableLiveStreamID.trim() !== "";
 
-  useNonSecretDraft([name, mode, oauthAccountID, privacyStatus, latencyPreference, titleTemplate, description, useConfiguredStreamKey, relayBindingID, reusableLiveStreamID, autoStart, autoStop, completeOnStop]);
+  useNonSecretDraft([name, mode, oauthAccountDraftValue, privacyStatus, latencyPreference, titleTemplate, description, useConfiguredStreamKey, relayBindingID, reusableLiveStreamID, autoStart, autoStop, completeOnStop]);
 
   return (
     <form
@@ -193,7 +190,7 @@ export function YouTubeOutputForm({ disabled, submit, initial, submitLabel }: { 
             // watch URL: the server correctly rejects ingest-adjacent fields
             // for the non-secret relay binding flow.
             watch_url: staticRelayMode ? "" : watchURL,
-            oauth_account_id: effectiveOAuthAccountID === noneValue ? "" : effectiveOAuthAccountID,
+            oauth_account_id: oauthAccountID === noneValue ? "" : oauthAccountID,
             use_configured_stream_key: configuredLiveAPIKeyMode,
             broadcast_title_template: titleTemplate,
             broadcast_description: description,
@@ -216,7 +213,7 @@ export function YouTubeOutputForm({ disabled, submit, initial, submitLabel }: { 
           options={outputModeOptions}
         />
         {!staticRelayMode ? <TextField label="RTMP URL" value={rtmpURL} onChange={setRTMPURL} required /> : null}
-        <SelectField label={uiText("接続済みGoogleアカウント")} value={effectiveOAuthAccountID} onChange={setOAuthAccountID} options={[{ value: noneValue, label: uiText("未選択") }, ...oauthAccounts]} />
+        <SelectField label={uiText("接続済みGoogleアカウント")} value={oauthAccountID} onChange={setOAuthAccountID} options={[{ value: noneValue, label: uiText("未選択") }, ...retainedDraftOptions(oauthAccounts, oauthAccountID)]} />
         {staticRelayMode ? (
           <>
             <TextField label={uiText("固定RelayバインディングID")} value={relayBindingID} onChange={setRelayBindingID} description={uiText("管理済みの固定Relayを識別する非秘密IDです。配信キーは入力しません。")} required />
@@ -281,7 +278,32 @@ export function YouTubeOutputForm({ disabled, submit, initial, submitLabel }: { 
           {uiText("YouTube Studioでカスタムキーの解像度を手動1080p60、デュアルストリームをOFFに設定してください。1つのキーを同時に複数枠へ割り当てることはできません。Control Panelは配信枠を自動作成し、このキーのLiveStreamへバインドします。")}</div>
       ) : null}
       {requiresOAuth && oauthAccounts.length === 0 ? <p className="text-sm text-muted-foreground">{uiText("YouTube Live APIを使うには、YouTube Live用途でGoogleアカウントを接続してください。")}</p> : null}
-      <FormActions label={submitLabel} disabled={disabled || (requiresOAuth && effectiveOAuthAccountID === noneValue) || (staticRelayMode && !staticRelayReady)} />
+      <FormActions label={submitLabel} disabled={disabled || (requiresOAuth && oauthAccountID === noneValue) || (staticRelayMode && !staticRelayReady)} />
     </form>
   );
+}
+
+// Undefined means the first automatic default is still pending; noneValue is an
+// explicit choice. Keep the default and its dirty baseline in the draft owner.
+function useDraftDefaultOption(initialValue: string, firstValue: string | undefined, enabled = true) {
+  const [selection, setSelection] = useState(() => {
+    const value = initialValue && initialValue !== noneValue ? initialValue : enabled ? firstValue : undefined;
+    return { value, baseline: value };
+  });
+  useEffect(() => {
+    if (!enabled || selection.value !== undefined || !firstValue) return;
+    const handle = window.setTimeout(() => {
+      setSelection((current) => current.value === undefined ? { value: firstValue, baseline: firstValue } : current);
+    }, 0);
+    return () => window.clearTimeout(handle);
+  }, [enabled, firstValue, selection.value]);
+  const value = selection.value ?? noneValue;
+  const dirtyValue = selection.value === selection.baseline ? "" : value;
+  return [value, (nextValue: string) => setSelection((current) => ({ ...current, value: nextValue || noneValue })), dirtyValue] as const;
+}
+
+function retainedDraftOptions(options: SelectOption[], value: string): SelectOption[] {
+  return value !== noneValue && !options.some((option) => option.value === value)
+    ? [{ value, label: value }, ...options]
+    : options;
 }

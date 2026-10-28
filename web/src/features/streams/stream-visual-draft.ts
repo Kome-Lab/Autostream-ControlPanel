@@ -165,14 +165,20 @@ export function buildStreamVisualFields(
 }
 
 export function buildStreamCreateVisualExtension(draft: StreamVisualDraft) {
+  const ownsSelectedUpload = draft.coverCandidates.some((candidate) => candidate.source === "upload")
+    || draft.coverSource === "upload" && Boolean(draft.coverAssetID)
+    || draft.backgroundMode === "image" && Boolean(draft.backgroundAssetID);
   return {
-    ...(draft.uploadSessionID ? { upload_session_id: draft.uploadSessionID } : {}),
+    ...(draft.uploadSessionID && ownsSelectedUpload ? { upload_session_id: draft.uploadSessionID } : {}),
     visual_settings: buildStreamVisualFields(draft),
   };
 }
 
 export function validateStreamVisualDraft(draft: StreamVisualDraft): StreamVisualValidation {
   const issues: string[] = [];
+  if (draft.coverCandidates.some((candidate) => !candidate.name.trim() || [...candidate.name.trim()].length > 255)) {
+    issues.push("蓋画像のファイル名は1〜255文字で指定してください。ファイル名を短くして選び直してください。");
+  }
   if (draft.backgroundMode === "image" && (!draft.backgroundAssetID.trim() || !draft.backgroundVariantID.trim())) {
     issues.push("背景画像の処理完了を待ってください。");
   }
@@ -220,5 +226,5 @@ function validDiscordID(value: string) {
 function validHeaderTitle(value: string) {
   const title = value.trim();
   if (!title || [...title].length > 80) return false;
-  return !/[\u0000-\u001f\u007f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/u.test(title);
+  return !/[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/u.test(title);
 }

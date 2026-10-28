@@ -16,7 +16,7 @@ const liveStatusQueryOptions = {
 export function useCurrentUser() {
   return useQuery({
     queryKey: ["auth", "me"],
-    queryFn: () => apiGet<CurrentUser>("/auth/me"),
+    queryFn: ({ signal }) => apiGet<CurrentUser>("/auth/me", signal),
     retry: false,
     refetchInterval: 15_000,
     refetchIntervalInBackground: true,
@@ -27,7 +27,7 @@ export function useCurrentUser() {
 export function useSetupStatus() {
   return useQuery({
     queryKey: ["setup", "status"],
-    queryFn: () => apiGet<SetupStatus>("/setup/status"),
+    queryFn: ({ signal }) => apiGet<SetupStatus>("/setup/status", signal),
     retry: false,
   });
 }
@@ -35,28 +35,28 @@ export function useSetupStatus() {
 export function useAppSettings() {
   return useQuery({
     queryKey: ["settings", "app"],
-    queryFn: () => apiGet<AppSettings>("/settings/app"),
+    queryFn: ({ signal }) => apiGet<AppSettings>("/settings/app", signal),
   });
 }
 
 export function useManagedAppSettings() {
   return useQuery({
     queryKey: ["settings", "app", "manage"],
-    queryFn: () => apiGet<ManagedAppSettings>("/settings/app/manage"),
+    queryFn: ({ signal }) => apiGet<ManagedAppSettings>("/settings/app/manage", signal),
   });
 }
 
 export function useVersion() {
   return useQuery({
     queryKey: ["version"],
-    queryFn: () => apiGet<AppVersion>("/version"),
+    queryFn: ({ signal }) => apiGet<AppVersion>("/version", signal),
   });
 }
 
 export function useSystemUpdates(enabled = true) {
   return useQuery({
     queryKey: ["system-updates"],
-    queryFn: async () => normalizeSystemUpdatesResponse(await apiGet<unknown>("/system-updates")),
+    queryFn: async ({ signal }) => normalizeSystemUpdatesResponse(await apiGet<unknown>("/system-updates", signal)),
     enabled,
     refetchInterval: (query) => query.state.data?.jobs.some((job) => isSystemUpdateJobActive(job.status)) ? 10_000 : 30_000,
     refetchIntervalInBackground: true,
@@ -67,9 +67,9 @@ export function useSystemUpdates(enabled = true) {
 export function useUpdaterSettings(updaterID: string, enabled = true) {
   return useQuery({
     queryKey: ["system-updates", "updaters", updaterID, "settings"],
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       try {
-        const response = await apiGet<unknown>(`/system-updates/updaters/${encodeURIComponent(updaterID)}/settings`);
+        const response = await apiGet<unknown>(`/system-updates/updaters/${encodeURIComponent(updaterID)}/settings`, signal);
         return normalizeUpdaterSettingsResponse(response, updaterID);
       } catch (error) {
         if (error instanceof APIError && error.status === 404 && error.code === "updater_policy_not_configured") {
@@ -85,8 +85,8 @@ export function useUpdaterSettings(updaterID: string, enabled = true) {
 export function useUpdaterHostBootstrapJobs(updaterID: string, enabled = true) {
   return useQuery({
     queryKey: ["system-updates", "updaters", updaterID, "bootstrap-jobs"],
-    queryFn: async () => normalizeUpdaterHostBootstrapJobsResponse(
-      await apiGet<unknown>(`/system-updates/updaters/${encodeURIComponent(updaterID)}/bootstrap-jobs`),
+    queryFn: async ({ signal }) => normalizeUpdaterHostBootstrapJobsResponse(
+      await apiGet<unknown>(`/system-updates/updaters/${encodeURIComponent(updaterID)}/bootstrap-jobs`, signal),
       updaterID,
     ),
     enabled: enabled && Boolean(updaterID),
@@ -100,7 +100,7 @@ export function useUpdaterHostBootstrapJobs(updaterID: string, enabled = true) {
 export function useStreams(enabled = true) {
   return useQuery({
     queryKey: ["streams"],
-    queryFn: () => apiGet<Stream[]>("/streams"),
+    queryFn: ({ signal }) => apiGet<Stream[]>("/streams", signal),
     enabled,
     // Stream lifecycle transitions happen in the service dispatch path, so
     // keep the list in sync while a start/stop request is settling instead
@@ -112,7 +112,7 @@ export function useStreams(enabled = true) {
 export function useArchiveStreams(enabled = true) {
   return useQuery({
     queryKey: ["archive-streams"],
-    queryFn: () => apiGet<Stream[]>("/archive/streams"),
+    queryFn: ({ signal }) => apiGet<Stream[]>("/archive/streams", signal),
     enabled,
     ...liveStatusQueryOptions,
   });
@@ -121,7 +121,7 @@ export function useArchiveStreams(enabled = true) {
 export function useArchiveProcessingStreams(enabled = true) {
   return useQuery({
     queryKey: ["archive-processing-streams"],
-    queryFn: () => apiGet<Stream[]>("/archive/processing-streams"),
+    queryFn: ({ signal }) => apiGet<Stream[]>("/archive/processing-streams", signal),
     enabled,
     ...liveStatusQueryOptions,
   });
@@ -130,7 +130,7 @@ export function useArchiveProcessingStreams(enabled = true) {
 export function useWorkers(enabled = true) {
   return useQuery({
     queryKey: ["workers"],
-    queryFn: () => apiGet<WorkerNode[]>("/workers"),
+    queryFn: ({ signal }) => apiGet<WorkerNode[]>("/workers", signal),
     ...liveStatusQueryOptions,
     enabled,
   });
@@ -139,7 +139,7 @@ export function useWorkers(enabled = true) {
 export function useServiceHealth(enabled = true) {
   return useQuery({
     queryKey: ["service-health"],
-    queryFn: () => apiGet<WorkerNode[]>("/service-health"),
+    queryFn: ({ signal }) => apiGet<WorkerNode[]>("/service-health", signal),
     ...liveStatusQueryOptions,
     enabled,
   });
@@ -148,7 +148,7 @@ export function useServiceHealth(enabled = true) {
 export function useNodes(enabled = true) {
   return useQuery({
     queryKey: ["nodes"],
-    queryFn: () => apiGet<WorkerNode[]>("/nodes"),
+    queryFn: ({ signal }) => apiGet<WorkerNode[]>("/nodes", signal),
     ...liveStatusQueryOptions,
     enabled,
   });
@@ -166,7 +166,7 @@ export function useAuditLogs(params?: { from?: string; to?: string; action?: str
   const suffix = search.toString() ? `?${search}` : "";
   return useQuery({
     queryKey: ["audit-logs", params],
-    queryFn: () => apiGet<AuditLog[]>(`/audit-logs${suffix}`),
+    queryFn: ({ signal }) => apiGet<AuditLog[]>(`/audit-logs${suffix}`, signal),
   });
 }
 
@@ -174,7 +174,7 @@ export function useWorkerMetrics(rangeMs = 3 * 60 * 60 * 1000) {
   const rangeSeconds = Math.max(15 * 60, Math.min(3 * 60 * 60, Math.floor(rangeMs / 1000)));
   return useQuery({
     queryKey: ["observability", "metrics", rangeSeconds],
-    queryFn: () => apiGet<MetricSnapshot[]>(`/observability/metrics?range_sec=${rangeSeconds}`),
+    queryFn: ({ signal }) => apiGet<MetricSnapshot[]>(`/observability/metrics?range_sec=${rangeSeconds}`, signal),
     ...liveStatusQueryOptions,
   });
 }
@@ -182,7 +182,7 @@ export function useWorkerMetrics(rangeMs = 3 * 60 * 60 * 1000) {
 export function useResourceData<T = unknown>(path: string, enabled = true) {
   return useQuery({
     queryKey: ["resource", path],
-    queryFn: () => apiGet<T>(path),
+    queryFn: ({ signal }) => apiGet<T>(path, signal),
     enabled,
     ...(isLiveResourcePath(path) ? liveStatusQueryOptions : {}),
   });

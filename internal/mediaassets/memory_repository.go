@@ -56,6 +56,9 @@ func (r *MemoryRepository) CreateUploadSession(_ context.Context, userID string,
 
 func (r *MemoryRepository) Upload(_ context.Context, in UploadInput) (Asset, error) {
 	in.SessionID, in.UserID, in.UsageType = strings.TrimSpace(in.SessionID), strings.TrimSpace(in.UserID), strings.TrimSpace(in.UsageType)
+	if in.ClientOperationID != "" && !ValidUploadOperationID(in.ClientOperationID) {
+		return Asset{}, ErrForbidden
+	}
 	if in.UsageType != "scene_background" && in.UsageType != "video_cover" {
 		return Asset{}, ErrForbidden
 	}
@@ -77,6 +80,10 @@ func (r *MemoryRepository) Upload(_ context.Context, in UploadInput) (Asset, err
 		r.mu.Unlock()
 		return Asset{}, ErrDraftExpired
 	}
+	if asset, exists, err := r.uploadOperationLocked(in); exists || err != nil {
+		r.mu.Unlock()
+		return asset, err
+	}
 	if in.UsageType == "video_cover" && r.draftCoverCountLocked(in.SessionID) >= MaxStreamCoverUploads {
 		r.mu.Unlock()
 		return Asset{}, ErrCoverUploadLimit
@@ -95,6 +102,9 @@ func (r *MemoryRepository) Upload(_ context.Context, in UploadInput) (Asset, err
 	if session.OwnerType != "upload_draft" || !session.ExpiresAt.After(r.now()) {
 		return Asset{}, ErrDraftClaimed
 	}
+	if asset, exists, err := r.uploadOperationLocked(in); exists || err != nil {
+		return asset, err
+	}
 	if in.UsageType == "video_cover" && r.draftCoverCountLocked(in.SessionID) >= MaxStreamCoverUploads {
 		return Asset{}, ErrCoverUploadLimit
 	}
@@ -104,6 +114,10 @@ func (r *MemoryRepository) Upload(_ context.Context, in UploadInput) (Asset, err
 	}
 	now := r.now()
 	asset := Asset{ID: id, OwnerUserID: in.UserID, OwnerType: "upload_draft", OwnerID: in.SessionID, UploadSessionID: in.SessionID, UsageType: in.UsageType, StorageKey: processed.StorageKey, SHA256: processed.SHA256, MediaType: processed.MediaType, ByteSize: processed.ByteSize, Width: processed.Width, Height: processed.Height, Opaque: processed.Opaque, ProcessorRevision: ProcessorRevision, CreatedAt: now, UpdatedAt: now}
+	asset.ClientOperationID = in.ClientOperationID
+	if in.ClientOperationID != "" {
+		asset.ClientOperationSessionID = in.SessionID
+	}
 	r.assets[id] = asset
 	return asset, nil
 }

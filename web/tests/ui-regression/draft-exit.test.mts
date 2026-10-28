@@ -131,14 +131,15 @@ test("UI-DRAFT-007: explicit non-secret comparison fields exclude credentials an
 test("UI-DRAFT-009: real Security result and resource-tab callbacks keep one draft and do not clear failures",()=>{
   let saved="before",tab="/security/settings",pending:unknown={},invalidations=0;
   const current=source("features/resources/resource-security-editor.tsx");
-  const bindings={setMessage(){},resourceActionResultMessage:()=>"safe",t:(key:string)=>key,uiText:(key:string)=>key,
-    setSavedSnapshot:(value:string)=>{saved=value;},draftSnapshot:"edited",setPending:(value:unknown)=>{pending=value;},resource:{path:"/security/settings"},queryClient:{invalidateQueries(){invalidations++;}}};
+  const intent={id:"RES-40"},submittedSnapshots={current:new WeakMap<object,string>([[intent,"edited"]])};
+  const bindings={setMessage(){},resourceActionResultMessage:()=>"safe",t:(key:string)=>key,uiText:(key:string)=>key,isRecord:(value:unknown)=>typeof value==="object"&&value!==null&&!Array.isArray(value),
+    setSavedSnapshot:(value:string)=>{saved=value;},draftSnapshot:"later edit",submittedSnapshots,setPending:(value:unknown)=>{pending=value;},resource:{path:"/security/settings"},queryClient:{invalidateQueries(){invalidations++;}}};
   const result=actualJSXCallback(current,"ResourceActionConfirmationHost","onResult",bindings);
-  for(const kind of ["blocked","failed","outcome_unknown"]) {result({kind});assert.equal(saved,"before");}
-  result({kind:"succeeded"});assert.equal(saved,"edited");assert.equal(pending,null);assert.equal(invalidations,2);
-  saved="before";
-  const mutant=current.replace("setSavedSnapshot(draftSnapshot);","void 0;");
-  actualJSXCallback(mutant,"ResourceActionConfirmationHost","onResult",bindings)({kind:"succeeded"});
+  for(const kind of ["blocked","failed","outcome_unknown"]) {result({kind},intent);assert.equal(saved,"before");}
+  result({kind:"succeeded"},intent);assert.equal(saved,"edited");assert.notEqual(saved,bindings.draftSnapshot);assert.equal(pending,null);assert.equal(invalidations,2);
+  saved="before";submittedSnapshots.current.set(intent,"edited");
+  const mutant=current.replace("setSavedSnapshot(submittedSnapshot);","void 0;");assert.notEqual(mutant,current);
+  actualJSXCallback(mutant,"ResourceActionConfirmationHost","onResult",bindings)({kind:"succeeded"},intent);
   assert.throws(()=>assert.equal(saved,"edited"),/before/);
   const {state,controller}=setup();state.dirty=true;
   const change=actualJSXCallback(source("features/resources/resource-page.tsx"),"Tabs","onValueChange",{draftExit:controller,pageId:"security",setSelection:(value:{pageId:string;path:string})=>{assert.equal(value.pageId,"security");tab=value.path;}});

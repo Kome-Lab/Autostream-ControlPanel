@@ -123,7 +123,7 @@ function LegacyNodeRegistrationView({ mode = "registration" }: { mode?: NodeRegi
   const editDraftExit = useDraftExit({ enabled: editingNode !== null && allowed, pending: updateNode.isPending });
   useExistingDraft(Boolean(editingNode) && JSON.stringify(editForm) !== JSON.stringify(editingNode ? nodeEditDefaults(editingNode) : editForm), updateNode.isPending, editDraftExit);
   const createError = nodeRegistrationErrorMessage(createToken.error);
-  const actionError = nodeRegistrationErrorMessage(updateNode.error || deleteNode.error || loadConfiguration.error || regenerateConfigureToken.error || rotateRuntimeToken.error);
+  const actionError = nodeRegistrationErrorMessage(updateNode.error || deleteNode.error || loadConfiguration.error || regenerateConfigureToken.error || rotateRuntimeToken.error, locale);
   const registeredRows = registeredNodes.data || [];
   const registeredRemoteState = aggregateRemainingQueries("nodes", {
     "registered-nodes": remainingQuerySnapshot(registeredNodes),
@@ -150,7 +150,7 @@ function LegacyNodeRegistrationView({ mode = "registration" }: { mode?: NodeRegi
   };
 
   const openEditNode = (node: WorkerNode) => {
-    editDraftExit.request(() => { setEditingNode(node); setEditForm(nodeEditDefaults(node)); });
+    editDraftExit.request(() => { updateNode.reset(); setEditingNode(node); setEditForm(nodeEditDefaults(node)); });
   };
 
   const submitEditNode = () => {
@@ -159,6 +159,7 @@ function LegacyNodeRegistrationView({ mode = "registration" }: { mode?: NodeRegi
       nodeID: nodeIdentity(editingNode),
       values: editForm,
       endpointless: isPullNode(editingNode),
+      baseline: editingNode,
     });
   };
 
@@ -357,6 +358,7 @@ function LegacyNodeRegistrationView({ mode = "registration" }: { mode?: NodeRegi
         editingNode={editingNode} setEditingNode={(node) => editDraftExit.request(() => setEditingNode(node))} editForm={editForm} setEditForm={setEditForm}
         editingPullHostAgent={editingPullHostAgent} allowed={allowed} editFormValid={editFormValid}
         updatePending={updateNode.isPending} submitEditNode={submitEditNode} t={t}
+        updateError={nodeRegistrationErrorMessage(updateNode.error, locale)} refreshNode={() => { void registeredNodes.refetch(); }}
       />
       ) : null}
     </div>

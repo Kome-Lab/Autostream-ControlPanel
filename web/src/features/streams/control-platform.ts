@@ -139,6 +139,8 @@ export function buildVideoCoverAction(active: boolean, state: VideoCoverState, i
 }
 
 export type VideoCoverActionRequest = ReturnType<typeof buildVideoCoverAction> & { candidate_variant_id?: string; expected_visual_revision?: number };
+export type VideoCoverAuthorityProof = Readonly<{ permission: CoverPermissionSnapshot; capability: CoverCapabilitySnapshot; valid: boolean; reason?: string }>;
+export type VideoCoverAuthorityBaseline = Readonly<{ streamID: string; streamStatus: string; encoderID: string; encoderAuthority: string; visualRevision: number }>;
 
 export function newVideoCoverIdempotencyKey(random: Pick<Crypto, "getRandomValues" | "randomUUID"> = globalThis.crypto) {
   if (typeof random?.randomUUID === "function") return random.randomUUID();
@@ -152,31 +154,60 @@ export function newVideoCoverIdempotencyKey(random: Pick<Crypto, "getRandomValue
 
 export function createVideoCoverActionController<T>(
 	permission: () => CoverPermissionSnapshot,
-	send: (request: VideoCoverActionRequest) => Promise<T>,
+	send: (request: VideoCoverActionRequest, signal?: AbortSignal) => Promise<T>,
 	capability: () => CoverCapabilitySnapshot = () => ({ status: "ready", supported: true }),
+	revalidate?: (request: VideoCoverActionRequest, signal: AbortSignal, baseline?: VideoCoverAuthorityBaseline) => Promise<VideoCoverAuthorityProof>,
 ) {
 	let pending = false;
 	let unresolved = false;
-	const issueRequest = async (request: VideoCoverActionRequest) => {
+	let uncertainIssued = false;
+	let accepted: VideoCoverState | undefined;
+	let active: { abort: AbortController; sent: boolean } | undefined;
+	const issueRequest = async (request: VideoCoverActionRequest, baseline?: VideoCoverAuthorityBaseline) => {
 		const availability = coverActionAvailability(request.active, permission(), pending, capability(), unresolved);
 		if (!availability.allowed || (!request.active && request.hide_confirmed !== true)) {
 			return { sent: false as const, reason: availability.reason || "確認が必要です。" };
 		}
 		pending = true;
+		const operation = { abort: new AbortController(), sent: false };
+		active = operation;
 		try {
-			return { sent: true as const, value: await send(request) };
-		} catch (error) {
-			unresolved = true;
-			throw error;
+			if (revalidate) {
+				let proof: VideoCoverAuthorityProof;
+				try { proof = await revalidate(request, operation.abort.signal, baseline); }
+				catch { return { sent: false as const, reason: "最新の権限または配信状態を確認できないため、操作を送信しませんでした。" }; }
+				const fresh = coverActionAvailability(request.active, proof.permission, false, proof.capability, unresolved);
+				if (!fresh.allowed || !proof.valid) return { sent: false as const, reason: fresh.reason || proof.reason || "対象の設定または担当Encoderが変更されました。最新状態を確認してください。" };
+			}
+			if (operation.abort.signal.aborted) return { sent: false as const, reason: "最新の権限または配信状態を確認できないため、操作を送信しませんでした。" };
+			try {
+				operation.sent = true;
+				return { sent: true as const, value: await send(request, operation.abort.signal) };
+			} catch (error) {
+				uncertainIssued = true;
+				unresolved = true;
+				accepted = undefined;
+				throw error;
+			}
 		} finally {
 			pending = false;
+			if (active === operation) active = undefined;
 		}
 	};
 	return {
 		get pending() { return pending; },
 		get unresolved() { return unresolved; },
-		holdForReconciliation() { unresolved = true; },
-		reconcile() { unresolved = false; },
+		cancel() { if (active && !active.sent) active.abort.abort(); },
+		holdForReconciliation(state?: VideoCoverState) { unresolved = true; if (!state) { uncertainIssued = true; accepted = undefined; } else if (!uncertainIssued) accepted = { ...state }; },
+		reconcile(state?: VideoCoverState) {
+			if (!unresolved) return true;
+			if (uncertainIssued || !accepted || !state || !Number.isSafeInteger(state.job_generation) || state.job_generation < 0 || !Number.isSafeInteger(state.desired_revision) || state.desired_revision < 0 || state.stream_id !== accepted.stream_id || state.job_generation !== accepted.job_generation || state.desired_revision !== accepted.desired_revision || state.desired_active !== accepted.desired_active || (state.asset_variant_id || "") !== (accepted.asset_variant_id || "")) return false;
+			const applied = state.status === "applied" && state.applied_revision === state.desired_revision && state.applied_active === state.desired_active && (!state.desired_active || state.applied_asset_variant_id === state.asset_variant_id);
+			if (!applied && state.status !== "failed") return false;
+			unresolved = false;
+			accepted = undefined;
+			return true;
+		},
 		issueRequest,
 		async issue(active: boolean, state: VideoCoverState, idempotencyKey: string, hideConfirmed = false) {
 			return issueRequest(buildVideoCoverAction(active, state, idempotencyKey, hideConfirmed));

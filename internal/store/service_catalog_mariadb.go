@@ -61,45 +61,47 @@ func (s MariaDBAuthStore) UpdateServiceMetadata(ctx context.Context, serviceID s
 	if err := validateServiceMetadataUpdate(update); err != nil {
 		return RegisteredService{}, err
 	}
+	if update.ExpectedMetadataRevision != nil && !ValidServiceMetadataRevision(*update.ExpectedMetadataRevision) {
+		return RegisteredService{}, ErrInvalidServiceRegistration
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return RegisteredService{}, err
+	}
+	defer tx.Rollback()
+	// The semantic comparison and the first metadata write share the service row
+	// lock. No stream, token or execution-host lock is acquired after this lock.
+	existing, err := lockMariaDBService(ctx, tx, serviceID)
+	if err != nil {
+		return RegisteredService{}, err
+	}
+	updated, err := updateMariaDBServiceMetadataLocked(ctx, tx, serviceID, update, existing)
+	if err != nil {
+		return RegisteredService{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return RegisteredService{}, err
+	}
+	return updated, nil
+}
+
+// updateMariaDBServiceMetadataLocked requires the service row lock and a
+// normalized, validated update. The caller owns the transaction commit.
+func updateMariaDBServiceMetadataLocked(ctx context.Context, tx *sql.Tx, serviceID string, update ServiceMetadataUpdate, existing RegisteredService) (RegisteredService, error) {
+	if update.ExpectedMetadataRevision != nil && *update.ExpectedMetadataRevision != ServiceMetadataRevision(existing) {
+		return RegisteredService{}, ErrRevisionConflict
+	}
+	if update.Endpointless && (existing.ServiceType != "update_agent" || existing.TransportMode != "pull_v2") {
+		return RegisteredService{}, ErrInvalidServiceRegistration
+	}
 	now := time.Now().UTC()
-	if update.PreserveEndpoint {
-		result, err := s.db.ExecContext(ctx, `UPDATE services SET service_name = ?, description = ?, updated_at = ? WHERE service_id = ?`,
-			update.ServiceName, update.Description, now, serviceID)
-		if err != nil {
-			return RegisteredService{}, err
-		}
-		affected, err := result.RowsAffected()
-		if err != nil {
-			return RegisteredService{}, err
-		}
-		if affected == 0 {
-			return RegisteredService{}, ErrNotFound
-		}
-		return s.getService(ctx, serviceID)
-	}
-	if update.Endpointless {
-		existing, err := s.getService(ctx, serviceID)
-		if err != nil {
-			return RegisteredService{}, err
-		}
-		if existing.ServiceType != "update_agent" || existing.TransportMode != "pull_v2" {
-			return RegisteredService{}, ErrInvalidServiceRegistration
-		}
-		result, err := s.db.ExecContext(ctx, `UPDATE services SET service_name = ?, description = ?, updated_at = ? WHERE service_id = ? AND service_type = 'update_agent' AND transport_mode = 'pull_v2'`,
-			update.ServiceName, update.Description, now, serviceID)
-		if err != nil {
-			return RegisteredService{}, err
-		}
-		affected, err := result.RowsAffected()
-		if err != nil {
-			return RegisteredService{}, err
-		}
-		if affected == 0 {
-			return RegisteredService{}, ErrNotFound
-		}
-		return s.getService(ctx, serviceID)
-	}
-	result, err := s.db.ExecContext(ctx, `UPDATE services SET
+	var result sql.Result
+	var err error
+	if update.PreserveEndpoint || update.Endpointless {
+		result, err = tx.ExecContext(ctx, `UPDATE services SET service_name = ?, description = ?, updated_at = ? WHERE service_id = ? AND endpoint_revision = ?`,
+			update.ServiceName, update.Description, now, serviceID, existing.EndpointRevision)
+	} else {
+		result, err = tx.ExecContext(ctx, `UPDATE services SET
 service_name = ?,
 description = ?,
 host = ?,
@@ -113,12 +115,13 @@ desired_public_url = ?,
 endpoint_revision = endpoint_revision + 1,
 endpoint_status = 'applied',
 updated_at = ?
-WHERE service_id = ?`,
-		update.ServiceName, update.Description,
-		update.Host, update.Port, update.SSLEnabled, update.PublicURL,
-		update.Host, update.Port, update.SSLEnabled, update.PublicURL,
-		now, serviceID,
-	)
+WHERE service_id = ? AND endpoint_revision = ?`,
+			update.ServiceName, update.Description,
+			update.Host, update.Port, update.SSLEnabled, update.PublicURL,
+			update.Host, update.Port, update.SSLEnabled, update.PublicURL,
+			now, serviceID, existing.EndpointRevision,
+		)
+	}
 	if err != nil {
 		return RegisteredService{}, err
 	}
@@ -126,10 +129,14 @@ WHERE service_id = ?`,
 	if err != nil {
 		return RegisteredService{}, err
 	}
-	if affected == 0 {
-		return RegisteredService{}, ErrNotFound
+	if affected != 1 && !(affected == 0 && (update.PreserveEndpoint || update.Endpointless) && existing.ServiceName == update.ServiceName && existing.Description == update.Description) {
+		return RegisteredService{}, ErrRevisionConflict
 	}
-	return s.getService(ctx, serviceID)
+	updated, err := scanService(tx.QueryRowContext(ctx, serviceSelectColumns+` FROM services WHERE service_id = ?`, serviceID))
+	if err != nil {
+		return RegisteredService{}, err
+	}
+	return updated, nil
 }
 
 func (s MariaDBAuthStore) DeleteService(ctx context.Context, serviceID string) (err error) {

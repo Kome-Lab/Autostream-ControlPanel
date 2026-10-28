@@ -13,8 +13,16 @@ export function streamActionLabel(id: StreamActionIntent["id"], uiText: UICopy =
   return labels[id];
 }
 
-export function streamActionBlockedMessage(reason: Extract<StreamActionExecutionResult, { kind: "blocked" }>["reason"], uiText: UICopy = japaneseCopy) {
+export function streamActionBlockedMessage(reason: Extract<StreamActionExecutionResult, { kind: "blocked" }>["reason"], uiText: UICopy = japaneseCopy, details?: Pick<Extract<StreamActionExecutionResult, { kind: "blocked" }>, "authorityChange" | "changedFields">) {
   if (reason === "permission-denied") return uiText("この操作を実行する権限がありません。");
+  if (details?.authorityChange) {
+    const message = details.authorityChange === "ownership" ? uiText("担当Nodeの割当が変更されました。入力内容は保持しています。最新の割当を確認してください。")
+      : details.authorityChange === "lifecycle" ? uiText("配信状態が変更されました。入力内容は保持しています。最新の配信状態を確認してください。")
+      : details.authorityChange === "missing" ? uiText("対象の配信枠が見つかりません。入力内容は保持しています。配信枠の一覧を確認してください。")
+      : uiText("編集中に同じ枠の設定が変更されました。入力内容は保持しています。最新設定を確認してから編集をやり直してください。");
+    const labels = { name: uiText("名前"), schedule: uiText("予約時刻"), discord: uiText("Discord設定"), youtube: uiText("YouTube出力"), encoding: uiText("Encoder設定"), caption: uiText("字幕設定"), overlay: uiText("ウォーターマーク"), archive: uiText("録画設定"), audio: uiText("Encoder音量"), nodes: uiText("担当Node") };
+    return details.changedFields?.length ? `${message} ${uiText("変更対象: {0}", details.changedFields.map((field) => labels[field]).join("、"))}` : message;
+  }
   if (reason === "authority-changed") return uiText("対象の状態が変更されたため送信しませんでした。最新状態を確認してください。");
   if (reason === "duplicate") return uiText("同じ操作を処理中です。");
   if (reason === "reconciliation-required") return uiText("前回の結果を確認できないため再送を抑止しています。最新状態または監査ログを確認してください。");

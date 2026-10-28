@@ -257,6 +257,16 @@ func (assignments appliedStreamServiceAssignments) Rollback(ctx context.Context,
 		if snapshot.CurrentStream == "" {
 			continue
 		}
+		current, err := services.GetService(ctx, snapshot.ServiceID)
+		if err != nil {
+			return err
+		}
+		// Snapshots include a retained primary beside a replaced service. Do not
+		// restore an owner that is already present using the empty-owner CAS:
+		// that would reject the unchanged row and stop the remaining rollback.
+		if strings.TrimSpace(current.CurrentStreamID) == snapshot.CurrentStream {
+			continue
+		}
 		expected := ""
 		if _, err := services.AssignServiceToStreamGuarded(ctx, store.ServiceAssignmentMutation{ServiceID: snapshot.ServiceID, StreamID: snapshot.CurrentStream, ActorUserID: actorUserID, AssignmentRole: snapshot.AssignmentRole, ExpectedCurrentStreamID: &expected}); err != nil {
 			return err

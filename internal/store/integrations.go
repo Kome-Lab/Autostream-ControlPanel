@@ -63,17 +63,18 @@ const (
 )
 
 type DriveDestination struct {
-	ID                  string `json:"id"`
-	Name                string `json:"name"`
-	AuthMode            string `json:"auth_mode"`
-	OAuthAccountID      string `json:"oauth_account_id,omitempty"`
-	FolderID            string `json:"-"`
-	FolderIDConfigured  bool   `json:"folder_id_configured"`
-	FolderIDFingerprint string `json:"folder_id_fingerprint,omitempty"`
-	MaskedFolderID      string `json:"masked_folder_id,omitempty"`
-	SharedDrive         bool   `json:"shared_drive"`
-	CreatedAt           string `json:"created_at"`
-	UpdatedAt           string `json:"updated_at"`
+	ExpectedUpdatedAt   *string `json:"-"`
+	ID                  string  `json:"id"`
+	Name                string  `json:"name"`
+	AuthMode            string  `json:"auth_mode"`
+	OAuthAccountID      string  `json:"oauth_account_id,omitempty"`
+	FolderID            string  `json:"-"`
+	FolderIDConfigured  bool    `json:"folder_id_configured"`
+	FolderIDFingerprint string  `json:"folder_id_fingerprint,omitempty"`
+	MaskedFolderID      string  `json:"masked_folder_id,omitempty"`
+	SharedDrive         bool    `json:"shared_drive"`
+	CreatedAt           string  `json:"created_at"`
+	UpdatedAt           string  `json:"updated_at"`
 }
 
 type IntegrationStore interface {

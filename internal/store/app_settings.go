@@ -58,22 +58,13 @@ func (s *MemoryAppSettingsStore) GetAppSettings(ctx context.Context) (AppSetting
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.settings, nil
+	settings := s.settings
+	settings.UpdatedAt = systemSettingsRevision(settings.UpdatedAt)
+	return settings, nil
 }
 
 func (s *MemoryAppSettingsStore) UpdateAppSettings(ctx context.Context, settings AppSettings) (AppSettings, error) {
-	if err := ctx.Err(); err != nil {
-		return AppSettings{}, err
-	}
-	normalized, err := normalizeAppSettings(settings)
-	if err != nil {
-		return AppSettings{}, err
-	}
-	normalized.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-	s.mu.Lock()
-	s.settings = normalized
-	s.mu.Unlock()
-	return normalized, nil
+	return s.UpdateAppSettingsRevision(ctx, AppSettingsMutation{Settings: settings}, nil)
 }
 
 type MariaDBAppSettingsStore struct {
@@ -89,7 +80,9 @@ func (s MariaDBAppSettingsStore) GetAppSettings(ctx context.Context) (AppSetting
 	var updatedAt time.Time
 	err := s.db.QueryRowContext(ctx, `SELECT value_json, updated_at FROM system_settings WHERE name = 'app'`).Scan(&body, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
-		return defaultAppSettings, nil
+		settings := defaultAppSettings
+		settings.UpdatedAt = UnconfiguredSystemSettingsRevision
+		return settings, nil
 	}
 	if err != nil {
 		return AppSettings{}, err
@@ -102,26 +95,12 @@ func (s MariaDBAppSettingsStore) GetAppSettings(ctx context.Context) (AppSetting
 	if err != nil {
 		return AppSettings{}, err
 	}
-	normalized.UpdatedAt = updatedAt.UTC().Format(time.RFC3339)
+	normalized.UpdatedAt = resourceUpdatedAt(updatedAt)
 	return normalized, nil
 }
 
 func (s MariaDBAppSettingsStore) UpdateAppSettings(ctx context.Context, settings AppSettings) (AppSettings, error) {
-	normalized, err := normalizeAppSettings(settings)
-	if err != nil {
-		return AppSettings{}, err
-	}
-	now := time.Now().UTC()
-	body, err := json.Marshal(normalized)
-	if err != nil {
-		return AppSettings{}, err
-	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO system_settings (name, value_json, updated_at) VALUES ('app', ?, ?) ON DUPLICATE KEY UPDATE value_json = VALUES(value_json), updated_at = VALUES(updated_at)`, string(body), now)
-	if err != nil {
-		return AppSettings{}, err
-	}
-	normalized.UpdatedAt = now.Format(time.RFC3339)
-	return normalized, nil
+	return s.UpdateAppSettingsRevision(ctx, AppSettingsMutation{Settings: settings}, nil)
 }
 
 func normalizeAppSettings(settings AppSettings) (AppSettings, error) {

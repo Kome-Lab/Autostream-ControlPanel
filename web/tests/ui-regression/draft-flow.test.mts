@@ -15,6 +15,10 @@ function currentFunction(text: string, name: string, bindings: Record<string, un
   const declaration = file.statements.find((node): node is ts.FunctionDeclaration => ts.isFunctionDeclaration(node) && node.name?.text === name);
   assert.ok(declaration); return actualCallback("const selected=" + declaration.getText(file).replace(/^export /, ""), "selected", bindings);
 }
+const createErrorSource = source("features/streams/stream-create-errors.ts");
+const streamCreateErrorIssues = currentFunction(createErrorSource, "streamCreateErrorIssues", {
+  rejections: actualCallback(createErrorSource, "rejections", {}),
+});
 function owner() {
   const state = { dirty: true, pending: false, discard: false, prompts: 0 };
   const controller = createDraftExitController({ enabled: () => true, pending: () => state.pending, confirmDiscard: () => { state.prompts++; return state.discard; } });
@@ -93,10 +97,10 @@ function createFlow(editing = false, slotSource = slot, handoff: StreamCreateFoc
   const setDirtySections = (next: ReadonlySet<string> | ((current: ReadonlySet<string>) => ReadonlySet<string>)) => { dirtySections = typeof next === "function" ? next(dirtySections) : next; };
   const update = actualCallback(visualSource, "update", { editing, currentCreateRevision, setCreateRevision: (next: number) => { revision = next; }, setCoverSelectionDirty() {}, setDirtySections, setDraft: (next: (current: typeof draft) => typeof draft) => { draft = next(draft); } });
   controller.register({ isDirty: () => editing ? dirtySections.size > 0 : currentCreateRevision.current !== savedCreateRevision.current, saved() {} });
-  const visualState = () => actualCallback(visualSource, "createState", { useMemo: (callback: () => unknown) => callback(), editing, draft, validation: { ready: true }, presetSelectionsReady: true, uploading: "", createRevision: revision, currentCreateRevision, savedCreateRevision, setDirtySections, buildStreamCreateVisualExtension: (value: typeof draft) => ({ visual_settings: { header_title_value: value.headerTitleValue } }) });
+  const visualState = () => actualCallback(visualSource, "createState", { useMemo: (callback: () => unknown) => callback(), editing, draft, validation: { ready: true }, presetSelectionsReady: true, uploading: "", uploads: { summary: { blocking: false }, isBlocked: () => false }, createRevision: revision, currentCreateRevision, savedCreateRevision, setDirtySections, buildStreamCreateVisualExtension: (value: typeof draft) => ({ visual_settings: { header_title_value: value.headerTitleValue } }) });
   const saveAcknowledgements = { current: new WeakMap<object, () => boolean>() };
   let outcomeUnresolved = false;
-  const bindings = { setMessage() {}, setSaveOutcomeUnresolved(value: boolean) { outcomeUnresolved = value; }, onActionResult() {}, liveEditing: false, editing, uiText: (key: string) => key, t: (key: string) => key, streamActionBlockedMessage: () => "blocked", isStreamValue: (value: unknown) => Boolean(value && typeof value === "object" && "id" in value), saveAcknowledgements, draft: basic };
+  const bindings = { setMessage() {}, setServerIssues() {}, streamCreateErrorIssues, setSaveOutcomeUnresolved(value: boolean) { outcomeUnresolved = value; }, onActionResult() {}, liveEditing: false, editing, uiText: (key: string) => key, t: (key: string) => key, streamActionBlockedMessage: () => "blocked", isStreamValue: (value: unknown) => Boolean(value && typeof value === "object" && "id" in value), saveAcknowledgements, draft: basic };
   const focusBindings = { createFocus: { current: handoff }, createTrigger: { current: { focus() { focus++; } } }, editTrigger: { current: { focus() { focus++; } } } };
   const focusCallback = editing ? jsxAt(streams, "SheetContent", "onCloseAutoFocus", 0, focusBindings) : actualCallback(streams, "restoreCreateFocus", focusBindings);
   const setCreateOpen=()=>{closes++;focusCallback({preventDefault(){}});};
@@ -110,12 +114,12 @@ function createFlow(editing = false, slotSource = slot, handoff: StreamCreateFoc
   };
   return { controller, state, update, prepare, result, renderBasic, setDirtySections, get outcomeUnresolved() { return outcomeUnresolved; }, get dirtySections() { return dirtySections; }, get closes() { return closes; }, get focus() { return focus; } };
 }
-test("UI-DRAFT-FLOW-004: actual form/visual/parent callbacks ack only successful submitted create once and return focus", () => {
+test("UI-DRAFT-FLOW-004: actual form/visual/parent callbacks ack only successful submitted create once and return focus", async () => {
   for (const withVisual of [false, true]) {
     const flow = createFlow(); if (withVisual) flow.update("title", { headerTitleValue: "Submitted title" }); const intent = flow.prepare();
-    flow.result({ kind: "succeeded", value: { id: "created", name: "Submitted name" } }, intent);
+    await flow.result({ kind: "succeeded", value: { id: "created", name: "Submitted name" } }, intent);
     assert.equal(flow.controller.dirty(), false); assert.equal(flow.state.prompts, 0); assert.equal(flow.closes, 1); assert.equal(flow.focus, 1);
-    flow.result({ kind: "succeeded", value: { id: "created", name: "Submitted name" } }, intent); assert.equal(flow.closes, 1);
+    await flow.result({ kind: "succeeded", value: { id: "created", name: "Submitted name" } }, intent); assert.equal(flow.closes, 1);
   }
 });
 
@@ -123,12 +127,12 @@ test("draft flow extracts the actual commit-time acknowledgement without substit
   assert.throws(() => actualEffect(slot, "saveAcknowledgements.current.set", {}), /unique actual effect/, "the passive-effect selector must not silently accept a different hook");
   assert.equal(typeof actualEffect(slot, "saveAcknowledgements.current.set", {}, "useLayoutEffect"), "function");
 });
-test("UI-DRAFT-FLOW-005: failure 409 unknown validation and mismatched intent cannot acknowledge or close", () => {
+test("UI-DRAFT-FLOW-005: failure 409 unknown validation and mismatched intent cannot acknowledge or close", async () => {
   for (const outcome of [{ kind: "failed", error: { kind: "conflict", status: 409, messageKey: "conflict" } }, { kind: "outcome_unknown" }, { kind: "blocked", reason: "invalid-intent" }, { kind: "succeeded", value: null }]) {
-    const flow = createFlow(); flow.update("title", { headerTitleValue: "Unsent" }); flow.result(outcome, flow.prepare());
+    const flow = createFlow(); flow.update("title", { headerTitleValue: "Unsent" }); await flow.result(outcome, flow.prepare());
     assert.equal(flow.controller.dirty(), true); assert.equal(flow.closes, 0); assert.equal(flow.dirtySections.size, 1);
   }
-  const flow = createFlow(); const intent = flow.prepare(); flow.result({ kind: "succeeded", value: { id: "other" } }, { ...intent }); assert.equal(flow.controller.dirty(), true); assert.equal(flow.closes, 0);
+  const flow = createFlow(); const intent = flow.prepare(); await flow.result({ kind: "succeeded", value: { id: "other" } }, { ...intent }); assert.equal(flow.controller.dirty(), true); assert.equal(flow.closes, 0);
 });
 test("UI-DRAFT-FLOW-006: real action control delayed success keeps later basic and visual edits dirty", async () => {
   for (const changed of ["basic", "visual"]) {
@@ -175,13 +179,13 @@ test("pending creation and an unknown receipt retain the draft and block media m
   assert.equal(writes, 0, "blocked or unknown requests must not upload or delete candidate files");
 });
 test("UI-DRAFT-FLOW-007: basic edit leaves visual dirty; only existing independent visual success clears it", async () => {
-  const flow = createFlow(true); flow.update("title", { headerTitleValue: "Independent" }); flow.result({ kind: "succeeded", value: { id: "edited", name: "Edited" } }, flow.prepare());
+  const flow = createFlow(true); flow.update("title", { headerTitleValue: "Independent" }); await flow.result({ kind: "succeeded", value: { id: "edited", name: "Edited" } }, flow.prepare());
   assert.equal(flow.controller.dirty(), true); assert.equal(flow.closes, 0); assert.equal(flow.state.prompts, 1);
   const revoked: string[] = [], coverURLs = { current: new Map([["cover-a", "blob:a"], ["cover-b", "blob:b"]]) };
   const draftCoverAssets = { current: new Map([["asset-a", { owner_type: "upload_draft" }]]) };
   let preview = "blob:a";
   const releaseCoverURLs = actualCallback(visualSource, "releaseCoverURLs", { coverURLs, draftCoverAssets, URL: { revokeObjectURL: (url: string) => revoked.push(url) } });
-  const save = actualCallback(visualSource, "save", { visual: { data: { revision: 4 } }, draftRevision: 4, validation: { ready: true }, presetSelectionsReady: true, saving: false, uploading: "", mutationBlocked: false, needsRefresh: false, serverSettingsChanged: false, editing: true, coverSelectionDirty: false, draft: {}, dirtySections: flow.dirtySections, setSaving() {}, setMessage() {}, controller: { issue: async (_fields: unknown, revision: number) => { assert.equal(revision, 4); return { kind: "succeeded", value: { revision: 5 } }; } }, buildStreamVisualSaveFields: () => ({}), queryClient: { setQueryData() {} }, queryKey: [], setDraft() {}, setDraftRevision() {}, setCoverPresetRevision() {}, setCoverSelectionDirty() {}, streamVisualDraftFromSettings: () => ({}), setDirtySections: flow.setDirtySections, setUploadedBackground() {}, releaseCoverURLs, setCoverPreview: (value: string) => { preview = value; }, locale: "en" });
+  const save = actualCallback(visualSource, "save", { visual: { data: { revision: 4 } }, draftRevision: 4, validation: { ready: true }, presetSelectionsReady: true, saving: false, uploading: "", mutationBlocked: false, needsRefresh: false, serverSettingsChanged: false, editing: true, coverSelectionDirty: false, draft: {}, dirtySections: flow.dirtySections, setSaving() {}, setMessage() {}, controller: { issue: async (_fields: unknown, revision: number) => { assert.equal(revision, 4); return { kind: "succeeded", value: { revision: 5 } }; } }, buildStreamVisualSaveFields: () => ({}), queryClient: { async cancelQueries() {}, setQueryData() {} }, uploads: { isBlocked: () => false, reset() {} }, previewOwner: { release() {} }, setBackgroundPreview() {}, queryKey: [], setDraft() {}, setDraftRevision() {}, setCoverPresetRevision() {}, setCoverSelectionDirty() {}, streamVisualDraftFromSettings: () => ({}), setDirtySections: flow.setDirtySections, setUploadedBackground() {}, releaseCoverURLs, setCoverPreview: (value: string) => { preview = value; }, locale: "en" });
   await save(); assert.equal(flow.controller.dirty(), false);
   assert.deepEqual(revoked, ["blob:a", "blob:b"]); assert.equal(coverURLs.current.size, 0); assert.equal(draftCoverAssets.current.size, 0); assert.equal(preview, "");
 });
@@ -351,7 +355,7 @@ test('UI-CREATE-FOCUS-010: actual dirty Stay/Discard and submitted save outcomes
       mobile.begin();mobile.menuClose();await settleEvents();
       const form=createFlow(false,slot,mobile.createFocus.current,{controller:mobile.createDraftExit,state:mobile.state,onSaved:mobile.onSaved});form.update('title',{headerTitleValue:'Submitted'});const intent=form.prepare();
       if(outcome==='later-edit')form.renderBasic(['Later edit']);
-      form.result(outcome==='succeeded'||outcome==='later-edit'?{kind:'succeeded',value:{id:'created',name:'Submitted'}}:{kind:outcome,error:{kind:'conflict',status:409,messageKey:'conflict'}},intent);
+      await form.result(outcome==='succeeded'||outcome==='later-edit'?{kind:'succeeded',value:{id:'created',name:'Submitted'}}:{kind:outcome,error:{kind:'conflict',status:409,messageKey:'conflict'}},intent);
       await settleEvents();assert.equal(mobile.focusCalls,outcome==='succeeded'?1:0);assert.equal(mobile.open,outcome!=='succeeded');assert.equal(form.controller.dirty(),outcome!=='succeeded');
     } finally {mobile.dispose();}
   }
@@ -381,7 +385,7 @@ test('UI-CREATE-REENTRY-010: real successful form ack closes through its mounted
       flow.begin();flow.menuClose();await settleEvents();assert.equal(flow.open,true);
       const pathname=flow.surface.location.pathname,search=flow.surface.location.search;
       const form=createFlow(false,slot,flow.createFocus.current,{controller:flow.createDraftExit,state:flow.state,onSaved:flow.onSaved});form.update('title',{headerTitleValue:'Submitted'});
-      form.result({kind:'succeeded',value:{id:'created',name:'Submitted'}},form.prepare());await settleEvents();
+      await form.result({kind:'succeeded',value:{id:'created',name:'Submitted'}},form.prepare());await settleEvents();
       assert.equal(flow.open,false);assert.equal(flow.surface.location.hash,'');assert.equal(flow.focusCalls,1);assert.equal(flow.surface.history.state,flow.historyState);
       assert.equal(flow.surface.location.pathname,pathname);assert.equal(flow.surface.location.search,search);assert.equal(flow.stats.replaces,1);assert.equal(flow.stats.created,1);assert.equal(flow.stats.notices,1);
       flow.begin();flow.menuClose();await settleEvents();assert.equal(flow.open,true);assert.equal(flow.stats.opens,2);assert.equal(flow.stats.mounts,1);assert.equal(flow.stats.listeners,1);
@@ -407,7 +411,7 @@ test('UI-CREATE-REENTRY-012: Stay, pending, failed/unknown and later edits retai
       const form=createFlow(false,slot,lease,{controller:flow.createDraftExit,state:flow.state,onSaved:flow.onSaved});form.update('title',{headerTitleValue:'Submitted'});const intent=form.prepare();
       if(outcome==='later-basic')form.renderBasic(['Later edit']);if(outcome==='later-visual')form.update('title',{headerTitleValue:'Later visual'});
       if(outcome==='pending')flow.state.pending=true;
-      if(outcome==='stay'||outcome==='pending')flow.close();else form.result(outcome==='failed'||outcome==='outcome_unknown'?{kind:outcome,error:{kind:'conflict',status:409,messageKey:'conflict'}}:{kind:'succeeded',value:{id:'created',name:'Submitted'}},intent);
+      if(outcome==='stay'||outcome==='pending')flow.close();else await form.result(outcome==='failed'||outcome==='outcome_unknown'?{kind:outcome,error:{kind:'conflict',status:409,messageKey:'conflict'}}:{kind:'succeeded',value:{id:'created',name:'Submitted'}},intent);
       await settleEvents();assert.equal(flow.open,true);assert.equal(flow.surface.location.hash,'#create-stream');assert.equal(flow.createFocus.current,lease);assert.equal(flow.focusCalls,0);assert.equal(flow.stats.replaces,0);assert.equal(form.controller.dirty(),true);
       flow.state.pending=false;flow.state.discard=true;flow.close();await settleEvents();assert.equal(flow.surface.location.hash,'');assert.equal(flow.focusCalls,1);
     } finally {flow.dispose();}
@@ -509,15 +513,15 @@ test('UI-CREATE-NAVIGATION-014: accepted-callback History, missing listener and 
   }
 });
 
-test("UI-DRAFT-FLOW-010: real missing-visual-ack and current-instead-of-submitted mutants are detected", () => {
+test("UI-DRAFT-FLOW-010: real missing-visual-ack and current-instead-of-submitted mutants are detected", async () => {
   const missing = slot.replace("createVisualState.acknowledgeSubmitted?.();", "void 0;"); assert.notEqual(missing, slot);
   const flow = createFlow(false, missing); flow.update("title", { headerTitleValue: "Submitted" });
-  flow.result({ kind: "succeeded", value: { id: "created", name: "Created" } }, flow.prepare());
+  await flow.result({ kind: "succeeded", value: { id: "created", name: "Created" } }, flow.prepare());
   assert.equal(flow.controller.dirty(), true); assert.equal(flow.closes, 0);
   assert.throws(() => assert.equal(flow.closes, 1), /0 !== 1/, "the 003 missing visual acknowledgement must fail the success-close contract");
   const wrongSnapshot = slot.replace("draft.acknowledgeSubmitted();", "draft.saved();"); assert.notEqual(wrongSnapshot, slot);
   const delayed = createFlow(false, wrongSnapshot), intent = delayed.prepare(); delayed.renderBasic(["Later edit"]);
-  delayed.result({ kind: "succeeded", value: { id: "created", name: "Created" } }, intent);
+  await delayed.result({ kind: "succeeded", value: { id: "created", name: "Created" } }, intent);
   assert.throws(() => assert.equal(delayed.controller.dirty(), true), /false !== true/, "current data cannot be marked saved by an older request");
 });
 

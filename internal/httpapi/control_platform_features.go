@@ -260,7 +260,7 @@ func (s *Server) uploadMediaAsset(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "multipart_required"})
 		return
 	}
-	var sessionID, usage string
+	var sessionID, usage, operationID string
 	var asset mediaassets.Asset
 	uploaded := false
 	for {
@@ -279,6 +279,14 @@ func (s *Server) uploadMediaAsset(w http.ResponseWriter, r *http.Request) {
 		case "usage_type":
 			raw, _ := io.ReadAll(io.LimitReader(part, 65))
 			usage = strings.TrimSpace(string(raw))
+		case "client_operation_id":
+			raw, _ := io.ReadAll(io.LimitReader(part, 37))
+			operationID = string(raw)
+			if uploaded || !mediaassets.ValidUploadOperationID(operationID) {
+				_ = part.Close()
+				writeJSON(w, http.StatusBadRequest, map[string]string{"code": "upload_metadata_must_precede_file"})
+				return
+			}
 		case "file":
 			if uploaded || sessionID == "" || usage == "" {
 				_ = part.Close()
@@ -286,7 +294,7 @@ func (s *Server) uploadMediaAsset(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			current := currentFromContext(r.Context())
-			asset, err = s.mediaAssets.Upload(r.Context(), mediaassets.UploadInput{SessionID: sessionID, UserID: current.User.ID, UsageType: usage, Filename: part.FileName(), ContentType: part.Header.Get("Content-Type"), Body: part})
+			asset, err = s.mediaAssets.Upload(r.Context(), mediaassets.UploadInput{SessionID: sessionID, ClientOperationID: operationID, UserID: current.User.ID, UsageType: usage, Filename: part.FileName(), ContentType: part.Header.Get("Content-Type"), Body: part})
 			uploaded = true
 			_ = part.Close()
 			if err != nil {
@@ -374,8 +382,10 @@ func (s *Server) deleteMediaAsset(w http.ResponseWriter, r *http.Request) {
 }
 
 func writeMediaAssetError(w http.ResponseWriter, err error) {
-	status, code := http.StatusBadRequest, "invalid_image"
+	status, code := http.StatusInternalServerError, "media_asset_operation_failed"
 	switch {
+	case errors.Is(err, mediaassets.ErrInvalidImage):
+		status, code = http.StatusBadRequest, "invalid_image"
 	case errors.Is(err, mediaassets.ErrNotFound):
 		status, code = http.StatusNotFound, "not_found"
 	case errors.Is(err, mediaassets.ErrForbidden):
@@ -383,13 +393,13 @@ func writeMediaAssetError(w http.ResponseWriter, err error) {
 	case errors.Is(err, mediaassets.ErrUploadTooLarge):
 		status, code = http.StatusRequestEntityTooLarge, "upload_too_large"
 	case errors.Is(err, mediaassets.ErrImageDimensions):
-		code = "invalid_image_dimensions"
+		status, code = http.StatusBadRequest, "invalid_image_dimensions"
 	case errors.Is(err, mediaassets.ErrContentTypeMismatch):
-		code = "content_type_mismatch"
+		status, code = http.StatusBadRequest, "content_type_mismatch"
 	case errors.Is(err, mediaassets.ErrAnimatedImage):
-		code = "animated_image_unsupported"
+		status, code = http.StatusBadRequest, "animated_image_unsupported"
 	case errors.Is(err, mediaassets.ErrUnsupportedImage):
-		code = "unsupported_image"
+		status, code = http.StatusBadRequest, "unsupported_image"
 	case errors.Is(err, mediaassets.ErrDraftExpired):
 		status, code = http.StatusConflict, "upload_session_expired"
 	case errors.Is(err, mediaassets.ErrDraftClaimed):

@@ -2,6 +2,7 @@
 import { fixedPresentationText } from "@/lib/i18n/ui-v2/presentation-copy";
 
 import { useUICopy } from "@/lib/i18n/ui-v2/use-ui-copy";
+import { useI18n } from "@/components/admin/i18n-provider";
 
 
 import { useId, useRef, useState } from "react";
@@ -15,7 +16,7 @@ import { systemUpdateDockerPortReconfigureRequest, systemUpdatePortReconfigureEl
 import type { SystemUpdateAgentStatus, SystemUpdateJob, SystemUpdatePortMode, SystemUpdatePortReconfigureCreateRequest, SystemUpdateTarget, WorkerNode } from "@/types/domain";
 import { type PortReconfigureAuthorityContext, type PortReconfigureProposal } from "./application-operation-types";
 import { validPortInput, portReconfigureReasonMessage, dockerPortMappingTone, dockerPortMappingLabel, formatPort } from "./port-reconfigure-presentation";
-import { portReconfigureAuthoritySnapshot } from "./port-reconfigure-authority";
+import { portConfigurationAuthorityKey, portReconfigureAuthoritySnapshot } from "./port-reconfigure-authority";
 import { newIdempotencyKey } from "./system-update-cache";
 
 export function PortReconfigureControl({
@@ -41,9 +42,10 @@ export function PortReconfigureControl({
   updaterActionController: ReturnType<typeof createUpdaterActionController>;
   updaterAuthorityPermission: UpdaterActionAuthority["permission"];
   updaterAuthorityFreshness: UpdaterActionAuthority["freshness"];
-  onRefreshAuthority: (context: PortReconfigureAuthorityContext) => Promise<UpdaterActionAuthority>;
+  onRefreshAuthority: (context: PortReconfigureAuthorityContext, signal?: AbortSignal) => Promise<UpdaterActionAuthority>;
 }) {
   const uiText = useUICopy();
+  const { locale } = useI18n();
   const inputID = useId();
   const reasonID = `${inputID}-reason`;
   const advertisedInputID = `${inputID}-advertised`;
@@ -56,6 +58,9 @@ export function PortReconfigureControl({
   const [newContainerPort, setNewContainerPort] = useState(String(target?.port_mapping?.container_port || ""));
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [locallySubmitting, setLocallySubmitting] = useState(false);
+  const [baseConfigurationKey, setBaseConfigurationKey] = useState(() => portConfigurationAuthorityKey(node, target));
+  const currentConfigurationKey = portConfigurationAuthorityKey(node, target);
+  const configurationChanged = baseConfigurationKey !== currentConfigurationKey;
   const submittingRef = useRef(false);
   const eligibility = systemUpdatePortReconfigureEligibility({ target, updater, node, latestJob, requestState });
   const hiddenReasons = new Set([
@@ -90,6 +95,8 @@ export function PortReconfigureControl({
   const advertisedOnly = localUnchanged && portMode === "local_and_advertised" && parsedAdvertisedPort !== eligibility.currentPort;
   const reason = !canExecute
     ? "permission_denied"
+    : configurationChanged
+      ? "configuration_changed"
     : !eligibility.ready
       ? eligibility.reason
       : dockerMode && !advancedOpen
@@ -107,11 +114,16 @@ export function PortReconfigureControl({
           : "";
   const submitting = requestState === "pending" || locallySubmitting;
   const ready = canExecute
+    && !configurationChanged
     && eligibility.ready
     && (dockerMode ? advancedOpen && validDockerPorts : validPort && advertisedInputValid)
     && !advertisedOnly
     && !submitting;
-  const reasonMessage = portReconfigureReasonMessage(reason, uiText);
+  const reasonMessage = reason === "configuration_changed"
+    ? locale === "ja"
+      ? "ポート設定または所有権が変更されました。入力は保持しています。最新設定を確認し、入力を破棄してやり直してください。"
+      : "Port configuration or ownership changed. Your input is preserved. Review the latest configuration and explicitly discard this draft to start again."
+    : portReconfigureReasonMessage(reason, uiText);
   const operationResult = fixedPresentationText(systemUpdatePortJobResultLabel(latestJob), uiText);
 
   const proposal: PortReconfigureProposal = dockerMode
@@ -281,10 +293,10 @@ export function PortReconfigureControl({
             authority={Object.freeze({
               permission: updaterAuthorityPermission,
               freshness: updaterAuthorityFreshness,
-              applicability: authoritySnapshot.applicable ? "applicable" : "not-applicable",
+              applicability: authoritySnapshot.applicable && !configurationChanged ? "applicable" : "not-applicable",
               authorityFingerprint: authoritySnapshot.fingerprint,
             })}
-            refreshAuthority={() => onRefreshAuthority({ targetID: actionIntent.resourceId, proposal })}
+            refreshAuthority={(signal) => onRefreshAuthority({ targetID: actionIntent.resourceId, proposal }, signal)}
             handler={submitPortReconfigure}
             label={unchanged ? uiText("変更不要か確認") : uiText("ポート変更")}
             icon={submitting ? <LoaderCircle className="size-4 animate-spin" /> : <ServerCog className="size-4" />}
@@ -297,6 +309,18 @@ export function PortReconfigureControl({
       <div id={reasonID} className={reason === "request_ambiguous" || reason === "recovery_required" ? "text-xs text-destructive" : "text-xs text-muted-foreground"} role="status" aria-live="polite">
         {reasonMessage || uiText("現在のsnapshotを固定して送信します。同じ値の場合も実状態を確認してから結果を表示します。")}
       </div>
+      {configurationChanged ? (
+        <Button type="button" variant="outline" size="sm" disabled={!canExecute || submitting || requestState !== "idle"} onClick={() => {
+          setNewPort(String(target?.local_listen_port || ""));
+          setNewAdvertisedPort(String(target?.port_mapping?.advertised_port || node.applied_endpoint?.port || ""));
+          setNewPublishedPort(String(target?.port_mapping?.published_port || ""));
+          setNewContainerPort(String(target?.port_mapping?.container_port || ""));
+          setPortMode("local_only");
+          setBaseConfigurationKey(currentConfigurationKey);
+        }}>
+          {locale === "ja" ? "入力を破棄して最新設定を使用" : "Discard input and use latest configuration"}
+        </Button>
+      ) : null}
       {operationResult ? <div className="text-xs font-medium">{uiText("直近のポート変更結果:")}{operationResult}</div> : null}
     </div>
   );

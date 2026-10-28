@@ -83,9 +83,21 @@ export function editNodeApiURL(form: NodeEditForm) {
   return `${form.ssl_enabled ? "https" : "http"}://${host}:${port}`;
 }
 
-export function nodeRegistrationErrorMessage(error: unknown) {
+export function nodeRegistrationErrorMessage(error: unknown, locale: "ja" | "en" = "ja") {
   if (!error) return "";
   if (error instanceof APIError) {
+    const editMessages: Record<string, [string, string]> = {
+      node_metadata_conflict: ["Nodeの名前・説明・接続先または担当設定が変更されています。入力は保持しました。最新状態を確認し、取り消して再編集すると新しい設定を読み込めます。", "The Node name, description, endpoint or ownership changed. Your input is retained. Review the latest state, then cancel and edit again to load it."],
+      node_metadata_revision_required: ["編集開始時の設定を確認できません。入力を保持しています。最新状態を確認してから取り消し、Nodeを再編集してください。", "The edit-start configuration could not be verified. Your input is retained. Refresh the latest state, then cancel and edit the Node again."],
+      node_update_outcome_unknown: ["保存結果を確認できません。入力は保持し、再送を停止しました。最新状態を読み取り、保存済みの設定を確認してください。", "The save outcome is unknown. Your input is retained and resubmission is stopped. Read the latest state and check the saved configuration."],
+      node_update_pending: ["Nodeの保存を確認中です。完了するまでお待ちください。", "The Node save is being checked. Wait for it to finish."],
+      node_endpoint_ownership_unavailable: ["Nodeの管理権を確認できないため変更しませんでした。入力は保持しています。最新状態を確認してから、もう一度保存してください。", "The Node ownership could not be verified, so nothing was changed. Your input is retained. Review the latest state before saving again."],
+      node_endpoint_managed_by_updater: ["この接続先はUpdaterが管理しています。入力は保持しました。接続先はUpdater設定から変更してください。名前・説明だけの変更は保存できます。", "This endpoint is managed by Updater. Your input is retained. Change its endpoint through Updater settings. Name and description changes can still be saved."],
+      permission_denied: ["この操作に必要な権限がありません。入力は保持しています。", "You no longer have permission for this operation. Your input is retained."],
+      not_found: ["対象のNodeが見つかりません。入力を保持しています。一覧の最新状態を確認してください。", "The Node no longer exists. Your input is retained. Review the latest Node list."],
+    };
+    const editMessage = editMessages[error.code || ""];
+    if (editMessage) return editMessage[locale === "ja" ? 0 : 1];
     const messages: Record<string, string> = {
       csrf_failed: "ログイン状態またはCSRF tokenが古くなっています。ページを再読み込みして、もう一度実行してください。",
       invalid_node_scope: "選択したNode権限の組み合わせが無効です。Runtime SecretsやRemediationのチェックを見直してください。",

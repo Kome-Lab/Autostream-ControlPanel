@@ -1,6 +1,7 @@
 import type { ActionDescriptor, ActionRisk } from "@/lib/foundation/actions/contracts";
 import { adaptAPIError } from "@/lib/foundation/api-errors/adapter";
 import type { AdaptedAPIError } from "@/lib/foundation/api-errors/contracts";
+import { withBoundedActionRevalidation } from "@/lib/foundation/actions/bounded-revalidation";
 
 export type UpdaterActionID = "UPD-01" | "UPD-02" | "UPD-03" | "UPD-04" | "UPD-05" | "UPD-06" | "UPD-07" | "UPD-08" | "UPD-09" | "UPD-10";
 
@@ -43,6 +44,12 @@ export type UpdaterActionAuthority = Readonly<{
   applicability: "applicable" | "not-applicable" | "unknown";
   authorityFingerprint: string;
 }>;
+
+export function updaterActionCanRevalidate(authority: UpdaterActionAuthority) {
+  return authority.permission === "allowed"
+    && (authority.freshness === "fresh" || authority.freshness === "refreshing")
+    && authority.applicability === "applicable";
+}
 
 export type UpdaterActionResult =
   | Readonly<{ kind: "succeeded"; value: unknown }>
@@ -91,8 +98,9 @@ export function createUpdaterActionController() {
     async execute(
       intent: UpdaterActionIntent,
       confirmation: Readonly<{ confirmed: boolean; typedValue?: string }>,
-      refresh: () => Promise<UpdaterActionAuthority>,
+      refresh: (signal?: AbortSignal) => Promise<UpdaterActionAuthority>,
       handler: () => Promise<unknown>,
+      signal?: AbortSignal,
     ): Promise<UpdaterActionResult> {
       const entry = definitions.get(intent.id);
       const descriptor = buildUpdaterActionDescriptor(intent);
@@ -107,7 +115,7 @@ export function createUpdaterActionController() {
       try {
         let authority: UpdaterActionAuthority;
         try {
-          authority = await refresh();
+          authority = await withBoundedActionRevalidation((readSignal) => refresh(readSignal), signal);
         } catch {
           return blocked("freshness-unavailable");
         }
@@ -115,6 +123,7 @@ export function createUpdaterActionController() {
         if (authority.freshness !== "fresh") return blocked("freshness-unavailable");
         if (authority.applicability !== "applicable") return blocked("not-applicable");
         if (authority.authorityFingerprint !== intent.authorityFingerprint) return blocked("authority-changed");
+        if (signal?.aborted) return blocked("freshness-unavailable");
         try {
           return Object.freeze({ kind: "succeeded", value: await handler() });
         } catch (error) {

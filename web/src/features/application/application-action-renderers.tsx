@@ -25,11 +25,11 @@ export function createApplicationActionRenderers({
   updaterActionController: ReturnType<typeof createUpdaterActionController>;
   currentUpdaterAuthority: (applicable: boolean, fingerprint: string) => UpdaterActionAuthority;
   updates: SystemUpdatesResponse | undefined;
-  refreshTargetAuthority: (actionID: "UPD-01" | "UPD-02", targetID: string) => Promise<UpdaterActionAuthority>;
+  refreshTargetAuthority: (actionID: "UPD-01" | "UPD-02", targetID: string, signal?: AbortSignal) => Promise<UpdaterActionAuthority>;
   executeTarget: (target: SystemUpdateTarget) => Promise<SystemUpdateJob>;
   creating: boolean;
   canExecuteSystemUpdates: boolean;
-  refreshCancelAuthority: (jobID: string) => Promise<UpdaterActionAuthority>;
+  refreshCancelAuthority: (jobID: string, signal?: AbortSignal) => Promise<UpdaterActionAuthority>;
   executeCancel: (job: SystemUpdateJob) => Promise<SystemUpdateJob>;
   cancelling: boolean;
   cancellingJobID: string | undefined
@@ -49,7 +49,7 @@ export function createApplicationActionRenderers({
         controller={updaterActionController}
         intent={intent}
         authority={currentUpdaterAuthority(snapshot.applicable, snapshot.fingerprint)}
-        refreshAuthority={() => refreshTargetAuthority(actionID, target.target_id)}
+        refreshAuthority={(signal) => refreshTargetAuthority(actionID, target.target_id, signal)}
         handler={() => executeTarget(target)}
         label={strategy === "when_idle" ? uiText("空き次第更新") : uiText("更新")}
         icon={creating ? <LoaderCircle className="size-4 animate-spin" /> : <Download className="size-4" />}
@@ -71,7 +71,7 @@ export function createApplicationActionRenderers({
         controller={updaterActionController}
         intent={intent}
         authority={currentUpdaterAuthority(snapshot.applicable, snapshot.fingerprint)}
-        refreshAuthority={() => refreshCancelAuthority(job.id)}
+        refreshAuthority={(signal) => refreshCancelAuthority(job.id, signal)}
         handler={() => executeCancel(job)}
         label={uiText("キャンセル")}
         icon={cancelling && cancellingJobID === job.id ? <LoaderCircle className="size-4 animate-spin" /> : <XCircle className="size-4" />}

@@ -79,8 +79,8 @@ func scanDriveDestination(row scanner) (DriveDestination, error) {
 	}
 	destination.OAuthAccountID = oauthAccountID.String
 	destination.FolderIDConfigured = true
-	destination.CreatedAt = createdAt.UTC().Format(time.RFC3339)
-	destination.UpdatedAt = updatedAt.UTC().Format(time.RFC3339)
+	destination.CreatedAt = createdAt.UTC().Format(time.RFC3339Nano)
+	destination.UpdatedAt = resourceUpdatedAt(updatedAt)
 	return destination, nil
 }
 

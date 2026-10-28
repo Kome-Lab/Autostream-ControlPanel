@@ -36,7 +36,7 @@ func (c *profileUpdateConn) Begin() (driver.Tx, error) {
 }
 func (c *profileUpdateConn) ExecContext(ctx context.Context, _ string, args []driver.NamedValue) (driver.Result, error) {
 	c.d.execs++
-	if ctx != c.d.ctx || len(args) != 5 || args[3].Value != "profile-id" || args[4].Value != "encoder" {
+	if ctx != c.d.ctx || len(args) != 6 || args[4].Value != "profile-id" || args[5].Value != "encoder" {
 		return nil, errors.New("UPDATE context/id/kind changed")
 	}
 	return profileUpdateResult{c.d}, c.d.execErr

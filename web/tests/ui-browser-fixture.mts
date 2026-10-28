@@ -119,6 +119,7 @@ export function escapeRegExp(value: string) {
 }
 export type BrowserRouteFixture = {
   authResponse: StubResponse;
+  authNextResponse?: StubResponse;
   setupResponse: StubResponse;
   healthResponse: StubResponse;
   versionFixture: StubResponse;
@@ -194,13 +195,20 @@ export function createBrowserRouteFixture(browser: BrowserHarness, resolveAdditi
     const additional = resolveAdditionalRoute?.({ method, url, postData });
     if (additional) return additional;
     const pathname = normalizePath(new URL(url).pathname);
-    if (pathname === "/auth/me" && method === "GET") return { ...fixture.authResponse, requiredResponse: fixture.authResponse.requiredResponse ?? false };
+    if (pathname === "/auth/me" && method === "GET") {
+      const response = fixture.authNextResponse ?? fixture.authResponse;
+      fixture.authNextResponse = undefined;
+      return { ...response, requiredResponse: response.requiredResponse ?? false };
+    }
     if (pathname === "/setup/status" && method === "GET") return { ...fixture.setupResponse, requiredResponse: fixture.setupResponse.requiredResponse ?? false };
     if (pathname === "/settings/app" && method === "GET") return { body: { app_name: "AutoStream", timezone: "Asia/Tokyo" }, requiredResponse: false };
     if (pathname === "/auth/oauth/providers" && method === "GET") return { body: [], requiredResponse: false };
     if (pathname === "/auth/mfa/status" && method === "GET") return { body: { enabled: false }, requiredResponse: false };
     if (pathname === "/auth/passkeys" && method === "GET") return { body: [], requiredResponse: false };
     if (pathname === "/auth/oauth-links" && method === "GET") return { body: [], requiredResponse: false };
+    if (pathname === "/integrations/oauth-accounts" && method === "GET") return { body: [], requiredResponse: false };
+    if (pathname === "/archive/destinations" && method === "GET") return { body: [], requiredResponse: false };
+    if (["/discord/configs", "/youtube/outputs", "/profiles/archive", "/profiles/overlay"].includes(pathname) && method === "GET") return { body: [], requiredResponse: false };
     if (pathname === "/account/preferences/ui") {
       fixture.uiPreferenceMethods.push(method);
       if (method === "GET") return { ...fixture.uiPreferenceResponse, requiredResponse: fixture.uiPreferenceResponse.requiredResponse ?? false };
@@ -213,6 +221,13 @@ export function createBrowserRouteFixture(browser: BrowserHarness, resolveAdditi
     if (pathname === "/auth/login" && method === "POST") return fixture.loginResponse;
     if (pathname === "/auth/logout" && method === "POST") return fixture.logoutResponse;
     if (pathname === "/streams" && method === "GET") return { ...fixture.streamsResponse, requiredResponse: fixture.streamsResponse.requiredResponse ?? false };
+    const streamMatch = pathname.match(/^\/streams\/([^/]+)$/);
+    if (streamMatch && method === "GET") {
+      if ((fixture.streamsResponse.status ?? 200) !== 200) return { ...fixture.streamsResponse, requiredResponse: false };
+      const row = Array.isArray(fixture.streamsResponse.body)
+        ? fixture.streamsResponse.body.find((value: unknown) => value !== null && typeof value === "object" && "id" in value && value.id === decodeURIComponent(streamMatch[1])) : undefined;
+      return row ? { body: structuredClone(row), requiredResponse: false } : { status: 404, body: { code: "not_found" }, requiredResponse: false };
+    }
     if (pathname === controlPlatformVisualPath && method === "GET") return { ...fixture.controlPlatformVisualResponse, requiredResponse: fixture.controlPlatformVisualResponse.requiredResponse ?? false };
 		if (pathname === `/streams/${controlPlatformStream.id}/media-assets/variant-cover` && method === "GET") return {
       contentType: "image/png",
@@ -223,8 +238,42 @@ export function createBrowserRouteFixture(browser: BrowserHarness, resolveAdditi
 			fixture.controlPlatformCoverMethods.push(method);
 			if (method === "GET") return { ...fixture.controlPlatformCoverResponse, requiredResponse: fixture.controlPlatformCoverResponse.requiredResponse ?? false };
 			if (method === "PUT") {
-				fixture.controlPlatformCoverBodies.push(JSON.parse(postData || "null"));
-				return fixture.controlPlatformCoverWriteResponse;
+        let request: unknown;
+        try { request = JSON.parse(postData || "null"); } catch { return { status: 400, body: { code: "invalid_video_cover_request" } }; }
+        fixture.controlPlatformCoverBodies.push(request);
+        const record = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
+        const allowedKeys = new Set(["active", "expected_job_generation", "expected_revision", "idempotency_key", "hide_confirmed", "candidate_variant_id", "expected_visual_revision"]);
+        const validKey = (value: unknown): value is string => typeof value === "string" && [...value].length >= 1 && [...value].length <= 128
+          && !/^[\p{White_Space}\uFEFF]|[\p{White_Space}\uFEFF]$/u.test(value) && !/[\u0000-\u001F\u007F]/u.test(value);
+        const current = fixture.controlPlatformCoverResponse.body;
+        const visual = fixture.controlPlatformVisualResponse.body;
+        if (!record(request) || Object.keys(request).some(key => !allowedKeys.has(key)) || typeof request.active !== "boolean" || !Number.isSafeInteger(request.expected_job_generation) || Number(request.expected_job_generation) < 1
+          || !Number.isSafeInteger(request.expected_revision) || Number(request.expected_revision) < 1 || !validKey(request.idempotency_key)
+          || (request.active ? Object.hasOwn(request, "hide_confirmed") : request.hide_confirmed !== true)) return { status: 400, body: { code: "invalid_video_cover_request" } };
+        const hasCandidate = Object.hasOwn(request, "candidate_variant_id"), hasVisualRevision = Object.hasOwn(request, "expected_visual_revision");
+        if (hasCandidate !== hasVisualRevision || hasCandidate && (!request.active || !validKey(request.candidate_variant_id) || !Number.isSafeInteger(request.expected_visual_revision) || Number(request.expected_visual_revision) < 1)) return { status: 400, body: { code: "invalid_video_cover_request" } };
+        if (!record(current) || current.job_generation !== request.expected_job_generation || current.desired_revision !== request.expected_revision) return { status: 409, body: { code: "revision_conflict" } };
+        if (request.candidate_variant_id !== undefined && (!request.active || !record(visual) || request.expected_visual_revision !== visual.revision
+          || !Array.isArray(visual.cover_candidates) || !visual.cover_candidates.some((candidate: unknown) => record(candidate) && candidate.variant_id === request.candidate_variant_id))) return { status: 409, body: { code: "revision_conflict" } };
+        const response = { ...fixture.controlPlatformCoverWriteResponse };
+        if ((response.status ?? 200) >= 200 && (response.status ?? 200) < 300) {
+          const receipt = structuredClone(response.body);
+          assert.ok(record(receipt), "successful cover fixture must have a state receipt");
+          assert.equal(receipt.stream_id, controlPlatformStream.id);
+          assert.equal(receipt.job_generation, request.expected_job_generation);
+          assert.equal(receipt.desired_revision, Number(request.expected_revision) + 1);
+          assert.equal(receipt.desired_active, request.active);
+          assert.ok(receipt.status === "applied" || receipt.status === "confirming" || receipt.status === "failed");
+          if (receipt.status === "applied") {
+            assert.equal(receipt.applied_revision, receipt.desired_revision);
+            assert.equal(receipt.applied_active, receipt.desired_active);
+          }
+          const commit = () => { fixture.controlPlatformCoverResponse = { body: receipt, requiredResponse: fixture.controlPlatformCoverResponse.requiredResponse }; };
+          response.body = receipt;
+          if (response.waitUntil) response.waitUntil = response.waitUntil.then(commit);
+          else commit();
+        }
+        return response;
 			}
       return { status: 405, body: { code: "method_not_allowed" } };
     }

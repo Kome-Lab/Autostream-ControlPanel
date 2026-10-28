@@ -66,11 +66,12 @@ type oauthAccountCallbackRequest struct {
 }
 
 type driveDestinationRequest struct {
-	Name           string `json:"name"`
-	AuthMode       string `json:"auth_mode"`
-	OAuthAccountID string `json:"oauth_account_id"`
-	FolderID       string `json:"folder_id"`
-	SharedDrive    bool   `json:"shared_drive"`
+	ExpectedUpdatedAt json.RawMessage `json:"expected_updated_at,omitempty"`
+	Name              string          `json:"name"`
+	AuthMode          string          `json:"auth_mode"`
+	OAuthAccountID    string          `json:"oauth_account_id"`
+	FolderID          string          `json:"folder_id"`
+	SharedDrive       bool            `json:"shared_drive"`
 }
 
 func (s *Server) listOAuthProviders(w http.ResponseWriter, r *http.Request) {
@@ -732,6 +733,10 @@ func (s *Server) updateDriveDestination(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
 		return
 	}
+	expected, err := parseExpectedUpdatedAt(body.ExpectedUpdatedAt)
+	if writeResourceUpdateRevisionError(w, err) {
+		return
+	}
 	if code, status := normalizeDriveDestinationAPIRequest(&body); code != "" {
 		writeJSON(w, status, map[string]string{"code": code})
 		return
@@ -741,8 +746,11 @@ func (s *Server) updateDriveDestination(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	destination, err := s.integrations.UpdateDriveDestination(r.Context(), store.DriveDestination{
-		ID: r.PathValue("id"), Name: body.Name, AuthMode: body.AuthMode, OAuthAccountID: body.OAuthAccountID, FolderID: body.FolderID, SharedDrive: body.SharedDrive,
+		ID: r.PathValue("id"), Name: body.Name, AuthMode: body.AuthMode, OAuthAccountID: body.OAuthAccountID, FolderID: body.FolderID, SharedDrive: body.SharedDrive, ExpectedUpdatedAt: expected,
 	})
+	if writeResourceUpdateRevisionError(w, err) {
+		return
+	}
 	if errors.Is(err, store.ErrNotFound) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
 		return
@@ -752,7 +760,7 @@ func (s *Server) updateDriveDestination(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "update_drive_destination_failed"})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "update_drive_destination_failed"})
 		return
 	}
 	current := currentFromContext(r.Context())

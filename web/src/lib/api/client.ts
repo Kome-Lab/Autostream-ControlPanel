@@ -38,22 +38,27 @@ export async function apiGet<T>(path: string, signal?: AbortSignal): Promise<T> 
   try {
     const response = await fetch(path, {
       method: "GET",
+      // React Query owns reusable API data. A fresh authority read must reach
+      // the server even while Chrome holds an older same-URL GET in flight.
+      cache: "no-store",
       signal,
       credentials: "same-origin",
       headers: { Accept: "application/json" },
     });
     return await readJSONResponse<T>(response, path);
   } catch (error) {
+    if (signal?.aborted) throw error;
     if (canUseMockFallback(path)) return mockGet(path) as T;
     throw error;
   }
 }
 
-export async function apiPost<T>(path: string, body?: unknown): Promise<T> {
+export async function apiPost<T>(path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
   if (forceMock()) return mockPost(path, body) as T;
   try {
     const response = await fetch(path, {
       method: "POST",
+      signal,
       credentials: "same-origin",
       headers: {
         Accept: "application/json",
@@ -64,14 +69,16 @@ export async function apiPost<T>(path: string, body?: unknown): Promise<T> {
     });
     return await readJSONResponse<T>(response, path);
   } catch (error) {
+    if (signal?.aborted) throw error;
     if (canUseMockFallback(path)) return mockPost(path, body) as T;
     throw error;
   }
 }
 
-export async function apiPostForm<T>(path: string, body: FormData): Promise<T> {
+export async function apiPostForm<T>(path: string, body: FormData, signal?: AbortSignal): Promise<T> {
   const response = await fetch(path, {
     method: "POST",
+    signal,
     credentials: "same-origin",
     headers: {
       Accept: "application/json",
@@ -82,11 +89,12 @@ export async function apiPostForm<T>(path: string, body: FormData): Promise<T> {
   return readJSONResponse<T>(response, path);
 }
 
-export async function apiPut<T>(path: string, body?: unknown): Promise<T> {
+export async function apiPut<T>(path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
   if (forceMock()) return mockPut(path, body) as T;
   try {
     const response = await fetch(path, {
       method: "PUT",
+      signal,
       credentials: "same-origin",
       headers: {
         Accept: "application/json",
@@ -97,16 +105,18 @@ export async function apiPut<T>(path: string, body?: unknown): Promise<T> {
     });
     return await readJSONResponse<T>(response, path);
   } catch (error) {
+    if (signal?.aborted) throw error;
     if (canUseMockFallback(path)) return mockPut(path, body) as T;
     throw error;
   }
 }
 
-export async function apiPutBinary<T>(path: string, body: Blob): Promise<T> {
+export async function apiPutBinary<T>(path: string, body: Blob, signal?: AbortSignal): Promise<T> {
   if (forceMock()) return mockPutBinary(path, body) as Promise<T>;
   try {
     const response = await fetch(path, {
       method: "PUT",
+      signal,
       credentials: "same-origin",
       headers: {
         Accept: "application/json",
@@ -121,16 +131,18 @@ export async function apiPutBinary<T>(path: string, body: Blob): Promise<T> {
     }
     return await readJSONResponse<T>(response, path);
   } catch (error) {
+    if (signal?.aborted) throw error;
     if (canUseMockFallback(path)) return mockPutBinary(path, body) as Promise<T>;
     throw error;
   }
 }
 
-export async function apiDelete<T>(path: string): Promise<T> {
+export async function apiDelete<T>(path: string, signal?: AbortSignal): Promise<T> {
   if (forceMock()) return mockDelete(path) as T;
   try {
     const response = await fetch(path, {
       method: "DELETE",
+      signal,
       credentials: "same-origin",
       headers: {
         Accept: "application/json",
@@ -139,15 +151,17 @@ export async function apiDelete<T>(path: string): Promise<T> {
     });
     return await readJSONResponse<T>(response, path);
   } catch (error) {
+    if (signal?.aborted) throw error;
     if (canUseMockFallback(path)) return mockDelete(path) as T;
     throw error;
   }
 }
 
-export async function apiDeleteJSON<T>(path: string, body: unknown): Promise<T> {
+export async function apiDeleteJSON<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
   if (forceMock()) return mockDelete(path) as T;
   const response = await fetch(path, {
     method: "DELETE",
+    signal,
     credentials: "same-origin",
     headers: {
       Accept: "application/json",

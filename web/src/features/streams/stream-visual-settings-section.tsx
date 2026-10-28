@@ -16,7 +16,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useCurrentUser, useResourceData, useServiceHealth } from "@/features/queries";
 import type { CoverCandidate, StreamVisualSettings } from "@/features/streams/control-platform";
 import { CoverCandidateGrid } from "@/features/streams/cover-candidate-grid";
-import { uploadDraftMediaAsset, type MediaAsset } from "@/features/streams/media-asset-client";
+import { deleteDraftMediaAsset, type MediaAsset } from "@/features/streams/media-asset-client";
+import { useStreamMediaUpload } from "@/features/streams/use-stream-media-upload";
+import { StreamMediaUploadCard, StreamMediaUploadSummary } from "@/features/streams/stream-media-upload-status";
+import type { MediaUploadSummary } from "@/features/streams/media-upload-protocol";
 import { mediaAssetBelongsToDraft } from "@/features/streams/media-asset-status";
 import {
   createStreamVisualActionController,
@@ -39,7 +42,7 @@ import {
   type StreamVisualSection,
 } from "@/features/streams/stream-visual-draft";
 import { normalizeRows, rowString } from "@/features/streams/stream-view-options";
-import { apiDelete, apiGet, apiPut } from "@/lib/api/client";
+import { apiGet, apiPut } from "@/lib/api/client";
 import { hasPermission } from "@/lib/auth/permissions";
 import { adaptAPIError } from "@/lib/foundation/api-errors/adapter";
 import type { CurrentUser, Stream } from "@/types/domain";
@@ -50,6 +53,8 @@ export type StreamCreateVisualState = Readonly<{
   ready: boolean;
   discordTargetReady: boolean;
   acknowledgeSubmitted?: () => void;
+  uploadSummary?: MediaUploadSummary;
+  isUploadBlocked?: () => boolean;
 }>;
 
 type Props = {
@@ -69,7 +74,7 @@ export function StreamVisualSettingsSection({ stream, canUpdate, mutationBlocked
   const queryKey = useMemo(() => ["streams", stream?.id || "create", "visual-settings"] as const, [stream?.id]);
   const visual = useQuery({
     queryKey,
-    queryFn: () => apiGet<StreamVisualSettings>(`/streams/${encodeURIComponent(stream?.id || "")}/visual-settings`),
+    queryFn: ({ signal }) => apiGet<StreamVisualSettings>(`/streams/${encodeURIComponent(stream?.id || "")}/visual-settings`, signal),
     enabled: editing,
     retry: false,
   });
@@ -91,7 +96,7 @@ export function StreamVisualSettingsSection({ stream, canUpdate, mutationBlocked
   const releaseCoverURLs = () => { for (const url of coverURLs.current.values()) URL.revokeObjectURL(url); coverURLs.current.clear(); draftCoverAssets.current.clear(); };
   const [backgroundPreview, setBackgroundPreview] = useState("");
   const [coverPreview, setCoverPreview] = useState("");
-  const [uploading, setUploading] = useState<"background" | "cover" | "">("");
+  const [removing, setUploading] = useState<"background" | "cover" | "">("");
   const [saving, setSaving] = useState(false);
   const [needsRefresh, setNeedsRefresh] = useState(false);
   const [message, setMessage] = useState("");
@@ -99,9 +104,35 @@ export function StreamVisualSettingsSection({ stream, canUpdate, mutationBlocked
   const [createRevision, setCreateRevision] = useState(0);
   const currentCreateRevision = useRef(0);
   const savedCreateRevision = useRef(0);
-  const draftExit = useExistingDraft(() => editing ? dirtySections.size > 0 : currentCreateRevision.current !== savedCreateRevision.current, Boolean(uploading) || saving);
   const initialized = useRef(Boolean(editing && visual.data));
   const previewOwner = useMemo(() => createStreamVisualPreviewOwner((url) => URL.revokeObjectURL(url)), []);
+  const update = useCallback((section: StreamVisualSection, fields: Partial<StreamVisualDraft> | ((current: StreamVisualDraft) => Partial<StreamVisualDraft>)) => {
+    if (!editing) { currentCreateRevision.current += 1; setCreateRevision(currentCreateRevision.current); }
+    if (section === "cover" && (typeof fields === "function" || ["coverSource", "coverPresetID", "coverAssetID", "coverVariantID", "coverCandidates"].some((key) => Object.prototype.hasOwnProperty.call(fields, key)))) setCoverSelectionDirty(true);
+    setDirtySections((current) => new Set([...current, section]));
+    setDraft((current) => ({ ...current, ...(typeof fields === "function" ? fields(current) : fields) }));
+  }, [editing]);
+  const uploads = useStreamMediaUpload({
+    ownerKey: stream?.id || "create", sessionID: draft.uploadSessionID,
+    coverCount: uploadedCoverCount(draft.coverCandidates), candidateCount: draft.coverCandidates.length,
+    canStart: () => canUpdate && !saving && !mutationBlocked && !needsRefresh && !uploadPending.current && !removing,
+    onReady: (kind, result, file, preview) => {
+      if (kind === "background") {
+        setBackgroundPreview(previewOwner.replace("background", preview));
+        setUploadedBackground(true);
+        update("background", { backgroundMode: "image", backgroundAssetID: result.asset.id, backgroundVariantID: result.variant.id, uploadSessionID: result.session.id });
+      } else {
+        coverURLs.current.set(result.variant.id, preview);
+        draftCoverAssets.current.set(result.asset.id, result.asset);
+        setCoverPreview(preview);
+        update("cover", (current) => ({ coverSource: "upload", coverAssetID: result.asset.id, coverVariantID: result.variant.id, uploadSessionID: result.session.id,
+          coverCandidates: [...current.coverCandidates, { name: file.name, source: "upload", asset_id: result.asset.id, variant_id: result.variant.id }] }));
+      }
+      setMessage(locale === "ja" ? "画像の検証と処理が完了しました。設定を保存すると配信枠に反映されます。" : "The image is ready. Save the settings to use it in this stream slot.");
+    },
+  });
+  const uploading = removing || uploads.pendingKind;
+  const draftExit = useExistingDraft(() => editing ? dirtySections.size > 0 || uploads.isBlocked() : currentCreateRevision.current !== savedCreateRevision.current || uploads.isBlocked(), Boolean(uploading) || saving);
 
   useEffect(() => {
     if (!editing || initialized.current || !visual.data) return;
@@ -117,11 +148,12 @@ export function StreamVisualSettingsSection({ stream, canUpdate, mutationBlocked
   const selectedDiscord = discordRows.find((row) => rowString(row, ["id"]) === draft.discordTargetPresetID);
   const selectedCover = coverRows.find((row) => rowString(row, ["id"]) === draft.coverPresetID);
   const uploadedCovers = uploadedCoverCount(draft.coverCandidates);
-  const uploadLimitReached = uploadedCovers >= maximumUploadedCovers;
+  const reservedCovers = uploadedCovers + uploads.summary.coverReservations;
+  const uploadLimitReached = reservedCovers >= maximumUploadedCovers;
   const selectedDiscordRevision = Number(selectedDiscord?.revision || 0);
   const selectedCoverRevision = Number(selectedCover?.revision || 0);
-  const canSelectDiscordPreset = canReadDiscordPresets && discordPresets.isSuccess && !discordPresets.isFetching;
-  const canSelectCoverPreset = canReadCoverPresets && coverPresets.isSuccess && !coverPresets.isFetching;
+  const canSelectDiscordPreset = canReadDiscordPresets && discordPresets.isSuccess;
+  const canSelectCoverPreset = canReadCoverPresets && coverPresets.isSuccess;
   const discordPresetRequired = (!editing || dirtySections.has("discord")) && draft.discordTargetMode === "preset";
   const savedCoverSnapshot = visual.data?.cover_candidates?.some((item)=>item.variant_id===draft.coverVariantID && item.preset_id===draft.coverPresetID && item.preset_revision===coverPresetRevision);
   const coverPresetRequired = (!editing || coverSelectionDirty) && draft.coverSource === "preset" && !savedCoverSnapshot;
@@ -133,7 +165,9 @@ export function StreamVisualSettingsSection({ stream, canUpdate, mutationBlocked
   const validation = useMemo(() => validateStreamVisualDraft(draft), [draft]);
   const createState = useMemo<StreamCreateVisualState>(() => ({
     extension: buildStreamCreateVisualExtension(draft),
-    ready: validation.ready && presetSelectionsReady && !uploading,
+    ready: validation.ready && presetSelectionsReady && !uploading && !uploads.summary.blocking,
+    uploadSummary: uploads.summary,
+    isUploadBlocked: uploads.isBlocked,
     acknowledgeSubmitted: () => {
       if (editing || currentCreateRevision.current !== createRevision) return;
       savedCreateRevision.current = createRevision;
@@ -144,7 +178,7 @@ export function StreamVisualSettingsSection({ stream, canUpdate, mutationBlocked
       : draft.discordTargetMode === "manual"
         ? [draft.discordGuildID, draft.discordTextChannelID, draft.discordVoiceChannelID].every((value) => value.trim() !== "")
         : false,
-  }), [createRevision, draft, editing, presetSelectionsReady, uploading, validation.ready]);
+  }), [createRevision, draft, editing, presetSelectionsReady, uploading, uploads.isBlocked, uploads.summary, validation.ready]);
   useEffect(() => { if (!editing) onCreateState(createState); }, [createState, editing, onCreateState]);
 
   const capabilities = useMemo(() => {
@@ -162,14 +196,16 @@ export function StreamVisualSettingsSection({ stream, canUpdate, mutationBlocked
   const controller = useMemo(() => createStreamVisualActionController({
     getPermission: () => visualPermissionSnapshot(queryClient),
     getState: () => visualStateSnapshot(queryClient, queryKey),
-    mutate: (request) => apiPut<StreamVisualSettings>(`/streams/${encodeURIComponent(stream?.id || "")}/visual-settings`, request),
+    revalidate: async (signal) => {
+      const [user, settings] = await Promise.all([
+        apiGet<CurrentUser>("/auth/me", signal),
+        apiGet<StreamVisualSettings>(`/streams/${encodeURIComponent(stream?.id || "")}/visual-settings`, signal),
+      ]);
+      return { permission: { kind: "ready", permissions: user.permissions || [] }, state: visualSettingsSnapshot(settings) };
+    },
+    mutate: (request, signal) => apiPut<StreamVisualSettings>(`/streams/${encodeURIComponent(stream?.id || "")}/visual-settings`, request, signal),
   }), [queryClient, queryKey, stream?.id]);
-  const update = useCallback((section: StreamVisualSection, fields: Partial<StreamVisualDraft>) => {
-    if (!editing) { currentCreateRevision.current += 1; setCreateRevision(currentCreateRevision.current); }
-    if (section === "cover" && ["coverSource", "coverPresetID", "coverAssetID", "coverVariantID", "coverCandidates"].some((key) => Object.prototype.hasOwnProperty.call(fields, key))) setCoverSelectionDirty(true);
-    setDirtySections((current) => new Set([...current, section]));
-    setDraft((current) => ({ ...current, ...fields }));
-  }, [editing]);
+  useEffect(() => () => controller.cancel(), [controller]);
   const selectDiscordPreset = (id: string) => {
     if (!canSelectDiscordPreset) return;
     const row = discordRows.find((item) => rowString(item, ["id"]) === id);
@@ -194,29 +230,8 @@ export function StreamVisualSettingsSection({ stream, canUpdate, mutationBlocked
 
   const upload = async (kind: "background" | "cover", file?: File) => {
     if (!file || mutationBlocked || needsRefresh || uploadPending.current || uploading || (kind === "cover" && (uploadLimitReached || draft.coverCandidates.length >= 32))) return;
-    uploadPending.current = true;
-    setUploading(kind);
     setMessage("");
-    try {
-      const result = await uploadDraftMediaAsset(file, kind === "background" ? "scene_background" : "video_cover", draft.uploadSessionID ? { id: draft.uploadSessionID } : undefined);
-      const preview = URL.createObjectURL(file);
-      if (kind === "background") {
-        setBackgroundPreview(previewOwner.replace("background", preview));
-        setUploadedBackground(true);
-        update("background", { backgroundMode: "image", backgroundAssetID: result.asset.id, backgroundVariantID: result.variant.id, uploadSessionID: result.session.id });
-      } else {
-        coverURLs.current.set(result.variant.id, preview);
-        if (mediaAssetBelongsToDraft(result.asset, result.session.id)) draftCoverAssets.current.set(result.asset.id, result.asset);
-        setCoverPreview(preview);
-        update("cover", { coverSource: "upload", coverAssetID: result.asset.id, coverVariantID: result.variant.id, uploadSessionID: result.session.id, coverCandidates: [...draft.coverCandidates,{name:file.name,source:"upload",asset_id:result.asset.id,variant_id:result.variant.id}] });
-      }
-      setMessage(locale === "ja" ? "画像の検証と処理が完了しました。設定を保存すると配信枠に反映されます。" : "The image is ready. Save the settings to use it in this stream slot.");
-    } catch (error) {
-      setMessage(t(adaptAPIError(error).messageKey));
-    } finally {
-      uploadPending.current = false;
-      setUploading("");
-    }
+    await uploads.start(kind, file);
   };
   const removeCoverCandidate = async (candidate: CoverCandidate) => {
     if (controlsDisabled || uploadPending.current || draft.coverVariantID === candidate.variant_id) return;
@@ -227,7 +242,7 @@ export function StreamVisualSettingsSection({ stream, canUpdate, mutationBlocked
       const asset = draftCoverAssets.current.get(candidate.asset_id);
       const otherVariant = draft.coverCandidates.some((item) => item.variant_id !== candidate.variant_id && item.asset_id === candidate.asset_id);
       if (asset && !otherVariant && mediaAssetBelongsToDraft(asset, draft.uploadSessionID)) {
-        await apiDelete(`/media-assets/${encodeURIComponent(asset.id)}?expected_upload_session_id=${encodeURIComponent(draft.uploadSessionID)}`);
+        await deleteDraftMediaAsset(asset, draft.uploadSessionID);
         draftCoverAssets.current.delete(asset.id);
       }
       const preview = coverURLs.current.get(candidate.variant_id);
@@ -242,10 +257,11 @@ export function StreamVisualSettingsSection({ stream, canUpdate, mutationBlocked
   };
 
   const save = async () => {
-    if (!visual.data || draftRevision === undefined || !validation.ready || !presetSelectionsReady || saving || uploading || mutationBlocked || needsRefresh || serverSettingsChanged) return;
+    if (!visual.data || draftRevision === undefined || !validation.ready || !presetSelectionsReady || saving || uploading || mutationBlocked || needsRefresh || serverSettingsChanged || uploads.isBlocked()) return;
     setSaving(true);
     setMessage("");
     const result = await controller.issue(buildStreamVisualSaveFields(draft, dirtySections, editing && !coverSelectionDirty), draftRevision, draft.uploadSessionID || undefined);
+    if (result.kind === "succeeded") await queryClient.cancelQueries({ queryKey, exact: true });
     setSaving(false);
     if (result.kind === "succeeded") {
       queryClient.setQueryData(queryKey, result.value);
@@ -256,13 +272,16 @@ export function StreamVisualSettingsSection({ stream, canUpdate, mutationBlocked
       setDirtySections(new Set());
       setUploadedBackground(false);
       releaseCoverURLs();
+      uploads.reset();
       setCoverPreview("");
+      previewOwner.release();
+      setBackgroundPreview("");
       setMessage(locale === "ja" ? "ビジュアル設定を保存しました。" : "Visual settings were saved.");
     } else if (result.kind === "outcome_unknown") {
       setNeedsRefresh(true);
       setMessage(t("confirmationOutcomeUnknown"));
     } else if (result.kind === "failed") {
-      setNeedsRefresh(true);
+      setNeedsRefresh(controller.unresolved);
       setMessage(t(result.error.messageKey));
     } else {
       setMessage(visualBlockedMessage(result.reason, locale, uiText));
@@ -271,38 +290,52 @@ export function StreamVisualSettingsSection({ stream, canUpdate, mutationBlocked
   const refresh = async () => {
     const result = await visual.refetch();
     if (result.isSuccess && result.data) {
-      controller.reconcile();
-      setNeedsRefresh(false);
-      setDraft(streamVisualDraftFromSettings(result.data));
-      setDraftRevision(result.data.revision);
-      setCoverPresetRevision(result.data.cover_preset_revision || 0);
-      setCoverSelectionDirty(false);
-      setDirtySections(new Set());
-      setUploadedBackground(false);
-      releaseCoverURLs();
-      setCoverPreview("");
-      previewOwner.release();
-      setBackgroundPreview("");
-      setCoverPreview("");
-      setMessage(locale === "ja" ? "サーバーの最新設定を読み込みました。" : "Loaded the latest server settings.");
+      const reconciled = controller.reconcile(result.data);
+      setNeedsRefresh(!reconciled);
+      setMessage(reconciled ? uiText("サーバーの最新状態を確認しました。入力内容は保持しています。") : t("confirmationOutcomeUnknown"));
     } else {
       setMessage(locale === "ja" ? "設定を再取得できませんでした。編集中の内容は保持しています。" : "The settings could not be reloaded. Your draft is unchanged.");
     }
   };
+  const discardAndReload = async () => {
+    if (saving || uploads.isBlocked()) return;
+    const result = await visual.refetch();
+    if (!result.isSuccess || !result.data) {
+      setMessage(locale === "ja" ? "設定を再取得できませんでした。編集中の内容は保持しています。" : "The settings could not be reloaded. Your draft is unchanged.");
+      return;
+    }
+    if (!controller.reconcile(result.data)) { setNeedsRefresh(true); setMessage(t("confirmationOutcomeUnknown")); return; }
+    setNeedsRefresh(false);
+    setDraft(streamVisualDraftFromSettings(result.data));
+    setDraftRevision(result.data.revision);
+    setCoverPresetRevision(result.data.cover_preset_revision || 0);
+    setCoverSelectionDirty(false);
+    setDirtySections(new Set());
+    setUploadedBackground(false);
+    releaseCoverURLs();
+    uploads.reset();
+    previewOwner.release();
+    setBackgroundPreview("");
+    setCoverPreview("");
+    setMessage(locale === "ja" ? "サーバーの最新設定を読み込みました。" : "Loaded the latest server settings.");
+  };
 
-  const controlsDisabled = !canUpdate || saving || Boolean(uploading) || mutationBlocked || needsRefresh || (editing && !visual.data);
-  const saveDisabled = controlsDisabled || dirtySections.size === 0 || !validation.ready || !presetSelectionsReady || Boolean(uploading) || visual.isFetching || needsRefresh || serverSettingsChanged;
+  const controlsDisabled = !canUpdate || saving || Boolean(uploading) || uploads.summary.unresolvedCount > 0 || mutationBlocked || needsRefresh || (editing && !visual.data);
+  const saveDisabled = controlsDisabled || dirtySections.size === 0 || !validation.ready || !presetSelectionsReady || uploads.summary.blocking || needsRefresh || serverSettingsChanged;
   return (
     <fieldset className="min-w-0 space-y-4 rounded-lg border p-4" aria-describedby="stream-visual-help">
       <legend className="max-w-full px-1 text-sm font-semibold [overflow-wrap:anywhere]">{locale === "ja" ? "背景・表示名・Discord配信先・蓋画像（Video Cover）" : "Background, display title, Discord target, and video cover"}</legend>
       <p id="stream-visual-help" className="text-xs text-muted-foreground">{locale === "ja" ? "背景・表示名・Discord配信先は次回の配信開始から適用されます。配信中の蓋画像の表示・解除は配信枠の詳細画面から操作できます。" : "Background, display title, and Discord target changes apply at the next start. Show or hide the cover during a stream from its detail view."}</p>
+      <StreamMediaUploadSummary summary={uploads.summary} uiText={uiText} />
       {visual.isError ? <p role="alert" className="text-sm text-destructive">{locale === "ja" ? "ビジュアル設定を取得できません。保存せず再読込してください。" : "Visual settings are unavailable. Reload before saving."}</p> : null}
       {serverSettingsChanged ? <p role="alert" className="text-sm text-amber-700 dark:text-amber-300">{locale === "ja" ? "編集中にサーバーの設定が更新されました。入力内容は保持しています。最新設定を再読込してから保存してください。" : "The server settings changed while you were editing. Your draft is preserved. Reload the latest settings before saving."}</p> : null}
       <div className="grid min-w-0 gap-4 xl:grid-cols-2">
         <VisualGroup title={locale === "ja" ? "シーン背景" : "Scene background"}>
           <ModeSelect purpose={locale === "ja" ? "シーン背景モード" : "Scene background mode"} value={draft.backgroundMode} disabled={controlsDisabled || uploadedBackground} onChange={(value) => update("background", { backgroundMode: value as StreamVisualDraft["backgroundMode"] })} options={[["default", locale === "ja" ? "既定" : "Default"], ["image", locale === "ja" ? "画像（cover / center crop）" : "Image (cover / center crop)"]]} />
-          {draft.backgroundMode === "image" ? <UploadControl label={locale === "ja" ? "背景画像をアップロード" : "Upload background image"} busy={uploading === "background"} disabled={controlsDisabled || uploadedBackground} onFile={(file) => void upload("background", file)} /> : null}
+          {draft.backgroundMode === "image" ? <UploadControl label={locale === "ja" ? "背景画像をアップロード" : "Upload background image"} busy={uploading === "background"} disabled={controlsDisabled || uploadedBackground || uploads.isBlocked()} onFile={(file) => void upload("background", file)} /> : null}
           {draft.backgroundMode === "image" ? <VisualPreview label={locale === "ja" ? "背景画像のプレビュー" : "Background image preview"} imageURL={backgroundPreview || (editing && draft.backgroundVariantID ? `/streams/${encodeURIComponent(stream?.id || "")}/media-assets/${encodeURIComponent(draft.backgroundVariantID)}` : "")} emptyLabel={draft.backgroundAssetID ? locale === "ja" ? "保存済みの背景画像を使用します。" : "The saved background image is selected." : locale === "ja" ? "背景画像を選択してください。" : "Select a background image."} /> : null}
+          {uploads.operation?.kind === "background" ? <StreamMediaUploadCard state={uploads.operation} uiText={uiText} errorMessage={uploads.operation.errorKey ? t(uploads.operation.errorKey) : ""} disabled={!canUpdate || saving || mutationBlocked || needsRefresh || Boolean(removing)} onRetry={() => void uploads.retry()} onCheck={() => void uploads.check()} onResume={() => void uploads.resume()} onDismiss={() => void uploads.dismiss()} /> : null}
+          {uploadedBackground ? <p data-media-ready-unsaved className="text-xs text-muted-foreground">{uiText("利用可能（枠は未保存）")}</p> : null}
         </VisualGroup>
         <VisualGroup title={locale === "ja" ? "ヘッダータイトル" : "Header title"}>
           <ModeSelect purpose={locale === "ja" ? "ヘッダータイトルモード" : "Header title mode"} value={draft.headerTitleMode} disabled={controlsDisabled} onChange={(value) => update("title", { headerTitleMode: value as StreamVisualDraft["headerTitleMode"] })} options={[["default", locale === "ja" ? "配信枠名を使用" : "Use stream name"], ["custom", locale === "ja" ? "カスタム" : "Custom"]]} />
@@ -331,12 +364,14 @@ export function StreamVisualSettingsSection({ stream, canUpdate, mutationBlocked
         <VisualGroup title={locale === "ja" ? "蓋画像（Video Cover）" : "Video cover"}>
           {draft.coverCandidates.length ? <div className="space-y-2" aria-label={locale==="ja"?"保存するフタ候補":"Saved cover candidates"}>
             <CoverCandidateGrid candidates={draft.coverCandidates} locale={locale} startVariantID={draft.coverVariantID} imageURL={(candidate) => coverCandidatePreviewURL(candidate, stream?.id, visual.data, coverURLs.current.get(candidate.variant_id))} actions={(candidate) => <>
+              {draftCoverAssets.current.has(candidate.asset_id) ? <p data-media-ready-unsaved className="text-xs text-muted-foreground">{uiText("利用可能（枠は未保存）")}</p> : null}
               <Button type="button" variant="outline" size="sm" className={visualButtonClassName} disabled={controlsDisabled || draft.coverVariantID===candidate.variant_id} onClick={()=>{ setCoverPresetRevision(candidate.preset_revision||0); update("cover",{coverSource:candidate.source,coverPresetID:candidate.preset_id||"",coverAssetID:candidate.asset_id,coverVariantID:candidate.variant_id}); setCoverPreview(coverURLs.current.get(candidate.variant_id) || (editing?`/streams/${encodeURIComponent(stream?.id||"")}/media-assets/${encodeURIComponent(candidate.variant_id)}`:candidate.source==="preset"?`/video-cover-presets/${encodeURIComponent(candidate.preset_id||"")}/media-assets/${encodeURIComponent(candidate.variant_id)}`:"")); }}>{draft.coverVariantID===candidate.variant_id?(locale==="ja"?"開始時の画像":"Start image"):(locale==="ja"?"開始時の画像にする":"Use at start")}</Button>
               <Button type="button" variant="outline" size="sm" className={visualButtonClassName} disabled={controlsDisabled || draft.coverVariantID===candidate.variant_id} onClick={()=>void removeCoverCandidate(candidate)}>{locale==="ja"?"候補から削除":"Remove candidate"}</Button>
             </>} />
             <p className="text-xs text-muted-foreground">{locale==="ja"?"開始時の画像を削除する場合は、先に別の候補を選択してください。配信中の手動切替は枠の詳細で行えます。":"Choose another start image before removing the current one. Switch images during a stream in its details."}</p>
           </div> : null}
-          <p className="text-sm" data-cover-upload-count>{locale === "ja" ? `アップロード画像 ${uploadedCovers}/${maximumUploadedCovers}枚` : `Uploaded images ${uploadedCovers}/${maximumUploadedCovers}`}</p>
+          {uploads.operation?.kind === "cover" ? <StreamMediaUploadCard state={uploads.operation} uiText={uiText} errorMessage={uploads.operation.errorKey ? t(uploads.operation.errorKey) : ""} disabled={!canUpdate || saving || mutationBlocked || needsRefresh || Boolean(removing)} onRetry={() => void uploads.retry()} onCheck={() => void uploads.check()} onResume={() => void uploads.resume()} onDismiss={() => void uploads.dismiss()} /> : null}
+          <p className="text-sm" data-cover-upload-count data-cover-upload-reserved={uploads.summary.coverReservations}>{locale === "ja" ? `アップロード画像 ${reservedCovers}/${maximumUploadedCovers}枚` : `Uploaded images ${reservedCovers}/${maximumUploadedCovers}`}</p>
           {uploadLimitReached ? <p role="status" className="text-xs text-muted-foreground">{locale === "ja" ? "枠専用のアップロード画像は4枚までです。追加するには、開始時の画像を別の候補へ変更してから不要な候補を削除してください。プリセットは引き続き利用できます。" : "A slot can have up to four uploaded cover images. Select another start image and remove an unwanted candidate before uploading. Presets remain available."}</p> : null}
           <ModeSelect purpose={locale === "ja" ? "蓋画像のソース" : "Video cover source"} value={draft.coverSource} disabled={controlsDisabled || Boolean(uploading)} onChange={(value) => update("cover", { coverSource: value as StreamVisualDraft["coverSource"], ...(value === "none" ? { coverStartActive: false } : {}) })} options={[["none", "OFF"], ["preset", locale === "ja" ? "プリセット" : "Preset", !canReadCoverPresets], ["upload", locale === "ja" ? "アップロード" : "Upload"]]} />
           {draft.coverSource === "preset" ? <ModeSelect purpose={locale === "ja" ? "蓋画像プリセット" : "Video cover preset"} value={draft.coverPresetID} disabled={controlsDisabled || !canSelectCoverPreset} onChange={selectCoverPreset} options={[["", locale === "ja" ? "選択してください" : "Select a preset"], ...visualPresetOptions(coverRows, draft.coverPresetID, locale === "ja" ? "設定済みプリセット（現在は選択不可）" : "Saved preset (currently unavailable)", coverPresetRevision)]} /> : null}
@@ -344,7 +379,7 @@ export function StreamVisualSettingsSection({ stream, canUpdate, mutationBlocked
             <p role="status">{locale === "ja" ? `蓋画像プリセット更新あり：選択済み r${coverPresetRevision}、最新 r${selectedCoverRevision}。開始時の表示設定だけを変更しても保存済み画像は変わりません。` : `Video cover preset update available: selected r${coverPresetRevision}, latest r${selectedCoverRevision}. Changing only the start visibility keeps the saved image.`}</p>
             <Button type="button" size="sm" variant="outline" className={visualButtonClassName} disabled={controlsDisabled || !canSelectCoverPreset} onClick={() => selectCoverPreset(draft.coverPresetID)}>{locale === "ja" ? "最新の蓋画像を適用" : "Use the latest cover image"}</Button>
           </div> : null}
-          {draft.coverSource !== "none" ? <>{draft.coverSource === "upload" ? <UploadControl label={locale === "ja" ? "蓋画像をアップロード" : "Upload cover image"} busy={uploading === "cover"} disabled={controlsDisabled || Boolean(uploading) || uploadLimitReached || draft.coverCandidates.length>=32} onFile={(file) => void upload("cover", file)} /> : null}{!draft.coverCandidates.length ? <VisualPreview label={locale === "ja" ? "蓋画像のプレビュー" : "Video cover preview"} imageURL={coverPreview || (editing && draft.coverVariantID ? `/streams/${encodeURIComponent(stream?.id || "")}/media-assets/${encodeURIComponent(draft.coverVariantID)}` : "")} emptyLabel={draft.coverAssetID ? locale === "ja" ? "保存済みの蓋画像を使用します。" : "The saved cover image is selected." : locale === "ja" ? "蓋画像を選択してください。" : "Select a video cover image."} /> : null}</> : null}
+          {draft.coverSource !== "none" ? <>{draft.coverSource === "upload" ? <UploadControl label={locale === "ja" ? "蓋画像をアップロード" : "Upload cover image"} busy={uploading === "cover"} disabled={controlsDisabled || uploads.isBlocked() || uploadLimitReached || draft.coverCandidates.length>=32} onFile={(file) => void upload("cover", file)} /> : null}{!draft.coverCandidates.length ? <VisualPreview label={locale === "ja" ? "蓋画像のプレビュー" : "Video cover preview"} imageURL={coverPreview || (editing && draft.coverVariantID ? `/streams/${encodeURIComponent(stream?.id || "")}/media-assets/${encodeURIComponent(draft.coverVariantID)}` : "")} emptyLabel={draft.coverAssetID ? locale === "ja" ? "保存済みの蓋画像を使用します。" : "The saved cover image is selected." : locale === "ja" ? "蓋画像を選択してください。" : "Select a video cover image."} /> : null}</> : null}
           {draft.coverSource !== "none" ? <label className="flex min-h-10 items-center gap-2 rounded-md border px-3 text-sm"><Checkbox checked={draft.coverStartActive} disabled={controlsDisabled} onCheckedChange={(value) => update("cover", { coverStartActive: value === true })} />{locale === "ja" ? "配信開始時からCoverを表示" : "Show cover when the stream starts"}</label> : null}
           <p className="text-xs text-muted-foreground">{locale === "ja" ? "蓋画像を表示中も音声は継続し、ウォーターマークはその上に表示されます。配信・録画・プレビューには同じ映像が送られます。" : "Audio continues while the cover is shown. The watermark stays above it, and live, recording, and preview outputs use the same composed image."}</p>
           <PresetListStatus locale={locale} allowed={canReadCoverPresets} authorityStatus={currentUser.status} status={coverPresets.status} fetching={coverPresets.isFetching} count={coverRows.length} onRefresh={() => void coverPresets.refetch()} manageHref="/admin/overlay/#video-cover-presets" manageLabel={locale === "ja" ? "蓋画像プリセット管理（別タブ）" : "Manage video cover presets (new tab)"} />
@@ -354,7 +389,8 @@ export function StreamVisualSettingsSection({ stream, canUpdate, mutationBlocked
       {!presetSelectionsReady && validation.ready ? <p role="status" className="text-sm text-amber-700 dark:text-amber-300">{locale === "ja" ? "変更するプリセットの最新状態を確認できていません。プリセット一覧を再取得して選択を確認してください。" : "The changed preset selection is not verified. Refresh its list and confirm the selection before saving."}</p> : null}
       {message ? <p aria-live="polite" className="text-sm text-muted-foreground">{message}</p> : null}
       {editing ? <div className="flex flex-wrap justify-end gap-2">
-        <Button type="button" variant="outline" onClick={() => { if (draftExit) draftExit.request(() => void refresh()); else void refresh(); }} disabled={visual.isFetching}><RefreshCcw className="size-4" />{locale === "ja" ? "最新設定を再読込" : "Reload latest"}</Button>
+        <Button type="button" variant="outline" onClick={() => void refresh()} disabled={visual.isFetching || saving}><RefreshCcw className="size-4" />{uiText("入力を保持して最新状態を確認")}</Button>
+        <Button type="button" variant="outline" onClick={() => { if (draftExit) draftExit.request(() => void discardAndReload()); else void discardAndReload(); }} disabled={visual.isFetching || saving || uploads.isBlocked()}><RefreshCcw className="size-4" />{uiText("入力を破棄して最新設定を再読込")}</Button>
         <Button type="button" onClick={() => void save()} disabled={saveDisabled}><Save className="size-4" />{locale === "ja" ? "ビジュアル設定を保存" : "Save visual settings"}</Button>
       </div> : null}
     </fieldset>
@@ -425,15 +461,17 @@ function VisualPreview({ label, imageURL, emptyLabel }: { label: string; imageUR
 function visualPermissionSnapshot(queryClient: ReturnType<typeof useQueryClient>): VisualActionPermissionSnapshot {
   const state = queryClient.getQueryState<CurrentUser>(["auth", "me"]);
   const current = queryClient.getQueryData<CurrentUser>(["auth", "me"]);
-  if (state?.fetchStatus === "fetching") return { kind: "refreshing", permissions: [] };
   if (state?.status !== "success" || !current) return { kind: "unavailable", permissions: [] };
   return { kind: "ready", permissions: current.permissions || [] };
 }
 function visualStateSnapshot(queryClient: ReturnType<typeof useQueryClient>, key: readonly string[]): VisualActionStateSnapshot {
   const state = queryClient.getQueryState<StreamVisualSettings>(key);
   const current = queryClient.getQueryData<StreamVisualSettings>(key);
-  const freshness = state?.fetchStatus === "fetching" ? "refreshing" : state?.status === "error" && current ? "stale" : state?.status === "success" && current ? "fresh" : "unavailable";
-  return current ? { kind: "ready", freshness, revision: current.revision, fingerprint: visualSettingsFingerprint(current) } : { kind: "unknown", freshness };
+  const freshness = state?.status === "error" && current ? "stale" : state?.status === "success" && current ? "fresh" : "unavailable";
+  return current ? { ...visualSettingsSnapshot(current), freshness } : { kind: "unknown", freshness };
+}
+function visualSettingsSnapshot(current: StreamVisualSettings): VisualActionStateSnapshot {
+  return { kind: "ready", freshness: "fresh", revision: current.revision, fingerprint: visualSettingsFingerprint(current), streamID: current.stream_id };
 }
 function visualBlockedMessage(reason: string, locale: "ja" | "en", uiText: UICopy = japaneseCopy) {
   if (locale === "en") return reason === "authority-changed" ? "The settings changed. Reload before saving." : reason === "reconciliation-required" ? "Reload the latest state before another save." : "The visual settings cannot be saved with the current authority state.";

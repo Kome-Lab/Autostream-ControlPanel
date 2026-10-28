@@ -248,10 +248,10 @@ export function ApplicationInfoView() {
     authorityFingerprint,
   });
   const { refreshTargetAuthority, refreshBatchAuthority, refreshCancelAuthority } = createApplicationAuthorityReaders({ systemUpdates, currentUser });
-  const refreshPortAuthority = (context: PortReconfigureAuthorityContext) => refreshApplicationPortAuthority(context, {
+  const refreshPortAuthority = (context: PortReconfigureAuthorityContext, signal?: AbortSignal) => refreshApplicationPortAuthority(context, {
     systemUpdates, currentUser, registeredNodes, serviceHealth, canReadRegisteredNodes, canReadServiceHealth,
     hasActivePortRequestTarget: (targetID) => activePortRequestTargets.current.has(targetID), unresolvedAmbiguousPortRequest,
-  });
+  }, signal);
   const batchAuthoritySnapshot = batchUpdateAuthoritySnapshot(availableTargets, systemUpdates.data);
   const batchIntent: UpdaterActionIntent = Object.freeze({
     id: "UPD-03",

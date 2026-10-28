@@ -1,5 +1,6 @@
 import type { ActionDescriptor, ActionEvaluation, ActionRisk } from "@/lib/foundation/actions/contracts";
 import { adaptAPIError } from "@/lib/foundation/api-errors/adapter";
+import { withBoundedActionRevalidation } from "@/lib/foundation/actions/bounded-revalidation";
 import type { AdaptedAPIError } from "@/lib/foundation/api-errors/contracts";
 import { evaluateActionPermission, type PermissionSnapshot } from "@/lib/foundation/permissions/evaluator";
 
@@ -7,6 +8,7 @@ export type AppSettingsActionID = "APP-01" | "APP-02";
 export type AppSettingsActionIntent = Readonly<{
   id: AppSettingsActionID;
   payload: Readonly<Record<string, unknown>>;
+  baselineFingerprint?: string;
 }>;
 export type AppSettingsActionRequest = Readonly<{
   id: AppSettingsActionID;
@@ -86,11 +88,18 @@ export type AppSettingsActionController = ReturnType<typeof createAppSettingsAct
 export function createAppSettingsActionController(dependencies: Readonly<{
   getPermissions: () => PermissionSnapshot;
   getState: () => AppSettingsActionState;
-  refresh: () => Promise<AppSettingsActionAuthority>;
+  refresh?: (signal?: AbortSignal) => Promise<AppSettingsActionAuthority>;
+  revalidate?: (intent: AppSettingsActionIntent, signal: AbortSignal) => Promise<AppSettingsActionAuthority>;
   mutate: (request: AppSettingsActionRequest & Readonly<{ signal: AbortSignal }>) => Promise<unknown>;
 }>) {
   const active = new Map<string, AbortController>();
   const unresolved = new Set<string>();
+  const readAuthority = (intent: AppSettingsActionIntent, signal?: AbortSignal) => withBoundedActionRevalidation(
+    (readSignal) => dependencies.revalidate
+      ? dependencies.revalidate(intent, readSignal)
+      : dependencies.refresh ? dependencies.refresh(readSignal) : Promise.reject(new Error("Authority reader unavailable")),
+    signal,
+  );
 
   const evaluateBase = (intent: AppSettingsActionIntent, authority?: AppSettingsActionAuthority): ActionEvaluation => {
     const descriptor = buildAppSettingsActionDescriptor(intent);
@@ -121,17 +130,25 @@ export function createAppSettingsActionController(dependencies: Readonly<{
     if (!scope) return blocked("invalid-intent");
     if (active.has(scope)) return blocked("duplicate");
     if (unresolved.has(scope)) return blocked("reconciliation-required");
-    let authority: AppSettingsActionAuthority;
+    const abort = new AbortController();
+    active.set(scope, abort);
     try {
-      authority = await dependencies.refresh();
-    } catch {
-      return blocked("state-unavailable");
+      let authority: AppSettingsActionAuthority;
+      try {
+        authority = await readAuthority(intent, abort.signal);
+      } catch {
+        return blocked(abort.signal.aborted ? "cancelled" : "state-unavailable");
+      }
+      if (abort.signal.aborted || active.get(scope) !== abort) return blocked("cancelled");
+      const reason = evaluationReason(evaluateBase(intent, authority));
+      if (reason) return blocked(reason);
+      const descriptor = buildAppSettingsActionDescriptor(intent);
+      if (!descriptor || authority.state.kind !== "ready" || authority.state.freshness !== "fresh" || !authority.state.fingerprint) return blocked("state-unavailable");
+      if (intent.baselineFingerprint !== undefined && authority.state.fingerprint !== intent.baselineFingerprint) return blocked("authority-changed");
+      return Object.freeze({ kind: "allowed", intent, descriptor, authority: authority.state.fingerprint });
+    } finally {
+      if (active.get(scope) === abort) active.delete(scope);
     }
-    const reason = evaluationReason(evaluateBase(intent, authority));
-    if (reason) return blocked(reason);
-    const descriptor = buildAppSettingsActionDescriptor(intent);
-    if (!descriptor || authority.state.kind !== "ready" || authority.state.freshness !== "fresh" || !authority.state.fingerprint) return blocked("state-unavailable");
-    return Object.freeze({ kind: "allowed", intent, descriptor, authority: authority.state.fingerprint });
   };
 
   const submit = async (
@@ -149,13 +166,14 @@ export function createAppSettingsActionController(dependencies: Readonly<{
     try {
       let authority: AppSettingsActionAuthority;
       try {
-        authority = await dependencies.refresh();
+        authority = await readAuthority(opened.intent, abort.signal);
       } catch {
         return blocked("state-unavailable");
       }
       const reason = evaluationReason(evaluateBase(opened.intent, authority));
       if (reason) return blocked(reason);
       if (!authority.state.fingerprint || authority.state.fingerprint !== opened.authority) return blocked("authority-changed");
+      if (opened.intent.baselineFingerprint !== undefined && authority.state.fingerprint !== opened.intent.baselineFingerprint) return blocked("authority-changed");
       const request = appSettingsActionRequest(opened.intent);
       if (!request || abort.signal.aborted || active.get(scope) !== abort) return blocked("cancelled");
       try {
@@ -170,8 +188,8 @@ export function createAppSettingsActionController(dependencies: Readonly<{
         return Object.freeze({ kind: "succeeded", value });
       } catch (error) {
         if (abort.signal.aborted || active.get(scope) !== abort) return blocked("cancelled");
-        unresolved.add(scope);
         const adapted = adaptAPIError(error);
+        if (!knownNonAppliedAppRejection(opened.intent, error)) unresolved.add(scope);
         return ["network", "timeout", "unavailable", "protocol", "unknown"].includes(adapted.kind)
           ? Object.freeze({ kind: "outcome_unknown", nextAction: "inspect-audit" as const })
           : Object.freeze({ kind: "failed", error: adapted });
@@ -200,6 +218,21 @@ export function createAppSettingsActionController(dependencies: Readonly<{
       }
     },
   });
+}
+
+function knownNonAppliedAppRejection(intent: AppSettingsActionIntent, error: unknown) {
+  try {
+    if (typeof error !== "object" || error === null || Reflect.get(error, "name") !== "APIError") return false;
+    const status = Reflect.get(error, "status"), code = Reflect.get(error, "code");
+    if (status === 400 && code === "bad_request") return true;
+    // The guarded APP-01 store validates and checks this revision before the
+    // atomic application-settings/SMTP/Turnstile transaction can commit.
+    if (intent.id === "APP-01" && (status === 400 && code === "invalid_app_settings" || status === 409 && code === "revision_conflict")) return true;
+    // These APP-02 responses are emitted before the Mailer.Send boundary.
+    return intent.id === "APP-02" && (status === 400 && code === "invalid_email_recipient" || status === 409 && code === "smtp_not_configured");
+  } catch {
+    return false;
+  }
 }
 
 function validPayload(intent: AppSettingsActionIntent) {

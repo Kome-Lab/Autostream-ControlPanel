@@ -115,15 +115,22 @@ function useResourceConfirmation(
   const [opened, setOpened] = useState<AllowedResourceActionOpen | null>(null);
   const [dialogState, setDialogState] = useState<ConfirmationDialogState>({ kind: "ready" });
   const opening = useRef(false);
+  const dispatched = useRef(false);
+  const generation = useRef(0);
+  const scope = resourceActionScope(intent);
+
+  useEffect(() => () => {
+    generation.current += 1;
+    opening.current = false;
+    if (!dispatched.current) controller.cancel(intent);
+  }, [controller, scope]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const submit = useCallback(async (allowed: AllowedResourceActionOpen) => {
     setDialogState({ kind: "revalidating" });
-    await Promise.resolve();
-    setDialogState({ kind: "submitting" });
     const result = await controller.submit(allowed, {
       confirmed: true,
       ...(allowed.typedToken === undefined ? {} : { typedValue: allowed.typedToken }),
-    }, { onDispatch });
+    }, { onDispatch: () => { dispatched.current = true; setDialogState({ kind: "submitting" }); onDispatch?.(); } });
     onResult(result, allowed.intent);
     if (result.kind === "succeeded") {
       setOpened(null);
@@ -136,7 +143,10 @@ function useResourceConfirmation(
   const openIntent = useCallback(() => {
     if (opening.current) return;
     opening.current = true;
+    dispatched.current = false;
+    const requestedGeneration = ++generation.current;
     void controller.open(intent).then((result) => {
+      if (requestedGeneration !== generation.current) return;
       if (result.kind === "allowed") {
         setOpened(result);
         setDialogState({ kind: "ready" });
@@ -144,11 +154,13 @@ function useResourceConfirmation(
       }
       onResult(result, intent);
     }).finally(() => {
-      opening.current = false;
+      if (requestedGeneration === generation.current) opening.current = false;
     });
   }, [controller, intent, onResult]);
 
   const closeIntent = useCallback(() => {
+    generation.current += 1;
+    opening.current = false;
     controller.cancel(opened?.intent ?? intent);
     setOpened(null);
     setDialogState({ kind: "ready" });

@@ -1,17 +1,17 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useUpdaterHostBootstrapJobs } from "@/features/queries";
 import { apiGet } from "@/lib/api/client";
-import { activeUpdaterHostBootstrapStatus, isUpdaterHostBootstrapBulkCandidate, updaterHostBootstrapConfirmationContext, updaterHostBootstrapEligibility } from "@/lib/updater-bootstrap";
+import { activeUpdaterHostBootstrapStatus, isUpdaterHostBootstrapBulkCandidate, normalizeUpdaterHostBootstrapJobsResponse, updaterHostBootstrapConfirmationContext, updaterHostBootstrapEligibility } from "@/lib/updater-bootstrap";
 import { normalizeSystemUpdatesResponse } from "@/lib/system-updates";
-import { normalizeUpdaterSettingsResponse } from "@/lib/updater-settings-model";
-import type { SystemUpdateAgentStatus, UpdaterSettingsHost } from "@/types/domain";
+import { hasPermission } from "@/lib/auth/permissions";
+import { withBoundedActionRevalidation } from "@/lib/foundation/actions/bounded-revalidation";
+import type { CurrentUser, SystemUpdateAgentStatus, UpdaterSettingsHost } from "@/types/domain";
+import { readUpdaterSettingsAuthority } from "./application-authority-readers";
 import { latestBootstrapResults } from "./updater-bootstrap-job-state";
 
 
 export async function refreshBootstrapSubmissionSelection({
   selection: { updaterID, expectedRevision, expectedAppliedRevision, selectedHostIDs, currentHosts, selectionMode, confirmedContext },
-  bootstrapJobs,
-  queryClient,
   operationStillCurrent,
 }: {
   selection: { updaterID: string; expectedRevision: number; expectedAppliedRevision: number; selectedHostIDs: string[]; currentHosts: UpdaterSettingsHost[]; selectionMode: "single" | "bulk" | null; confirmedContext: string };
@@ -20,23 +20,21 @@ export async function refreshBootstrapSubmissionSelection({
   operationStillCurrent: () => boolean
 }): Promise<SystemUpdateAgentStatus | undefined> {
 
-      const [refreshedSystemUpdatesRaw, refreshedBootstrapJobs, refreshedSettingsRaw] = await Promise.all([
-        apiGet<unknown>("/system-updates"),
-        bootstrapJobs.refetch(),
-        apiGet<unknown>(`/system-updates/updaters/${encodeURIComponent(updaterID)}/settings`),
-      ]);
+      const [refreshedSystemUpdatesRaw, bootstrapJobsRaw, refreshedSettings, refreshedUser] = await withBoundedActionRevalidation((signal) => Promise.all([
+        apiGet<unknown>("/system-updates", signal),
+        apiGet<unknown>(`/system-updates/updaters/${encodeURIComponent(updaterID)}/bootstrap-jobs`, signal),
+        readUpdaterSettingsAuthority(updaterID, signal),
+        apiGet<CurrentUser>("/auth/me", signal),
+      ]));
       if (!operationStillCurrent()) return;
+      if (!hasPermission(refreshedUser, "system_updates.execute")) throw new Error("permission_denied");
       const refreshedSystemUpdates = normalizeSystemUpdatesResponse(refreshedSystemUpdatesRaw);
-      const refreshedSettings = normalizeUpdaterSettingsResponse(refreshedSettingsRaw, updaterID);
-      queryClient.setQueryData(["system-updates"], refreshedSystemUpdates);
-      queryClient.setQueryData(["system-updates", "updaters", updaterID, "settings"], refreshedSettings);
+      const refreshedBootstrapJobs = normalizeUpdaterHostBootstrapJobsResponse(bootstrapJobsRaw, updaterID);
       const refreshedUpdater = refreshedSystemUpdates.updaters.find((candidate) => candidate.updater_id === updaterID);
       if (
         !refreshedUpdater
         || refreshedSettings.revision !== expectedRevision
         || (refreshedSettings.projection_revision ?? refreshedSettings.revision) !== expectedAppliedRevision
-        || refreshedBootstrapJobs.isError
-        || !refreshedBootstrapJobs.data
       ) {
         throw new Error("updater_host_bootstrap_status_unavailable");
       }
@@ -54,8 +52,8 @@ export async function refreshBootstrapSubmissionSelection({
       ) {
         throw new Error("bootstrap_host_keys_unconfirmed");
       }
-      const refreshedLatestResults = latestBootstrapResults(refreshedBootstrapJobs.data.jobs, expectedRevision);
-      const refreshedActiveStatus = activeUpdaterHostBootstrapStatus(refreshedBootstrapJobs.data.jobs);
+      const refreshedLatestResults = latestBootstrapResults(refreshedBootstrapJobs.jobs, expectedRevision);
+      const refreshedActiveStatus = activeUpdaterHostBootstrapStatus(refreshedBootstrapJobs.jobs);
       const refreshedSelectionReady = selectedHostIDs.every((hostID) => {
         const currentHost = currentHosts.find((host) => host.host_id === hostID);
         const eligibility = updaterHostBootstrapEligibility({

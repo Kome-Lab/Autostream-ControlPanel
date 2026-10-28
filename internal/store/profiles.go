@@ -100,7 +100,7 @@ func (s *MemoryProfileStore) CreateProfile(ctx context.Context, kind ProfileKind
 	if err := validateProfileInput(kind, name, config); err != nil {
 		return Profile{}, err
 	}
-	now := time.Now().UTC()
+	now := time.Now().UTC().Truncate(time.Microsecond)
 	profile := Profile{ID: newUUID(), Kind: kind, Name: strings.TrimSpace(name), Config: copyConfig(config), CreatedAt: now, UpdatedAt: now}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -130,36 +130,7 @@ func (s *MemoryProfileStore) GetProfile(ctx context.Context, kind ProfileKind, i
 }
 
 func (s *MemoryProfileStore) UpdateProfile(ctx context.Context, kind ProfileKind, id, name string, config map[string]any) (Profile, error) {
-	if err := ctx.Err(); err != nil {
-		return Profile{}, err
-	}
-	if err := validateProfileInput(kind, name, config); err != nil {
-		return Profile{}, err
-	}
-	unlockRelayBindingOutput := s.lockRelayBindingOutputMutation(kind)
-	defer unlockRelayBindingOutput()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	profile, ok := s.profiles[id]
-	if !ok || profile.Kind != kind {
-		return Profile{}, ErrNotFound
-	}
-	if err := s.requireUnclaimedYouTubeOutputLocked(ctx, kind, id); err != nil {
-		return Profile{}, err
-	}
-	for existingID, existing := range s.profiles {
-		if existingID != id && existing.Kind == kind && existing.Name == strings.TrimSpace(name) {
-			return Profile{}, errors.New("profile name already exists")
-		}
-	}
-	profile.Name = strings.TrimSpace(name)
-	profile.Config = copyConfig(config)
-	if kind == ProfileYouTubeOutput {
-		profile.YouTubeRelayBindingRevision++
-	}
-	profile.UpdatedAt = time.Now().UTC()
-	s.profiles[id] = profile
-	return copyProfile(profile), nil
+	return s.UpdateProfileRevision(ctx, kind, id, ProfileUpdate{Name: name, Config: config}, nil)
 }
 
 func (s *MemoryProfileStore) DeleteProfile(ctx context.Context, kind ProfileKind, id string) error {
@@ -248,7 +219,7 @@ func (s MariaDBProfileStore) CreateProfile(ctx context.Context, kind ProfileKind
 	if err != nil {
 		return Profile{}, err
 	}
-	now := time.Now().UTC()
+	now := time.Now().UTC().Truncate(time.Microsecond)
 	profile := Profile{ID: newUUID(), Kind: kind, Name: strings.TrimSpace(name), Config: copyConfig(config), CreatedAt: now, UpdatedAt: now}
 	_, err = s.db.ExecContext(ctx, `INSERT INTO profiles (id, kind, name, config, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`, profile.ID, string(profile.Kind), profile.Name, string(body), profile.CreatedAt, profile.UpdatedAt)
 	if err != nil {
@@ -280,13 +251,14 @@ func (s MariaDBProfileStore) updateProfileAt(ctx context.Context, kind ProfileKi
 	if err != nil {
 		return Profile{}, err
 	}
-	query := `UPDATE profiles SET name = ?, config = ?, updated_at = ? WHERE id = ? AND kind = ?`
+	query := `UPDATE profiles SET name = ?, config = ?, updated_at = IF(updated_at>=?,TIMESTAMPADD(MICROSECOND,1,updated_at),?) WHERE id = ? AND kind = ?`
 	if kind == ProfileYouTubeOutput {
 		query = `UPDATE profiles
-SET name = ?, config = ?, updated_at = ?, youtube_relay_binding_revision = youtube_relay_binding_revision + 1
+SET name = ?, config = ?, updated_at = IF(updated_at>=?,TIMESTAMPADD(MICROSECOND,1,updated_at),?), youtube_relay_binding_revision = youtube_relay_binding_revision + 1
 WHERE id = ? AND kind = ?`
 	}
-	result, err := s.db.ExecContext(ctx, query, strings.TrimSpace(name), string(body), now, id, string(kind))
+	now = now.UTC().Truncate(time.Microsecond)
+	result, err := s.db.ExecContext(ctx, query, strings.TrimSpace(name), string(body), now, now, id, string(kind))
 	if err != nil {
 		if isYouTubeRelayBindingClaimProfileConstraintError(err) {
 			return Profile{}, ErrYouTubeRelayBindingClaimActive
@@ -335,6 +307,7 @@ func scanProfile(row profileScanner) (Profile, error) {
 		return Profile{}, err
 	}
 	profile.Kind = ProfileKind(kind)
+	profile.UpdatedAt = profile.UpdatedAt.UTC().Truncate(time.Microsecond)
 	_ = json.Unmarshal([]byte(config), &profile.Config)
 	if profile.Config == nil {
 		profile.Config = map[string]any{}

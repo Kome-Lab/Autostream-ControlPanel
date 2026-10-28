@@ -11,10 +11,22 @@ import { latestJobsByTarget, compareUpdateJobs, updateCanStart } from "./system-
 import { type PortReconfigureProposal } from "./application-operation-types";
 
 export function portControlKey(node: WorkerNode, target?: SystemUpdateTarget) {
+  return `${nodeIdentity(node)}:${target?.target_id || nodeIdentity(node)}`;
+}
+
+export function portConfigurationAuthorityKey(node: WorkerNode, target?: SystemUpdateTarget) {
   const mapping = target?.port_mapping;
   return [
     nodeIdentity(node),
+    target?.target_id || "",
+    target?.host_id || "",
+    target?.updater_id || "",
+    target?.port_policy_snapshot_id || "",
+    target?.applied_config_revision || 0,
+    target?.ownership_epoch || 0,
+    target?.local_listen_port || 0,
     node.endpoint_revision || 0,
+    node.applied_endpoint?.public_url || "",
     node.applied_endpoint?.port || 0,
     mapping?.state || "",
     mapping?.advertised_port || 0,
@@ -56,7 +68,6 @@ export function softwareUpdateAuthoritySnapshot(actionID: "UPD-01" | "UPD-02", t
       latestJob?.recovery_required,
       updater?.updater_id,
       updater?.online,
-      updater?.last_heartbeat_at,
       updater?.desired_revision,
       updater?.applied_revision,
       updater?.policy_status,
@@ -66,13 +77,12 @@ export function softwareUpdateAuthoritySnapshot(actionID: "UPD-01" | "UPD-02", t
       policy?.label,
       host?.host_id,
       host?.reachability,
-      host?.reachability_checked_at,
     ]),
   };
 }
 
 export function batchUpdateAuthoritySnapshot(targets: SystemUpdateTarget[], response?: SystemUpdatesResponse) {
-  const fingerprints = targets.map((target) => softwareUpdateAuthoritySnapshot(
+  const fingerprints = [...targets].sort((left, right) => left.target_id.localeCompare(right.target_id)).map((target) => softwareUpdateAuthoritySnapshot(
     isControlPanelUpdateTarget(target) ? "UPD-02" : "UPD-01",
     target,
     response,
@@ -147,7 +157,6 @@ export function portReconfigureAuthoritySnapshot({
       target?.port_mapping?.config_revision,
       updater?.updater_id,
       updater?.online,
-      updater?.last_heartbeat_at,
       updater?.desired_revision,
       updater?.applied_revision,
       updater?.policy_status,

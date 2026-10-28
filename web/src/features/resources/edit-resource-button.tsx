@@ -22,6 +22,8 @@ import { resourceWriteErrorMessage, resourceActionResultMessage } from "./resour
 import { requiredPermissionText } from "./resource-permissions";
 import { ResourceFormFields } from "./resource-form-fields";
 
+const timestampGuardedPaths = new Set(["/profiles/encoder", "/profiles/archive", "/profiles/caption", "/profiles/overlay", "/discord/configs", "/youtube/outputs", "/archive/destinations"]);
+
 export function EditResourceButton({ resource, row, disabled, controller }: { resource: ResourceDefinition; row: ResourceRow; disabled: boolean; controller: ResourceActionController }) {
   const uiText = useUICopy();
   const { t, locale } = useI18n();
@@ -30,7 +32,9 @@ export function EditResourceButton({ resource, row, disabled, controller }: { re
   const [message, setMessage] = useState("");
   const [pending, setPending] = useState<PendingResourceSubmission | null>(null);
   const [dispatching, setDispatching] = useState(false);
-  const id = resourceRowID(row);
+  const [baseline, setBaseline] = useState<ResourceRow | null>(null);
+  const editRow = baseline ?? row;
+  const id = resourceRowID(editRow);
   const copy = resourceCopy(resource, locale);
   const legacyMutation = useMutation<unknown, Error, Record<string, unknown>>({
     mutationFn: async (payload) => apiPut(`${resource.path}/${encodeURIComponent(id)}`, payload),
@@ -49,9 +53,15 @@ export function EditResourceButton({ resource, row, disabled, controller }: { re
   const draftExit = useDraftExit({ enabled: open && !disabled, pending: legacyMutation.isPending || Boolean(pending) || dispatching });
   const submit: SubmitResource = (payload, options) => {
     setMessage("");
+    const expectedUpdatedAt = editRow.updated_at;
+    if (timestampGuardedPaths.has(resource.path) && (typeof expectedUpdatedAt !== "string" || !expectedUpdatedAt)) {
+      setMessage(locale === "ja" ? "編集開始時の更新日時を確認できません。入力を保持しています。最新状態を確認してから再編集してください。" : "The edit's original update timestamp is unavailable. Your input is retained. Check the latest state, then edit again.");
+      return;
+    }
+    const guardedPayload = timestampGuardedPaths.has(resource.path) ? { ...payload, expected_updated_at: expectedUpdatedAt } : payload;
     const actionID = resourceActionID(resource.path, "update");
     if (!actionID) {
-      legacyMutation.mutate(payload);
+      legacyMutation.mutate(guardedPayload);
       options?.onSensitiveDispatched?.();
       return;
     }
@@ -59,7 +69,7 @@ export function EditResourceButton({ resource, row, disabled, controller }: { re
     if (options?.secretValue) {
       intents.push(Object.freeze({ id: "RES-13", payload: Object.freeze({ value: options.secretValue }), publicLabel: "Deepgram API key" }));
     }
-    intents.push(Object.freeze({ id: actionID, row: Object.freeze({ ...row }), payload: Object.freeze({ ...payload }), publicLabel: resourceRowLabel(row, uiText) }));
+    intents.push(Object.freeze({ id: actionID, row: Object.freeze({ ...editRow }), payload: Object.freeze({ ...guardedPayload }), publicLabel: resourceRowLabel(editRow, uiText) }));
     setPending({
       path: `${resource.path}/${encodeURIComponent(id)}`,
       invalidatePath: resource.path,
@@ -99,7 +109,10 @@ export function EditResourceButton({ resource, row, disabled, controller }: { re
   };
 
   return (
-    <DraftExitContext.Provider value={draftExit}><Dialog open={open} onOpenChange={(value) => { if (value) setOpen(true); else draftExit.request(() => setOpen(false)); }}>
+    <DraftExitContext.Provider value={draftExit}><Dialog open={open} onOpenChange={(value) => {
+      if (value) { setBaseline(Object.freeze({ ...row })); setOpen(true); }
+      else draftExit.request(() => { setOpen(false); setBaseline(null); });
+    }}>
       <DialogTrigger asChild>
           <Button variant="outline" size="icon-sm" disabled={!id || disabled} title={disabled ? requiredPermissionText(resource.permissions?.update, uiText) : undefined} aria-label={uiText("{0} を編集", resourceRowLabel(row, uiText))}>
           <Pencil className="size-4" />
@@ -110,7 +123,13 @@ export function EditResourceButton({ resource, row, disabled, controller }: { re
           <DialogTitle>{locale === "ja" ? copy.title + uiText("を編集") : "Edit " + copy.title}</DialogTitle>
           <DialogDescription>{resource.form === "user" ? uiText("ユーザー名、メールアドレス、割り当てロールを更新します。") : uiText("作成済みの設定をフォームで更新します。秘密情報は空欄のまま更新すると既存値を保持する項目があります。")}</DialogDescription>
         </DialogHeader>
-        <ResourceFormFields resource={resource} disabled={legacyMutation.isPending || Boolean(pending) || dispatching} submit={submit} initial={row} submitLabel={locale === "ja" ? uiText("更新") : "Update"} />
+        <ResourceFormFields resource={resource} disabled={legacyMutation.isPending || Boolean(pending) || dispatching} submit={submit} initial={editRow} submitLabel={locale === "ja" ? uiText("更新") : "Update"} />
+        {baseline && row.updated_at !== baseline.updated_at ? <p role="alert" className="text-sm text-destructive">{locale === "ja"
+          ? "この設定は別の操作で更新されています。入力は保持しています。最新状態を確認し、必要なら閉じて再編集してください。"
+          : "This setting changed in another operation. Your input is retained. Check the latest state, then close and edit again if needed."}</p> : null}
+        <Button type="button" variant="outline" disabled={legacyMutation.isPending || Boolean(pending) || dispatching} onClick={() => {
+          void queryClient.refetchQueries({ queryKey: ["resource", resource.path], exact: true });
+        }}>{locale === "ja" ? "最新状態を確認" : "Check latest state"}</Button>
         {message ? <p className="text-sm text-muted-foreground">{message}</p> : null}
         {pending ? (
           <ResourceActionConfirmationHost

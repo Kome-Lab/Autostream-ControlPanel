@@ -15,11 +15,13 @@ import { UpdaterActionConfirmation } from "@/features/application/updater-action
 import { createUpdaterActionController, updaterAuthorityFingerprint, type UpdaterActionAuthority, type UpdaterActionIntent } from "@/features/application/updater-action-policy";
 import { useCurrentUser, useUpdaterSettings } from "@/features/queries";
 import { apiGet } from "@/lib/api/client";
+import { withBoundedActionRevalidation } from "@/lib/foundation/actions/bounded-revalidation";
+import { readUpdaterSettingsAuthority } from "./application-authority-readers";
 import { hasPermission } from "@/lib/auth/permissions";
 import { pullUpdaterOwnershipActivationEligibility, pullUpdaterOwnershipActivationRequest, pullUpdaterOwnershipDeactivationEligibility, pullUpdaterOwnershipDeactivationRequest, pullOwnershipMutationFenceAdvanced } from "@/lib/updater-ownership";
 import { normalizeSystemUpdatesResponse } from "@/lib/system-updates";
 import { systemUpdateErrorMessage, systemUpdatePolicyErrorMessage, systemUpdateUpdaterPolicyState } from "@/lib/system-update-presentation";
-import type { PullUpdaterOwnershipActivationRequest, SystemUpdateAgentStatus, SystemUpdateJob, SystemUpdateTarget } from "@/types/domain";
+import type { CurrentUser, PullUpdaterOwnershipActivationRequest, SystemUpdateAgentStatus, SystemUpdateJob, SystemUpdateTarget, UpdaterSettings } from "@/types/domain";
 import { type PullOwnershipDeactivationAttempt } from "./updater-settings-form-model";
 import { ownershipActionAuthoritySnapshot, unavailableUpdaterAuthority, ownershipEligibilityMessage } from "./updater-settings-authority";
 import { OwnershipStateItem, UpdaterSettingsForm } from "./updater-settings-form";
@@ -189,31 +191,35 @@ export function UpdaterSettingsPanel({ updater, availableTargets, jobs, canEdit,
     applicability: snapshot.applicable ? "applicable" : "not-applicable",
     authorityFingerprint: snapshot.fingerprint,
   });
-  const refreshOwnershipAuthority = async (actionID: "UPD-06" | "UPD-07"): Promise<UpdaterActionAuthority> => {
-    const [systemUpdatesRaw, refreshedSettings, refreshedUser] = await Promise.all([
-      apiGet<unknown>("/system-updates"),
-      settings.refetch(),
-      currentUser.refetch(),
-    ]);
-    if (refreshedSettings.isError || !refreshedSettings.data || refreshedUser.isError || !refreshedUser.data) {
+  const refreshOwnershipAuthority = async (actionID: "UPD-06" | "UPD-07", signal?: AbortSignal): Promise<UpdaterActionAuthority> => {
+    let fresh: { updates: ReturnType<typeof normalizeSystemUpdatesResponse>; settings: UpdaterSettings; user: CurrentUser };
+    try {
+      fresh = await withBoundedActionRevalidation(async (readSignal) => {
+        const [updates, saved, user] = await Promise.all([
+          apiGet<unknown>("/system-updates", readSignal),
+          readUpdaterSettingsAuthority(updater.updater_id, readSignal),
+          apiGet<CurrentUser>("/auth/me", readSignal),
+        ]);
+        return { updates: normalizeSystemUpdatesResponse(updates), settings: saved, user };
+      }, signal);
+    } catch {
       return unavailableUpdaterAuthority(updaterAuthorityFingerprint([actionID, updater.updater_id, "unavailable"]));
     }
-    const systemUpdates = normalizeSystemUpdatesResponse(systemUpdatesRaw);
-    queryClient.setQueryData(["system-updates"], systemUpdates);
+    const systemUpdates = fresh.updates;
     const refreshedUpdater = systemUpdates.updaters.find((candidate) => candidate.updater_id === updater.updater_id);
     if (!refreshedUpdater) {
       return unavailableUpdaterAuthority(updaterAuthorityFingerprint([actionID, updater.updater_id, "missing"]));
     }
     const refreshedSettingsData = refreshedUpdater.transport_mode === "pull_v2"
-      ? { ...refreshedSettings.data, transport_mode: "pull_v2" as const, execution_host_id: refreshedUpdater.execution_host_id || "" }
-      : refreshedSettings.data;
+      ? { ...fresh.settings, transport_mode: "pull_v2" as const, execution_host_id: refreshedUpdater.execution_host_id || "" }
+      : fresh.settings;
     const activation = actionID === "UPD-06";
     const eligibility = activation
       ? pullUpdaterOwnershipActivationEligibility({ updater: refreshedUpdater, settings: refreshedSettingsData, jobs: systemUpdates.jobs, requestState: "idle" })
       : pullUpdaterOwnershipDeactivationEligibility({ updater: refreshedUpdater, settings: refreshedSettingsData, jobs: systemUpdates.jobs, requestState: "idle" });
     const snapshot = ownershipActionAuthoritySnapshot(actionID, refreshedUpdater, refreshedSettingsData, systemUpdates.jobs, eligibility.ready);
     return Object.freeze({
-      permission: hasPermission(refreshedUser.data, "system_updates.execute") ? "allowed" : "denied",
+      permission: hasPermission(fresh.user, "system_updates.execute") ? "allowed" : "denied",
       freshness: "fresh",
       applicability: snapshot.applicable ? "applicable" : "not-applicable",
       authorityFingerprint: snapshot.fingerprint,
@@ -306,7 +312,7 @@ export function UpdaterSettingsPanel({ updater, availableTargets, jobs, canEdit,
                   controller={updaterActionController}
                   intent={activationIntent}
                   authority={currentFoundationAuthority(activationSnapshot)}
-                  refreshAuthority={() => refreshOwnershipAuthority("UPD-06")}
+                  refreshAuthority={(signal) => refreshOwnershipAuthority("UPD-06", signal)}
                   handler={requestOwnershipActivation}
                   label={uiText("Host Agentへ切り替え")}
                   icon={activateOwnership.isPending ? <LoaderCircle className="size-4 animate-spin" /> : <KeyRound className="size-4" />}
@@ -321,7 +327,7 @@ export function UpdaterSettingsPanel({ updater, availableTargets, jobs, canEdit,
                   controller={updaterActionController}
                   intent={deactivationIntent}
                   authority={currentFoundationAuthority(deactivationSnapshot)}
-                  refreshAuthority={() => refreshOwnershipAuthority("UPD-07")}
+                  refreshAuthority={(signal) => refreshOwnershipAuthority("UPD-07", signal)}
                   handler={requestOwnershipDeactivation}
                   label={uiText("実行権限を解除")}
                   icon={deactivateOwnership.isPending ? <LoaderCircle className="size-4 animate-spin" /> : <KeyRound className="size-4" />}
@@ -357,7 +363,7 @@ export function UpdaterSettingsPanel({ updater, availableTargets, jobs, canEdit,
           </div>
         ) : settingsData ? (
           <UpdaterSettingsForm
-            key={`${settingsData.updater_id}:${settingsData.transport_mode}`}
+            key={settingsData.updater_id}
             updater={updater}
             availableTargets={availableTargets}
             settings={settingsData}

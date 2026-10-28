@@ -136,7 +136,7 @@ func validateMemoryCandidates(current, next Settings, update Update) error {
 	}
 	seen := map[string]bool{}
 	for _, candidate := range next.CoverCandidates {
-		if strings.TrimSpace(candidate.Name) == "" || len([]rune(candidate.Name)) > 128 || candidate.Source != "upload" && candidate.Source != "preset" || candidate.VariantID == "" || candidate.AssetID == "" || seen[candidate.VariantID] {
+		if strings.TrimSpace(candidate.Name) == "" || len([]rune(candidate.Name)) > 255 || candidate.Source != "upload" && candidate.Source != "preset" || candidate.VariantID == "" || candidate.AssetID == "" || seen[candidate.VariantID] {
 			return ErrInvalidSettings
 		}
 		seen[candidate.VariantID] = true

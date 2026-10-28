@@ -16,6 +16,7 @@ export type StreamCreateValues = {
   scheduledStartAt?: string;
   scheduledEndAt?: string;
   encoderInputURL?: string;
+  expectedSettingsRevision?: string;
 };
 
 export type StreamServiceAssignmentOption = {
@@ -84,7 +85,19 @@ export function buildStreamSettingsPayload(values: StreamCreateValues): Record<s
     scheduled_start_at: values.scheduledStartAt || "",
     scheduled_end_at: values.scheduledEndAt || "",
     encoder_input_url: values.encoderInputURL || "",
+    ...(values.expectedSettingsRevision === undefined ? {} : { expected_settings_revision: values.expectedSettingsRevision }),
   };
+}
+
+export type StreamCreateValidationIssue = Readonly<{ field: "name" | "schedule"; code: "name_required" | "name_too_long" | "name_invalid" | "schedule_time_invalid" }>;
+
+export function validateStreamCreateValues(values: Pick<StreamCreateValues, "name" | "scheduledStartAt">): readonly StreamCreateValidationIssue[] {
+  const issues: StreamCreateValidationIssue[] = [];
+  if (!values.name.trim()) issues.push({ field: "name", code: "name_required" });
+  else if ([...values.name.trim()].length > 255) issues.push({ field: "name", code: "name_too_long" });
+  else if (/[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028-\u202e\u2066-\u2069]/u.test(values.name)) issues.push({ field: "name", code: "name_invalid" });
+  if (values.scheduledStartAt && !Number.isFinite(Date.parse(values.scheduledStartAt))) issues.push({ field: "schedule", code: "schedule_time_invalid" });
+  return issues;
 }
 
 function compactRecord(record: Record<string, unknown>) {

@@ -40,6 +40,7 @@ const editorSource = readFileSync(new URL("../src/features/streams/stream-visual
 const panelSource = readFileSync(new URL("../src/features/streams/stream-control-platform-panel.tsx", import.meta.url), "utf8");
 const { mediaAssetBelongsToDraft } = await import("../src/features/streams/media-asset-status.ts");
 const { adaptAPIError } = await import("../src/lib/foundation/api-errors/adapter.ts");
+const { APIError } = await import("../src/lib/api/client.ts");
 
 test("new preset candidates use their preset authority until the stream snapshot is saved", () => {
   const candidate = { name: "Shared", source: "preset" as const, preset_id: "preset-one", preset_revision: 7, asset_id: "shared-asset", variant_id: "shared-variant" };
@@ -174,7 +175,7 @@ test("custom scene and Cover expose capability-blocked readiness without fallbac
   assert.match(warnings[1], /live_video_cover_v1/);
 });
 
-test("visual settings controller revalidates authority and latches failures without resend", async () => {
+test("visual settings controller revalidates authority and distinguishes definite rejection from uncertain failure", async () => {
   let stateCalls = 0;
   let requests = 0;
   const changed = createStreamVisualActionController({
@@ -188,13 +189,23 @@ test("visual settings controller revalidates authority and latches failures with
   const conflict = createStreamVisualActionController({
     getPermission: () => ({ kind: "ready", permissions: ["*"] }),
     getState: () => ({ kind: "ready", freshness: "fresh", revision: 4, fingerprint: "r4" }),
-    mutate: async () => { requests++; throw Object.assign(new Error(), { name: "APIError", status: 409, code: "revision_conflict" }); },
+    mutate: async () => { requests++; throw new APIError("Conflict", 409, "revision_conflict"); },
   });
   assert.equal((await conflict.issue({ header_title_mode: "default" }, 4)).kind, "failed");
-  assert.equal((await conflict.issue({ header_title_mode: "default" }, 4)).kind, "blocked");
-  assert.equal(requests, 1);
-  conflict.reconcile();
   assert.equal(conflict.unresolved, false);
+  assert.equal((await conflict.issue({ header_title_mode: "default" }, 4)).kind, "failed");
+  assert.equal(requests, 2, "a definite rolled-back rejection permits a deliberate corrected attempt");
+
+  const unknown = createStreamVisualActionController({
+    getPermission: () => ({ kind: "ready", permissions: ["*"] }),
+    getState: () => ({ kind: "ready", freshness: "fresh", revision: 4, fingerprint: "r4" }),
+    mutate: async () => { requests++; throw Object.assign(new Error(), { name: "APIError", status: 409, code: "revision_conflict" }); },
+  });
+  assert.equal((await unknown.issue({ header_title_mode: "default" }, 4)).kind, "failed");
+  assert.equal(unknown.unresolved, true, "an unvalidated structural error must not become a definite rejection");
+  assert.equal(unknown.reconcile(), false, "a no-argument refresh cannot prove an uncertain write");
+  assert.equal((await unknown.issue({ header_title_mode: "default" }, 4)).kind, "blocked");
+  assert.equal(requests, 3, "the uncertain request is never sent twice");
 });
 
 test("visual save never rebases an older displayed draft onto a newer cache revision", async () => {

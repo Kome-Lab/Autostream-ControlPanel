@@ -24,7 +24,7 @@ import { useAppSettings, useCurrentUser, useResourceData, useStreams } from "@/f
 import { createStreamActionController, type StreamActionExecutionResult } from "@/features/streams/stream-action-controller";
 import type { StreamActionIntent } from "@/features/streams/stream-action-descriptors";
 import { streamActionBlockedMessage, streamActionLabel } from "@/features/streams/stream-action-feedback";
-import { cacheStreamActionResponse, mutateStreamAction, readStreamStopOutcome, refreshStreamActionAuthority, streamActionStateSnapshot, streamPermissionSnapshot } from "@/features/streams/stream-action-runtime";
+import { cacheStreamActionResponse, mutateStreamAction, readStreamStopOutcome, refreshStreamActionAuthority, revalidateStreamActionAuthority, streamActionStateSnapshot, streamPermissionSnapshot } from "@/features/streams/stream-action-runtime";
 import { StreamDetailsDialog } from "@/features/streams/stream-details-dialog";
 import { readinessResult, type StreamOperationNotice } from "./stream-detail-operations";
 import { StreamSlotForm } from "@/features/streams/stream-slot-form";
@@ -69,6 +69,7 @@ export function StreamsView() {
   const actionController = useMemo(() => createStreamActionController({
     getPermissions: () => streamPermissionSnapshot(queryClient),
     getState: (intent) => streamActionStateSnapshot(queryClient, intent),
+    revalidate: (intent, signal) => revalidateStreamActionAuthority(queryClient, intent, signal),
     mutate: mutateStreamAction,
     readStopOutcome: (intent) => readStreamStopOutcome(queryClient, intent),
   }), [queryClient]);
@@ -141,9 +142,9 @@ export function StreamsView() {
     return () => { window.removeEventListener("hashchange", syncFromHash); navigation?.removeEventListener("navigate", invalidateClose); releaseFocus?.(); };
   }, [canCreate, createDraftExit, requestCreateOpen]);
   useEffect(() => { if (!canCreate) { createFocus.current?.cancel(); createFocus.current = null; createTrigger.current = null; } }, [canCreate]);
-  const handleStreamActionResult = useCallback((result: StreamActionExecutionResult, intent: StreamActionIntent) => {
+  const handleStreamActionResult = useCallback(async (result: StreamActionExecutionResult, intent: StreamActionIntent) => {
     if (result.kind === "succeeded") {
-      cacheStreamActionResponse(queryClient, intent, result.value);
+      await cacheStreamActionResponse(queryClient, intent, result.value);
       if (intent.stream) setCreatedStreams((current) => current.filter((stream) => stream.id !== intent.stream?.id));
       if (intent.id === "STR-10" && intent.stream) {
         setSelectedStream((current)=>current?.id===intent.stream?.id?null:current);
@@ -160,9 +161,11 @@ export function StreamsView() {
     if (result.kind === "outcome_unknown") {
       setActionNotice({ tone: "error", streamID: intent.stream?.id, message: uiText("操作結果を確認できません。再送せず、配信枠の最新状態または監査ログを確認してください。") });
     } else if (result.kind === "failed") {
-      setActionNotice({ tone: "error", streamID: intent.stream?.id, message: uiText("{0} 再送せず、最新状態を確認してください。", t(result.error.messageKey)) });
+      setActionNotice({ tone: "error", streamID: intent.stream?.id, message: result.retryAfterCorrection
+        ? uiText("{0} 入力内容を保持しています。該当項目を修正して保存してください。", t(result.error.messageKey))
+        : uiText("{0} 再送せず、最新状態を確認してください。", t(result.error.messageKey)) });
     } else {
-      setActionNotice({ tone: "error", streamID: intent.stream?.id, message: streamActionBlockedMessage(result.reason, uiText) });
+      setActionNotice({ tone: "error", streamID: intent.stream?.id, message: streamActionBlockedMessage(result.reason, uiText, result) });
     }
     if (result.kind === "failed" && intent.id === "STR-08") {
       // The control clears its latch only when both permission and resource

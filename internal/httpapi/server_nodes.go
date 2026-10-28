@@ -31,17 +31,27 @@ func (s *Server) updateNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Name        *string `json:"name"`
-		ServiceName *string `json:"service_name"`
-		Description *string `json:"description"`
-		Host        *string `json:"host"`
-		Port        *int    `json:"port"`
-		SSLEnabled  *bool   `json:"ssl_enabled"`
-		PublicURL   *string `json:"public_url"`
+		Name                     *string         `json:"name"`
+		ServiceName              *string         `json:"service_name"`
+		Description              *string         `json:"description"`
+		Host                     *string         `json:"host"`
+		Port                     *int            `json:"port"`
+		SSLEnabled               *bool           `json:"ssl_enabled"`
+		PublicURL                *string         `json:"public_url"`
+		ExpectedMetadataRevision json.RawMessage `json:"expected_metadata_revision"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
 		return
+	}
+	var expectedMetadataRevision *string
+	if body.ExpectedMetadataRevision != nil {
+		var revision string
+		if json.Unmarshal(body.ExpectedMetadataRevision, &revision) != nil || !store.ValidServiceMetadataRevision(revision) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_metadata_revision"})
+			return
+		}
+		expectedMetadataRevision = &revision
 	}
 	s.systemUpdateOperationMu.Lock()
 	defer s.systemUpdateOperationMu.Unlock()
@@ -117,22 +127,57 @@ func (s *Server) updateNode(w http.ResponseWriter, r *http.Request) {
 		preserveEndpoint = sameNodeEndpoint(existing, host, port, sslEnabled, publicURL)
 		if !preserveEndpoint {
 			managed, ownershipErr := s.activePullManagedSystemdTarget(r.Context(), existing)
-			if ownershipErr != nil || managed {
+			if ownershipErr != nil {
+				if expectedMetadataRevision != nil {
+					writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "node_endpoint_ownership_unavailable"})
+				} else {
+					writeJSON(w, http.StatusConflict, map[string]string{"code": "node_endpoint_managed_by_updater"})
+				}
+				return
+			}
+			if managed {
 				writeJSON(w, http.StatusConflict, map[string]string{"code": "node_endpoint_managed_by_updater"})
 				return
 			}
 		}
 	}
-	updated, err := s.services.UpdateServiceMetadata(r.Context(), existing.ServiceID, store.ServiceMetadataUpdate{
-		ServiceName:      serviceName,
-		Description:      description,
-		Host:             host,
-		Port:             port,
-		SSLEnabled:       sslEnabled,
-		PublicURL:        publicURL,
-		Endpointless:     endpointless,
-		PreserveEndpoint: preserveEndpoint,
-	})
+	update := store.ServiceMetadataUpdate{
+		ExpectedMetadataRevision: expectedMetadataRevision,
+		ServiceName:              serviceName,
+		Description:              description,
+		Host:                     host,
+		Port:                     port,
+		SSLEnabled:               sslEnabled,
+		PublicURL:                publicURL,
+		Endpointless:             endpointless,
+		PreserveEndpoint:         preserveEndpoint,
+	}
+	var updated store.RegisteredService
+	if expectedMetadataRevision != nil && !endpointless && !preserveEndpoint {
+		coordinator, coordinatorOK := s.services.(store.ServiceMetadataEndpointOwnershipStore)
+		ownerships, ownershipsOK := s.systemUpdates.(store.SystemUpdateExecutionHostStore)
+		if !coordinatorOK || !ownershipsOK {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "node_endpoint_ownership_unavailable"})
+			return
+		}
+		updated, err = coordinator.UpdateServiceMetadataWithEndpointOwnership(r.Context(), s.updaterPolicies, ownerships, existing.ServiceID, update)
+	} else {
+		// Legacy omitted-stamp callers retain their existing preliminary guard.
+		// Name/description and exact endpoint no-ops need only the service-row CAS.
+		updated, err = s.services.UpdateServiceMetadata(r.Context(), existing.ServiceID, update)
+	}
+	if errors.Is(err, store.ErrServiceEndpointOwnershipUnavailable) {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "node_endpoint_ownership_unavailable"})
+		return
+	}
+	if errors.Is(err, store.ErrServiceEndpointManagedByUpdater) {
+		writeJSON(w, http.StatusConflict, map[string]string{"code": "node_endpoint_managed_by_updater"})
+		return
+	}
+	if errors.Is(err, store.ErrRevisionConflict) {
+		writeJSON(w, http.StatusConflict, map[string]string{"code": "node_metadata_conflict"})
+		return
+	}
 	if errors.Is(err, store.ErrNotFound) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
 		return

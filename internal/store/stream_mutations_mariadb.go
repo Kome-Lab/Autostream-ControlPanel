@@ -182,7 +182,7 @@ func (s MariaDBStreamStore) UpdateStreamSettings(ctx context.Context, id string,
 	}
 	defer tx.Rollback()
 	var streamID string
-	err = tx.QueryRowContext(ctx, `SELECT id FROM streams WHERE id = ? FOR UPDATE`, id).Scan(&streamID)
+	err = tx.QueryRowContext(ctx, `SELECT id FROM streams WHERE id = ? AND deleted_at IS NULL FOR UPDATE`, id).Scan(&streamID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Stream{}, ErrNotFound
 	}
@@ -216,11 +216,18 @@ func UpsertStreamSettingsTx(ctx context.Context, tx *sql.Tx, id string, settings
 	if tx == nil || strings.TrimSpace(id) == "" {
 		return ErrNotFound
 	}
-	now = now.UTC()
+	previous, err := streamSettingsTimeTx(ctx, tx, id)
+	if err != nil {
+		return err
+	}
+	if err := MatchStreamSettingsRevision(settings.ExpectedSettingsRevision, StreamSettingsRevisionFromTime(previous)); err != nil {
+		return err
+	}
+	now = nextStreamSettingsTime(previous, now)
 	if _, err := tx.ExecContext(ctx, `UPDATE streams SET name = COALESCE(NULLIF(?, ''), name), scheduled_start_at = ?, scheduled_end_at = ?, updated_at = ? WHERE id = ?`, strings.TrimSpace(settings.Name), nullableTime(settings.ScheduledStartAt), nullableTime(settings.ScheduledEndAt), now, id); err != nil {
 		return err
 	}
-	_, err := tx.ExecContext(ctx, `INSERT INTO stream_settings (stream_id, discord_config_id, auto_start_trigger, encoder_profile_id, caption_profile_id, overlay_profile_id, encoder_audio_gain_db, archive_profile_id, archive_drive_destination_id, archive_oauth_account_id, archive_shared_drive, archive_shared_drive_id, archive_file_name, youtube_output_id, encoder_input_url, updated_at)
+	_, err = tx.ExecContext(ctx, `INSERT INTO stream_settings (stream_id, discord_config_id, auto_start_trigger, encoder_profile_id, caption_profile_id, overlay_profile_id, encoder_audio_gain_db, archive_profile_id, archive_drive_destination_id, archive_oauth_account_id, archive_shared_drive, archive_shared_drive_id, archive_file_name, youtube_output_id, encoder_input_url, updated_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON DUPLICATE KEY UPDATE discord_config_id = VALUES(discord_config_id), auto_start_trigger = VALUES(auto_start_trigger), encoder_profile_id = VALUES(encoder_profile_id), caption_profile_id = VALUES(caption_profile_id), overlay_profile_id = VALUES(overlay_profile_id), encoder_audio_gain_db = VALUES(encoder_audio_gain_db), archive_profile_id = VALUES(archive_profile_id), archive_drive_destination_id = VALUES(archive_drive_destination_id), archive_oauth_account_id = VALUES(archive_oauth_account_id), archive_shared_drive = VALUES(archive_shared_drive), archive_shared_drive_id = VALUES(archive_shared_drive_id), archive_file_name = VALUES(archive_file_name), youtube_output_id = VALUES(youtube_output_id), encoder_input_url = VALUES(encoder_input_url), updated_at = VALUES(updated_at)`,
 		id, nullEmpty(settings.DiscordConfigID), strings.TrimSpace(settings.AutoStartTrigger), nullEmpty(settings.EncoderProfileID), nullEmpty(settings.CaptionProfileID), nullEmpty(settings.OverlayProfileID), settings.EncoderAudioGainDB, nullEmpty(settings.ArchiveProfileID), nullEmpty(settings.ArchiveDriveDestinationID), nullEmpty(settings.ArchiveOAuthAccountID), settings.ArchiveSharedDrive, nullEmpty(settings.ArchiveSharedDriveID), nullEmpty(settings.ArchiveFileName), nullEmpty(settings.YouTubeOutputID), nullEmpty(settings.EncoderInputURL), now)
@@ -228,25 +235,36 @@ ON DUPLICATE KEY UPDATE discord_config_id = VALUES(discord_config_id), auto_star
 }
 
 func (s MariaDBStreamStore) UpdateStreamEncoderRuntimeSettings(ctx context.Context, id string, audioGainDB float64, overlayProfileID string) (Stream, error) {
+	return s.UpdateStreamEncoderRuntimeSettingsRevision(ctx, id, audioGainDB, overlayProfileID, nil)
+}
+
+func (s MariaDBStreamStore) UpdateStreamEncoderRuntimeSettingsRevision(ctx context.Context, id string, audioGainDB float64, overlayProfileID string, expectedRevision *string) (Stream, error) {
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return Stream{}, ErrNotFound
 	}
-	now := time.Now().UTC()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Stream{}, err
 	}
 	defer tx.Rollback()
-	result, err := tx.ExecContext(ctx, `UPDATE streams SET updated_at = ? WHERE id = ?`, now, id)
+	var streamID string
+	if err = tx.QueryRowContext(ctx, `SELECT id FROM streams WHERE id = ? AND deleted_at IS NULL FOR UPDATE`, id).Scan(&streamID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Stream{}, ErrNotFound
+		}
+		return Stream{}, err
+	}
+	previous, err := streamSettingsTimeTx(ctx, tx, id)
 	if err != nil {
 		return Stream{}, err
 	}
-	if affected, err := result.RowsAffected(); err != nil || affected == 0 {
-		if err != nil {
-			return Stream{}, err
-		}
-		return Stream{}, ErrNotFound
+	if err := MatchStreamSettingsRevision(expectedRevision, StreamSettingsRevisionFromTime(previous)); err != nil {
+		return Stream{}, err
+	}
+	now := nextStreamSettingsTime(previous, time.Now())
+	if _, err = tx.ExecContext(ctx, `UPDATE streams SET updated_at = ? WHERE id = ?`, now, id); err != nil {
+		return Stream{}, err
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO stream_settings (stream_id, overlay_profile_id, encoder_audio_gain_db, updated_at)
 VALUES (?, ?, ?, ?)

@@ -47,8 +47,11 @@ func (s *MemoryStreamStore) UpdateStreamSettings(ctx context.Context, id string,
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	stream, ok := s.streams[id]
-	if !ok {
+	if !ok || stream.DeletedAt != nil {
 		return Stream{}, ErrNotFound
+	}
+	if err := MatchStreamSettingsRevision(settings.ExpectedSettingsRevision, stream.SettingsRevision); err != nil {
+		return Stream{}, err
 	}
 	for _, claim := range s.youtubeRelayBindingClaims {
 		if claim.StreamID == id && claim.YouTubeOutputID != strings.TrimSpace(settings.YouTubeOutputID) {
@@ -81,23 +84,34 @@ func applyMemoryStreamSettings(stream Stream, settings StreamSettings) Stream {
 	stream.ArchiveFolderIDConfigured = stream.ArchiveDriveDestinationID != ""
 	stream.YouTubeOutputID = strings.TrimSpace(settings.YouTubeOutputID)
 	stream.EncoderInputURL = strings.TrimSpace(settings.EncoderInputURL)
-	stream.UpdatedAt = time.Now().UTC()
+	previous, _ := time.Parse(time.RFC3339Nano, stream.SettingsRevision)
+	stream.UpdatedAt = nextStreamSettingsTime(previous, time.Now())
+	stream.SettingsRevision = StreamSettingsRevisionFromTime(stream.UpdatedAt)
 	return stream
 }
 
 func (s *MemoryStreamStore) UpdateStreamEncoderRuntimeSettings(ctx context.Context, id string, audioGainDB float64, overlayProfileID string) (Stream, error) {
+	return s.UpdateStreamEncoderRuntimeSettingsRevision(ctx, id, audioGainDB, overlayProfileID, nil)
+}
+
+func (s *MemoryStreamStore) UpdateStreamEncoderRuntimeSettingsRevision(ctx context.Context, id string, audioGainDB float64, overlayProfileID string, expectedRevision *string) (Stream, error) {
 	if err := ctx.Err(); err != nil {
 		return Stream{}, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	stream, ok := s.streams[strings.TrimSpace(id)]
-	if !ok {
+	if !ok || stream.DeletedAt != nil {
 		return Stream{}, ErrNotFound
+	}
+	if err := MatchStreamSettingsRevision(expectedRevision, stream.SettingsRevision); err != nil {
+		return Stream{}, err
 	}
 	stream.EncoderAudioGainDB = audioGainDB
 	stream.OverlayProfileID = strings.TrimSpace(overlayProfileID)
-	stream.UpdatedAt = time.Now().UTC()
+	previous, _ := time.Parse(time.RFC3339Nano, stream.SettingsRevision)
+	stream.UpdatedAt = nextStreamSettingsTime(previous, time.Now())
+	stream.SettingsRevision = StreamSettingsRevisionFromTime(stream.UpdatedAt)
 	s.streams[stream.ID] = stream
 	return stream, nil
 }

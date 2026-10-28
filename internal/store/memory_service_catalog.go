@@ -68,9 +68,22 @@ func (s *MemoryAuthStore) UpdateServiceMetadata(ctx context.Context, serviceID s
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.updateServiceMetadataLocked(serviceID, update)
+}
+
+// updateServiceMetadataLocked requires s.mu and a normalized, validated update.
+func (s *MemoryAuthStore) updateServiceMetadataLocked(serviceID string, update ServiceMetadataUpdate) (RegisteredService, error) {
 	svc, ok := s.services[serviceID]
 	if !ok {
 		return RegisteredService{}, ErrNotFound
+	}
+	if update.ExpectedMetadataRevision != nil {
+		if !ValidServiceMetadataRevision(*update.ExpectedMetadataRevision) {
+			return RegisteredService{}, ErrInvalidServiceRegistration
+		}
+		if *update.ExpectedMetadataRevision != ServiceMetadataRevision(svc) {
+			return RegisteredService{}, ErrRevisionConflict
+		}
 	}
 	if update.Endpointless && (svc.ServiceType != "update_agent" || svc.TransportMode != "pull_v2") {
 		return RegisteredService{}, ErrInvalidServiceRegistration

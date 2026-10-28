@@ -32,8 +32,9 @@ func (s *MemoryIntegrationStore) CreateDriveDestination(ctx context.Context, des
 		return DriveDestination{}, err
 	}
 	destination.ID = newUUID()
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := resourceUpdatedAt(time.Now().UTC())
 	destination.CreatedAt, destination.UpdatedAt = now, now
+	destination.ExpectedUpdatedAt = nil
 	destination.FolderIDConfigured = destination.FolderID != ""
 	destination.FolderIDFingerprint = security.SecretFingerprint(destination.FolderID)
 	destination.MaskedFolderID = maskIdentifier(destination.FolderID)
@@ -43,6 +44,9 @@ func (s *MemoryIntegrationStore) CreateDriveDestination(ctx context.Context, des
 		if strings.EqualFold(existing.Name, destination.Name) {
 			return DriveDestination{}, errors.New("drive destination name already exists")
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return DriveDestination{}, err
 	}
 	s.destinations[destination.ID] = destination
 	return publicDriveDestination(destination), nil
@@ -78,6 +82,9 @@ func (s *MemoryIntegrationStore) UpdateDriveDestination(ctx context.Context, des
 	if err := ctx.Err(); err != nil {
 		return DriveDestination{}, err
 	}
+	if err := validateExpectedResourceUpdatedAt(destination.ExpectedUpdatedAt); err != nil {
+		return DriveDestination{}, err
+	}
 	destination, err := normalizeDriveDestination(destination, false)
 	if err != nil {
 		return DriveDestination{}, err
@@ -87,6 +94,13 @@ func (s *MemoryIntegrationStore) UpdateDriveDestination(ctx context.Context, des
 	existing, ok := s.destinations[destination.ID]
 	if !ok {
 		return DriveDestination{}, ErrNotFound
+	}
+	previous, err := time.Parse(time.RFC3339Nano, existing.UpdatedAt)
+	if err != nil {
+		return DriveDestination{}, ErrInvalidResourceRevision
+	}
+	if err := matchExpectedResourceUpdatedAt(destination.ExpectedUpdatedAt, previous); err != nil {
+		return DriveDestination{}, err
 	}
 	for id, item := range s.destinations {
 		if id != destination.ID && strings.EqualFold(item.Name, destination.Name) {
@@ -104,7 +118,11 @@ func (s *MemoryIntegrationStore) UpdateDriveDestination(ctx context.Context, des
 		destination.MaskedFolderID = maskIdentifier(destination.FolderID)
 	}
 	destination.CreatedAt = existing.CreatedAt
-	destination.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	destination.UpdatedAt = resourceUpdatedAt(nextResourceUpdatedAt(previous, time.Now().UTC()))
+	destination.ExpectedUpdatedAt = nil
+	if err := ctx.Err(); err != nil {
+		return DriveDestination{}, err
+	}
 	s.destinations[destination.ID] = destination
 	return publicDriveDestination(destination), nil
 }

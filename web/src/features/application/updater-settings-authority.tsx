@@ -25,7 +25,6 @@ export function ownershipActionAuthoritySnapshot(
       updater.execution_host_id,
       updater.ownership_epoch,
       updater.online,
-      updater.last_heartbeat_at,
       updater.desired_revision,
       updater.applied_revision,
       updater.policy_status,
@@ -40,7 +39,6 @@ export function ownershipActionAuthoritySnapshot(
       ownership?.policy_revision,
       activation?.ready,
       activation?.status,
-      activation?.last_heartbeat_at,
       activation?.observe_only,
       activation?.update_executor,
       activation?.mutation_enabled,
@@ -66,7 +64,7 @@ export function updaterSettingsFormFingerprint(
     form.localExecutorPolicySHA256,
     deleteGitHubToken,
     githubTokenPresent,
-    ...form.hosts.flatMap((host) => [
+    ...[...form.hosts].sort((left, right) => left.host_id.localeCompare(right.host_id)).flatMap((host) => [
       host.host_id,
       host.name,
       host.address,
@@ -75,7 +73,7 @@ export function updaterSettingsFormFingerprint(
       host.arch,
       host.host_public_key,
     ]),
-    ...form.targets.flatMap((target) => [
+    ...[...form.targets].sort((left, right) => left.target_id.localeCompare(right.target_id)).flatMap((target) => [
       target.target_id,
       target.service_id,
       target.host_id,

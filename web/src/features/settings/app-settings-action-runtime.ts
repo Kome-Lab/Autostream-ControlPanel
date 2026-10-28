@@ -17,7 +17,6 @@ const queryKey = ["settings", "app", "manage"] as const;
 export function appSettingsPermissionSnapshot(queryClient: QueryClient): PermissionSnapshot {
   const state = queryClient.getQueryState<CurrentUser>(["auth", "me"]);
   const value = queryClient.getQueryData<CurrentUser>(["auth", "me"]);
-  if (state?.fetchStatus === "fetching") return Object.freeze({ kind: "refreshing" });
   return state?.status === "success" && value && Array.isArray(value.permissions)
     ? Object.freeze({ kind: "ready", permissions: Object.freeze([...value.permissions]) })
     : Object.freeze({ kind: "unavailable" });
@@ -26,9 +25,7 @@ export function appSettingsPermissionSnapshot(queryClient: QueryClient): Permiss
 export function appSettingsStateSnapshot(queryClient: QueryClient): AppSettingsActionState {
   const state = queryClient.getQueryState<ManagedAppSettings>(queryKey);
   const data = queryClient.getQueryData<ManagedAppSettings>(queryKey);
-  const freshness = state?.fetchStatus === "fetching"
-    ? "refreshing" as const
-    : state?.status === "error" && data
+  const freshness = state?.status === "error" && data
       ? "stale" as const
       : state?.status === "success" && data
         ? "fresh" as const
@@ -38,11 +35,17 @@ export function appSettingsStateSnapshot(queryClient: QueryClient): AppSettingsA
     : Object.freeze({ kind: "unknown", freshness });
 }
 
-export async function refreshAppSettingsAction(queryClient: QueryClient): Promise<AppSettingsActionAuthority> {
+export async function refreshAppSettingsAction(queryClient: QueryClient, signal?: AbortSignal): Promise<AppSettingsActionAuthority> {
   const [settings, currentUser] = await Promise.all([
-    apiGet<ManagedAppSettings>("/settings/app/manage"),
-    apiGet<CurrentUser>("/auth/me"),
+    apiGet<ManagedAppSettings>("/settings/app/manage", signal),
+    apiGet<CurrentUser>("/auth/me", signal),
   ]);
+  if (signal?.aborted) throw signal.reason;
+  await Promise.all([
+    queryClient.cancelQueries({ queryKey, exact: true }),
+    queryClient.cancelQueries({ queryKey: ["auth", "me"], exact: true }),
+  ]);
+  if (signal?.aborted) throw signal.reason;
   queryClient.setQueryData(queryKey, settings);
   queryClient.setQueryData(["auth", "me"], currentUser);
   return Object.freeze({
@@ -56,12 +59,12 @@ export async function refreshAppSettingsAction(queryClient: QueryClient): Promis
 export async function mutateAppSettingsAction(request: AppSettingsActionRequest & Readonly<{ signal: AbortSignal }>) {
   if (request.signal.aborted) throw new DOMException("Cancelled", "AbortError");
   return request.method === "PUT"
-    ? apiPut<unknown>(request.path, request.body)
-    : apiPost<unknown>(request.path, request.body);
+    ? apiPut<unknown>(request.path, request.body, request.signal)
+    : apiPost<unknown>(request.path, request.body, request.signal);
 }
 
-export function appSettingsIntent(id: AppSettingsActionIntent["id"], payload: Record<string, unknown>): AppSettingsActionIntent {
-  return Object.freeze({ id, payload: Object.freeze({ ...payload }) });
+export function appSettingsIntent(id: AppSettingsActionIntent["id"], payload: Record<string, unknown>, baselineFingerprint?: string): AppSettingsActionIntent {
+  return Object.freeze({ id, payload: Object.freeze({ ...payload }), ...(baselineFingerprint === undefined ? {} : { baselineFingerprint }) });
 }
 
 export function managedAppSettingsRemoteState(query: Readonly<{
@@ -81,7 +84,7 @@ export function managedAppSettingsRemoteState(query: Readonly<{
   return projectRemoteState(snapshot, { classifyData: () => "ready" });
 }
 
-function settingsFingerprint(settings: ManagedAppSettings) {
+export function settingsFingerprint(settings: ManagedAppSettings) {
   const value = settings as ManagedAppSettings & Record<string, unknown>;
   const safe: Record<string, unknown> = {};
   for (const key of [

@@ -108,8 +108,9 @@ func (s *Server) getProfile(kind store.ProfileKind) http.HandlerFunc {
 func (s *Server) updateProfile(kind store.ProfileKind, action string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			Name   string         `json:"name"`
-			Config map[string]any `json:"config"`
+			ExpectedUpdatedAt json.RawMessage `json:"expected_updated_at,omitempty"`
+			Name              string          `json:"name"`
+			Config            map[string]any  `json:"config"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
@@ -119,7 +120,18 @@ func (s *Server) updateProfile(kind store.ProfileKind, action string) http.Handl
 		if !s.validateProfileSecretReferences(w, kind, body.Config) {
 			return
 		}
-		profile, err := s.profiles.UpdateProfile(r.Context(), kind, r.PathValue("id"), body.Name, body.Config)
+		if strings.TrimSpace(body.Name) == "" || body.Config == nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
+			return
+		}
+		expected, err := parseExpectedUpdatedAt(body.ExpectedUpdatedAt)
+		if writeResourceUpdateRevisionError(w, err) {
+			return
+		}
+		profile, err := store.UpdateProfileWithRevision(r.Context(), s.profiles, s.secrets, kind, r.PathValue("id"), store.ProfileUpdate{Name: body.Name, Config: body.Config, ExpectedUpdatedAt: expected})
+		if writeResourceUpdateRevisionError(w, err) {
+			return
+		}
 		if errors.Is(err, store.ErrNotFound) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
 			return
@@ -129,7 +141,7 @@ func (s *Server) updateProfile(kind store.ProfileKind, action string) http.Handl
 			return
 		}
 		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"code": "update_profile_failed"})
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "update_profile_failed"})
 			return
 		}
 		current := currentFromContext(r.Context())

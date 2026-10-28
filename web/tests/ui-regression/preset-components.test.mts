@@ -154,3 +154,44 @@ test("failed visual reload with cached data does not discard an edited draft or 
   assert.equal(writes, 0);
   assert.deepEqual(messages, ["The settings could not be reloaded. Your draft is unchanged."]);
 });
+
+
+test("checking latest visual settings preserves every draft owner and only an explicit discard resets them", async () => {
+  const latest = { revision: 5, stream_id: "stream-one" }, replacement = { headerTitleValue: "Server value" };
+  const resetNames: string[] = [], checked: unknown[] = [], needsRefresh: boolean[] = [], messages: string[] = [];
+  const bindings = {
+    visual: { refetch: async () => ({ isSuccess: true, data: latest }) },
+    controller: { reconcile: (value: unknown) => { checked.push(value); return true; } },
+    setNeedsRefresh: (value: boolean) => needsRefresh.push(value), setMessage: (value: string) => messages.push(value),
+    uiText: (value: string) => value, t: (value: string) => value, locale: "en",
+    saving: false, uploads: { isBlocked: () => false, reset: () => resetNames.push("upload-owner") },
+    setDraft: (value: unknown) => { assert.equal(value, replacement); resetNames.push("draft"); },
+    setDraftRevision: (value: number) => { assert.equal(value, 5); resetNames.push("revision"); },
+    streamVisualDraftFromSettings: (value: unknown) => { assert.equal(value, latest); return replacement; },
+    setCoverPresetRevision: () => resetNames.push("preset-revision"), setCoverSelectionDirty: () => resetNames.push("selection-dirty"),
+    setDirtySections: () => resetNames.push("dirty"), setUploadedBackground: () => resetNames.push("background"),
+    releaseCoverURLs: () => resetNames.push("cover-urls"), previewOwner: { release: () => resetNames.push("preview-owner") },
+    setBackgroundPreview: () => resetNames.push("background-url"), setCoverPreview: () => resetNames.push("cover-url"),
+  };
+  await actualCallback(visualSource, "refresh", bindings)();
+  assert.deepEqual(checked, [latest]); assert.deepEqual(needsRefresh, [false]); assert.deepEqual(resetNames, []);
+  assert.match(messages[0], /入力内容は保持/);
+  await actualCallback(visualSource, "discardAndReload", bindings)();
+  assert.deepEqual(resetNames, ["draft", "revision", "preset-revision", "selection-dirty", "dirty", "background", "cover-urls", "upload-owner", "preview-owner", "background-url", "cover-url"]);
+});
+
+test("a failed or unproven visual refresh cannot clear an unknown write or discard uploads", async () => {
+  for (const success of [false, true]) {
+    let resets = 0; const needsRefresh: boolean[] = [], messages: string[] = [];
+    const refresh = actualCallback(visualSource, "discardAndReload", {
+      saving: false, uploads: { isBlocked: () => false, reset: () => { resets++; } },
+      visual: { refetch: async () => ({ isSuccess: success, data: { revision: 7 } }) },
+      controller: { reconcile: () => false }, setNeedsRefresh: (value: boolean) => needsRefresh.push(value),
+      setMessage: (value: string) => messages.push(value), t: (value: string) => value, locale: "en",
+      setDraft: () => { resets++; }, setDraftRevision: () => { resets++; }, releaseCoverURLs: () => { resets++; },
+    });
+    await refresh(); assert.equal(resets, 0); assert.equal(messages.length, 1);
+    assert.deepEqual(needsRefresh, success ? [true] : []);
+    assert.equal(messages[0], success ? "confirmationOutcomeUnknown" : "The settings could not be reloaded. Your draft is unchanged.");
+  }
+});

@@ -137,7 +137,7 @@ export function streamActionScope(intent: StreamActionIntent): string | undefine
 export function streamActionApplicable(intent: StreamActionIntent): boolean {
   if (intent.id === "STR-01") return Boolean(intent.payload && safePublicLabel(streamActionLabel(intent)));
   const status = String(intent.stream?.status || "").trim().toLowerCase();
-  if (!intent.stream?.id || !safePublicLabel(intent.stream.name)) return false;
+  if (!intent.stream?.id || !safePublicLabel(intent.id === "STR-02" || intent.id === "STR-03" ? streamActionLabel(intent) : intent.stream.name)) return false;
   switch (intent.id) {
     case "STR-02": return !["starting", "live", "stopping"].includes(status);
     case "STR-03": return status === "live";
@@ -160,9 +160,26 @@ function streamActionTarget(intent: StreamActionIntent) {
 }
 
 function streamActionLabel(intent: StreamActionIntent) {
-  if (intent.id !== "STR-01") return intent.stream?.name?.trim() || "";
+  if (!["STR-01", "STR-02", "STR-03"].includes(intent.id)) return intent.stream?.name?.trim() || "";
   const payloadName = intent.payload?.name;
-  return (intent.publicLabel || (typeof payloadName === "string" ? payloadName : "")).trim();
+  return streamSettingsPresentationLabel((typeof payloadName === "string" ? payloadName : intent.publicLabel || intent.stream?.name || "").trim());
+}
+
+// Only the confirmation-free create/settings presentation is bounded here. The
+// persisted payload remains complete, and all other action labels keep their
+// original public-label/confirmation contract.
+export function streamSettingsPresentationLabel(name: string) {
+  const value = name.trim();
+  if (!value || Array.from(value).length > 255 || /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028-\u202e\u2066-\u2069]/u.test(value)) return "";
+  if (value.length <= 128) return safePublicLabel(value) ? value : "Stream";
+  let label = "";
+  for (const character of value) {
+    if (label.length + character.length > 127) break;
+    label += character;
+  }
+  if (label.length < value.length) label += "…";
+  else label = value;
+  return safePublicLabel(label) ? label : "Stream";
 }
 
 function labelKey(id: StreamActionID): "streams" | "save" | "start" | "stop" | "actions" {

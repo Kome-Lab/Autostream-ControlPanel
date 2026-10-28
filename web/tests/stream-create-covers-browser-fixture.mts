@@ -63,6 +63,32 @@ function projectVisualWrite(current: Visual, fields: Record<string, unknown>): V
   return projected;
 }
 
+type FixtureSession = { id: string; owner_type: string; expires_at: string; claimed_stream_id?: string };
+type FixtureAsset = { id: string; owner_type: string; owner_id: string; upload_session_id: string; client_operation_id: string; usage_type: string; media_type: string; width: number; height: number; opaque: boolean; sha256: string; byte_size: number; deleted_at?: string };
+type FixtureVariant = { id: string; asset_id: string; status: string; width: number; height: number; opaque: boolean; target_width: number; target_height: number; crop_mode: string };
+
+function uploadMetadata(postData?: string) {
+  assert.ok(postData, "the browser must expose actual multipart metadata; do not invent a session or nonce");
+  const boundary = postData.slice(0, postData.indexOf("\r\n"));
+  assert.ok(/^--[^\r\n]{1,200}$/.test(boundary), "multipart boundary is required");
+  const values = new Map<string, string>();
+  for (const part of postData.split(boundary).slice(1)) {
+    const separator = part.indexOf("\r\n\r\n");
+    if (separator < 0) continue;
+    const headers = part.slice(0, separator), name = headers.match(/content-disposition:[^\r\n]*; name="([^"]+)"/i)?.[1];
+    if (name === "file") break;
+    if (!name) continue;
+    assert.ok(["session_id", "usage_type", "client_operation_id"].includes(name), "unexpected upload metadata");
+    assert.equal(values.has(name), false, "duplicate multipart metadata is rejected");
+    values.set(name, part.slice(separator + 4).replace(/\r\n$/, ""));
+  }
+  const sessionID = values.get("session_id"), usage = values.get("usage_type"), operationID = values.get("client_operation_id");
+  assert.ok(sessionID && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(sessionID), "actual session metadata is required");
+  assert.ok(usage === "scene_background" || usage === "video_cover", "actual upload usage is required");
+  assert.ok(operationID && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(operationID), "actual operation nonce is required");
+  return { sessionID, usage, operationID };
+}
+
 export function fixtureRoutes() {
   const state = {
     visual: visual([]), streams: [] as Record<string, unknown>[], uploads: 0,
@@ -73,6 +99,17 @@ export function fixtureRoutes() {
     visualWait: undefined as Promise<void> | undefined, visualUnknown:false,
     claimedAssets:new Set<string>(),deleteSessions:[] as string[],
     sessionSerial:0,currentSession:"",draftSessions:new Map<string,string>(),
+    sessions:new Map<string,FixtureSession>(), assets:new Map<string,FixtureAsset>(),
+    operations:new Map<string,string>(), variants:new Map<string,FixtureVariant[]>(),
+  };
+  const claimSession = (sessionID: unknown) => {
+    if (typeof sessionID !== "string") return;
+    const session = state.sessions.get(sessionID);
+    if (!session) return;
+    session.owner_type = "stream"; session.claimed_stream_id = controlPlatformStream.id;
+    for (const asset of state.assets.values()) if (asset.upload_session_id === sessionID && !asset.deleted_at) {
+      asset.owner_type = "stream"; asset.owner_id = controlPlatformStream.id; state.claimedAssets.add(asset.id);
+    }
   };
   const route = ({ method, url, postData }: StubRequest): StubResponse | null => {
     const path = new URL(url).pathname.replace(/\/+$/, "");
@@ -83,6 +120,7 @@ export function fixtureRoutes() {
       state.creates.push(body);
       state.visual = projectVisualWrite(visual([]), body.visual_settings as Record<string,unknown>);
       for(const item of state.visual.cover_candidates)state.claimedAssets.add(item.asset_id);
+      claimSession(body.upload_session_id);
       const stream = { ...controlPlatformStream, name: body.name, discord_config_id: body.discord_config_id, auto_start_trigger: body.auto_start_trigger };
       state.streams = [stream];
       state.createEntered?.();
@@ -95,6 +133,7 @@ export function fixtureRoutes() {
         state.saves.push(body);
         state.visual = { ...projectVisualWrite(state.visual,body), revision: state.visual.revision + 1 };
         for(const item of state.visual.cover_candidates)state.claimedAssets.add(item.asset_id);
+        claimSession(body.upload_session_id);
         return {...response(state.visualUnknown?{code:"temporary_unavailable"}:state.visual),status:state.visualUnknown?503:200,waitUntil:state.visualWait};
       }
     }
@@ -103,21 +142,55 @@ export function fixtureRoutes() {
     if (path === "/discord/configs") return response([{ id: "discord-config-one", name: "Selected BOT", service_id: "bot-one" }]);
     if (path === "/media-assets/upload-sessions" && method === "POST") {
       state.sessionSerial++;state.currentSession=state.sessionSerial===1?"upload-session-one":`upload-session-${state.sessionSerial}`;
-      return response({ id: state.currentSession, owner_type: "upload_draft", expires_at: "2099-01-01T00:00:00Z" });
+      const session = { id: state.currentSession, owner_type: "upload_draft", expires_at: "2099-01-01T00:00:00Z" };
+      state.sessions.set(session.id, session);
+      return response({ ...session });
+    }
+    const operation = path.match(/^\/media-assets\/upload-sessions\/([A-Za-z0-9_-]+)\/assets$/);
+    if (operation && method === "GET") {
+      const parameters = new URL(url).searchParams, operationID = parameters.get("operation_id") || "";
+      if (parameters.getAll("operation_id").length !== 1 || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(operationID)) return { status: 400, body: { code: "bad_request" }, requiredResponse: false };
+      const session = state.sessions.get(operation[1]);
+      if (!session) return { status: 404, body: { code: "not_found" }, requiredResponse: false };
+      const assetID = state.operations.get(`${session.id}/${operationID}`), asset = assetID ? state.assets.get(assetID) : undefined;
+      return response({ session: { ...session }, operation_id: operationID, assets: asset ? [{ asset: { ...asset }, variants: (state.variants.get(asset.id) || []).map(variant => ({ ...variant })) }] : [] });
     }
     if (path === "/media-assets" && method === "POST") {
+      const { sessionID, usage, operationID } = uploadMetadata(postData), session = state.sessions.get(sessionID);
+      if (!session) return { status: 404, body: { code: "not_found" }, requiredResponse: false };
+      if (session.owner_type !== "upload_draft" || session.claimed_stream_id) return { status: 409, body: { code: "upload_session_claimed" }, requiredResponse: false };
+      const key = `${sessionID}/${operationID}`, existingID = state.operations.get(key), existing = existingID ? state.assets.get(existingID) : undefined;
+      if (existing) {
+        if (existing.deleted_at) return { status: 404, body: { code: "not_found" }, requiredResponse: false };
+        if (existing.usage_type !== usage) return { status: 403, body: { code: "forbidden" }, requiredResponse: false };
+        return response({ ...existing });
+      }
       state.uploads += 1;
-      const assetID=`asset-${state.uploads}`;state.claimedAssets.delete(assetID);state.draftSessions.set(assetID,state.currentSession);
-      return response({ id: assetID, usage_type: "video_cover", owner_type: "upload_draft", owner_id: state.currentSession, upload_session_id: state.currentSession, media_type: "image/png", width: 1920, height: 1080, sha256: "fixture-sha256" });
+      const assetID = `asset-${state.uploads}`;
+      const asset: FixtureAsset = { id: assetID, usage_type: usage, owner_type: "upload_draft", owner_id: sessionID, upload_session_id: sessionID, client_operation_id: operationID,
+        media_type: "image/png", width: 640, height: 360, opaque: true, byte_size: 128, sha256: "a".repeat(64) };
+      state.claimedAssets.delete(assetID);state.draftSessions.set(assetID,sessionID);state.assets.set(assetID,asset);state.operations.set(key,assetID);
+      return response({ ...asset });
     }
     if (/^\/media-assets\/asset-\d+$/.test(path) && method === "DELETE") {
       state.deletes.push(path);state.deleteSessions.push(new URL(url).searchParams.get("expected_upload_session_id") || "");
-      if(state.claimedAssets.has(path.split("/").at(-1)!))return {status:409,body:{code:"upload_session_claimed"},requiredResponse:false};
-      if(state.deleteSessions.at(-1)!==state.draftSessions.get(path.split("/").at(-1)!))return {status:403,body:{code:"forbidden"},requiredResponse:false};
+      const assetID = path.split("/").at(-1)!, asset = state.assets.get(assetID);
+      if(state.claimedAssets.has(assetID) || asset?.owner_type === "stream")return {status:409,body:{code:"upload_session_claimed"},requiredResponse:false};
+      if(!asset)return {status:404,body:{code:"not_found"},requiredResponse:false};
+      if(state.deleteSessions.at(-1)!==state.draftSessions.get(assetID))return {status:403,body:{code:"forbidden"},requiredResponse:false};
+      asset.deleted_at = "2026-10-28T00:00:00Z";
       return { status: 204, requiredResponse: false };
     }
     const variant = path.match(/^\/media-assets\/(asset-\d+)\/variants$/);
-    if (variant && method === "POST") return response({ id: variant[1].replace("asset-", "variant-"), asset_id: variant[1], status: "ready", width: 1920, height: 1080, opaque: true });
+    if (variant && method === "POST") {
+      const asset = state.assets.get(variant[1]);
+      if (!asset || asset.deleted_at) return { status: 404, body: { code: "not_found" }, requiredResponse: false };
+      const spec = JSON.parse(postData || "{}");
+      assert.deepEqual(spec, { width: 1920, height: 1080, opaque: true }, "the variant must use the actual requested specification");
+      const ready = { id: variant[1].replace("asset-", "variant-"), asset_id: variant[1], status: "ready", width: 1920, height: 1080, opaque: true, target_width: 1920, target_height: 1080, crop_mode: "center_crop_opaque" };
+      state.variants.set(asset.id, [ready]);
+      return response(ready);
+    }
     if (path.includes("/media-assets/") && method === "GET") {
       state.previewRequests.push(path);
       if(path===`/streams/${controlPlatformStream.id}/media-assets/shared-variant` && !state.visual.cover_candidates.some(item=>item.variant_id==="shared-variant")) return {status:403,body:{code:"permission_denied"},requiredResponse:false};

@@ -1,6 +1,7 @@
 import type { QueryClient } from "@tanstack/react-query";
 
 import { apiGet } from "@/lib/api/client";
+import { withBoundedActionRevalidation } from "@/lib/foundation/actions/bounded-revalidation";
 import type { ActionEvaluation } from "@/lib/foundation/actions/contracts";
 import { adaptAPIError } from "@/lib/foundation/api-errors/adapter";
 import type { AdaptedAPIError } from "@/lib/foundation/api-errors/contracts";
@@ -30,7 +31,8 @@ export type WorkerConfigurationSnapshot = Readonly<{
 
 export type WorkerConfigurationControllerDependencies = Readonly<{
   queryClient: QueryClient;
-  getConfiguration?: (path: string) => Promise<unknown>;
+  getConfiguration?: (path: string, signal?: AbortSignal) => Promise<unknown>;
+  revalidatePermissions?: (signal: AbortSignal) => Promise<PermissionSnapshot>;
 }>;
 
 export type WorkerConfigurationController = Readonly<{
@@ -46,11 +48,13 @@ const initialState = Object.freeze({ kind: "initial-loading" } as const);
 
 export function createWorkerConfigurationController({
   queryClient,
-  getConfiguration = (path) => apiGet<unknown>(path),
+  getConfiguration = (path, signal) => apiGet<unknown>(path, signal),
+  revalidatePermissions,
 }: WorkerConfigurationControllerDependencies): WorkerConfigurationController {
   const listeners = new Set<(snapshot: WorkerConfigurationSnapshot) => void>();
   const cache = new Map<string, Readonly<{ data: WorkerConfigurationData; lastSuccessAt: number }>>();
   let generation = 0;
+  let activeRead: AbortController | undefined;
   let current = freezeSnapshot({
     state: initialState,
     evaluation: configurationEvaluation(queryClient),
@@ -63,6 +67,9 @@ export function createWorkerConfigurationController({
   };
 
   const load = async (targetId: string, sameTarget: boolean): Promise<WorkerConfigurationSnapshot> => {
+    activeRead?.abort();
+    const abort = new AbortController();
+    activeRead = abort;
     const requestGeneration = generation + 1;
     generation = requestGeneration;
     const evaluation = configurationEvaluation(queryClient);
@@ -95,7 +102,23 @@ export function createWorkerConfigurationController({
 
     let response: unknown;
     try {
-      response = await getConfiguration(`/nodes/${encodeURIComponent(targetId)}/configuration`);
+      const result = await withBoundedActionRevalidation(async (signal) => {
+        const freshEvaluation = revalidatePermissions
+          ? configurationEvaluation(queryClient, await revalidatePermissions(signal))
+          : configurationEvaluation(queryClient);
+        return {
+          evaluation: freshEvaluation,
+          response: freshEvaluation.availability.kind === "allowed"
+            ? await getConfiguration(`/nodes/${encodeURIComponent(targetId)}/configuration`, signal)
+            : undefined,
+        };
+      }, abort.signal);
+      if (generation !== requestGeneration || current.targetId !== targetId) return current;
+      if (result.evaluation.availability.kind !== "allowed") {
+        emit(freezeSnapshot({ targetId, state: Object.freeze({ kind: "blocking-error", error: permissionError(result.evaluation) }), evaluation: result.evaluation, pending: false }));
+        return current;
+      }
+      response = result.response;
     } catch (error) {
       if (generation !== requestGeneration || current.targetId !== targetId) return current;
       const adapted = adaptAPIError(error);
@@ -183,10 +206,10 @@ export function createWorkerConfigurationController({
   });
 }
 
-function configurationEvaluation(queryClient: QueryClient): ActionEvaluation {
+function configurationEvaluation(queryClient: QueryClient, authority?: PermissionSnapshot): ActionEvaluation {
   return evaluateActionPermission({
     requirement: workerConfigurationDescriptor.permissions,
-    snapshot: permissionSnapshot(queryClient),
+    snapshot: authority ?? permissionSnapshot(queryClient),
     disclosure: workerConfigurationDescriptor.disclosure,
     deniedReasonKey: "workerConfigurationPermissionDenied",
     unknownReasonKey: "workerConfigurationPermissionUnknown",
@@ -195,7 +218,7 @@ function configurationEvaluation(queryClient: QueryClient): ActionEvaluation {
 
 function permissionSnapshot(queryClient: QueryClient): PermissionSnapshot {
   const state = queryClient.getQueryState(authQueryKey);
-  if (state?.fetchStatus === "fetching") return Object.freeze({ kind: "refreshing" });
+  if (state?.status !== "success") return Object.freeze({ kind: "unavailable" });
   const current = queryClient.getQueryData<CurrentUser>(authQueryKey);
   const permissions = copyStringArray(current?.permissions);
   return permissions

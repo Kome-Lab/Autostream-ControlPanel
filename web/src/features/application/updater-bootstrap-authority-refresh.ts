@@ -3,10 +3,11 @@ import { updaterAuthorityFingerprint, type UpdaterActionAuthority } from "@/feat
 import { useCurrentUser, useUpdaterHostBootstrapJobs } from "@/features/queries";
 import { apiGet } from "@/lib/api/client";
 import { hasPermission } from "@/lib/auth/permissions";
-import { activeUpdaterHostBootstrapStatus, isUpdaterHostBootstrapBulkCandidate, updaterHostBootstrapConfirmationContext, updaterHostBootstrapEligibility } from "@/lib/updater-bootstrap";
+import { activeUpdaterHostBootstrapStatus, isUpdaterHostBootstrapBulkCandidate, normalizeUpdaterHostBootstrapJobsResponse, updaterHostBootstrapConfirmationContext, updaterHostBootstrapEligibility } from "@/lib/updater-bootstrap";
 import { normalizeSystemUpdatesResponse } from "@/lib/system-updates";
-import { normalizeUpdaterSettingsResponse } from "@/lib/updater-settings-model";
-import type { UpdaterSettingsHost } from "@/types/domain";
+import { withBoundedActionRevalidation } from "@/lib/foundation/actions/bounded-revalidation";
+import type { CurrentUser, UpdaterSettingsHost } from "@/types/domain";
+import { readUpdaterSettingsAuthority } from "./application-authority-readers";
 import { latestBootstrapResults } from "./updater-bootstrap-job-state";
 import { bootstrapActionAuthoritySnapshot, unavailableBootstrapAuthority } from "./updater-bootstrap-authority";
 
@@ -14,9 +15,6 @@ import { bootstrapActionAuthoritySnapshot, unavailableBootstrapAuthority } from 
 
 export function createBootstrapAuthorityRefresher({
   context,
-  bootstrapJobs,
-  currentUser,
-  queryClient,
   busy,
 }: {
   context: Parameters<typeof bootstrapActionAuthoritySnapshot>[0];
@@ -26,21 +24,16 @@ export function createBootstrapAuthorityRefresher({
   busy: boolean
 }) {
   const { actionID: foundationActionID, updater, expectedRevision, expectedAppliedRevision, selectedHostIDs, currentHosts, currentTargets, selectionMode, confirmedContext } = context;
-  const refreshFoundationAuthority = async (): Promise<UpdaterActionAuthority> => {
-    const [systemUpdatesRaw, refreshedBootstrapJobs] = await Promise.all([
-      apiGet<unknown>("/system-updates"),
-      bootstrapJobs.refetch(),
+  const refreshFoundationAuthority = async (signal?: AbortSignal): Promise<UpdaterActionAuthority> => withBoundedActionRevalidation(async (readSignal) => {
+    const [systemUpdatesRaw, bootstrapJobsRaw, refreshedSettings, refreshedUser] = await Promise.all([
+      apiGet<unknown>("/system-updates", readSignal),
+      apiGet<unknown>(`/system-updates/updaters/${encodeURIComponent(updater.updater_id)}/bootstrap-jobs`, readSignal),
+      readUpdaterSettingsAuthority(updater.updater_id, readSignal),
+      apiGet<CurrentUser>("/auth/me", readSignal),
     ]);
-    const [updaterSettingsRaw, refreshedUser] = await Promise.all([
-      apiGet<unknown>(`/system-updates/updaters/${encodeURIComponent(updater.updater_id)}/settings`),
-      currentUser.refetch(),
-    ]);
-    if (refreshedBootstrapJobs.isError || !refreshedBootstrapJobs.data || refreshedUser.isError || !refreshedUser.data) {
-      return unavailableBootstrapAuthority(updaterAuthorityFingerprint([foundationActionID, updater.updater_id, "unavailable"]));
-    }
+    const refreshedBootstrapJobs = normalizeUpdaterHostBootstrapJobsResponse(bootstrapJobsRaw, updater.updater_id);
     const systemUpdates = normalizeSystemUpdatesResponse(systemUpdatesRaw);
     const refreshedUpdater = systemUpdates.updaters.find((candidate) => candidate.updater_id === updater.updater_id);
-    const refreshedSettings = normalizeUpdaterSettingsResponse(updaterSettingsRaw, updater.updater_id);
     if (
       !refreshedUpdater
       || refreshedSettings.revision !== expectedRevision
@@ -48,14 +41,12 @@ export function createBootstrapAuthorityRefresher({
     ) {
       return unavailableBootstrapAuthority(updaterAuthorityFingerprint([foundationActionID, updater.updater_id, "authority-changed"]));
     }
-    queryClient.setQueryData(["system-updates"], systemUpdates);
-    queryClient.setQueryData(["system-updates", "updaters", updater.updater_id, "settings"], refreshedSettings);
     const refreshedSavedHostsByID = new Map(refreshedSettings.hosts.map((host) => [host.host_id, host]));
     const refreshedSelectedHosts = selectedHostIDs
       .map((hostID) => refreshedSavedHostsByID.get(hostID))
       .filter((host): host is UpdaterSettingsHost => Boolean(host));
-    const refreshedLatestResults = latestBootstrapResults(refreshedBootstrapJobs.data.jobs, expectedRevision);
-    const refreshedActiveStatus = activeUpdaterHostBootstrapStatus(refreshedBootstrapJobs.data.jobs);
+    const refreshedLatestResults = latestBootstrapResults(refreshedBootstrapJobs.jobs, expectedRevision);
+    const refreshedActiveStatus = activeUpdaterHostBootstrapStatus(refreshedBootstrapJobs.jobs);
     const refreshedReady = selectedHostIDs.length > 0 && selectedHostIDs.every((hostID) => {
       const eligibility = updaterHostBootstrapEligibility({
         updater: refreshedUpdater,
@@ -86,7 +77,7 @@ export function createBootstrapAuthorityRefresher({
       savedTargets: refreshedSettings.targets,
       currentTargets,
       releaseTokenConfigured: refreshedSettings.github_token_configured,
-      bootstrapJobs: refreshedBootstrapJobs.data.jobs,
+      bootstrapJobs: refreshedBootstrapJobs.jobs,
       selectionMode,
       confirmedContext,
       confirmationContext: refreshedConfirmationContext,
@@ -94,11 +85,11 @@ export function createBootstrapAuthorityRefresher({
       applicable: refreshedReady && confirmedContext === refreshedConfirmationContext && !busy,
     });
     return Object.freeze({
-      permission: hasPermission(refreshedUser.data, "system_updates.execute") ? "allowed" : "denied",
+      permission: hasPermission(refreshedUser, "system_updates.execute") ? "allowed" : "denied",
       freshness: "fresh",
       applicability: snapshot.applicable ? "applicable" : "not-applicable",
       authorityFingerprint: snapshot.fingerprint,
     });
-  };
+  }, signal);
   return refreshFoundationAuthority;
 }

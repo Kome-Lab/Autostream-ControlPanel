@@ -42,6 +42,14 @@ func (s *Server) updateStreamSettings(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": code})
 		return
 	}
+	// The legacy direct archive helper commits profiles/destinations separately.
+	// It cannot participate in a guarded settings transaction. Reject only this
+	// new combination before assignments or archive writes; older callers that
+	// omit the expectation and managed-profile edits retain their contract.
+	if body.ExpectedSettingsRevision != nil && streamArchiveDirectRequested(body) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "stream_settings_archive_revision_unsupported"})
+		return
+	}
 	if err := s.validateStreamSettingsReferences(r.Context(), settings); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": streamSettingsReferenceCode(err)})
 		return
@@ -61,6 +69,10 @@ func (s *Server) updateStreamSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_stream_failed"})
+		return
+	}
+	if err := store.MatchStreamSettingsRevision(body.ExpectedSettingsRevision, existing.SettingsRevision); err != nil {
+		writeStreamSettingsRevisionError(w, err)
 		return
 	}
 	if isActiveStreamStatus(existing.Status) {
@@ -123,6 +135,9 @@ func (s *Server) updateStreamSettings(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
 			return
 		}
+		if writeStreamSettingsRevisionError(w, err) {
+			return
+		}
 		if code, status, handled := serviceAssignmentHTTPError(err, false); handled {
 			writeJSON(w, status, map[string]string{"code": code})
 			return
@@ -141,6 +156,9 @@ func (s *Server) updateStreamSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func streamSettingsFromRequest(body streamSettingsRequest) (store.StreamSettings, string) {
+	if body.ExpectedSettingsRevision != nil && !store.ValidStreamSettingsRevision(*body.ExpectedSettingsRevision) {
+		return store.StreamSettings{}, "bad_request"
+	}
 	if math.IsNaN(body.EncoderAudioGainDB) || math.IsInf(body.EncoderAudioGainDB, 0) || body.EncoderAudioGainDB < -60 || body.EncoderAudioGainDB > 24 {
 		return store.StreamSettings{}, "invalid_encoder_audio_gain_db"
 	}
@@ -156,33 +174,39 @@ func streamSettingsFromRequest(body streamSettingsRequest) (store.StreamSettings
 		return store.StreamSettings{}, "schedule_end_before_start"
 	}
 	return store.StreamSettings{
-		Name:                  strings.TrimSpace(body.Name),
-		ScheduledStartAt:      scheduledStart,
-		ScheduledEndAt:        scheduledEnd,
-		DiscordConfigID:       strings.TrimSpace(body.DiscordConfigID),
-		AutoStartTrigger:      normalizeAutoStartTrigger(body.AutoStartTrigger),
-		EncoderProfileID:      strings.TrimSpace(body.EncoderProfileID),
-		CaptionProfileID:      strings.TrimSpace(body.CaptionProfileID),
-		OverlayProfileID:      strings.TrimSpace(body.OverlayProfileID),
-		EncoderAudioGainDB:    body.EncoderAudioGainDB,
-		ArchiveProfileID:      strings.TrimSpace(body.ArchiveProfileID),
-		ArchiveOAuthAccountID: archiveRequestString(body.ArchiveOAuthAccountID),
-		ArchiveSharedDrive:    archiveRequestBool(body.ArchiveSharedDrive),
-		ArchiveSharedDriveID:  archiveRequestString(body.ArchiveSharedDriveID),
-		ArchiveFileName:       archiveSafeFileName(archiveRequestString(body.ArchiveFileName)),
-		YouTubeOutputID:       strings.TrimSpace(body.YouTubeOutputID),
-		EncoderInputURL:       strings.TrimSpace(body.EncoderInputURL),
+		ExpectedSettingsRevision: body.ExpectedSettingsRevision,
+		Name:                     strings.TrimSpace(body.Name),
+		ScheduledStartAt:         scheduledStart,
+		ScheduledEndAt:           scheduledEnd,
+		DiscordConfigID:          strings.TrimSpace(body.DiscordConfigID),
+		AutoStartTrigger:         normalizeAutoStartTrigger(body.AutoStartTrigger),
+		EncoderProfileID:         strings.TrimSpace(body.EncoderProfileID),
+		CaptionProfileID:         strings.TrimSpace(body.CaptionProfileID),
+		OverlayProfileID:         strings.TrimSpace(body.OverlayProfileID),
+		EncoderAudioGainDB:       body.EncoderAudioGainDB,
+		ArchiveProfileID:         strings.TrimSpace(body.ArchiveProfileID),
+		ArchiveOAuthAccountID:    archiveRequestString(body.ArchiveOAuthAccountID),
+		ArchiveSharedDrive:       archiveRequestBool(body.ArchiveSharedDrive),
+		ArchiveSharedDriveID:     archiveRequestString(body.ArchiveSharedDriveID),
+		ArchiveFileName:          archiveSafeFileName(archiveRequestString(body.ArchiveFileName)),
+		YouTubeOutputID:          strings.TrimSpace(body.YouTubeOutputID),
+		EncoderInputURL:          strings.TrimSpace(body.EncoderInputURL),
 	}, ""
 }
 
 type streamRuntimeSettingsRequest struct {
-	EncoderAudioGainDB float64 `json:"encoder_audio_gain_db"`
-	OverlayProfileID   string  `json:"overlay_profile_id"`
+	EncoderAudioGainDB       float64 `json:"encoder_audio_gain_db"`
+	OverlayProfileID         string  `json:"overlay_profile_id"`
+	ExpectedSettingsRevision *string `json:"expected_settings_revision,omitempty"`
 }
 
 func (s *Server) updateStreamRuntimeSettings(w http.ResponseWriter, r *http.Request) {
 	var body streamRuntimeSettingsRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
+		return
+	}
+	if body.ExpectedSettingsRevision != nil && !store.ValidStreamSettingsRevision(*body.ExpectedSettingsRevision) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
 		return
 	}
@@ -207,13 +231,34 @@ func (s *Server) updateStreamRuntimeSettings(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_stream_failed"})
 		return
 	}
+	if err := store.MatchStreamSettingsRevision(body.ExpectedSettingsRevision, existing.SettingsRevision); err != nil {
+		writeStreamSettingsRevisionError(w, err)
+		return
+	}
 	status := strings.ToLower(strings.TrimSpace(existing.Status))
 	if status == "starting" || status == "stopping" {
 		writeJSON(w, http.StatusConflict, map[string]string{"code": "stream_runtime_settings_transition_in_progress"})
 		return
 	}
-	updated, err := s.streams.UpdateStreamEncoderRuntimeSettings(r.Context(), streamID, body.EncoderAudioGainDB, body.OverlayProfileID)
+	var updated store.Stream
+	if body.ExpectedSettingsRevision != nil {
+		revisionStore, ok := s.streams.(store.StreamRuntimeSettingsRevisionStore)
+		if !ok {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "update_stream_runtime_settings_failed"})
+			return
+		}
+		updated, err = revisionStore.UpdateStreamEncoderRuntimeSettingsRevision(r.Context(), streamID, body.EncoderAudioGainDB, body.OverlayProfileID, body.ExpectedSettingsRevision)
+	} else {
+		updated, err = s.streams.UpdateStreamEncoderRuntimeSettings(r.Context(), streamID, body.EncoderAudioGainDB, body.OverlayProfileID)
+	}
 	if err != nil {
+		if writeStreamSettingsRevisionError(w, err) {
+			return
+		}
+		if errors.Is(err, store.ErrNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
+			return
+		}
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "update_stream_runtime_settings_failed"})
 		return
 	}
@@ -251,6 +296,18 @@ func (s *Server) updateStreamRuntimeSettings(w http.ResponseWriter, r *http.Requ
 	}
 	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.update_runtime_settings", ResourceType: "stream", ResourceID: streamID, Result: "success", Metadata: metadata})
 	writeJSON(w, http.StatusOK, updated)
+}
+
+func writeStreamSettingsRevisionError(w http.ResponseWriter, err error) bool {
+	if errors.Is(err, store.ErrRevisionConflict) {
+		writeJSON(w, http.StatusConflict, map[string]string{"code": "revision_conflict"})
+		return true
+	}
+	if errors.Is(err, store.ErrInvalidStreamSettingsRevision) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
+		return true
+	}
+	return false
 }
 
 func parseStreamScheduleTime(value string) (*time.Time, string) {

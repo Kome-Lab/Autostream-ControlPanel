@@ -12,6 +12,8 @@ type nodeListResponse struct {
 	ServiceID               string         `json:"service_id"`
 	ServiceType             string         `json:"service_type"`
 	ServiceName             string         `json:"service_name"`
+	MetadataRevision        string         `json:"metadata_revision"`
+	TransportMode           string         `json:"transport_mode,omitempty"`
 	Description             string         `json:"description,omitempty"`
 	Host                    string         `json:"host,omitempty"`
 	Port                    int            `json:"port,omitempty"`
@@ -50,6 +52,8 @@ func nodeListResponses(services []store.RegisteredService, now time.Time) []node
 			ServiceID:               service.ServiceID,
 			ServiceType:             service.ServiceType,
 			ServiceName:             service.ServiceName,
+			MetadataRevision:        store.ServiceMetadataRevision(service),
+			TransportMode:           service.TransportMode,
 			Description:             service.Description,
 			Host:                    service.Host,
 			Port:                    service.Port,

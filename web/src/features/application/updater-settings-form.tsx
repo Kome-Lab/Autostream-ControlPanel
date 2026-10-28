@@ -14,10 +14,13 @@ import { UpdaterHostBootstrapPanel } from "@/features/application/updater-host-b
 import { UpdaterActionConfirmation } from "@/features/application/updater-action-confirmation";
 import { createUpdaterActionController, updaterAuthorityFingerprint, type UpdaterActionAuthority, type UpdaterActionIntent } from "@/features/application/updater-action-policy";
 import { useCurrentUser, useUpdaterSettings } from "@/features/queries";
-import { apiPut } from "@/lib/api/client";
+import { apiGet, apiPut } from "@/lib/api/client";
+import { withBoundedActionRevalidation } from "@/lib/foundation/actions/bounded-revalidation";
+import { normalizeSystemUpdatesResponse } from "@/lib/system-updates";
 import { hasPermission } from "@/lib/auth/permissions";
 import { applyUpdaterSettingsTargetSelection, applyUpdaterSettingsTargetPatch, firstUnusedUpdaterSettingsTarget, normalizeUpdaterSettingsResponse } from "@/lib/updater-settings-model";
-import type { SystemUpdateAgentStatus, SystemUpdateTarget, UpdaterSettings, UpdaterSettingsHost, UpdaterSettingsTarget } from "@/types/domain";
+import type { CurrentUser, SystemUpdateAgentStatus, SystemUpdateTarget, UpdaterSettings, UpdaterSettingsHost, UpdaterSettingsTarget } from "@/types/domain";
+import { readUpdaterSettingsAuthority } from "./application-authority-readers";
 import { type UpdaterSettingsFormState, settingsToForm, buildUpdaterSettingsPayload, updaterSettingsErrorMessage, newHost } from "./updater-settings-form-model";
 import { updaterSettingsFormFingerprint, updaterSettingsActionAuthoritySnapshot, unavailableUpdaterAuthority } from "./updater-settings-authority";
 import { UpdaterRuntimeSettingsSection } from "./updater-runtime-settings-section";
@@ -111,6 +114,8 @@ export function UpdaterSettingsForm({
   });
 
   const savedForm = settingsToForm(settingsAuthorityQuery.data || settings);
+  const latestSettings = settingsAuthorityQuery.data || settings;
+  const settingsRevisionChanged = latestSettings.revision !== baseRevision;
   useExistingDraft(JSON.stringify(updaterDraftValues(form)) !== JSON.stringify(updaterDraftValues(savedForm)) || deleteGitHubToken,
     saveSettings.isPending || bootstrapActive || ownershipOperationBlocked);
 
@@ -194,22 +199,29 @@ export function UpdaterSettingsForm({
     applicability: settingsActionSnapshot.applicable ? "applicable" : "not-applicable",
     authorityFingerprint: settingsActionSnapshot.fingerprint,
   });
-  const refreshSettingsActionAuthority = async (): Promise<UpdaterActionAuthority> => {
-    const [refreshedSettings, refreshedUser] = await Promise.all([
-      settingsAuthorityQuery.refetch(),
-      currentUser.refetch(),
-    ]);
-    if (refreshedSettings.isError || !refreshedSettings.data || refreshedUser.isError || !refreshedUser.data) {
+  const refreshSettingsActionAuthority = async (signal?: AbortSignal): Promise<UpdaterActionAuthority> => {
+    let fresh: { settings: UpdaterSettings; updater: SystemUpdateAgentStatus | undefined; user: CurrentUser };
+    try {
+      fresh = await withBoundedActionRevalidation(async (readSignal) => {
+        const [saved, updates, user] = await Promise.all([
+          readUpdaterSettingsAuthority(updater.updater_id, readSignal),
+          apiGet<unknown>("/system-updates", readSignal),
+          apiGet<CurrentUser>("/auth/me", readSignal),
+        ]);
+        return { settings: saved, updater: normalizeSystemUpdatesResponse(updates).updaters.find((candidate) => candidate.updater_id === updater.updater_id), user };
+      }, signal);
+    } catch {
       return unavailableUpdaterAuthority(updaterAuthorityFingerprint(["UPD-08", updater.updater_id, "unavailable"]));
     }
+    if (!fresh.updater) return unavailableUpdaterAuthority(updaterAuthorityFingerprint(["UPD-08", updater.updater_id, "missing"]));
     const snapshot = updaterSettingsActionAuthoritySnapshot(
-      updater,
-      refreshedSettings.data,
+      fresh.updater,
+      fresh.settings,
       formAuthorityFingerprint,
-      refreshedSettings.data.revision === baseRevision && !bootstrapActive && !ownershipOperationBlocked,
+      fresh.settings.revision === baseRevision && !bootstrapActive && !ownershipOperationBlocked,
     );
     return Object.freeze({
-      permission: hasPermission(refreshedUser.data, "system_updates.execute") ? "allowed" : "denied",
+      permission: hasPermission(fresh.user, "system_updates.execute") ? "allowed" : "denied",
       freshness: "fresh",
       applicability: snapshot.applicable ? "applicable" : "not-applicable",
       authorityFingerprint: snapshot.fingerprint,
@@ -219,6 +231,20 @@ export function UpdaterSettingsForm({
   return (
     <>
       <div className="space-y-6">
+        {settingsRevisionChanged ? (
+          <div role="alert" className="space-y-2 rounded-md border border-amber-300 p-3 text-sm">
+            <p>{locale === "ja"
+              ? "保存済みのUpdater設定が変更されました。入力は保持しています。最新設定を確認してから、入力を破棄して編集し直してください。"
+              : "The saved updater configuration changed. Your input is preserved. Review the latest configuration, then explicitly discard this draft to edit it."}</p>
+            <button type="button" className="underline" disabled={saveSettings.isPending || bootstrapActive || ownershipOperationBlocked} onClick={() => {
+              setForm(settingsToForm(latestSettings));
+              setBaseRevision(latestSettings.revision);
+              setGithubToken("");
+              setDeleteGitHubToken(false);
+              setFeedback(null);
+            }}>{locale === "ja" ? "入力を破棄して最新設定を使用" : "Discard input and use latest configuration"}</button>
+          </div>
+        ) : null}
         <SectionNavigation label={locale === "ja" ? "Updater設定のセクション" : "Updater settings sections"} items={[
           { id: formID + "-runtime-section", label: "Runtime / policy" },
           { id: formID + "-hosts-section", label: "Host / bootstrap" },

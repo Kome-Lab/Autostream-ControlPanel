@@ -40,6 +40,10 @@ github.com/Kome-Lab/Autostream-Contracts v1.2.12-0.20260929140016-7edb888d585e h
 github.com/Kome-Lab/Autostream-Contracts v1.2.12-0.20260929140016-7edb888d585e/go.mod h1:sJPMVofBZcO4uZd1T/y/VkN6/pwN0PJNAQGzlXI+GN4=
 github.com/Kome-Lab/Autostream-Contracts v1.2.12-0.20261012062538-f62ddfaf1144 h1:HGpPVEGM1dsMqxXV0jv5ZQsZJI+Bjx6YJ1oPtVBXQDs=
 github.com/Kome-Lab/Autostream-Contracts v1.2.12-0.20261012062538-f62ddfaf1144/go.mod h1:sJPMVofBZcO4uZd1T/y/VkN6/pwN0PJNAQGzlXI+GN4=
+github.com/Kome-Lab/Autostream-Contracts v1.2.13-0.20261027232625-85fffab05320 h1:hDQjFBJozrARKF6fdScscbtEZM3QRtuESIYS9zLpQrM=
+github.com/Kome-Lab/Autostream-Contracts v1.2.13-0.20261027232625-85fffab05320/go.mod h1:sJPMVofBZcO4uZd1T/y/VkN6/pwN0PJNAQGzlXI+GN4=
+github.com/Kome-Lab/Autostream-Contracts v1.2.13-0.20261028041239-2235c0da3539 h1:b9ZRgNY7zAHHw4mPf1k7R1i5eD3XTbmDDu4OF+Az1WI=
+github.com/Kome-Lab/Autostream-Contracts v1.2.13-0.20261028041239-2235c0da3539/go.mod h1:sJPMVofBZcO4uZd1T/y/VkN6/pwN0PJNAQGzlXI+GN4=
 github.com/alessio/shellescape v1.4.1 h1:V7yhSDDn8LP4lc4jS8pFkt0zCnzVJlG5JXy9BVKJUX0=
 github.com/alessio/shellescape v1.4.1/go.mod h1:PZAiSCk0LJaZkiCSkPv8qIobYglO3FPpyFjDCtHLS30=
 github.com/asaskevich/govalidator v0.0.0-20230301143203-a9d515a09cc2 h1:DklsrG3dyBCFEj5IhUbnKptjxatkF07cF2ak3yi77so=

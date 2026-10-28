@@ -3,6 +3,7 @@ import {
   resourceActionApplicable,
   resourceActionRequest,
   resourceActionScope,
+  resourceActionTemplate,
   type ResourceActionIntent,
   type ResourceActionRequest,
 } from "@/features/resources/resource-action-descriptors";
@@ -10,11 +11,13 @@ import type { ActionEvaluation } from "@/lib/foundation/actions/contracts";
 import { adaptAPIError } from "@/lib/foundation/api-errors/adapter";
 import type { AdaptedAPIError } from "@/lib/foundation/api-errors/contracts";
 import { evaluateActionPermission, type PermissionSnapshot } from "@/lib/foundation/permissions/evaluator";
+import { withBoundedActionRevalidation } from "@/lib/foundation/actions/bounded-revalidation";
 
 export type ResourceActionStateSnapshot = Readonly<{
   kind: "ready" | "missing" | "unknown";
   freshness: "fresh" | "refreshing" | "stale" | "unavailable";
   fingerprint?: string;
+  baselineFingerprint?: string;
 }>;
 
 export type ResourceActionAuthority = Readonly<{
@@ -66,11 +69,12 @@ export type ResourceActionSubmitLifecycle = Readonly<{
 export type ResourceActionControllerDependencies = Readonly<{
   getPermissions: () => PermissionSnapshot;
   getState: (intent: ResourceActionIntent) => ResourceActionStateSnapshot;
-  refresh: (intent: ResourceActionIntent) => Promise<ResourceActionAuthority>;
+  refresh: (intent: ResourceActionIntent, signal?: AbortSignal) => Promise<ResourceActionAuthority>;
+  revalidate?: (intent: ResourceActionIntent, signal: AbortSignal) => Promise<Pick<ResourceActionAuthority, "permissions" | "state">>;
   mutate: (request: ResourceActionRequest & Readonly<{ signal: AbortSignal }>) => Promise<unknown>;
 }>;
 
-type ActiveOperation = { generation: number; abort: AbortController; released: boolean };
+type ActiveOperation = { generation: number; abort: AbortController; released: boolean; dispatched: boolean };
 
 export function createResourceActionController(dependencies: ResourceActionControllerDependencies): ResourceActionController {
   const active = new Map<string, ActiveOperation>();
@@ -111,31 +115,39 @@ export function createResourceActionController(dependencies: ResourceActionContr
     if (!scope) return blocked("invalid-intent");
     if (active.has(scope)) return blocked("duplicate");
     if (unresolved.has(scope)) return blocked("reconciliation-required");
-    let authority: ResourceActionAuthority;
+    const operation = acquire(scope);
+    if (!operation) return blocked("duplicate");
     try {
-      authority = await dependencies.refresh(intent);
-    } catch {
-      return blocked("state-unavailable");
+      let authority: ResourceActionAuthority;
+      try {
+        authority = await withBoundedActionRevalidation((signal) => dependencies.refresh(intent, signal), operation.abort.signal);
+      } catch {
+        return blocked(current(scope, operation) ? "state-unavailable" : "cancelled");
+      }
+      if (!current(scope, operation)) return blocked("cancelled");
+      if (baselineChanged(authority.state)) return blocked("authority-changed");
+      const reason = evaluationReason(evaluateBase(authority.intent, authority));
+      if (reason) return blocked(reason);
+      const descriptor = buildResourceActionDescriptor(authority.intent);
+      if (!descriptor || authority.state.kind !== "ready" || authority.state.freshness !== "fresh" || !authority.state.fingerprint) {
+        return blocked("state-unavailable");
+      }
+      const typedToken = descriptor.confirmation.mode === "typed-target"
+        ? descriptor.confirmation.typedToken.kind === "fixed-ascii"
+          ? descriptor.confirmation.typedToken.value
+          : descriptor.target.publicLabel
+        : undefined;
+      if (descriptor.confirmation.mode === "typed-target" && !typedToken) return blocked("invalid-intent");
+      return Object.freeze({
+        kind: "allowed",
+        intent: authority.intent,
+        descriptor,
+        authority: authority.state.fingerprint,
+        ...(typedToken === undefined ? {} : { typedToken }),
+      });
+    } finally {
+      release(scope, operation);
     }
-    const reason = evaluationReason(evaluateBase(authority.intent, authority));
-    if (reason) return blocked(reason);
-    const descriptor = buildResourceActionDescriptor(authority.intent);
-    if (!descriptor || authority.state.kind !== "ready" || authority.state.freshness !== "fresh" || !authority.state.fingerprint) {
-      return blocked("state-unavailable");
-    }
-    const typedToken = descriptor.confirmation.mode === "typed-target"
-      ? descriptor.confirmation.typedToken.kind === "fixed-ascii"
-        ? descriptor.confirmation.typedToken.value
-        : descriptor.target.publicLabel
-      : undefined;
-    if (descriptor.confirmation.mode === "typed-target" && !typedToken) return blocked("invalid-intent");
-    return Object.freeze({
-      kind: "allowed",
-      intent: authority.intent,
-      descriptor,
-      authority: authority.state.fingerprint,
-      ...(typedToken === undefined ? {} : { typedToken }),
-    });
   };
 
   const submit = async (
@@ -153,8 +165,12 @@ export function createResourceActionController(dependencies: ResourceActionContr
     try {
       let authority: ResourceActionAuthority;
       try {
-        authority = await dependencies.refresh(opened.intent);
+        const revalidate = dependencies.revalidate;
+        authority = revalidate
+          ? { intent: opened.intent, ...await withBoundedActionRevalidation((signal) => revalidate(opened.intent, signal), operation.abort.signal) }
+          : await withBoundedActionRevalidation((signal) => dependencies.refresh(opened.intent, signal), operation.abort.signal);
       } catch {
+        if (!current(scope, operation)) return blocked("cancelled");
         return blocked("state-unavailable");
       }
       const reason = evaluationReason(evaluateBase(authority.intent, authority));
@@ -162,10 +178,11 @@ export function createResourceActionController(dependencies: ResourceActionContr
       if (authority.state.kind !== "ready" || authority.state.freshness !== "fresh" || !authority.state.fingerprint) {
         return blocked("state-unavailable");
       }
-      if (authority.state.fingerprint !== opened.authority) return blocked("authority-changed");
+      if (baselineChanged(authority.state) || authority.state.fingerprint !== opened.authority) return blocked("authority-changed");
       const request = resourceActionRequest(authority.intent);
       if (!request || !current(scope, operation)) return blocked("cancelled");
       try {
+        operation.dispatched = true;
         const execution = dependencies.mutate(Object.freeze({ ...request, signal: operation.abort.signal }));
         try {
           lifecycle?.onDispatch?.();
@@ -178,7 +195,7 @@ export function createResourceActionController(dependencies: ResourceActionContr
       } catch (error) {
         if (!current(scope, operation)) return blocked("cancelled");
         const adapted = adaptAPIError(error);
-        unresolved.add(scope);
+        if (!knownUnappliedRejection(request, error)) unresolved.add(scope);
         if (ambiguous(adapted)) {
           return Object.freeze({ kind: "outcome_unknown", nextAction: "inspect-audit" });
         }
@@ -191,7 +208,7 @@ export function createResourceActionController(dependencies: ResourceActionContr
 
   function acquire(scope: string): ActiveOperation | undefined {
     if (active.has(scope)) return undefined;
-    const operation = { generation: (generations.get(scope) ?? 0) + 1, abort: new AbortController(), released: false };
+    const operation = { generation: (generations.get(scope) ?? 0) + 1, abort: new AbortController(), released: false, dispatched: false };
     generations.set(scope, operation.generation);
     active.set(scope, operation);
     return operation;
@@ -216,19 +233,15 @@ export function createResourceActionController(dependencies: ResourceActionContr
       for (const scope of scopes) {
         const operation = active.get(scope);
         if (!operation) continue;
+        if (operation.dispatched) unresolved.add(scope);
         operation.abort.abort();
         generations.set(scope, operation.generation + 1);
         release(scope, operation);
       }
     },
-    reconcile: (intent) => {
-      if (!intent) {
-        unresolved.clear();
-        return;
-      }
-      const scope = resourceActionScope(intent);
-      if (scope) unresolved.delete(scope);
-    },
+    // A list GET cannot prove whether an earlier mutation was applied. Known
+    // early rejections never acquire this latch; unknown outcomes retain it.
+    reconcile: () => undefined,
     isPending: (intent) => {
       const scope = resourceActionScope(intent);
       return Boolean(scope && active.has(scope));
@@ -249,6 +262,25 @@ function evaluationReason(evaluation: ActionEvaluation): ResourceActionBlockedRe
 
 function ambiguous(error: AdaptedAPIError) {
   return ["network", "timeout", "unavailable", "protocol", "unknown"].includes(error.kind);
+}
+
+function baselineChanged(state: ResourceActionStateSnapshot) {
+  return state.baselineFingerprint !== undefined && state.baselineFingerprint !== state.fingerprint;
+}
+
+function knownUnappliedRejection(request: ResourceActionRequest, error: unknown) {
+  if (!error || typeof error !== "object" || !("status" in error) || !("code" in error)) return false;
+  const path = resourceActionTemplate(request.id)?.sourcePath;
+  // Atomic resource CAS rejects this exact conflict before any row or secret
+  // write. An explicit new edit must still capture and validate its own baseline.
+  if (request.method === "PUT" && error.status === 409 && error.code === "revision_conflict") {
+    return ["/profiles/encoder", "/profiles/archive", "/profiles/caption", "/profiles/overlay", "/discord/configs", "/youtube/outputs", "/archive/destinations", "/security/settings"].includes(path ?? "");
+  }
+  if ((request.method !== "POST" && request.method !== "PUT") || error.status !== 400) return false;
+  // These exact handler branches precede profile and secret writes. Later
+  // *_failed responses can follow partial writes and are deliberately absent.
+  return path === "/discord/configs" && error.code === "invalid_discord_config"
+    || path === "/youtube/outputs" && error.code === "invalid_youtube_output";
 }
 
 function notApplicable(): ActionEvaluation {

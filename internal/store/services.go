@@ -109,14 +109,15 @@ type ServiceRegistration struct {
 }
 
 type ServiceMetadataUpdate struct {
-	ServiceName      string
-	Description      string
-	Host             string
-	Port             int
-	SSLEnabled       bool
-	PublicURL        string
-	Endpointless     bool
-	PreserveEndpoint bool
+	ExpectedMetadataRevision *string
+	ServiceName              string
+	Description              string
+	Host                     string
+	Port                     int
+	SSLEnabled               bool
+	PublicURL                string
+	Endpointless             bool
+	PreserveEndpoint         bool
 }
 
 type ServiceHeartbeat struct {

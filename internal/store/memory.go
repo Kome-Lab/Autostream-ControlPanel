@@ -64,6 +64,9 @@ func (s *MemoryStreamStore) ListStreams(ctx context.Context) ([]Stream, error) {
 		if stream.DeletedAt != nil {
 			continue
 		}
+		if stream.SettingsRevision == "" {
+			stream.SettingsRevision = UnconfiguredStreamSettingsRevision
+		}
 		items = append(items, stream)
 	}
 	return items, nil
@@ -134,7 +137,7 @@ func (s *MemoryStreamStore) CreateStream(ctx context.Context, name string) (Stre
 		return Stream{}, err
 	}
 	now := time.Now().UTC()
-	stream := Stream{ID: newUUID(), Name: name, Status: "created", CreatedAt: now, UpdatedAt: now}
+	stream := Stream{ID: newUUID(), Name: name, Status: "created", CreatedAt: now, UpdatedAt: now, SettingsRevision: UnconfiguredStreamSettingsRevision}
 	s.mu.Lock()
 	s.streams[stream.ID] = stream
 	s.mu.Unlock()
@@ -150,6 +153,9 @@ func (s *MemoryStreamStore) GetStream(ctx context.Context, id string) (Stream, e
 	stream, ok := s.streams[id]
 	if !ok {
 		return Stream{}, ErrNotFound
+	}
+	if stream.SettingsRevision == "" {
+		stream.SettingsRevision = UnconfiguredStreamSettingsRevision
 	}
 	return stream, nil
 }

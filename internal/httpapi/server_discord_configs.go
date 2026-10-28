@@ -8,24 +8,26 @@ import (
 	"strings"
 	"time"
 
+	"github.com/example/autostream-control-panel/internal/security"
 	"github.com/example/autostream-control-panel/internal/store"
 )
 
 type discordConfigRequest struct {
-	Name                 string `json:"name"`
-	ServiceID            string `json:"service_id"`
-	GuildID              string `json:"guild_id"`
-	VoiceChannelID       string `json:"voice_channel_id"`
-	TextChannelID        string `json:"text_channel_id"`
-	BotToken             string `json:"bot_token"`
-	CaptionEnabled       *bool  `json:"caption_enabled"`
-	STTProfileID         string `json:"stt_profile_id"`
-	ReconnectEnabled     *bool  `json:"reconnect_enabled"`
-	ReconnectMaxAttempts int    `json:"reconnect_max_attempts"`
-	ReconnectBaseDelay   string `json:"reconnect_base_delay"`
-	ReconnectMaxDelay    string `json:"reconnect_max_delay"`
-	AudioForwardEnabled  *bool  `json:"audio_forward_enabled"`
-	Config               any    `json:"config"`
+	ExpectedUpdatedAt    json.RawMessage `json:"expected_updated_at,omitempty"`
+	Name                 string          `json:"name"`
+	ServiceID            string          `json:"service_id"`
+	GuildID              string          `json:"guild_id"`
+	VoiceChannelID       string          `json:"voice_channel_id"`
+	TextChannelID        string          `json:"text_channel_id"`
+	BotToken             string          `json:"bot_token"`
+	CaptionEnabled       *bool           `json:"caption_enabled"`
+	STTProfileID         string          `json:"stt_profile_id"`
+	ReconnectEnabled     *bool           `json:"reconnect_enabled"`
+	ReconnectMaxAttempts int             `json:"reconnect_max_attempts"`
+	ReconnectBaseDelay   string          `json:"reconnect_base_delay"`
+	ReconnectMaxDelay    string          `json:"reconnect_max_delay"`
+	AudioForwardEnabled  *bool           `json:"audio_forward_enabled"`
+	Config               any             `json:"config"`
 }
 
 type discordConfigResponse struct {
@@ -130,6 +132,10 @@ func (s *Server) updateDiscordConfig(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
 		return
 	}
+	expected, err := parseExpectedUpdatedAt(body.ExpectedUpdatedAt)
+	if writeResourceUpdateRevisionError(w, err) {
+		return
+	}
 	id := r.PathValue("id")
 	existing, err := s.profiles.GetProfile(r.Context(), store.ProfileDiscordConfig, id)
 	if errors.Is(err, store.ErrNotFound) {
@@ -153,27 +159,23 @@ func (s *Server) updateDiscordConfig(w http.ResponseWriter, r *http.Request) {
 		config["bot_token_secret_name"] = existingSecret
 		config["bot_token_fingerprint"] = configString(existing.Config, "bot_token_fingerprint")
 	}
+	changes := []store.SecretWrite{}
 	if strings.TrimSpace(body.BotToken) != "" {
 		secretName := discordBotTokenSecretName(id)
-		status, err := s.secrets.UpdateSecret(r.Context(), secretName, body.BotToken)
-		if errors.Is(err, store.ErrSecretKeyRequired) {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "secret_encryption_key_required"})
-			return
-		}
-		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"code": "store_discord_bot_token_failed"})
-			return
-		}
+		changes = append(changes, store.SecretWrite{Name: secretName, Value: body.BotToken})
 		config["bot_token_secret_name"] = secretName
-		config["bot_token_fingerprint"] = status.Fingerprint
+		config["bot_token_fingerprint"] = security.SecretFingerprint(body.BotToken)
 	}
-	profile, err := s.profiles.UpdateProfile(r.Context(), store.ProfileDiscordConfig, id, body.Name, config)
+	profile, err := store.UpdateProfileWithRevision(r.Context(), s.profiles, s.secrets, store.ProfileDiscordConfig, id, store.ProfileUpdate{Name: body.Name, Config: config, ExpectedUpdatedAt: expected, SecretChanges: changes})
+	if writeResourceUpdateRevisionError(w, err) {
+		return
+	}
 	if errors.Is(err, store.ErrNotFound) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
 		return
 	}
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "update_discord_config_failed"})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "update_discord_config_failed"})
 		return
 	}
 	current := currentFromContext(r.Context())

@@ -15,7 +15,7 @@ import { useAppSettings, useResourceData } from "@/features/queries";
 import { createObservabilityActionController, findRefreshedObservabilityPlan, type ObservabilityActionExecutionResult, type ObservabilityActionPlan } from "@/features/observability/action-policy";
 import { type ResourceDefinition } from "@/features/resources/resource-config";
 import { createResourceActionController } from "@/features/resources/resource-action-controller";
-import { mutateResourceAction, refreshResourceAction, resourceActionStateSnapshot, resourcePermissionSnapshot } from "@/features/resources/resource-action-runtime";
+import { mutateResourceAction, refreshResourceAction, revalidateResourceAction, resourceActionStateSnapshot, resourcePermissionSnapshot } from "@/features/resources/resource-action-runtime";
 import { hasPermission } from "@/lib/auth/permissions";
 import type { CurrentUser } from "@/types/domain";
 import { type ResourceAccess, type ResourceRow } from "./resource-form-types";
@@ -58,8 +58,9 @@ export function GenericResourcePanel({ resource, access, currentUser }: { resour
   const resourceActionController = useMemo(() => createResourceActionController({
     getPermissions: () => resourcePermissionSnapshot(queryClient),
     getState: (intent) => resourceActionStateSnapshot(queryClient, intent),
-    refresh: (intent) => refreshResourceAction(queryClient, intent),
-    mutate: mutateResourceAction,
+    refresh: (intent, signal) => refreshResourceAction(queryClient, intent, signal),
+    revalidate: (intent, signal) => revalidateResourceAction(queryClient, intent, signal),
+    mutate: (request) => mutateResourceAction(request, queryClient),
   }), [queryClient]);
   const historyMutation = useMutation<ResourceRow[], Error, void>({
     mutationFn: async () => {
@@ -127,9 +128,7 @@ export function GenericResourcePanel({ resource, access, currentUser }: { resour
   return (
     <DetailSection title={copy.title} description={copy.description} actions={<div className="flex items-center gap-2">
           <Button variant="outline" size="sm" aria-busy={query.isFetching} disabled={query.isFetching} onClick={() => {
-            void query.refetch().then((result) => {
-              if (result.isSuccess) resourceActionController.reconcile();
-            });
+            void query.refetch();
           }}>
             <RefreshCcw className={query.isFetching ? "size-4 animate-spin motion-reduce:animate-none" : "size-4"} aria-hidden="true" />
             {locale === "ja" ? "更新" : "Refresh"}
@@ -139,9 +138,7 @@ export function GenericResourcePanel({ resource, access, currentUser }: { resour
       <div className="space-y-4">
         {query.isFetching && query.data !== undefined && !quietRefresh ? <p role="status" className="text-sm text-muted-foreground">{locale === "ja" ? "取得済みデータを表示しながら更新中です。" : "Refreshing; showing previously received data."}</p> : null}
         {query.isError ? <QueryErrorNotice onRetry={() => {
-          void query.refetch().then((result) => {
-            if (result.isSuccess) resourceActionController.reconcile();
-          });
+          void query.refetch();
         }} /> : null}
         {resource.form === "security-settings" ? <SecuritySettingsEditor resource={resource} data={query.data} loading={query.isLoading} disabled={!access.update} controller={resourceActionController} /> : null}
         {resource.form && resource.form !== "security-settings" ? <CreateResourceForm resource={resource} allowed={access.create} permission={resource.permissions?.create} controller={resourceActionController} /> : null}

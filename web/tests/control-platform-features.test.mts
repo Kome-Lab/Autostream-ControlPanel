@@ -161,7 +161,7 @@ test("cover idempotency keys retain cryptographic UUID v4 semantics without rand
   );
 });
 
-test("ambiguous cover state blocks resend until a read-only reconciliation refresh", async () => {
+test("accepted confirming cover state needs its matching applied or failed read-only receipt", async () => {
 	const requests: ReturnType<typeof buildVideoCoverAction>[] = [];
 	const controller = createVideoCoverActionController(
 		() => ({ status: "ready", permissions: ["streams.hide_cover"] }),
@@ -170,11 +170,16 @@ test("ambiguous cover state blocks resend until a read-only reconciliation refre
 	const originalState: VideoCoverState = { stream_id: "stream-1", job_generation: 9, desired_active: true, desired_revision: 12, applied_active: true, applied_revision: 12, status: "applied", pipeline_order: [], cover_watermark_independent: true };
 	const original = buildVideoCoverAction(false, originalState, "hide-reconcile", true);
 	assert.equal((await controller.issueRequest(original)).sent, true);
-	controller.holdForReconciliation();
+	const accepted: VideoCoverState = { ...originalState, desired_active: false, desired_revision: 13, status: "confirming" };
+	controller.holdForReconciliation(accepted);
 	assert.equal((await controller.issueRequest(original)).sent, false);
 	assert.deepEqual(requests, [original]);
-	controller.reconcile();
+	assert.equal(controller.reconcile(), false);
+	assert.equal(controller.reconcile({ ...accepted, desired_revision: 14, status: "failed" }), false);
+	assert.equal(controller.reconcile({ ...accepted, status: "applied", applied_active: false, applied_revision: 13 }), true);
 	assert.equal(controller.unresolved, false);
+	controller.holdForReconciliation(accepted);
+	assert.equal(controller.reconcile({ ...accepted, status: "failed" }), true);
 });
 
 test("backend cover rejection is one request with no automatic resend", async () => {

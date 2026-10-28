@@ -240,6 +240,11 @@ func (r *SQLRepository) CreateStream(ctx context.Context, userID string, input C
 	if err = store.UpsertStreamSettingsTx(ctx, tx, stream.ID, streamSettings, now); err != nil {
 		return store.Stream{}, Settings{}, err
 	}
+	var storedSettingsAt time.Time
+	if err = tx.QueryRowContext(ctx, `SELECT updated_at FROM stream_settings WHERE stream_id=?`, stream.ID).Scan(&storedSettingsAt); err != nil {
+		return store.Stream{}, Settings{}, err
+	}
+	stream.SettingsRevision = store.StreamSettingsRevisionFromTime(storedSettingsAt)
 	if err = tx.Commit(); err != nil {
 		return store.Stream{}, Settings{}, err
 	}

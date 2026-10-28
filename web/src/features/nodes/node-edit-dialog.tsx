@@ -9,6 +9,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useI18n } from "@/components/admin/i18n-provider";
 import type { WorkerNode } from "@/types/domain";
 import { type NodeEditForm, nodeIdentity, editNodeApiURL } from "./node-registration-model";
+import { hasNodeMetadataRevision } from "./node-metadata-edit";
 
 
 
@@ -22,6 +23,8 @@ export function NodeEditDialog({
   editFormValid,
   updatePending,
   submitEditNode,
+  updateError,
+  refreshNode,
   t,
 }: {
   editingNode: WorkerNode | null;
@@ -33,17 +36,20 @@ export function NodeEditDialog({
   editFormValid: boolean;
   updatePending: boolean;
   submitEditNode: () => void;
+  updateError?: string;
+  refreshNode: () => void;
   t: ReturnType<typeof useI18n>["t"]
 }) {
   const uiText = useUICopy();
+  const { locale } = useI18n();
   return (
-<Dialog open={Boolean(editingNode)} onOpenChange={(open) => (!open ? setEditingNode(null) : undefined)}>
+<Dialog open={Boolean(editingNode)} onOpenChange={(open) => (!open && !updatePending ? setEditingNode(null) : undefined)}>
         <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>{uiText("Nodeを編集")}</DialogTitle>
             <DialogDescription>{uiText("Node IDとNode typeは変更できません。接続先を変えた場合は必要に応じてNode Agent側の設定も更新してください。")}</DialogDescription>
           </DialogHeader>
-          <div className="grid gap-4">
+          <fieldset className="grid gap-4" disabled={updatePending}>
             <div className="grid gap-2">
               <label className="text-sm font-medium">Node ID</label>
               <Input value={editingNode ? nodeIdentity(editingNode) : ""} disabled />
@@ -80,12 +86,17 @@ export function NodeEditDialog({
               <label className="text-sm font-medium">{uiText("説明")}</label>
               <Textarea value={editForm.description} onChange={(event) => setEditForm((current) => ({ ...current, description: event.target.value }))} rows={3} />
             </div>
-          </div>
+          </fieldset>
+          {updateError ? <p role="alert" className="text-sm text-destructive">{updateError}</p> : null}
+          {editingNode && !hasNodeMetadataRevision(editingNode) ? <p role="status" className="text-sm text-muted-foreground">{locale === "ja" ? "編集開始時の設定を確認できないため保存できません。最新状態を確認してから取り消し、再編集してください。" : "The edit-start configuration is unavailable. Refresh, cancel and edit again before saving."}</p> : null}
           <DialogFooter>
-            <Button variant="outline" onClick={() => setEditingNode(null)}>
+            <Button variant="outline" onClick={refreshNode} disabled={updatePending}>
+              {locale === "ja" ? "最新状態を確認" : "Refresh latest state"}
+            </Button>
+            <Button variant="outline" onClick={() => setEditingNode(null)} disabled={updatePending}>
               {t("cancel")}
             </Button>
-            <Button onClick={submitEditNode} disabled={!allowed || !editFormValid || updatePending}>
+            <Button onClick={submitEditNode} disabled={!allowed || !editFormValid || updatePending || !editingNode || !hasNodeMetadataRevision(editingNode)}>
               {updatePending ? uiText("保存中") : uiText("保存")}
             </Button>
           </DialogFooter>

@@ -28,6 +28,7 @@ export type Stream = {
   started_at?: string;
   ended_at?: string;
   updated_at?: string;
+  settings_revision?: string;
   created_at?: string;
   deleted_at?: string;
   discord_config_id?: string;
@@ -51,6 +52,7 @@ export type Stream = {
 
 export type WorkerNode = {
   id: string;
+  metadata_revision?: string;
   service_id?: string;
   service_type: string;
   service_name: string;

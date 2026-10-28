@@ -3,8 +3,10 @@ import { readFileSync } from "node:fs";
 import { register } from "node:module";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { QueryClient } from "@tanstack/react-query";
+import { QueryClient, type QueryKey } from "@tanstack/react-query";
 import ts from "typescript";
+import type { WorkerNode } from "../src/types/domain.ts";
+import type { AllowedWorkerRestartOpen, WorkerRestartController } from "../src/features/workers/workers-action-controller.ts";
 
 
 const resolverSource = [
@@ -106,20 +108,24 @@ export function workerCompositeTotalityIssues(source: string) {
   return [...issues].sort();
 }
 
-export function restartHarness(options = {}) {
+export function restartHarness(options: Readonly<{
+  invalidateFailure?: boolean;
+  fetchFailure?: boolean;
+  post?: (path: string) => unknown | Promise<unknown>;
+}> = {}) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  let freshWorkers = [worker("worker-1")];
+  let freshWorkers: unknown = [worker("worker-1")];
   let gets = 0;
   let posts = 0;
   let invalidations = 0;
-  const postInvocations = [];
-  const invalidatedKeys = [];
+  const postInvocations: { path: string; argumentCount: number }[] = [];
+  const invalidatedKeys: (QueryKey | undefined)[] = [];
   queryClient.setQueryData(["auth", "me"], auth(["workers.restart"]));
   queryClient.setQueryData(["workers"], freshWorkers);
   const originalInvalidate = queryClient.invalidateQueries.bind(queryClient);
   queryClient.invalidateQueries = async (filters) => {
     invalidations += 1;
-    invalidatedKeys.push(filters.queryKey);
+    invalidatedKeys.push(filters!.queryKey);
     if (options.invalidateFailure) throw new TypeError("RAW INVALIDATION MARKER");
     return originalInvalidate({ ...filters, refetchType: "none" });
   };
@@ -142,13 +148,13 @@ export function restartHarness(options = {}) {
     postInvocations,
     invalidatedKeys,
     calls: () => ({ gets, posts, invalidations }),
-    setAuth: (permissions) => queryClient.setQueryData(["auth", "me"], auth(permissions)),
-    setCachedWorkers: (workers) => queryClient.setQueryData(["workers"], workers),
-    setFreshWorkers: (workers) => { freshWorkers = workers; },
+    setAuth: (permissions: readonly string[]) => queryClient.setQueryData(["auth", "me"], auth(permissions)),
+    setCachedWorkers: (workers: unknown) => queryClient.setQueryData(["workers"], workers),
+    setFreshWorkers: (workers: unknown) => { freshWorkers = workers; },
   };
 }
 
-export function configurationHarness(options = {}) {
+export function configurationHarness(options: Readonly<{ get?: (path: string) => unknown | Promise<unknown> }> = {}) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   let gets = 0;
   queryClient.setQueryData(["auth", "me"], auth(["service_health.read"]));
@@ -163,25 +169,26 @@ export function configurationHarness(options = {}) {
     queryClient,
     controller,
     calls: () => gets,
-    setAuth: (permissions) => queryClient.setQueryData(["auth", "me"], auth(permissions)),
+    setAuth: (permissions: readonly string[]) => queryClient.setQueryData(["auth", "me"], auth(permissions)),
   };
 }
 
-export function allowedOpen(controller, target) {
+export function allowedOpen(controller: WorkerRestartController, target: WorkerNode): AllowedWorkerRestartOpen {
   const result = controller.open(target);
   assert.equal(result.kind, "allowed");
+  assert.ok(result.kind === "allowed");
   return result;
 }
 
-export function worker(id, name = "Worker", serviceType = "worker") {
-  return { service_id: id, service_type: serviceType, service_name: name, status: "online", health_status: "healthy" };
+export function worker(id: string, name = "Worker", serviceType = "worker"): WorkerNode {
+  return { id, service_id: id, service_type: serviceType, service_name: name, status: "online", health_status: "healthy" };
 }
 
-export function auth(permissions) {
+export function auth(permissions: readonly string[]) {
   return { user: { id: "user-1", username: "operator" }, permissions };
 }
 
-export function configuration(id, yaml) {
+export function configuration(id: string, yaml: string) {
   return {
     node: worker(id, `Node ${id}`),
     node_api_url: `https://${id}.example.invalid`,
@@ -191,18 +198,18 @@ export function configuration(id, yaml) {
   };
 }
 
-export function apiError(status, code) {
+export function apiError(status: number, code: string) {
   return Object.assign(new Error("RAW API MARKER"), { name: "APIError", status, code, responseContentType: "application/json" });
 }
 
 export function deferred() {
-  let resolve;
-  let reject;
-  const promise = new Promise((resolver, rejecter) => { resolve = resolver; reject = rejecter; });
+  let resolve!: (value?: unknown) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<unknown>((resolver, rejecter) => { resolve = resolver; reject = rejecter; });
   return { promise, resolve, reject };
 }
 
-export async function waitFor(predicate) {
+export async function waitFor(predicate: () => boolean) {
   for (let attempt = 0; attempt < 50; attempt += 1) {
     if (predicate()) return;
     await new Promise((resolve) => setImmediate(resolve));

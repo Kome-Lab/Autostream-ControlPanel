@@ -1,5 +1,7 @@
 // Fixed UI copy. Interpolated values retain their original meaning.
 export const messages = {
+  "設定が更新されています。編集中の入力は保持しています。": "Settings have changed. Your draft has been kept.",
+  "入力を破棄して最新の設定を読み込む": "Discard draft and load current settings",
   "保存しました。": "Saved.",
   "テストメールを送信しました。": "Test email sent.",
   "基本設定": "General settings",

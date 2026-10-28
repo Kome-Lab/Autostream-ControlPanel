@@ -1,5 +1,7 @@
 // Fixed UI copy. Interpolated values retain their original meaning.
+import { mediaUploadMessages } from "./media-upload";
 export const messages = {
+  ...mediaUploadMessages,
   "担当EncoderとWorkerを選択して、配信経路と枠をまとめて保存します。": "Select an Encoder and Worker to save the stream and its assignments together.",
   "担当Workerを選択してください。": "Select a Worker.",
   "担当Encoderを選択してください。": "Select an Encoder.",
@@ -100,7 +102,7 @@ export const messages = {
   "再生中": "Playing",
   "再生失敗": "Playback failed",
   "再接続中": "Reconnecting",
-  "準備中": "Staging",
+  "準備中": "Preparing",
   "VC参加者": "Voice participants",
   "（発言中）": "(speaking)",
   "設定が変わりました。再読込してから保存してください。": "Settings changed. Reload before saving.",

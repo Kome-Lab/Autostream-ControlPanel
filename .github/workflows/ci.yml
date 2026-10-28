@@ -90,7 +90,7 @@ jobs:
       ST_PORT_UPDATER_SHA: 9a9af039795adbbe9db786da4980d17ef195e525
       # Legacy ST-PORT Contracts source is retained for the fixed Updater application.
       ST_PORT_CONTRACTS_SHA: 1550fab9220f3a5d706543e5caad3ec57d078531
-      CONTROL_PANEL_CONTRACTS_SHA: f62ddfaf1144d502966b2a58e3a93133cfbfded0
+      CONTROL_PANEL_CONTRACTS_SHA: 2235c0da353922f322d4b02d824a51e07400027a
       ST_PORT_WORKER_SHA: feb5b8f2705bc6feb4c4b7599e2f302a73a36f54
       GOMAXPROCS: "2"
     outputs:
@@ -263,6 +263,19 @@ jobs:
           jq -e \
             'select(.Action == "pass" and .Package == "github.com/example/autostream-control-panel/internal/store" and ((.Test // "") == ""))' \
             "${result}" > /dev/null
+          mkdir -p "${RUNNER_TEMP}/polling-create-upload-sql-evidence"
+          store_parent_inventory="${RUNNER_TEMP}/polling-create-upload-sql-evidence/store-parent-inventory.json"
+          test ! -e "${store_parent_inventory}"
+          python3 -B scripts/ci/verify-polling-create-upload-evidence.py sql-store > "${store_parent_inventory}"
+          cat "${store_parent_inventory}"
+          jq -s -e \
+            --arg package github.com/example/autostream-control-panel/internal/store \
+            --argjson required "$(jq -c '.parents' "${store_parent_inventory}")" \
+            '. as $events | all($required[]; . as $name |
+              ([$events[] | select(.Package==$package and .Test==$name and .Action=="run")]|length)==1 and
+              ([$events[] | select(.Package==$package and .Test==$name and .Action=="pass")]|length)==1 and
+              ([$events[] | select(.Package==$package and .Test==$name and (.Action=="skip" or .Action=="fail"))]|length)==0)' \
+            "${result}" >/dev/null
       - name: Verify UI188 atomic roles, cover snapshots, stop ownership, and safe deletion with MariaDB
         shell: bash
         env:
@@ -280,6 +293,50 @@ jobs:
           jq -s -e '([.[] | select(.Action=="skip" or .Action=="fail")]|length)==0 and ([.[]|select(.Action=="pass" and .Test=="TestUI188MariaDBAtomicCreateCoverSnapshotsPreviewAndStopReceipt")]|length)==1' "${result}" >/dev/null
           python3 -B scripts/ci/ui188-r4-chain/test_artifact_transport.py
           python3 -B scripts/ci/ui188-r4-chain/test_archive_oracle.py
+      - name: Prepare Node for SQL-backed UI witnesses
+        timeout-minutes: 5
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 26
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install fixed SQL UI witness dependencies
+        timeout-minutes: 5
+        working-directory: web
+        run: npm ci
+      - name: Prepare and verify Japanese SQL UI witness fonts
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y fontconfig fonts-noto-cjk=1:20230817+repack1-3
+          fc-list -q ':lang=ja'
+          test -x /usr/bin/google-chrome
+      - name: Verify polling, upload recovery, and create CAS against isolated MariaDB
+        timeout-minutes: 10
+        shell: bash
+        env:
+          AUTOSTREAM_MARIADB_TEST_DSN: autostream_ci:autostream-ci-password@tcp(127.0.0.1:3306)/autostream_ci?parseTime=true
+          AUTOSTREAM_CREATE_PAYLOAD_EVIDENCE_DIR: ${{ runner.temp }}/polling-create-upload-sql-evidence/create-payload
+        run: bash scripts/ci/test-polling-create-upload-mariadb.sh http
+      - name: Verify actual Next UI, HTTP handlers, and MariaDB upload recovery
+        timeout-minutes: 10
+        shell: bash
+        env:
+          AUTOSTREAM_SQL_UI_BROWSER: "1"
+          AUTOSTREAM_MARIADB_TEST_DSN: autostream_ci:autostream-ci-password@tcp(127.0.0.1:3306)/autostream_ci?parseTime=true
+          AUTOSTREAM_BROWSER_PATH: /usr/bin/google-chrome
+          AUTOSTREAM_SQL_UI_EVIDENCE_DIR: ${{ runner.temp }}/polling-create-upload-sql-evidence/browser
+        run: bash scripts/ci/test-polling-create-upload-mariadb.sh browser
+      - name: Upload SQL polling, create payload, and actual browser evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: polling-create-upload-sql-evidence-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/polling-create-upload-sql-evidence/
+          if-no-files-found: error
+          retention-days: 14
       - name: Test MariaDB OAuth and Configure Token migrations
         shell: bash
         env:
@@ -324,6 +381,14 @@ jobs:
           jq -e \
             'select(.Action == "pass" and .Package == "github.com/example/autostream-control-panel/internal/database" and ((.Test // "") == ""))' \
             "${result}" > /dev/null
+          jq -s -e \
+            --arg package github.com/example/autostream-control-panel/internal/database \
+            --arg name TestMariaDBStreamSettingsRevisionConcurrentWritersAndLifecycleIsolation \
+            '. as $events |
+              ([$events[] | select(.Package==$package and .Test==$name and .Action=="run")]|length)==1 and
+              ([$events[] | select(.Package==$package and .Test==$name and .Action=="pass")]|length)==1 and
+              ([$events[] | select(.Package==$package and .Test==$name and (.Action=="skip" or .Action=="fail"))]|length)==0' \
+            "${result}" >/dev/null
       - name: Test backup script with root-owned Linux fixtures
         run: |
           docker run --rm \
@@ -762,6 +827,9 @@ jobs:
         run: node --no-warnings --test tests/ui-foundation-status.test.mts
       - name: Test control-platform web semantic witnesses
         run: npm run test:control-platform
+      - name: Require exact polling, create, upload and live-cover unit witnesses
+        timeout-minutes: 5
+        run: bash ../scripts/ci/test-polling-create-upload-web.sh unit
       - name: Prepare and verify Japanese browser fonts
         run: |
           set -euo pipefail
@@ -788,6 +856,19 @@ jobs:
           if-no-files-found: warn
       - name: Test Observability and Updater UI operation witnesses
         run: npm run test:operation-witnesses
+      - name: Require actual upload and related-screen browser witnesses
+        timeout-minutes: 15
+        env:
+          AUTOSTREAM_BROWSER_PATH: /usr/bin/google-chrome
+        run: bash ../scripts/ci/test-polling-create-upload-web.sh browser
+      - name: Upload polling, create, upload and related-browser evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: polling-create-upload-web-evidence-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/polling-create-upload-web-evidence/
+          if-no-files-found: error
+          retention-days: 14
       - name: Test foundation migration action denominator
         run: npm run test:foundation-migrations
       - name: Test UI Foundation operations and complete action denominator

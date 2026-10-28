@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/example/autostream-control-panel/internal/store"
 	"github.com/example/autostream-control-panel/internal/streamvisual"
@@ -20,6 +21,7 @@ func (s *Server) registerStreamRoutes() {
 	s.mux.HandleFunc("GET /archive/processing-streams", s.requirePermission("archives.read", s.listArchiveProcessingStreams))
 	s.mux.HandleFunc("POST /streams", s.requirePermission("streams.create", s.createStream))
 	s.mux.HandleFunc("POST /media-assets/upload-sessions", s.requireAnyPermission([]string{"streams.create", "streams.update"}, s.createMediaUploadSession))
+	s.mux.HandleFunc("GET /media-assets/upload-sessions/{session_id}/assets", s.requireAnyPermission([]string{"streams.create", "streams.update"}, s.inspectMediaUploadOperation))
 	s.mux.HandleFunc("POST /media-assets", s.requireAnyPermission([]string{"streams.create", "streams.update"}, s.uploadMediaAsset))
 	s.mux.HandleFunc("GET /media-assets/{id}", s.requireAnyPermission([]string{"streams.create", "streams.update"}, s.getMediaAsset))
 	s.mux.HandleFunc("POST /media-assets/{id}/variants", s.requireAnyPermission([]string{"streams.create", "streams.update"}, s.createMediaAssetVariant))
@@ -119,16 +121,17 @@ func (s *Server) listArchiveProcessingStreams(w http.ResponseWriter, r *http.Req
 }
 
 type streamSettingsRequest struct {
-	Name               string  `json:"name,omitempty"`
-	ScheduledStartAt   string  `json:"scheduled_start_at,omitempty"`
-	ScheduledEndAt     string  `json:"scheduled_end_at,omitempty"`
-	DiscordConfigID    string  `json:"discord_config_id,omitempty"`
-	AutoStartTrigger   string  `json:"auto_start_trigger,omitempty"`
-	EncoderProfileID   string  `json:"encoder_profile_id,omitempty"`
-	CaptionProfileID   string  `json:"caption_profile_id,omitempty"`
-	OverlayProfileID   string  `json:"overlay_profile_id,omitempty"`
-	EncoderAudioGainDB float64 `json:"encoder_audio_gain_db"`
-	ArchiveProfileID   string  `json:"archive_profile_id,omitempty"`
+	ExpectedSettingsRevision *string `json:"expected_settings_revision,omitempty"`
+	Name                     string  `json:"name,omitempty"`
+	ScheduledStartAt         string  `json:"scheduled_start_at,omitempty"`
+	ScheduledEndAt           string  `json:"scheduled_end_at,omitempty"`
+	DiscordConfigID          string  `json:"discord_config_id,omitempty"`
+	AutoStartTrigger         string  `json:"auto_start_trigger,omitempty"`
+	EncoderProfileID         string  `json:"encoder_profile_id,omitempty"`
+	CaptionProfileID         string  `json:"caption_profile_id,omitempty"`
+	OverlayProfileID         string  `json:"overlay_profile_id,omitempty"`
+	EncoderAudioGainDB       float64 `json:"encoder_audio_gain_db"`
+	ArchiveProfileID         string  `json:"archive_profile_id,omitempty"`
 	// Direct archive fields predate archive_profile_id. Keep their presence so a
 	// normal profile-based edit can omit them without erasing legacy state, while
 	// an API caller can still deliberately clear a field with "" or false.
@@ -207,6 +210,10 @@ func (s *Server) createStream(w http.ResponseWriter, r *http.Request) {
 	body.Name = strings.TrimSpace(body.Name)
 	if body.Name == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "name_required"})
+		return
+	}
+	if utf8.RuneCountInString(body.Name) > 255 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "name_too_long"})
 		return
 	}
 	settings, code := streamSettingsFromRequest(body)

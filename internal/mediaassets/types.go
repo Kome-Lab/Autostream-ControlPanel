@@ -9,12 +9,12 @@ import (
 )
 
 const (
-	MaxUploadBytes    int64 = 20 * 1024 * 1024
-	MaxDecodedPixels        = 40_000_000
-	MaxImageSide            = 8192
-	ProcessorRevision       = 1
-	DraftRetention          = 24 * time.Hour
-	MaxStreamCoverUploads   = 4
+	MaxUploadBytes        int64 = 20 * 1024 * 1024
+	MaxDecodedPixels            = 40_000_000
+	MaxImageSide                = 8192
+	ProcessorRevision           = 1
+	DraftRetention              = 24 * time.Hour
+	MaxStreamCoverUploads       = 4
 )
 
 var (
@@ -44,24 +44,26 @@ type UploadSession struct {
 }
 
 type Asset struct {
-	ID                string     `json:"id"`
-	OwnerUserID       string     `json:"-"`
-	OwnerType         string     `json:"owner_type"`
-	OwnerID           string     `json:"owner_id"`
-	UploadSessionID   string     `json:"upload_session_id,omitempty"`
-	UsageType         string     `json:"usage_type"`
-	StorageKey        string     `json:"-"`
-	SHA256            string     `json:"sha256"`
-	MediaType         string     `json:"media_type"`
-	ByteSize          int64      `json:"byte_size"`
-	Width             int        `json:"width"`
-	Height            int        `json:"height"`
-	Opaque            bool       `json:"opaque"`
-	ProcessorRevision int        `json:"processor_revision"`
-	DeletedAt         *time.Time `json:"deleted_at,omitempty"`
-	RetentionUntil    *time.Time `json:"retention_until,omitempty"`
-	CreatedAt         time.Time  `json:"created_at"`
-	UpdatedAt         time.Time  `json:"updated_at"`
+	ID                       string     `json:"id"`
+	OwnerUserID              string     `json:"-"`
+	OwnerType                string     `json:"owner_type"`
+	OwnerID                  string     `json:"owner_id"`
+	UploadSessionID          string     `json:"upload_session_id,omitempty"`
+	ClientOperationID        string     `json:"client_operation_id,omitempty"`
+	ClientOperationSessionID string     `json:"-"`
+	UsageType                string     `json:"usage_type"`
+	StorageKey               string     `json:"-"`
+	SHA256                   string     `json:"sha256"`
+	MediaType                string     `json:"media_type"`
+	ByteSize                 int64      `json:"byte_size"`
+	Width                    int        `json:"width"`
+	Height                   int        `json:"height"`
+	Opaque                   bool       `json:"opaque"`
+	ProcessorRevision        int        `json:"processor_revision"`
+	DeletedAt                *time.Time `json:"deleted_at,omitempty"`
+	RetentionUntil           *time.Time `json:"retention_until,omitempty"`
+	CreatedAt                time.Time  `json:"created_at"`
+	UpdatedAt                time.Time  `json:"updated_at"`
 }
 
 type Variant struct {
@@ -85,12 +87,13 @@ type Variant struct {
 }
 
 type UploadInput struct {
-	SessionID   string
-	UserID      string
-	UsageType   string
-	Filename    string
-	ContentType string
-	Body        io.Reader
+	SessionID         string
+	ClientOperationID string
+	UserID            string
+	UsageType         string
+	Filename          string
+	ContentType       string
+	Body              io.Reader
 }
 
 type ProcessedImage struct {

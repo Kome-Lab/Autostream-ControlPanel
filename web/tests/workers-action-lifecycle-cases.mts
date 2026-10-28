@@ -179,7 +179,11 @@ test("Configuration distinguishes empty, malformed blocking error and safe manua
 });
 
 test("service_id-only Configuration becomes ready with a detached canonical node", async () => {
-  const sourceNode = worker("worker-real-shape-1", "Worker A");
+  // This response deliberately exercises the legacy wire boundary without an
+  // id; ordinary UI fixtures use the required canonical WorkerNode identity.
+  const { id: canonicalID, ...sourceNode } = worker("worker-real-shape-1", "Worker A");
+  assert.equal(canonicalID, "worker-real-shape-1");
+  assert.equal("id" in sourceNode, false);
   const harness = configurationHarness({
     get: async () => ({
       node: sourceNode,

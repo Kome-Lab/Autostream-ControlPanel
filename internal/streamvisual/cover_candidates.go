@@ -78,7 +78,7 @@ func (r *SQLRepository) resolveCoverCandidates(ctx context.Context, tx *sql.Tx, 
 	seen := map[string]bool{}
 	for _, input := range *update.CoverCandidates {
 		input.Name = strings.TrimSpace(input.Name)
-		if input.Name == "" || utf8.RuneCountInString(input.Name) > 128 {
+		if input.Name == "" || utf8.RuneCountInString(input.Name) > 255 {
 			return ErrInvalidSettings
 		}
 		candidateSettings := *next

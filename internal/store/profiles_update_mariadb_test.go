@@ -29,7 +29,7 @@ func TestMariaDBProfileUpdateZeroChangedReadsExistingRow(t *testing.T) {
 		t.Fatal(err)
 	}
 	var precision int
-	if err = db.QueryRowContext(ctx, `SELECT DATETIME_PRECISION FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='profiles' AND COLUMN_NAME='updated_at'`).Scan(&precision); err != nil || precision != 0 {
+	if err = db.QueryRowContext(ctx, `SELECT DATETIME_PRECISION FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='profiles' AND COLUMN_NAME='updated_at'`).Scan(&precision); err != nil || precision != 6 {
 		t.Fatalf("saved timestamp precision=%d err=%v", precision, err)
 	}
 	profiles := NewMariaDBProfileStore(db)

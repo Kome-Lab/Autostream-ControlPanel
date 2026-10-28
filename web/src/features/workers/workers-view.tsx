@@ -38,6 +38,7 @@ import { useI18n } from "@/components/admin/i18n-provider";
 import type { WorkerNode } from "@/types/domain";
 import { formatNodeMetricPercent, formatWorkerHeartbeat } from "./node-operational-display";
 import { buildWorkerRestartDescriptor } from "./workers-action-descriptors";
+import { readWorkerPermissions, readWorkerRestartAuthority } from "./workers-action-runtime";
 import { copyCanonicalWorkerWireValue } from "./workers-wire-normalizer";
 import {
   createWorkerRestartController,
@@ -104,11 +105,11 @@ export function WorkersView() {
   const serviceHealth = useServiceHealth(canReadServiceHealth);
   const queryClient = useQueryClient();
   const restartController = useMemo(
-    () => createWorkerRestartController({ queryClient }),
+    () => createWorkerRestartController({ queryClient, revalidate: readWorkerRestartAuthority }),
     [queryClient],
   );
   const configurationController = useMemo(
-    () => createWorkerConfigurationController({ queryClient }),
+    () => createWorkerConfigurationController({ queryClient, revalidatePermissions: readWorkerPermissions }),
     [queryClient],
   );
   const configurationSnapshot = useSyncExternalStore(

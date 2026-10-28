@@ -14,6 +14,7 @@ import { type ResourceDefinition } from "@/features/resources/resource-config";
 import { ResourceActionConfirmationHost } from "@/features/resources/resource-action-control";
 import { type ResourceActionController } from "@/features/resources/resource-action-controller";
 import { type ResourceActionIntent } from "@/features/resources/resource-action-descriptors";
+import { resourceSecurityMetadata } from "@/features/resources/resource-action-runtime";
 import { normalizeRows, rowString } from "./resource-values";
 import { isRecord, numberSetting, stringSetting, numberValue } from "./resource-values";
 import { NumberField, SelectField, Field, CheckboxList } from "./resource-input-fields";
@@ -29,6 +30,7 @@ type SecuritySettingsPayload = {
   remember_me_enabled: false;
   mfa_mode: string;
   mfa_required_roles: string[];
+  expected_updated_at: string;
 };
 
 export function SecuritySettingsEditor({ resource, data, loading, disabled, controller }: { resource: ResourceDefinition; data: unknown; loading: boolean; disabled: boolean; controller: ResourceActionController }) {
@@ -45,6 +47,9 @@ export function SecuritySettingsEditor({ resource, data, loading, disabled, cont
   const [mfaRequiredRoles, setMFARequiredRoles] = useState<string[]>([]);
   const [message, setMessage] = useState("");
   const [pending, setPending] = useState<ResourceActionIntent | null>(null);
+  const [baseline, setBaseline] = useState(() => resourceSecurityMetadata(data));
+  const [baselineUpdatedAt, setBaselineUpdatedAt] = useState(() => isRecord(data) && typeof data.updated_at === "string" ? data.updated_at : undefined);
+  const submittedSnapshots = useRef(new WeakMap<ResourceActionIntent, string>());
 
   const draftSnapshot = JSON.stringify([passwordMinLength, loginLockoutThreshold, sessionIdleTimeout, sessionAbsoluteLifetime, mfaMode, mfaRequiredRoles]);
   const [savedSnapshot, setSavedSnapshot] = useState(draftSnapshot);
@@ -57,6 +62,8 @@ export function SecuritySettingsEditor({ resource, data, loading, disabled, cont
     if (!isRecord(data) || dirtyRef.current) return;
     const handle = window.setTimeout(() => {
       if (dirtyRef.current) return;
+      setBaseline(resourceSecurityMetadata(data));
+      setBaselineUpdatedAt(typeof data.updated_at === "string" ? data.updated_at : undefined);
       setSavedSnapshot(JSON.stringify([String(numberSetting(data.password_min_length, 12)), String(numberSetting(data.login_lockout_threshold, 5)), String(numberSetting(data.session_idle_timeout_min, 30)), String(numberSetting(data.session_absolute_lifetime_h, 12)), stringSetting(data.mfa_mode, "disabled"), Array.isArray(data.mfa_required_roles) ? data.mfa_required_roles.map(String) : []]));
       setPasswordMinLength(String(numberSetting(data.password_min_length, 12)));
       setLoginLockoutThreshold(String(numberSetting(data.login_lockout_threshold, 5)));
@@ -97,6 +104,7 @@ export function SecuritySettingsEditor({ resource, data, loading, disabled, cont
           className="space-y-3"
           onSubmit={(event) => {
             event.preventDefault();
+            if (!baseline || !baselineUpdatedAt) return;
             const payload: SecuritySettingsPayload = {
               password_min_length: numberValue(passwordMinLength, 12),
               password_hash: "argon2id",
@@ -106,9 +114,12 @@ export function SecuritySettingsEditor({ resource, data, loading, disabled, cont
               remember_me_enabled: false,
               mfa_mode: mfaMode,
               mfa_required_roles: mfaRequiredRoles,
+              expected_updated_at: baselineUpdatedAt,
             };
             setMessage("");
-            setPending(Object.freeze({ id: "RES-40", payload: Object.freeze(payload), publicLabel: "Security policy" }));
+            const intent: ResourceActionIntent = Object.freeze({ id: "RES-40", row: Object.freeze({ ...baseline, updated_at: baselineUpdatedAt }), payload: Object.freeze(payload), publicLabel: "Security policy" });
+            submittedSnapshots.current.set(intent, draftSnapshot);
+            setPending(intent);
           }}
         >
           <fieldset disabled={disabled} className="space-y-3">
@@ -140,18 +151,26 @@ export function SecuritySettingsEditor({ resource, data, loading, disabled, cont
           />
           <p className="text-xs text-muted-foreground">{uiText("MFAポリシー有効時にロールを未選択で保存すると、全ユーザーが対象になります。")}</p>
           </fieldset>
-          <Button type="submit" disabled={Boolean(pending) || disabled} title={disabled ? requiredPermissionText(resource.permissions?.update, uiText) : undefined}>
+          <Button type="submit" disabled={Boolean(pending) || disabled || !baseline || !baselineUpdatedAt} title={disabled ? requiredPermissionText(resource.permissions?.update, uiText) : !baselineUpdatedAt ? t("confirmationRevalidationUnavailable") : undefined}>
             {uiText("保存")}</Button>
+          {!baselineUpdatedAt ? <p role="alert" className="text-sm text-destructive">{t("confirmationRevalidationUnavailable")}</p> : null}
           {disabled ? <p className="text-xs text-muted-foreground">{requiredPermissionText(resource.permissions?.update, uiText)}</p> : null}
           {message ? <p className="text-sm text-muted-foreground">{message}</p> : null}
           {pending ? (
             <ResourceActionConfirmationHost
               controller={controller}
               intent={pending}
-              onResult={(result) => {
+              onResult={(result, intent) => {
                 setMessage(resourceActionResultMessage(result, t, uiText("セキュリティ設定を保存しました。")));
                 if (result.kind === "succeeded") {
-                  setSavedSnapshot(draftSnapshot);
+                  const submittedSnapshot = submittedSnapshots.current.get(intent);
+                  if (submittedSnapshot === undefined) return;
+                  submittedSnapshots.current.delete(intent);
+                  if (isRecord(result.value) && typeof result.value.updated_at === "string" && result.value.updated_at) {
+                    setBaseline(resourceSecurityMetadata(result.value));
+                    setBaselineUpdatedAt(result.value.updated_at);
+                  }
+                  setSavedSnapshot(submittedSnapshot);
                   setPending(null);
                   void queryClient.invalidateQueries({ queryKey: ["resource", resource.path] });
                   void queryClient.invalidateQueries({ queryKey: ["auth", "mfa", "status"] });

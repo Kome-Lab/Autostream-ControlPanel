@@ -9,27 +9,29 @@ import (
 	"strings"
 	"time"
 
+	"github.com/example/autostream-control-panel/internal/security"
 	"github.com/example/autostream-control-panel/internal/store"
 )
 
 type youtubeOutputRequest struct {
-	Name                   string `json:"name"`
-	Mode                   string `json:"mode"`
-	RTMPURL                string `json:"rtmp_url"`
-	StreamKey              string `json:"stream_key"`
-	WatchURL               string `json:"watch_url"`
-	OAuthAccountID         string `json:"oauth_account_id"`
-	UseConfiguredStreamKey bool   `json:"use_configured_stream_key"`
-	RelayBindingID         string `json:"relay_binding_id"`
-	ReusableLiveStreamID   string `json:"reusable_live_stream_id"`
-	BroadcastTitleTemplate string `json:"broadcast_title_template"`
-	BroadcastDescription   string `json:"broadcast_description"`
-	PrivacyStatus          string `json:"privacy_status"`
-	LatencyPreference      string `json:"latency_preference"`
-	EnableAutoStart        *bool  `json:"enable_auto_start"`
-	EnableAutoStop         *bool  `json:"enable_auto_stop"`
-	CompleteOnStop         *bool  `json:"complete_on_stop"`
-	Config                 any    `json:"config"`
+	ExpectedUpdatedAt      json.RawMessage `json:"expected_updated_at,omitempty"`
+	Name                   string          `json:"name"`
+	Mode                   string          `json:"mode"`
+	RTMPURL                string          `json:"rtmp_url"`
+	StreamKey              string          `json:"stream_key"`
+	WatchURL               string          `json:"watch_url"`
+	OAuthAccountID         string          `json:"oauth_account_id"`
+	UseConfiguredStreamKey bool            `json:"use_configured_stream_key"`
+	RelayBindingID         string          `json:"relay_binding_id"`
+	ReusableLiveStreamID   string          `json:"reusable_live_stream_id"`
+	BroadcastTitleTemplate string          `json:"broadcast_title_template"`
+	BroadcastDescription   string          `json:"broadcast_description"`
+	PrivacyStatus          string          `json:"privacy_status"`
+	LatencyPreference      string          `json:"latency_preference"`
+	EnableAutoStart        *bool           `json:"enable_auto_start"`
+	EnableAutoStop         *bool           `json:"enable_auto_stop"`
+	CompleteOnStop         *bool           `json:"complete_on_stop"`
+	Config                 any             `json:"config"`
 }
 
 type youtubeOutputResponse struct {
@@ -137,6 +139,10 @@ func (s *Server) updateYouTubeOutput(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
 		return
 	}
+	expected, err := parseExpectedUpdatedAt(body.ExpectedUpdatedAt)
+	if writeResourceUpdateRevisionError(w, err) {
+		return
+	}
 	id := r.PathValue("id")
 	existing, err := s.profiles.GetProfile(r.Context(), store.ProfileYouTubeOutput, id)
 	if errors.Is(err, store.ErrNotFound) {
@@ -170,31 +176,27 @@ func (s *Server) updateYouTubeOutput(w http.ResponseWriter, r *http.Request) {
 	if existingSecret != "" && !staticRelayMode && strings.TrimSpace(body.StreamKey) == "" {
 		config["stream_key_secret_name"] = existingSecret
 	}
+	changes := []store.SecretWrite{}
 	if strings.TrimSpace(body.StreamKey) != "" {
 		secretName := youtubeOutputSecretName(id)
-		status, err := s.secrets.UpdateSecret(r.Context(), secretName, body.StreamKey)
-		if errors.Is(err, store.ErrSecretKeyRequired) {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "secret_encryption_key_required"})
-			return
-		}
-		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"code": "store_youtube_stream_key_failed"})
-			return
-		}
+		changes = append(changes, store.SecretWrite{Name: secretName, Value: body.StreamKey})
 		config["stream_key_secret_name"] = secretName
-		config["stream_key_fingerprint"] = status.Fingerprint
+		config["stream_key_fingerprint"] = security.SecretFingerprint(body.StreamKey)
 	}
-	profile, err := s.profiles.UpdateProfile(r.Context(), store.ProfileYouTubeOutput, id, body.Name, config)
+	if staticRelayMode && existingSecret != "" {
+		changes = append(changes, store.SecretWrite{Name: existingSecret, Value: ""})
+	}
+	profile, err := store.UpdateProfileWithRevision(r.Context(), s.profiles, s.secrets, store.ProfileYouTubeOutput, id, store.ProfileUpdate{Name: body.Name, Config: config, ExpectedUpdatedAt: expected, SecretChanges: changes})
+	if writeResourceUpdateRevisionError(w, err) {
+		return
+	}
 	if errors.Is(err, store.ErrNotFound) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
 		return
 	}
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "update_youtube_output_failed"})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "update_youtube_output_failed"})
 		return
-	}
-	if staticRelayMode && existingSecret != "" {
-		_, _ = s.secrets.UpdateSecret(r.Context(), existingSecret, "")
 	}
 	current := currentFromContext(r.Context())
 	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "youtube_outputs.update", ResourceType: "youtube_output", ResourceID: profile.ID, Result: "success", Metadata: map[string]any{"mode": normalizedYouTubeOutputMode(body.Mode), "stream_key_updated": strings.TrimSpace(body.StreamKey) != ""}})

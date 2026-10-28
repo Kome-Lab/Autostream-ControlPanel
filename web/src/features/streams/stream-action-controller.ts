@@ -12,24 +12,34 @@ import type { AdaptedAPIError } from "@/lib/foundation/api-errors/contracts";
 import { defaultAPIErrorRegistry, defineAPIErrorRegistry } from "@/lib/foundation/api-errors/registry";
 import { evaluateActionPermission, type PermissionSnapshot } from "@/lib/foundation/permissions/evaluator";
 import { isStreamValue, isConfirmedStreamStopOutcome } from "@/features/streams/stream-action-response";
+import { definitiveStreamCreateRejection, streamCreateErrorRegistry } from "@/features/streams/stream-create-errors";
+import { withBoundedActionRevalidation } from "@/lib/foundation/actions/bounded-revalidation";
+import { APIError } from "@/lib/api/client";
 
 export type StreamActionStateSnapshot = Readonly<{
   kind: "ready" | "missing" | "unknown";
   freshness: "fresh" | "refreshing" | "stale" | "unavailable";
   fingerprint?: string;
+  baselineChanged?: boolean;
+  authorityChange?: StreamAuthorityChange;
+  changedFields?: readonly StreamChangedField[];
 }>;
+
+export type StreamAuthorityChange = "settings" | "ownership" | "lifecycle" | "missing";
+export type StreamChangedField = "name" | "schedule" | "discord" | "youtube" | "encoding" | "caption" | "overlay" | "archive" | "audio" | "nodes";
+type StreamActionBlockDetails = Readonly<{ authorityChange?: StreamAuthorityChange; changedFields?: readonly StreamChangedField[] }>;
 
 export type StreamActionOpenResult =
   | Readonly<{ kind: "allowed"; intent: StreamActionIntent; descriptor: NonNullable<ReturnType<typeof buildStreamActionDescriptor>>; authority: string; typedToken?: string }>
-  | Readonly<{ kind: "blocked"; reason: StreamActionBlockedReason }>;
+  | (Readonly<{ kind: "blocked"; reason: StreamActionBlockedReason }> & StreamActionBlockDetails);
 
 export type AllowedStreamActionOpen = Extract<StreamActionOpenResult, { kind: "allowed" }>;
 
 export type StreamActionExecutionResult =
   | Readonly<{ kind: "succeeded"; value: unknown }>
-  | Readonly<{ kind: "failed"; error: AdaptedAPIError }>
+  | Readonly<{ kind: "failed"; error: AdaptedAPIError; retryAfterCorrection?: true }>
   | Readonly<{ kind: "outcome_unknown"; nextAction: "refresh-resource" | "inspect-audit" }>
-  | Readonly<{ kind: "blocked"; reason: StreamActionBlockedReason }>;
+  | (Readonly<{ kind: "blocked"; reason: StreamActionBlockedReason }> & StreamActionBlockDetails);
 
 export type StreamActionBlockedReason =
   | "invalid-intent" | "permission-denied" | "permission-unknown" | "not-applicable"
@@ -39,7 +49,7 @@ export type StreamActionBlockedReason =
 export type StreamActionController = Readonly<{
   evaluate: (intent: StreamActionIntent) => ActionEvaluation;
   open: (intent: StreamActionIntent) => Promise<StreamActionOpenResult>;
-  submit: (opened: AllowedStreamActionOpen, confirmation: Readonly<{ confirmed: boolean; typedValue?: string }>) => Promise<StreamActionExecutionResult>;
+  submit: (opened: AllowedStreamActionOpen, confirmation: Readonly<{ confirmed: boolean; typedValue?: string; onRevalidated?: () => void }>) => Promise<StreamActionExecutionResult>;
   cancel: (intent?: StreamActionIntent) => void;
   reconcile: (intent: StreamActionIntent) => void;
   reconcileStop: (intent: StreamActionIntent) => Promise<StreamActionExecutionResult>;
@@ -51,9 +61,10 @@ export type StreamActionControllerDependencies = Readonly<{
   getState: (intent: StreamActionIntent) => StreamActionStateSnapshot;
   mutate: (request: StreamActionRequest & Readonly<{ signal: AbortSignal }>) => Promise<unknown>;
   readStopOutcome?: (intent: StreamActionIntent) => Promise<unknown>;
+  revalidate?: (intent: StreamActionIntent, signal: AbortSignal) => Promise<Readonly<{ permissions: PermissionSnapshot; state: StreamActionStateSnapshot }>>;
 }>;
 
-type ActiveOperation = { generation: number; abort: AbortController; released: boolean };
+type ActiveOperation = { generation: number; abort: AbortController; released: boolean; sent: boolean };
 
 const deleteErrorRegistry = defineAPIErrorRegistry({
   codes: {
@@ -71,11 +82,11 @@ export function createStreamActionController(dependencies: StreamActionControlle
   const generations = new Map<string, number>();
   const unresolved = new Set<string>();
 
-  const evaluateBase = (intent: StreamActionIntent): ActionEvaluation => {
+  const evaluateBase = (intent: StreamActionIntent, proven?: Readonly<{ permissions: PermissionSnapshot; state: StreamActionStateSnapshot }>): ActionEvaluation => {
     const descriptor = buildStreamActionDescriptor(intent);
     if (!descriptor || !streamActionRequest(intent)) return notApplicable();
     if (!streamActionApplicable(intent)) return notApplicable();
-    const state = dependencies.getState(intent);
+    const state = proven?.state ?? dependencies.getState(intent);
     const constraint = state.kind === "missing"
       ? { kind: "not-applicable" as const, reasonKey: "actionStateBlocked" as const }
       : state.kind !== "ready" || state.freshness !== "fresh" || !state.fingerprint
@@ -83,7 +94,7 @@ export function createStreamActionController(dependencies: StreamActionControlle
         : { kind: "ready" as const };
     return evaluateActionPermission({
       requirement: descriptor.permissions ?? { kind: "none" },
-      snapshot: dependencies.getPermissions(),
+      snapshot: proven?.permissions ?? dependencies.getPermissions(),
       disclosure: "visible-denied",
       constraint,
     });
@@ -110,9 +121,10 @@ export function createStreamActionController(dependencies: StreamActionControlle
 
   const open = async (intent: StreamActionIntent): Promise<StreamActionOpenResult> => {
     const reason = evaluationReason(evaluate(intent));
-    if (reason) return blocked(reason);
+    if (reason) return blocked(reason, reason === "state-unavailable" || reason === "not-applicable" ? dependencies.getState(intent) : undefined);
     const descriptor = buildStreamActionDescriptor(intent);
     const state = dependencies.getState(intent);
+    if (state.baselineChanged) return blocked("authority-changed", state);
     if (!descriptor || state.kind !== "ready" || state.freshness !== "fresh" || !state.fingerprint) {
       return blocked("state-unavailable");
     }
@@ -129,7 +141,7 @@ export function createStreamActionController(dependencies: StreamActionControlle
 
   const submit = async (
     opened: AllowedStreamActionOpen,
-    confirmation: Readonly<{ confirmed: boolean; typedValue?: string }>,
+    confirmation: Readonly<{ confirmed: boolean; typedValue?: string; onRevalidated?: () => void }>,
   ): Promise<StreamActionExecutionResult> => {
     const scope = streamActionScope(opened.intent);
     if (!scope) return blocked("invalid-intent");
@@ -139,14 +151,26 @@ export function createStreamActionController(dependencies: StreamActionControlle
     const operation = acquire(scope);
     if (!operation) return blocked("duplicate");
     try {
-      const reason = evaluationReason(evaluateIgnoringPending(opened.intent));
-      if (reason) return blocked(reason);
-      const state = dependencies.getState(opened.intent);
+      let proven: Readonly<{ permissions: PermissionSnapshot; state: StreamActionStateSnapshot }> | undefined;
+      if (dependencies.revalidate) {
+        try {
+          proven = await withBoundedActionRevalidation((signal) => dependencies.revalidate!(opened.intent, signal), operation.abort.signal);
+        } catch {
+          return blocked(current(scope, operation) ? "state-unavailable" : "cancelled");
+        }
+      }
+      if (!current(scope, operation)) return blocked("cancelled");
+      const reason = evaluationReason(evaluateIgnoringPending(opened.intent, proven));
+      if (reason) return blocked(reason, reason === "state-unavailable" || reason === "not-applicable" ? proven?.state ?? dependencies.getState(opened.intent) : undefined);
+      const state = proven?.state ?? dependencies.getState(opened.intent);
+      if (state.baselineChanged) return blocked("authority-changed", state);
       if (state.kind !== "ready" || state.freshness !== "fresh" || !state.fingerprint) return blocked("state-unavailable");
-      if (state.fingerprint !== opened.authority) return blocked("authority-changed");
+      if (state.fingerprint !== opened.authority) return blocked("authority-changed", state);
       const requestValue = streamActionRequest(opened.intent);
       if (!requestValue || !current(scope, operation)) return blocked("cancelled");
+      confirmation.onRevalidated?.();
       try {
+        operation.sent = true;
         const value = await dependencies.mutate(Object.freeze({ ...requestValue, signal: operation.abort.signal }));
         if (!current(scope, operation)) return blocked("cancelled");
         if (opened.intent.id === "STR-05") {
@@ -158,8 +182,9 @@ export function createStreamActionController(dependencies: StreamActionControlle
         return Object.freeze({ kind: "succeeded", value });
       } catch (error) {
         if (!current(scope, operation)) return blocked("cancelled");
-        const adapted = adaptAPIError(error, opened.intent.id === "STR-10" ? { registry: deleteErrorRegistry } : undefined);
-        unresolved.add(scope);
+        const adapted = adaptAPIError(error, opened.intent.id === "STR-01" ? { registry: streamCreateErrorRegistry } : opened.intent.id === "STR-10" ? { registry: deleteErrorRegistry } : undefined);
+        const definiteRejection = definitiveStreamRejection(opened.intent, error);
+        if (!definiteRejection) unresolved.add(scope);
         if (["network", "timeout", "unavailable", "protocol", "unknown"].includes(adapted.kind)) {
           // A lost Stop response is reconciled by reads only. A completed row
           // is written by the server after the assigned services acknowledge
@@ -176,7 +201,7 @@ export function createStreamActionController(dependencies: StreamActionControlle
           }
           return Object.freeze({ kind: "outcome_unknown", nextAction: "inspect-audit" });
         }
-        return Object.freeze({ kind: "failed", error: adapted });
+        return Object.freeze({ kind: "failed", error: adapted, ...(definiteRejection ? { retryAfterCorrection: true as const } : {}) });
       }
     } finally {
       release(scope, operation);
@@ -185,7 +210,7 @@ export function createStreamActionController(dependencies: StreamActionControlle
 
   function acquire(scope: string): ActiveOperation | undefined {
     if (active.has(scope)) return undefined;
-    const operation = { generation: (generations.get(scope) ?? 0) + 1, abort: new AbortController(), released: false };
+    const operation = { generation: (generations.get(scope) ?? 0) + 1, abort: new AbortController(), released: false, sent: false };
     generations.set(scope, operation.generation);
     active.set(scope, operation);
     return operation;
@@ -210,6 +235,7 @@ export function createStreamActionController(dependencies: StreamActionControlle
       for (const scope of scopes) {
         const operation = active.get(scope);
         if (!operation) continue;
+        if (operation.sent) unresolved.add(scope);
         operation.abort.abort();
         generations.set(scope, operation.generation + 1);
         release(scope, operation);
@@ -217,7 +243,9 @@ export function createStreamActionController(dependencies: StreamActionControlle
     },
     reconcile: (intent) => {
       const scope = streamActionScope(intent);
-      if (scope && intent.id !== "STR-05") {
+      // Only the read-only readiness check can be released by a generic GET.
+      // Mutating operations need their own outcome proof; Stop has one below.
+      if (scope && intent.id === "STR-08") {
         unresolved.delete(scope);
       }
     },
@@ -243,8 +271,8 @@ export function createStreamActionController(dependencies: StreamActionControlle
     },
   });
 
-  function evaluateIgnoringPending(intent: StreamActionIntent) {
-    const value = evaluateBase(intent);
+  function evaluateIgnoringPending(intent: StreamActionIntent, proven?: Readonly<{ permissions: PermissionSnapshot; state: StreamActionStateSnapshot }>) {
+    const value = evaluateBase(intent, proven);
     const scope = streamActionScope(intent);
     if (scope && unresolved.has(scope)) {
       return Object.freeze({
@@ -254,6 +282,16 @@ export function createStreamActionController(dependencies: StreamActionControlle
     }
     return value;
   }
+}
+
+function definitiveStreamRejection(intent: StreamActionIntent, error: unknown) {
+  if (intent.id === "STR-01") return definitiveStreamCreateRejection(error);
+  if ((intent.id !== "STR-02" && intent.id !== "STR-03") || !(error instanceof APIError)) return false;
+  // These settings-route errors are emitted before any write, or after a
+  // successful rollback of the expected-revision rejection. Unknown 4xx codes
+  // and partial failures retain the unresolved latch.
+  return error.status === 409 && error.code === "revision_conflict"
+    || error.status === 400 && ["bad_request", "name_required", "invalid_encoder_audio_gain_db", "schedule_time_invalid", "schedule_end_before_start"].includes(error.code || "");
 }
 
 function evaluationReason(evaluation: ActionEvaluation): StreamActionBlockedReason | undefined {
@@ -274,6 +312,9 @@ function notApplicable(): ActionEvaluation {
   });
 }
 
-function blocked(reason: StreamActionBlockedReason) {
-  return Object.freeze({ kind: "blocked" as const, reason });
+function blocked(reason: StreamActionBlockedReason, details?: StreamActionBlockDetails) {
+  return Object.freeze({ kind: "blocked" as const, reason,
+    ...(details?.authorityChange ? { authorityChange: details.authorityChange } : {}),
+    ...(details?.changedFields?.length ? { changedFields: Object.freeze([...details.changedFields]) } : {}),
+  });
 }

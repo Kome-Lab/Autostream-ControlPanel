@@ -37,10 +37,12 @@ type Stream struct {
 	AssignedEncoderID         string     `json:"assigned_encoder_id,omitempty"`
 	CreatedAt                 time.Time  `json:"created_at"`
 	UpdatedAt                 time.Time  `json:"updated_at"`
+	SettingsRevision          string     `json:"settings_revision"`
 	DeletedAt                 *time.Time `json:"deleted_at,omitempty"`
 }
 
 type StreamSettings struct {
+	ExpectedSettingsRevision *string `json:"-"`
 	// Set by the Panel after resolving the authentication selection. The
 	// settings commit revalidates this owner; it is never a client wire field.
 	ExpectedDiscordServiceID  *string    `json:"-"`

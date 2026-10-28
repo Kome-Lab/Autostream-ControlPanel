@@ -1,6 +1,7 @@
 import type { QueryClient } from "@tanstack/react-query";
 
 import { apiGet, apiPost } from "@/lib/api/client";
+import { withBoundedActionRevalidation } from "@/lib/foundation/actions/bounded-revalidation";
 import type {
   ActionEvaluation,
   MutationOutcome,
@@ -65,7 +66,8 @@ export type WorkerRestartSubmitResult = Readonly<{
 
 export type WorkerRestartControllerDependencies = Readonly<{
   queryClient: QueryClient;
-  fetchWorkers?: () => Promise<unknown>;
+  fetchWorkers?: (signal?: AbortSignal) => Promise<unknown>;
+  revalidate?: (signal: AbortSignal) => Promise<Readonly<{ permissions: PermissionSnapshot; workers: unknown }>>;
   postRestart?: (path: string) => Promise<unknown>;
 }>;
 
@@ -94,7 +96,8 @@ const invalidWorkerTarget = Object.freeze({
 
 export function createWorkerRestartController({
   queryClient,
-  fetchWorkers = () => apiGet<unknown>("/workers"),
+  fetchWorkers = (signal) => apiGet<unknown>("/workers", signal),
+  revalidate,
   postRestart = (path) => apiPost(path),
 }: WorkerRestartControllerDependencies): WorkerRestartController {
   const activeDuplicateKeys = new Set<string>();
@@ -161,8 +164,13 @@ export function createWorkerRestartController({
       }
 
       let freshWorkers: readonly CanonicalWorkerNode[];
+      let freshPermissions: PermissionSnapshot;
       try {
-        freshWorkers = copyCanonicalWorkerWireList(await fetchWorkers()) ?? [];
+        const authority = await withBoundedActionRevalidation(async (signal) => revalidate
+          ? revalidate(signal)
+          : { workers: await fetchWorkers(signal), permissions: permissionSnapshot(queryClient) });
+        freshWorkers = copyCanonicalWorkerWireList(authority.workers) ?? [];
+        freshPermissions = authority.permissions;
       } catch {
         return Object.freeze({ state: revalidationUnavailableState });
       }
@@ -174,7 +182,7 @@ export function createWorkerRestartController({
       const currentDescriptor = buildWorkerRestartDescriptor(current);
       const currentEvaluation = evaluateActionPermission({
         requirement: currentDescriptor.permissions,
-        snapshot: permissionSnapshot(queryClient),
+        snapshot: freshPermissions,
         disclosure: "visible-denied",
         constraint: { kind: "ready" },
         pending: { kind: "idle" },
@@ -253,7 +261,6 @@ export function createWorkerRestartController({
 
 function permissionSnapshot(queryClient: QueryClient): PermissionSnapshot {
   const state = queryClient.getQueryState(authQueryKey);
-  if (state?.fetchStatus === "fetching") return Object.freeze({ kind: "refreshing" });
   if (state?.status !== "success") return Object.freeze({ kind: "unavailable" });
   const current = queryClient.getQueryData<CurrentUser>(authQueryKey);
   const permissions = copyStringArray(current?.permissions);
@@ -278,12 +285,16 @@ function findWorker(rows: readonly CanonicalWorkerNode[], resourceId: string): C
 
 function workerRemoteState(queryClient: QueryClient, worker: WorkerNode): RemoteState<readonly WorkerNode[]> {
   const state = queryClient.getQueryState(workersQueryKey);
+  if (state?.status !== "success") return Object.freeze({
+    kind: "blocking-error",
+    error: Object.freeze({ kind: "unavailable", messageKey: "workerRestartStateUnavailable" }),
+  });
   const lastSuccessAt = state?.dataUpdatedAt && state.dataUpdatedAt >= 0 ? state.dataUpdatedAt : 0;
   return Object.freeze({
     kind: "ready",
     data: Object.freeze([worker]),
     freshness: Object.freeze({
-      kind: state?.fetchStatus === "fetching" ? "refreshing" : "fresh",
+      kind: "fresh",
       lastSuccessAt,
     }),
   });

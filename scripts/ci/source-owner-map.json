@@ -647,16 +647,17 @@
       },
       {
         "path": "internal/store/service_catalog_mariadb.go",
-        "sha256": "06d78ff43d289cdfe411f9a69af875e7a1994204b83c16ada8c892fad7e64eed",
+        "sha256": "e7c565c733060048ac8e07cc4d8e5d231763e634d882d87fcb4cd9aad9ed0920",
         "symbols": [
           "MariaDBAuthStore.DeleteService",
           "MariaDBAuthStore.GetService",
           "MariaDBAuthStore.ListServices",
           "MariaDBAuthStore.ListWorkers",
           "MariaDBAuthStore.UpdateServiceMetadata",
-          "MariaDBAuthStore.getService"
+          "MariaDBAuthStore.getService",
+          "updateMariaDBServiceMetadataLocked"
         ],
-        "physical_lines": 270
+        "physical_lines": 277
       },
       {
         "path": "internal/store/service_node_configuration_mariadb.go",
@@ -792,7 +793,7 @@
       },
       {
         "path": "internal/store/services.go",
-        "sha256": "b64e2073097c39316884e93cf81833b90aa1fe15502fa29e424406b162832085",
+        "sha256": "f327de5b94fde43bf48611646f3dfe3acd6e2f298f5d11817f4a80838e61569f",
         "symbols": [
           "ErrAlreadyExists",
           "ErrForbidden",
@@ -821,7 +822,7 @@
           "serviceSelectColumns",
           "serviceSelectColumnsAliased"
         ],
-        "physical_lines": 271
+        "physical_lines": 272
       }
     ]
   },
@@ -1401,7 +1402,7 @@
       },
       {
         "path": "web/tests/ui-browser-fixture.mts",
-        "sha256": "7cfcc8587b79b496486430c4cfd1bde4ea83d489ee18378974a55074a909893e",
+        "sha256": "92d2f8010200220700364e42b44137afc7ce0971c3b994a5f65d0179f321757c",
         "symbols": [
           "controlPlatformCoverState",
           "createBrowserRouteFixture",
@@ -1412,7 +1413,7 @@
           "versionResponse",
           "workerConfiguration"
         ],
-        "physical_lines": 255
+        "physical_lines": 304
       },
       {
         "path": "web/tests/ui-browser-navigation-helpers.mts",
@@ -1473,9 +1474,9 @@
       },
       {
         "path": "web/tests/ui-browser-visual-settings-scenarios.mts",
-        "sha256": "d788653f69fea8398cf3c9f934c9033e45d5181527ad098d9a93500b596f41bd",
+        "sha256": "b0019e02934b60f037bec9aa62ff73604701866be019418a3241f0e5713b6a73",
         "symbols": [],
-        "physical_lines": 170
+        "physical_lines": 223
       },
       {
         "path": "web/tests/ui-browser-worker-configuration-scenarios.mts",
@@ -3153,21 +3154,22 @@
       },
       {
         "path": "internal/store/stream_mutations_mariadb.go",
-        "sha256": "7ddef8744211386f9a91a7e6f6a4d3dc485b38c628d51101e1ccfe9ca818ae6a",
+        "sha256": "d9eb7c8d725f4748e75c88c971175858a03e271766e856cdc7b8ca31ef56b675",
         "symbols": [
           "MariaDBStreamStore.DeleteStream",
           "MariaDBStreamStore.GetStream",
           "MariaDBStreamStore.TransitionStreamStatus",
           "MariaDBStreamStore.UpdateStreamEncoderRuntimeSettings",
+          "MariaDBStreamStore.UpdateStreamEncoderRuntimeSettingsRevision",
           "MariaDBStreamStore.UpdateStreamSettings",
           "MariaDBStreamStore.UpdateStreamStatus",
           "UpsertStreamSettingsTx"
         ],
-        "physical_lines": 296
+        "physical_lines": 314
       },
       {
         "path": "internal/store/stream_queries_mariadb.go",
-        "sha256": "abb4193851ead7c7eb8f3299dcc1ffae76ca1c4708cddb87570c82e22b9ee36f",
+        "sha256": "e150c7afc136eddd09c9cd7c7307f5b1ac9e4539ae96e3166e5fff852ef948ff",
         "symbols": [
           "MariaDBStreamStore.CreateStream",
           "MariaDBStreamStore.HasActiveStream",
@@ -3181,7 +3183,7 @@
           "streamRowScanner",
           "streamSelectFields"
         ],
-        "physical_lines": 169
+        "physical_lines": 170
       },
       {
         "path": "internal/store/stream_youtube_runtime_mariadb.go",
@@ -3203,7 +3205,7 @@
       },
       {
         "path": "internal/store/streams.go",
-        "sha256": "be50f5278b57cb5c80f6927b188d93ccec2081d6ee61faaf2c5483e681c85e43",
+        "sha256": "57090b44b16108fe40e7abf28e198025a5c4286283fef625fe1803e61752874d",
         "symbols": [
           "ActiveStreamStore",
           "ArchiveProcessingStreamStore",
@@ -3228,7 +3230,7 @@
           "StreamYouTubeRuntime",
           "StreamYouTubeRuntimeStore"
         ],
-        "physical_lines": 223
+        "physical_lines": 225
       }
     ]
   },
@@ -3662,15 +3664,16 @@
       },
       {
         "path": "internal/store/memory_service_catalog.go",
-        "sha256": "998657a40a7ee97116b6130a1daad306722612131d2bbb502687ecaa2bd702e5",
+        "sha256": "91d11ef6317566998aa2c65140e34b61d76a98638fc06eae8506bc51939025a8",
         "symbols": [
           "*MemoryAuthStore.DeleteService",
           "*MemoryAuthStore.GetService",
           "*MemoryAuthStore.ListServices",
           "*MemoryAuthStore.ListWorkers",
-          "*MemoryAuthStore.UpdateServiceMetadata"
+          "*MemoryAuthStore.UpdateServiceMetadata",
+          "MemoryAuthStore.updateServiceMetadataLocked"
         ],
-        "physical_lines": 142
+        "physical_lines": 155
       },
       {
         "path": "internal/store/memory_service_node_configuration.go",
@@ -3732,7 +3735,7 @@
     "destinations": [
       {
         "path": "internal/store/integration_drive_mariadb.go",
-        "sha256": "ec4b0412a393fc2c923400db71ff586144a7e49b6f96914961dfd0f464699982",
+        "sha256": "ed8abeefcf7bf3ef2514d0f34f8d0726b81c6908c517b5d5d75768914dd548b9",
         "symbols": [
           "MariaDBIntegrationStore.CreateDriveDestination",
           "MariaDBIntegrationStore.DeleteDriveDestination",
@@ -3741,11 +3744,11 @@
           "MariaDBIntegrationStore.ListDriveDestinations",
           "MariaDBIntegrationStore.UpdateDriveDestination"
         ],
-        "physical_lines": 122
+        "physical_lines": 151
       },
       {
         "path": "internal/store/integration_drive_memory.go",
-        "sha256": "fca790db287fdcc9aff9df3a547085ed38056c82cb92546dd08f98590fe914c2",
+        "sha256": "62892d24cb39187590548c1f24dadeb1f747477204f25854d63f0383a4641b0c",
         "symbols": [
           "*MemoryIntegrationStore.CreateDriveDestination",
           "*MemoryIntegrationStore.DeleteDriveDestination",
@@ -3754,7 +3757,7 @@
           "*MemoryIntegrationStore.ListDriveDestinations",
           "*MemoryIntegrationStore.UpdateDriveDestination"
         ],
-        "physical_lines": 123
+        "physical_lines": 141
       },
       {
         "path": "internal/store/integration_normalization.go",
@@ -3849,7 +3852,7 @@
       },
       {
         "path": "internal/store/integration_rows.go",
-        "sha256": "b2b5044ba00a010167cbcf2fb6b03c859150be12bb680fef7214dc1138ea8ea8",
+        "sha256": "4fabc9c033646befa074f7fba3e92357023e5cd35d9a6f0da4d5fc9d46a8f50f",
         "symbols": [
           "MariaDBIntegrationStore.encryptOptional",
           "MariaDBIntegrationStore.encryptRequired",
@@ -3880,7 +3883,7 @@
       },
       {
         "path": "internal/store/integrations.go",
-        "sha256": "8c887b151e59aa9468395b2e7ab512dcf2350cedb9d5eec5af4e162a3ad85c1a",
+        "sha256": "c148282e3de84c97758079da8fa457f06132cea30ab0070b645d9f9efabd91d1",
         "symbols": [
           "DriveDestination",
           "IntegrationStore",
@@ -3890,7 +3893,7 @@
           "OAuthProvider",
           "OAuthTokenRefreshFailureUnknown,OAuthTokenRefreshFailureCredentialsUnavailable,OAuthTokenRefreshFailureProviderNotReady,OAuthTokenRefreshFailureProviderUnavailable,OAuthTokenRefreshFailureProviderCredentialsInvalid,OAuthTokenRefreshFailureReauthorizationRequired,OAuthTokenRefreshFailureTimedOut,OAuthTokenRefreshFailureInvalidResponse"
         ],
-        "physical_lines": 118
+        "physical_lines": 119
       }
     ]
   },
@@ -4701,7 +4704,7 @@
     "destinations": [
       {
         "path": "internal/store/memory.go",
-        "sha256": "0874fabad6898f2c5c16d6447a23ab1fbd6344d73e031fda5d4ac5caf3bcf6ed",
+        "sha256": "4611535dd0c3ef9941b8ed4f81ef9f7bfa0c6d7d1093c53674a6b1ff8d3e1ea1",
         "symbols": [
           "*MemoryStreamStore.AssignmentGuardMemoryStore",
           "*MemoryStreamStore.CreateStream",
@@ -4715,7 +4718,7 @@
           "MemoryStreamStore",
           "NewMemoryStreamStore"
         ],
-        "physical_lines": 271
+        "physical_lines": 277
       },
       {
         "path": "internal/store/memory_stream_artifact_catalog.go",
@@ -4755,15 +4758,16 @@
       },
       {
         "path": "internal/store/memory_stream_settings.go",
-        "sha256": "5e8868168a0b3194d877861136c08cc18acbc6cb8033746dda7b58e4eb4a9225",
+        "sha256": "e67232a227dbd60436f483c9bdc308ec7138a81ea266cd0b29846c92569290a7",
         "symbols": [
           "*MemoryStreamStore.GetStreamMediaRuntime",
           "*MemoryStreamStore.SetStreamVideoOverlayBurnIn",
           "*MemoryStreamStore.UpdateStreamEncoderRuntimeSettings",
           "*MemoryStreamStore.UpdateStreamSettings",
+          "MemoryStreamStore.UpdateStreamEncoderRuntimeSettingsRevision",
           "cloneTimePtr"
         ],
-        "physical_lines": 111
+        "physical_lines": 125
       },
       {
         "path": "internal/store/memory_stream_start_claim.go",
@@ -5025,11 +5029,11 @@
       },
       {
         "path": "web/src/features/application/updater-bootstrap-authority-refresh.ts",
-        "sha256": "255e265bc06cf3fb4804d0ff293ce1cfc52148fd4c82af83984600749d6221d3",
+        "sha256": "c40be8f6d29468f29598de974054e54bef9cd551db1304637b24d3c34c8fc04d",
         "symbols": [
           "refreshFoundationAuthority"
         ],
-        "physical_lines": 104
+        "physical_lines": 95
       },
       {
         "path": "web/src/features/application/updater-bootstrap-authority.ts",
@@ -5052,7 +5056,7 @@
       },
       {
         "path": "web/src/features/application/updater-bootstrap-job-state.ts",
-        "sha256": "0646323b47fab8c18b06b6598d24ab1fb6ce9aeb3f0427b15dd24014b6363322",
+        "sha256": "121e479b2588e9b8b34c97d31d73a2166553d103fafd59dfb29a1ef562d32a59",
         "symbols": [
           "clearBootstrapRequestEnvelope",
           "latestBootstrapResults",
@@ -5082,9 +5086,9 @@
       },
       {
         "path": "web/src/features/application/updater-bootstrap-submission-preflight.ts",
-        "sha256": "9ff132175f1b0683301ab054a6bdaddd052838ed983c37e90197f81625dc998a",
+        "sha256": "f8c3acd430586a01cebba57248e2bd3e342a37d32135011552a26fc441982d67",
         "symbols": [],
-        "physical_lines": 75
+        "physical_lines": 73
       },
       {
         "path": "web/src/features/application/updater-host-bootstrap-panel.tsx",
@@ -5376,9 +5380,9 @@
       },
       {
         "path": "web/tests/workers-action-lifecycle-cases.mts",
-        "sha256": "0be47a844bc11bf35665a0b65706858e7a1937b96d3ef85ea500c19b45f09d15",
+        "sha256": "1b6ae2e3ec2360572afaf5cfb8e84ec3c28208a46c7d058eb350d8d2de257953",
         "symbols": [],
-        "physical_lines": 203
+        "physical_lines": 207
       },
       {
         "path": "web/tests/workers-foundation-pilot.test.mts",
@@ -5388,7 +5392,7 @@
       },
       {
         "path": "web/tests/workers-pilot-fixture.mts",
-        "sha256": "6299ac80b2d5a7f4ef24985b26092921a27f2bb9364100062e5c5c46ec4890ec",
+        "sha256": "feb2820c0024447350fcd90b968954a913583ab63b79b4ac9baad75b255d31f7",
         "symbols": [
           "allowedOpen",
           "apiError",
@@ -5404,7 +5408,7 @@
           "worker",
           "workerCompositeTotalityIssues"
         ],
-        "physical_lines": 211
+        "physical_lines": 218
       },
       {
         "path": "web/tests/workers-restart-authority-cases.mts",
@@ -5455,15 +5459,15 @@
       },
       {
         "path": "web/src/features/nodes/node-edit-dialog.tsx",
-        "sha256": "506f0e93b4d0b02d6466ed158a13b5d8065a69b716bc34ba367ac66d624c3484",
+        "sha256": "a25ca14c8b173cc6e66c4780403432f1ae586c57a498a64d5f02d752b852d117",
         "symbols": [
           "NodeEditDialog"
         ],
-        "physical_lines": 95
+        "physical_lines": 106
       },
       {
         "path": "web/src/features/nodes/node-registration-view.tsx",
-        "sha256": "ffe720ce7d50606e516782d66e70b58e07969957d01dc6aa15f63da3e417c312",
+        "sha256": "4ce5e93e6324f606aa80882e2ebdc37f7c794b990d1cbde477bf28ca57c66f58",
         "symbols": [
           "LegacyNodeRegistrationView",
           "NodeRegistrationView",
@@ -5473,7 +5477,7 @@
           "openEditNode",
           "submitEditNode"
         ],
-        "physical_lines": 364
+        "physical_lines": 366
       },
       {
         "path": "web/src/features/nodes/registered-node-columns.tsx",
@@ -5485,9 +5489,9 @@
       },
       {
         "path": "web/src/features/nodes/use-node-registration-mutations.ts",
-        "sha256": "69b49bb7b5bfc1d336068deafa81f2404ee6a3f4a1c5b67f05d0abde790d4b2c",
+        "sha256": "a2ad654cddfa460c21acb631c5d506829e1b8656c5bac0021d3cf9689c0f9ac0",
         "symbols": [],
-        "physical_lines": 78
+        "physical_lines": 104
       }
     ]
   },
@@ -5534,7 +5538,7 @@
       },
       {
         "path": "web/src/features/application/updater-settings-form.tsx",
-        "sha256": "333afa17f4e5be301c5d6668d4af26af934dec9c3cfae6c61a7bcd2ee7a50173",
+        "sha256": "21c63b6d2e3df997d196171c7484c02edc27e58defb1b403347e0dee4d43e4e5",
         "symbols": [
           "OwnershipStateItem",
           "UpdaterSettingsForm",
@@ -5546,7 +5550,7 @@
           "updateTarget",
           "updaterDraftValues"
         ],
-        "physical_lines": 343
+        "physical_lines": 369
       },
       {
         "path": "web/src/features/application/updater-targets-settings-section.tsx",
@@ -5586,7 +5590,7 @@
     "destinations": [
       {
         "path": "web/src/features/application/application-action-renderers.tsx",
-        "sha256": "c1d89dd5298ab188efc4cab299babe1a77113f8aa6bfa132d9947ba365697f5d",
+        "sha256": "9c84579e9259d722d4ec74e321402094929206832391f3076e2f7c0a3ab1a365",
         "symbols": [
           "createApplicationActionRenderers",
           "renderCancelAction",
@@ -5596,17 +5600,19 @@
       },
       {
         "path": "web/src/features/application/application-authority-readers.ts",
-        "sha256": "8ff85ef97f9061ea59bbca41bbaae4a934c610594ca587ea7e97fe4db2d41209",
+        "sha256": "a08bca09f99b73966ab4f93418b5f8cd9bf24c766de9230eefbed24599b76b31",
         "symbols": [
+          "readApplicationAuthority",
+          "readUpdaterSettingsAuthority",
           "refreshBatchAuthority",
           "refreshCancelAuthority",
           "refreshTargetAuthority"
         ],
-        "physical_lines": 108
+        "physical_lines": 128
       },
       {
         "path": "web/src/features/application/application-info-view.tsx",
-        "sha256": "5e9410ff710df4a388a770e3d935295fa0881aeb10a98c837617b39ebc2c95b1",
+        "sha256": "d999654ec4d637eabff1335b3b8716c09fb22b295e8c4021b5439a105ddb32df",
         "symbols": [
           "ApplicationInfoView",
           "clearTerminalSelfUpdate",
@@ -5716,7 +5722,7 @@
       },
       {
         "path": "web/src/features/application/updater-settings-form.tsx",
-        "sha256": "333afa17f4e5be301c5d6668d4af26af934dec9c3cfae6c61a7bcd2ee7a50173",
+        "sha256": "21c63b6d2e3df997d196171c7484c02edc27e58defb1b403347e0dee4d43e4e5",
         "symbols": [
           "OwnershipStateItem",
           "UpdaterSettingsForm",
@@ -5728,11 +5734,11 @@
           "updateTarget",
           "updaterDraftValues"
         ],
-        "physical_lines": 343
+        "physical_lines": 369
       },
       {
         "path": "web/src/features/application/updater-settings-panel.tsx",
-        "sha256": "e1fd6f9aaf5bf397b90db05a2c869dd8f2af7390cdd0eef44061a54168ea0920",
+        "sha256": "5f4738e91776e225417fa96b7c6fbf2b3b6ad330e34130046715c2d44dad5b69",
         "symbols": [
           "UpdaterSettingsPanel",
           "currentFoundationAuthority",
@@ -5741,7 +5747,7 @@
           "requestOwnershipDeactivation",
           "setDialogOpen"
         ],
-        "physical_lines": 374
+        "physical_lines": 380
       },
       {
         "path": "web/src/features/application/updater-targets-settings-section.tsx",
