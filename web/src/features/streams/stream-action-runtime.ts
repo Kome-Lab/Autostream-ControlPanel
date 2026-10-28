@@ -120,7 +120,13 @@ export async function revalidateStreamActionAuthority(queryClient: QueryClient, 
     return { permissions: authority.permissions, state: { kind: "unknown" as const, freshness: "stale" as const } };
   }
   queryClient.setQueryData(["auth", "me"], currentUser);
-  if (currentStream) queryClient.setQueryData<Stream[]>(["streams"], (rows) => [...(rows || []).filter((row) => row.id !== currentStream.id), currentStream]);
+  if (currentStream) queryClient.setQueryData<Stream[]>(["streams"], (rows) => {
+    const currentRows = rows || [];
+    const index = currentRows.findIndex((row) => row.id === currentStream.id);
+    const next = currentRows.filter((row) => row.id !== currentStream.id);
+    next.splice(index < 0 ? next.length : index, 0, currentStream);
+    return next;
+  });
   requests.forEach((row, index) => queryClient.setQueryData(row.key, selected[index]));
   return authority;
 }

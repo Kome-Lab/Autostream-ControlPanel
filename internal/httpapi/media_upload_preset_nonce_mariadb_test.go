@@ -48,7 +48,7 @@ func TestMariaDBDraftUploadOperationPresetDetachPreservesNonce(t *testing.T) {
 		t.Fatal(err)
 	}
 	inspection, err := media.InspectDraftUpload(t.Context(), user.ID, session.ID, operation)
-	if err != nil || inspection.Session.OwnerType != "upload_draft" || len(inspection.Assets) != 1 || inspection.Assets[0].Asset.ID != asset.ID || inspection.Assets[0].Asset.UploadSessionID != "" || inspection.Assets[0].Asset.OwnerType != "preset" {
+	if err != nil || inspection.Session.ID != session.ID || inspection.Session.OwnerType != "upload_draft" || inspection.Session.ClaimedAt != nil || len(inspection.Assets) != 1 || inspection.Assets[0].Asset.ID != asset.ID || inspection.Assets[0].Asset.UploadSessionID != "" || inspection.Assets[0].Asset.OwnerType != "preset" || inspection.Assets[0].Asset.ClientOperationSessionID != session.ID || inspection.Assets[0].Asset.ClientOperationID != operation {
 		t.Fatal("preset detach lost immutable operation origin or changed remaining draft ownership")
 	}
 	input.Body = bytes.NewReader(image)

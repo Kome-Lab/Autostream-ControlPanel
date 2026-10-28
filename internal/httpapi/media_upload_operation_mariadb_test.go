@@ -29,6 +29,13 @@ func TestMariaDBDraftUploadOperationConcurrentReplayAndReadOnlyRecovery(t *testi
 	const operation = "3cf1a246-eac1-421b-b00e-48ec97ca6075"
 	image := testAvatarPNG(t, 32, 32)
 	input := mediaassets.UploadInput{UserID: user.ID, SessionID: session.ID, ClientOperationID: operation, UsageType: "video_cover", Filename: "nonce.png", ContentType: "image/png"}
+	initial, err := media.InspectDraftUpload(t.Context(), user.ID, session.ID, operation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if initial.Session.ID != session.ID || initial.Session.OwnerType != "upload_draft" || initial.Session.ClaimedAt != nil || initial.OperationID != operation || len(initial.Assets) != 0 {
+		t.Fatal("canonical session inspection did not read the migrated schema before any upload")
+	}
 	alias := strings.ToUpper(session.ID)
 	if alias == session.ID {
 		t.Fatal("session fixture requires a case alias")
@@ -134,5 +141,25 @@ func TestMariaDBDraftUploadOperationConcurrentReplayAndReadOnlyRecovery(t *testi
 	}
 	if err = st.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM media_assets WHERE upload_session_id=?`, session.ID).Scan(&count); err != nil || count != 1 {
 		t.Fatal("read-only recovery or replay allocated a row")
+	}
+	stream, err := st.streams.CreateStream(ctx, "claimed nonce snapshot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimedAt := time.Now().UTC().Truncate(time.Microsecond)
+	claimTx, err := st.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer claimTx.Rollback()
+	if err = media.ClaimDraftTx(ctx, claimTx, user.ID, session.ID, stream.ID, claimedAt); err != nil {
+		t.Fatal(err)
+	}
+	if err = claimTx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := media.InspectDraftUpload(ctx, user.ID, session.ID, operation)
+	if err != nil || claimed.Session.OwnerType != "stream" || claimed.Session.ClaimedStreamID != stream.ID || claimed.Session.ClaimedAt == nil || !claimed.Session.ClaimedAt.Equal(claimedAt) || !claimed.Session.UpdatedAt.Equal(claimedAt) || len(claimed.Assets) != 1 || claimed.Assets[0].Asset.ClientOperationSessionID != session.ID || claimed.Assets[0].Asset.DeletedAt == nil {
+		t.Fatal("claimed session inspection did not preserve the committed claim timestamp and operation tombstone")
 	}
 }

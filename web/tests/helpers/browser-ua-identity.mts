@@ -75,6 +75,38 @@ export function inspectUAAX(nodes:UAAX[],frame:string,host:number,dom:ReadonlySe
   return {related,relevant,parents,byID,chains,required,topology};
 }
 
+export type UAAXComparison = Readonly<{
+  stage:"focus-final"|"ledger-read"|"ledger-proof";
+  totals:readonly[number,number];membership:readonly[number,number];
+  fields:Readonly<{mapping:number;frame:number;role:number;ignored:number;flags:number;properties:number;parent:number;childOrder:number}>;
+}>;
+const axComparisonFailures=new WeakMap<object,UAAXComparison>();
+// The actual failed comparison owns this finite record. It contains neither
+// protocol identities nor property names/values and cannot authorize a delta.
+export function bindUAAXComparison(error:unknown,before:ReturnType<typeof inspectUAAX>,after:ReturnType<typeof inspectUAAX>,stage:UAAXComparison["stage"]){
+  if(!(error instanceof assert.AssertionError))return;
+  const old=new Map(before.relevant.map(n=>[n.nodeId,n])),now=new Map(after.relevant.map(n=>[n.nodeId,n]));
+  const fields={mapping:0,frame:0,role:0,ignored:0,flags:0,properties:0,parent:0,childOrder:0};
+  for(const [id,a]of old){const b=now.get(id);if(!b)continue;
+    if(a.backendDOMNodeId!==b.backendDOMNodeId)fields.mapping++;
+    if(a.frameId!==b.frameId)fields.frame++;
+    if(a.role?.value!==b.role?.value)fields.role++;
+    if(a.ignored!==b.ignored)fields.ignored++;
+    if(["focusable","focused","disabled"].some(key=>flag(a,key)!==flag(b,key)))fields.flags++;
+    if(encode(canonicalProperties(a.properties))!==encode(canonicalProperties(b.properties)))fields.properties++;
+    if(before.parents.get(id)!==after.parents.get(id)||a.parentId!==b.parentId)fields.parent++;
+    if(encode((a.childIds||[]).filter(child=>old.has(child)))!==encode((b.childIds||[]).filter(child=>now.has(child))))fields.childOrder++;
+  }
+  axComparisonFailures.set(error,Object.freeze({stage,totals:Object.freeze([old.size,now.size]as const),membership:Object.freeze([[...old.keys()].filter(id=>!now.has(id)).length,[...now.keys()].filter(id=>!old.has(id)).length]as const),fields:Object.freeze(fields)}));
+}
+export function readUAAXComparison(value:unknown):UAAXComparison|undefined{
+  return value!==null&&(typeof value==="object"||typeof value==="function")?axComparisonFailures.get(value):undefined;
+}
+export function inheritUAAXComparison(source:unknown,target:unknown){
+  const record=readUAAXComparison(source);
+  if(record&&target!==null&&(typeof target==="object"||typeof target==="function"))axComparisonFailures.set(target,record);
+}
+
 export function classifyUANode(node:UADOM, matches:UAAX[]):"stylesheet"|"text"|"container"|"interactive-or-unknown" {
   const props=node.attributes;
   if(node.nodeType===undefined||props&&(!Array.isArray(props)||props.length%2!==0))return "interactive-or-unknown";
@@ -212,7 +244,9 @@ export class MediaIdentityLedger {
   prepare(current:UARead,final:UARead,paint:{visible:boolean;indicator:boolean}) {
     assert.ok(paint.visible&&paint.indicator,"semantic UA delta requires visible unclipped hit-tested focus indicator");
     const currentFacts=retain(current),finalFacts=retain(final);
-    assert.ok(readAxis(currentFacts).topology===readAxis(finalFacts).topology,"UA AX topology changed inside observation");
+    const currentAxis=readAxis(currentFacts),finalAxis=readAxis(finalFacts);
+    try{assert.ok(currentAxis.topology===finalAxis.topology,"UA AX topology changed inside observation");}
+    catch(error){bindUAAXComparison(error,currentAxis,finalAxis,"ledger-read");throw error;}
     // No-change reads still traverse this owner. They cannot reuse retired
     // evidence, and do not consume the finite non-operative-delta allowance.
     if(encode(currentFacts)===encode(this.latest)&&encode(finalFacts)===encode(currentFacts)){const revision=this.revision;return {delta:{removed:0,added:0,changed:0,accepted:true}as VerifiedUADelta,commit:()=>{assert.equal(this.revision,revision,"UA proof owner revision changed before commit");}};}
@@ -220,7 +254,8 @@ export class MediaIdentityLedger {
     const original=proof(this.original),before=proof(this.latest),next=proof(currentFacts),end=proof(finalFacts);
     assert.ok(next.scope===original.scope,"original UA owner/media scope changed");assert.ok(end.scope===next.scope,"UA observation scope race");
     assert.ok(encode([...end.facts])===encode([...next.facts]),"UA DOM/AX changed inside semantic observation");
-    assert.ok(end.axis.topology===next.axis.topology,"UA AX topology changed inside observation");
+    try{assert.ok(end.axis.topology===next.axis.topology,"UA AX topology changed inside observation");}
+    catch(error){bindUAAXComparison(error,next.axis,end.axis,"ledger-proof");throw error;}
     if(next.operational!==original.operational)assert.fail("complete UA control/focused ancestry changed "+encode(operationalDifference(original,next)));
     assert.ok(end.operational===next.operational,"UA operational snapshot race");
     for(const p of [original,before]){

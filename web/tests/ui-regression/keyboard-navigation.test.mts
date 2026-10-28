@@ -523,6 +523,7 @@ test('UI-UA-STABILITY-030: real observer retains subtree rejection and original 
 
 test('UI-UA-WRITER-030: actual condition writer bounds closed output, preserves cause identity, and stops after output failure',async()=>{
  const {UAConditionDiagnostic,bindUADiagnostic,UAOutputFailure}=await import('../helpers/browser-ua-diagnostic.mts');
+ const {MediaIdentityLedger,inheritUAAXComparison,readUAAXComparison}=await import('../helpers/browser-ua-identity.mts');
  const {createConditionRunner,ConditionFailure}=await import('./condition-lifecycle.mts');
  const {inventory}=await import('./matrix.mts');
  const record={boundary:'between',baseline:true,total:4,delta:[1,1,0],classes:[[{classification:'SPAN|StaticText|1|0|0|0|0',count:1}],[{classification:'SPAN|StaticText|1|0|0|0|0',count:1}],[]],same:[true,true,true,true,true,true,true],mediaStates:["error","error"],focusable:1,focused:2,unknown:1,overflow:false} as const;
@@ -555,6 +556,29 @@ test('UI-UA-WRITER-030: actual condition writer bounds closed output, preserves 
   for(const value of saved){assert.ok(Buffer.byteLength(JSON.stringify(value,null,2)+'\n')<=4096);assert.doesNotMatch(JSON.stringify(value),/DO-NOT-LOG|secret-value|fixed writer/);}
   if(fault==='overflow')assert.equal((saved[0]as {overflow:boolean}).overflow,true);
  }
+ const initial={host:{backendNodeId:10,nodeName:'VIDEO',shadowRoots:[{backendNodeId:20,nodeName:'#document-fragment',children:[]}]},nodes:[{nodeId:'DO-NOT-LOG-root',backendDOMNodeId:1,frameId:'DO-NOT-LOG-frame',role:{value:'RootWebArea'},ignored:false,childIds:['DO-NOT-LOG-host'],properties:[]},{nodeId:'DO-NOT-LOG-host',backendDOMNodeId:10,role:{value:'Video'},ignored:false,childIds:[],properties:[]}],frame:{id:'DO-NOT-LOG-frame',loaderId:'DO-NOT-LOG-loader'},document:'DO-NOT-LOG-document',media:null} as import('../helpers/browser-ua-identity.mts').UARead;
+ const final=structuredClone(initial);final.nodes[0].properties!.push({name:'DO-NOT-LOG-private-property',value:{value:'SECRET https://fixture.invalid/?token=private'}});
+ let actual:unknown;try{new MediaIdentityLedger(initial).verify(initial,final,{visible:true,indicator:true});}catch(error){actual=error;}
+ assert.ok(actual instanceof assert.AssertionError);assert.equal(readUAAXComparison(actual)?.stage,'ledger-read');
+ const zero={...record,delta:[0,0,0],classes:[[],[],[]]};
+ for(const wrapped of [false,true]){
+  const failure=wrapped?new AggregateError([actual,Error('DO-NOT-LOG cleanup')],'UA observation and cleanup failed',{cause:actual}):actual;
+  if(wrapped)inheritUAAXComparison(actual,failure);
+  bindUADiagnostic(failure,zero as unknown as Parameters<typeof bindUADiagnostic>[1]);
+  const diagnostic=new UAConditionDiagnostic(),saved:unknown[]=[];
+  await assert.rejects(diagnostic.observe('restore',async()=>{throw failure;}),error=>error===failure);
+  diagnostic.write('fixed-condition',value=>saved.push(value));
+  const output=saved[0] as {changed:boolean;failed:boolean;observations:{comparison:unknown;secondary:unknown;delta:number[]}[]};
+  assert.equal(output.changed,false);assert.equal(output.failed,true);assert.deepEqual(output.observations[0].delta,[0,0,0]);
+  assert.deepEqual(output.observations[0].comparison,{stage:'ledger-read',totals:[2,2],membership:[0,0],fields:{mapping:0,frame:0,role:0,ignored:0,flags:0,properties:1,parent:0,childOrder:0}});
+  assert.deepEqual(output.observations[0].secondary,{code:'UNKNOWN',ctor:'UNKNOWN'},'existing owned-pair classifier remains narrow');
+  assert.ok(Buffer.byteLength(JSON.stringify(saved))<4096);assert.doesNotMatch(JSON.stringify(saved),/DO-NOT-LOG|SECRET|https:|token=|backendNode|nodeId|objectId/);
+  const writerFailure=Error('DO-NOT-LOG output');assert.throws(()=>diagnostic.write('fixed-condition',()=>{throw writerFailure;}),error=>error instanceof UAOutputFailure&&error.cause===writerFailure);
+ }
+ const bounded=new UAConditionDiagnostic();bindUADiagnostic(actual,zero as unknown as Parameters<typeof bindUADiagnostic>[1]);
+ for(let i=0;i<16;i++)await assert.rejects(bounded.observe('restore',async()=>{throw actual;}),error=>error===actual);
+ const overflow:unknown[]=[];assert.throws(()=>bounded.write('fixed-condition',value=>overflow.push(value)),UAOutputFailure);assert.equal((overflow[0]as {code:string}).code,'UA_OBSERVATION_STABILITY_OVERFLOW');
+ assert.ok(Buffer.byteLength(JSON.stringify(overflow))<4096);assert.equal(readUAAXComparison(new assert.AssertionError({message:'UA AX topology changed inside observation'})),undefined,'matching text cannot forge the comparison owner');
  let writes=0;const normal=new UAConditionDiagnostic();await normal.observe('tab-forward',async()=>({}));normal.write('fixed-condition',()=>writes++);assert.equal(writes,0,'stable success does not flood the writer');const invalid=new UAConditionDiagnostic(),value={};bindUADiagnostic(value,record as unknown as Parameters<typeof bindUADiagnostic>[1]);await invalid.observe('negative-enter',async()=>value);assert.throws(()=>invalid.write('/DO-NOT-LOG/raw',()=>{throw Error('must not write invalid identity');}),/outside closed ID/);
  const {safeKeyboardTrace}=await import('./observation.mts');
  const condition=conditions.find(c=>c.family==='public-archive-share'&&c.exercise==='keyboard')!;

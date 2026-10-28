@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import {uaSnapshot,summarizeUA,bindUADiagnostic,type UASnapshot,type UADiagnostic} from "./browser-ua-diagnostic.mts";
-import {MediaIdentityLedger,inspectUAAX,type UADOM,type UAAX,type UARead} from "./browser-ua-identity.mts";
+import {MediaIdentityLedger,inspectUAAX,bindUAAXComparison,inheritUAAXComparison,type UADOM,type UAAX,type UARead} from "./browser-ua-identity.mts";
 
 // Read-only, same-document UA identity observations; callers decide operability.
 // No names, values, URLs, raw AX objects or protocol identifiers leave this owner.
@@ -154,7 +154,9 @@ export class NativeFocusObserver {
       const painted=(paint.result as {value?:{indicator:boolean;visible:boolean}})?.value;assert.ok(painted);
       const finalNodes=(await this.send("Accessibility.getFullAXTree",{frameId:frame.id})).nodes as AXNode[];
       assert.ok(Array.isArray(finalNodes)&&finalNodes.length<=8192,"UA final AX observation bound");
-      assert.ok(inspectUAAX(nodes,frame.id,host.backendNodeId,domOwner).topology===inspectUAAX(finalNodes,frame.id,host.backendNodeId,domOwner).topology,"UA AX topology changed inside observation");
+      const firstAxis=inspectUAAX(nodes,frame.id,host.backendNodeId,domOwner),finalAxis=inspectUAAX(finalNodes,frame.id,host.backendNodeId,domOwner);
+      try{assert.ok(firstAxis.topology===finalAxis.topology,"UA AX topology changed inside observation");}
+      catch(error){bindUAAXComparison(error,firstAxis,finalAxis,"focus-final");throw error;}
       const finalFocused=finalNodes.filter(n=>n.properties?.some(p=>p.name==="focused"&&p.value?.value===true));
       assert.ok(finalFocused.length===focused.length&&finalFocused.every(n=>focused.some(old=>old.nodeId===n.nodeId&&old.backendDOMNodeId===n.backendDOMNodeId&&old.ignored===n.ignored)),"UA focused identities changed during observation");
       const finalById=new Map(finalNodes.map(node=>[node.nodeId,node]));
@@ -202,8 +204,8 @@ export class NativeFocusObserver {
         if(kind==="media"&&!ledger&&["empty","error"].includes(mediaState)&&disabled(leaf)&&leaf.backendDOMNodeId===host.backendNodeId&&firstSet.length===1)this.mediaIdentity.set(host.backendNodeId,new MediaIdentityLedger(read));
       };
       bindUADiagnostic(observation,diagnostic);return observation;
-    }catch(error){const failure=identityFailure&&error!==identityFailure&&!(error instanceof AggregateError&&error.cause===identityFailure)?new AggregateError([identityFailure,error],"UA identity and complete observation rejected",{cause:identityFailure}):error;primary=failure;bindUADiagnostic(failure,diagnostic);throw failure;}finally{
-      try{await this.send("Runtime.releaseObjectGroup",{objectGroup:group});if(!primary)commitRead?.();}catch(error){const failure=primary?new AggregateError([primary,error],"UA observation and cleanup failed",{cause:primary}):error;bindUADiagnostic(failure,diagnostic);throw failure;}
+    }catch(error){const failure=identityFailure&&error!==identityFailure&&!(error instanceof AggregateError&&error.cause===identityFailure)?new AggregateError([identityFailure,error],"UA identity and complete observation rejected",{cause:identityFailure}):error;primary=failure;inheritUAAXComparison(error,failure);bindUADiagnostic(failure,diagnostic);throw failure;}finally{
+      try{await this.send("Runtime.releaseObjectGroup",{objectGroup:group});if(!primary)commitRead?.();}catch(error){const failure=primary?new AggregateError([primary,error],"UA observation and cleanup failed",{cause:primary}):error;inheritUAAXComparison(primary,failure);bindUADiagnostic(failure,diagnostic);throw failure;}
     }
   }
 }

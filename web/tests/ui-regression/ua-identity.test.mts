@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {runInNewContext} from "node:vm";
 import {createHarnessFixture} from "../helpers/browser-cdp-socket-fixture.mts";
-import {MediaIdentityLedger,type UARead,type UAAX,type UADOM} from "../helpers/browser-ua-identity.mts";
+import {MediaIdentityLedger,readUAAXComparison,type UARead,type UAAX,type UADOM} from "../helpers/browser-ua-identity.mts";
 import {readUADiagnostic,UAConditionDiagnostic} from "../helpers/browser-ua-diagnostic.mts";
 import {exerciseUnavailableMedia} from "./media-keyboard-contract.mts";
 import {conditions} from "./matrix.mts";
@@ -158,7 +158,7 @@ function protocolOwner(){
 }
 
 test("UI-UA-OWNER-037: real harness observer preserves latest retired identities and validates complete same-read AX ownership before declaring complete",async t=>{
-  for(const fault of ["retired-return","no-change-bound","successive","release-before-commit","within-parent","within-order","within-ax-add","within-ax-remove","declared-parent","cycle","multi-parent","missing-child","unmapped-focusable","unmapped-focused","unmapped-operation","foreign-dom","foreign-frame","unchanged-ambiguous","same-read-no-dom-delta","valid-parent-ids"] as const)await t.test(fault,async()=>{
+  for(const fault of ["retired-return","no-change-bound","successive","release-before-commit","within-parent","within-order","within-ax-add","within-ax-remove","declared-parent","cycle","multi-parent","missing-child","unmapped-focusable","unmapped-focused","unmapped-operation","foreign-dom","foreign-frame","unchanged-ambiguous","same-read-no-dom-delta","same-read-private-property","valid-parent-ids"] as const)await t.test(fault,async()=>{
     const owner=protocolOwner(),before=reading();extra(before,40);
     const current=structuredClone(before);children(current).shift();current.host.shadowRoots![0].childNodeCount=2;
     const final=structuredClone(current);
@@ -198,15 +198,26 @@ test("UI-UA-OWNER-037: real harness observer preserves latest retired identities
         await owner.observe(current);await assert.rejects(owner.observe(before),/retired UA identity reused/);
       }else if(fault==="valid-parent-ids")assert.equal((await owner.observe(current,final)).complete,true);
       else{
-        const same=fault==="same-read-no-dom-delta",end=same?structuredClone(before):final;
-        if(same){end.nodes[1].childIds=["extra40"];end.nodes[3].childIds=["decoration"];}
-        await assert.rejects(owner.observe(same?before:current,end),e=>{
+        const same=fault==="same-read-no-dom-delta"||fault==="same-read-private-property",end=same?structuredClone(before):final;
+        if(fault==="same-read-no-dom-delta"){end.nodes[1].childIds=["extra40"];end.nodes[3].childIds=["decoration"];}
+        if(fault==="same-read-private-property")end.nodes[0].properties!.push({name:"DO-NOT-LOG-property",value:{value:"SECRET https://fixture.invalid/private?token=secret"}});
+        const diagnostic=new UAConditionDiagnostic();
+        await assert.rejects(diagnostic.observe("restore",()=>owner.observe(same?before:current,end)),e=>{
           assert.ok(e instanceof Error);
           const all=e instanceof AggregateError?e.errors.map(x=>x.message).join(" "):e.message;
           assert.match(all,/AX|control|owner|parent|mapping|topology|frame|focus/);
           if(!same){assert.ok(e.cause instanceof Error);assert.match(e.cause.message,/UA subtree/);}else assert.equal(e.cause,undefined);
+          if(["within-parent","within-order","within-ax-add","within-ax-remove","same-read-no-dom-delta","same-read-private-property"].includes(fault)){
+            const comparison=readUAAXComparison(e);assert.ok(comparison);assert.equal(comparison.stage,"focus-final");
+            assert.deepEqual(comparison.membership,fault==="within-ax-add"?[0,1]:fault==="within-ax-remove"?[1,0]:[0,0]);
+            assert.deepEqual(comparison.fields,{mapping:0,frame:0,role:0,ignored:0,flags:0,properties:fault==="same-read-private-property"?1:0,parent:["within-parent","same-read-no-dom-delta"].includes(fault)?1:0,childOrder:fault==="same-read-private-property"?0:["within-parent","same-read-no-dom-delta"].includes(fault)?2:1});
+            assert.equal(Object.hasOwn(e,"comparison"),false,"failure diagnostic stays in its owner WeakMap");
+          }
           return true;
         });
+        const emitted:unknown[]=[];diagnostic.write("owned-UA-restore",value=>emitted.push(value));
+        if(same){const output=emitted[0]as {changed:boolean;failed:boolean;observations:{delta:number[];comparison:unknown}[]};assert.equal(output.changed,false);assert.equal(output.failed,true);assert.deepEqual(output.observations[0].delta,[0,0,0]);assert.ok(output.observations[0].comparison,"compact zero-DOM-delta failure retains actual AX comparison");}
+        assert.ok(Buffer.byteLength(JSON.stringify(emitted))<4096);assert.doesNotMatch(JSON.stringify(emitted),/DO-NOT-LOG|SECRET|https:|token=|backendNode|nodeId|objectId/);
         assert.equal((await owner.observe(before)).stable,true,"failed observation leaves previous proof unchanged");
       }
     }finally{

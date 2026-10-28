@@ -278,4 +278,52 @@ test("POLL-STREAM-009: an older direct authority GET cannot publish over a confi
     assert.equal(authority.state.kind, "unknown", "a real same-target mutation supersedes the older local read");
     assert.deepEqual(client.getQueryData(["streams"]), [saved]);
   } finally { globalThis.fetch = originalFetch; client.clear(); }
+
+  // The same revalidation must publish fresh authority without evicting the
+  // actual opener from its current page. These extend this existing guarantee;
+  // the original held-read/mutation regression above remains unchanged.
+  for (const scenario of ["existing", "duplicate", "missing"] as const) {
+    const client = new QueryClient();
+    const baseline: Stream[] = Array.from({ length: 25 }, (_, index) => ({
+      id: index === 0 ? "stream-control-platform" : "ui-stream-" + index,
+      name: "Stream " + index, status: "live", updated_at: "2026-10-28T00:00:00Z",
+    }));
+    const selected = baseline[1];
+    const fresh = { ...selected, name: "Fresh selected name", updated_at: "2026-10-28T00:01:00Z" };
+    const initial = scenario === "duplicate"
+      ? [...baseline.slice(0, 10), { ...selected, name: "Stale duplicate" }, ...baseline.slice(10)]
+      : scenario === "missing" ? baseline.filter(row => row.id !== selected.id) : baseline;
+    client.setQueryData(["streams"], initial);
+    const cachedBefore = client.getQueryData<Stream[]>(["streams"])!;
+    const reads: { method: string; path: string }[] = [];
+    globalThis.fetch = async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : String(input), "http://ui.test");
+      const method = input instanceof Request ? input.method : init?.method || "GET";
+      assert.equal(method, "GET", "row revalidation must never dispatch a mutation");
+      assert.equal(url.search, "");
+      reads.push({ method, path: url.pathname });
+      if (url.pathname === "/auth/me") return Response.json({ permissions: ["streams.read"] });
+      assert.equal(url.pathname, "/streams/" + selected.id, "read only the selected stream, not the whole list or another row");
+      return Response.json(fresh);
+    };
+    try {
+      const authority = await revalidateStreamActionAuthority(client, { id: "STR-11", stream: selected }, new AbortController().signal);
+      assert.equal(authority.state.kind, "ready");
+      assert.deepEqual(authority.permissions, { kind: "ready", permissions: ["streams.read"] });
+      assert.deepEqual(reads, [{ method: "GET", path: "/auth/me" }, { method: "GET", path: "/streams/" + selected.id }]);
+      const rows = client.getQueryData<Stream[]>(["streams"])!;
+      const expectedIDs = scenario === "missing"
+        ? [...baseline.filter(row => row.id !== selected.id).map(row => row.id), selected.id]
+        : baseline.map(row => row.id);
+      assert.deepEqual(rows.map(row => row.id), expectedIDs, `${scenario}: preserve existing order and deduplicate at the first position; append only a missing target`);
+      assert.equal(rows.filter(row => row.id === selected.id).length, 1);
+      assert.deepEqual(rows.find(row => row.id === selected.id), fresh, "cache receives the current fields");
+      if (scenario !== "missing") assert.equal(rows.slice(0, 8).some(row => row.id === selected.id), true, "the selected first-page row remains rendered");
+      if (scenario !== "duplicate") {
+        for (const prior of cachedBefore.filter(row => row.id !== selected.id)) {
+          assert.equal(rows.find(row => row.id === prior.id), prior, "unrelated cache rows keep their actual object identity");
+        }
+      }
+    } finally { globalThis.fetch = originalFetch; client.clear(); }
+  }
 });

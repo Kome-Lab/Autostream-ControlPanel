@@ -71,7 +71,7 @@ func TestMariaDBP2UIStreamCreatePayloadPersistsAtomically(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				profile, err := st.profiles.CreateProfile(t.Context(), store.ProfileDiscordConfig, "P2 selected authentication", map[string]any{"service_id": botID, "bot_token_secret_name": secret.Name, "bot_token_fingerprint": secret.Fingerprint})
+				profile, err := st.profiles.CreateProfile(t.Context(), store.ProfileDiscordConfig, "P2 selected authentication "+scenario.name, map[string]any{"service_id": botID, "bot_token_secret_name": secret.Name, "bot_token_fingerprint": secret.Fingerprint})
 				if err != nil {
 					t.Fatal(err)
 				}

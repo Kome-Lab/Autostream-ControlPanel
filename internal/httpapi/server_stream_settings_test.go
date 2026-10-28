@@ -217,7 +217,7 @@ func TestStreamSettingsCanBeSavedAndReturned(t *testing.T) {
 	}
 	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithProfileStore(profiles))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
-	createReq := httptest.NewRequest(http.MethodPost, "/streams", bytes.NewBufferString(ui188CreatePayload(t, handler, `{"name":"configured stream","discord_config_id":"`+discordOne.ID+`","auto_start_trigger":"discord_voice_join","youtube_output_id":"`+youtubeOutput.ID+`","visual_settings":{"expected_revision":0,"discord_target":{"mode":"manual","guild_id":"1001","voice_channel_id":"1002","text_channel_id":"1003"}}}`)))
+	createReq := httptest.NewRequest(http.MethodPost, "/streams", bytes.NewBufferString(ui188CreatePayload(t, handler, `{"name":"configured stream 2001","discord_config_id":"`+discordOne.ID+`","auto_start_trigger":"discord_voice_join","youtube_output_id":"`+youtubeOutput.ID+`","visual_settings":{"expected_revision":0,"discord_target":{"mode":"manual","guild_id":"1001","voice_channel_id":"1002","text_channel_id":"1003"}}}`)))
 	createReq.AddCookie(cookie)
 	createReq.Header.Set("X-CSRF-Token", csrf)
 	createRes := httptest.NewRecorder()
@@ -259,8 +259,24 @@ func TestStreamSettingsCanBeSavedAndReturned(t *testing.T) {
 	getReq.AddCookie(cookie)
 	getRes := httptest.NewRecorder()
 	handler.ServeHTTP(getRes, getReq)
-	if getRes.Code != http.StatusOK || !strings.Contains(getRes.Body.String(), discordTwo.ID) || strings.Contains(getRes.Body.String(), "2001") || !strings.Contains(getRes.Body.String(), "discord_voice_join") || !strings.Contains(getRes.Body.String(), archiveProfile.ID) {
+	if getRes.Code != http.StatusOK {
 		t.Fatalf("get stream did not return settings: status=%d body=%s", getRes.Code, getRes.Body.String())
+	}
+	var returned store.Stream
+	if err := json.Unmarshal(getRes.Body.Bytes(), &returned); err != nil {
+		t.Fatal(err)
+	}
+	if returned.ID != created.ID || returned.Name != "configured stream 2001" || returned.DiscordConfigID != discordTwo.ID || returned.AutoStartTrigger != "discord_voice_join" || returned.ArchiveProfileID != archiveProfile.ID {
+		t.Fatalf("get stream did not return the saved settings: %#v", returned)
+	}
+	var streamFields map[string]json.RawMessage
+	if err := json.Unmarshal(getRes.Body.Bytes(), &streamFields); err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"discord_guild_id", "discord_voice_channel_id", "discord_text_channel_id", "discord_target", "visual_settings"} {
+		if _, present := streamFields[field]; present {
+			t.Fatalf("stream response includes separate visual-settings field %q", field)
+		}
 	}
 	visualGet := httptest.NewRequest(http.MethodGet, "/streams/"+created.ID+"/visual-settings", nil)
 	visualGet.AddCookie(cookie)

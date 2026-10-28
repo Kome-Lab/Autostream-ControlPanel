@@ -19,9 +19,8 @@ func (r *SQLRepository) InspectDraftUpload(ctx context.Context, userID, sessionI
 	defer tx.Rollback()
 	var session UploadSession
 	var claimed sql.NullString
-	var claimedAt sql.NullTime
-	err = tx.QueryRowContext(ctx, `SELECT id,user_id,owner_type,claimed_stream_id,expires_at,created_at,updated_at,claimed_at FROM media_upload_sessions WHERE id=? AND user_id=?`, sessionID, userID).Scan(
-		&session.ID, &session.UserID, &session.OwnerType, &claimed, &session.ExpiresAt, &session.CreatedAt, &session.UpdatedAt, &claimedAt)
+	err = tx.QueryRowContext(ctx, `SELECT id,user_id,owner_type,claimed_stream_id,expires_at,created_at,updated_at FROM media_upload_sessions WHERE id=? AND user_id=?`, sessionID, userID).Scan(
+		&session.ID, &session.UserID, &session.OwnerType, &claimed, &session.ExpiresAt, &session.CreatedAt, &session.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return DraftUploadSnapshot{}, ErrNotFound
 	}
@@ -34,8 +33,11 @@ func (r *SQLRepository) InspectDraftUpload(ctx context.Context, userID, sessionI
 	if claimed.Valid {
 		session.ClaimedStreamID = claimed.String
 	}
-	if claimedAt.Valid {
-		session.ClaimedAt = &claimedAt.Time
+	if session.OwnerType == "stream" && session.ClaimedStreamID != "" {
+		// ClaimDraftTx persists the claim timestamp in updated_at; this schema
+		// has no separate claimed_at column. Draft creation is not a claim.
+		claimedAt := session.UpdatedAt
+		session.ClaimedAt = &claimedAt
 	}
 	result := DraftUploadSnapshot{Session: session, OperationID: operationID, Assets: []DraftUploadAsset{}}
 	asset, err := scanAsset(tx.QueryRowContext(ctx, assetSelect+` WHERE owner_user_id=? AND client_operation_session_id=? AND client_operation_id=?`, userID, sessionID, operationID))

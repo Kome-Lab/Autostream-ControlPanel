@@ -742,6 +742,15 @@ jobs:
           normal_log_bytes="$(wc -c < "${normal_log}")"
           failed_tests="$(jq -Rr 'fromjson? | select(.Action == "fail" and ((.Test // "") != "")) | .Test | split("/")[0] | select(test("^Test[A-Za-z0-9_]+$"))' "${full_race_log}" | sort -u)"
           failed_test_count="$(printf '%s\n' "${failed_tests}" | awk 'NF {count++} END {print count+0}')"
+          failed_test_locations="$(jq -Rr --arg failures "${failed_tests}" '
+            fromjson? |
+            select(.Action == "output" and ((.Test // "") != "")) |
+            select(.Test | split("/")[0] as $name | ($failures | split("\n") | index($name)) != null) |
+            (.Output // "") |
+            capture("^[[:space:]]*(?<file>[A-Za-z0-9_./-]{1,200}\\.go):(?<line>[0-9]{1,7}):")? |
+            "\(.file):\(.line)"
+          ' "${full_race_log}" | sort -u)"
+          failed_test_location_count="$(printf '%s\n' "${failed_test_locations}" | awk 'NF {count++} END {print count+0}')"
           {
             printf 'status=current_source_checks_completed\n'
             printf 'current_sha=%s\n' "${current_sha}"
@@ -758,6 +767,12 @@ jobs:
               [[ -z "${test_name}" ]] || printf 'full_package_failed_test=%s\n' "${test_name}"
             done
             printf 'failed_test_names_truncated=%s\n' "$([[ "${failed_test_count}" -gt 20 ]] && echo true || echo false)"
+            printf 'full_package_failure_location_count=%s\n' "${failed_test_location_count}"
+            printf '%s\n' "${failed_test_locations}" | sed -n '1,20p' | while IFS= read -r location; do
+              [[ -z "${location}" ]] || printf 'full_package_failure_location=%s\n' "${location}"
+            done
+            printf 'failure_locations_truncated=%s\n' "$([[ "${failed_test_location_count}" -gt 20 ]] && echo true || echo false)"
+            printf 'failure_location_details=source_path_and_line_only\n'
             printf 'failure_without_test_event=%s\n' "$([[ "${full_race_status}" -ne 0 && "${failed_test_count}" -eq 0 ]] && echo true || echo false)"
             printf 'normal_package_exit=%s\n' "${normal_status}"
             printf 'normal_package_raw_log_bytes=%s\n' "${normal_log_bytes}"

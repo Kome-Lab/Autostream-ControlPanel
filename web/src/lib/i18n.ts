@@ -1,5 +1,5 @@
 import type { Locale } from "@/types/domain";
-import { streamCreateMessages } from "@/lib/stream-create-messages";
+import { streamCreateMessages } from "./stream-create-messages.ts";
 
 export const supportedLocales: Locale[] = ["ja", "en"];
 export const localeStorageKey = "autostream.controlPanel.locale";
