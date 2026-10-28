@@ -3,7 +3,7 @@
 export const pollingCurrentBase = "65a601fc9d4f15c93083e9be4ab9e71586fdba69";
 export const pollingCurrentTree = "2624414bc4e1cb4bd304faccf82e5d22e3201dd2";
 export const pollingCurrentFixturePath = "web/tests/fixtures/ui-regression/polling-current-source-delta.json";
-export const pollingCurrentFixtureSHA256 = "cbfb178820d949d6472928b7f7be3df78529a2ac14ada69480c6f9b46c491228";
+export const pollingCurrentFixtureSHA256 = "817af3a42d8a5909d6c6829eef38d0919ac8e53897c1fcf58cc17d00be38e9e2";
 export const pollingLegacyFixturePath = "web/tests/fixtures/ui-regression/polling-legacy-parity.json";
 export const pollingLegacyFixtureSHA256 = "b2df0a26ef1f77a08a0ddbfe8762b7e77a583c21ba8ed03d22373e4ebce764a8";
 export const pollingCurrentPaths = Object.freeze([
@@ -167,6 +167,13 @@ export const pollingCurrentPaths = Object.freeze([
   "web/tests/generic-resource-polling.test.mts",
   "web/tests/generic-resource-security-cas.test.mts",
   "web/tests/generic-resource-security-draft.test.mts",
+  "web/tests/helpers/browser-executable.mts",
+  "web/tests/helpers/browser-harness.mts",
+  "web/tests/helpers/browser-network-cancel-proof.mts",
+  "web/tests/helpers/browser-network-cancel-proof.test.mts",
+  "web/tests/helpers/browser-next-readiness-fixture.mts",
+  "web/tests/helpers/browser-request-lifecycle.mts",
+  "web/tests/helpers/browser-response-count.mts",
   "web/tests/helpers/p3-media-browser-fixture.mts",
   "web/tests/helpers/p3-media-browser-flow.mts",
   "web/tests/helpers/p3-media-browser-proof.mts",
@@ -203,11 +210,14 @@ export const pollingCurrentPaths = Object.freeze([
   "web/tests/streams-visual-integration.test.mts",
   "web/tests/ui-browser-fixture.mts",
   "web/tests/ui-browser-visual-settings-scenarios.mts",
+  "web/tests/ui-refresh-layout-browser.test.mts",
   "web/tests/ui-regression/draft-exit.test.mts",
   "web/tests/ui-regression/draft-flow.test.mts",
   "web/tests/ui-regression/polling-current-source-test-names.mts",
   "web/tests/ui-regression/preset-components.test.mts",
+  "web/tests/ui-regression/route-fixture.mts",
   "web/tests/ui-regression/source-normalization.mts",
+  "web/tests/ui-release-layout-browser.test.mts",
   "web/tests/workers-action-lifecycle-cases.mts",
   "web/tests/workers-pilot-fixture.mts",
   "web/tsconfig.ui-regression.json",

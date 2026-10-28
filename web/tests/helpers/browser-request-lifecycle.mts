@@ -1,3 +1,5 @@
+import { takeNetworkCancellationTicket } from "./browser-network-cancel-proof.mts";
+
 export const invalidInterceptionIdMessage = "Invalid InterceptionId.";
 
 export type FetchSettlementCommand = "Fetch.continueRequest" | "Fetch.fulfillRequest";
@@ -90,6 +92,7 @@ export class FetchRequestLifecycle {
   private readonly idleWaiters = new Set<IdleWaiter>();
   private navigationGeneration = 0;
   private cancellationCount = 0;
+  private preSettlementCount = 0;
   private fatalError: Error | undefined;
   private diagnosticOrder = 0;
   private navigationBeginOrder = 0;
@@ -141,6 +144,8 @@ export class FetchRequestLifecycle {
   get activeCount() {
     return this.activeRequests.size;
   }
+  get generation() { return this.navigationGeneration; }
+  get preSettlementCancellationCount() { return this.preSettlementCount; }
 
   get safeCancellationCount() {
     return this.cancellationCount;
@@ -198,6 +203,21 @@ export class FetchRequestLifecycle {
     this.recordTerminal(request, attempt.command === "Fetch.fulfillRequest" ? "fulfilled" : "continued");
     this.activeRequests.delete(request.requestId);
     this.flushIdleWaiters();
+  }
+
+  completePreSettlementCancellation(requestId: string, command: FetchSettlementCommand, ticket: unknown) {
+    const request = this.activeRequests.get(requestId);
+    const proved = takeNetworkCancellationTicket(ticket, this, requestId, this.navigationGeneration, command, request?.pathname);
+    this.assertHealthy();
+    if (!proved || !request || request.requiredResponse || request.method !== "GET" || request.generation !== this.navigationGeneration
+      || request.terminalState !== "active" || request.settlementAttemptCount !== 0) throw new Error("Invalid pre-settlement cancellation witness");
+    this.beginSettlement(requestId, command);
+    this.recordTerminal(request, "cancelled");
+    this.activeRequests.delete(requestId);
+    this.cancellationCount += 1;
+    this.preSettlementCount += 1;
+    this.flushIdleWaiters();
+    return { cancelled: true } as const;
   }
 
   handleSettlementError(attempt: FetchSettlementAttempt, error: unknown) {

@@ -15,7 +15,7 @@
     "test:auth-redirect": "node --no-warnings --test tests/post-login-redirect.test.mts",
     "test:analytics": "node --no-warnings --test tests/google-analytics.test.mts",
     "test:navigation": "node --no-warnings --test tests/navigation-section.test.mts",
-    "test:browser-harness": "node --no-warnings --test tests/helpers/browser-launch-profile.test.mts tests/helpers/browser-startup.test.mts tests/helpers/browser-process-attempt.test.mts tests/helpers/browser-request-lifecycle.test.mts",
+    "test:browser-harness": "node --no-warnings --test tests/helpers/browser-launch-profile.test.mts tests/helpers/browser-startup.test.mts tests/helpers/browser-process-attempt.test.mts tests/helpers/browser-request-lifecycle.test.mts tests/helpers/browser-network-cancel-proof.test.mts",
     "test:logout-single-flight": "node --no-warnings --test tests/logout-single-flight.test.mts",
     "test:ui-foundation-browser": "npm run test:logout-single-flight && npm run test:browser-harness && node --no-warnings tests/helpers/run-ui-foundation-browser.mts",
     "test:ui-source:contracts": "node --no-warnings --test tests/browser-source-contract.test.mts",

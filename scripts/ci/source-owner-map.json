@@ -214,16 +214,14 @@
       },
       {
         "path": "web/tests/helpers/browser-harness.mts",
-        "sha256": "84cd6803955b7b6e266518d13f6fd582842fbeb512b3cd449a8d4143e803b95c",
+        "sha256": "d540615b61cc1a50b01cb19fd4768993d7e11b84548eb26dc9fd298031735f35",
         "symbols": [
           "BrowserHarness",
           "removeOwnedBrowserDirectory",
-          "resolveBrowserPath",
           "terminateChildProcess",
-          "waitForChildExit",
-          "waitForMapCount"
+          "waitForChildExit"
         ],
-        "physical_lines": 793
+        "physical_lines": 768
       },
       {
         "path": "web/tests/helpers/browser-command-deadline.mts",
@@ -271,7 +269,7 @@
       },
       {
         "path": "web/tests/helpers/browser-next-readiness-fixture.mts",
-        "sha256": "9657317cc80e2b2f37ea52474b9c18f9a97a04b993f5aecdce87afcdaf98511e",
+        "sha256": "a26bdc014158f7aafd283850d282aa43798deea5c712c0b86ec208cce05619f3",
         "symbols": [
           "NextReadinessChild",
           "NextReadinessClock",
@@ -297,7 +295,7 @@
           "setTimeout",
           "unref"
         ],
-        "physical_lines": 339
+        "physical_lines": 340
       },
       {
         "path": "web/tests/helpers/browser-next-server.mts",
@@ -452,6 +450,45 @@
         "sha256": "e095c29e5a06a11685b226b65a81be454b7bc220be99d67e6c067a9d8906e544",
         "symbols": [],
         "physical_lines": 29
+      },
+      {
+        "path": "web/tests/helpers/browser-executable.mts",
+        "sha256": "8909f360e74c87176927b03cdfccb1d4426329d88f51d8644858cead6da4ed5c",
+        "symbols": [
+          "resolveBrowserPath"
+        ],
+        "physical_lines": 26
+      },
+      {
+        "path": "web/tests/helpers/browser-network-cancel-proof.mts",
+        "sha256": "153e3926590e0a62fabfe270b4b10837119ce9ac618e17ddb141c0bb964040b0",
+        "symbols": [
+          "requestURL",
+          "takeNetworkCancellationTicket"
+        ],
+        "physical_lines": 178
+      },
+      {
+        "path": "web/tests/helpers/browser-network-cancel-proof.test.mts",
+        "sha256": "43739c7956ee9e1826ee1b742528ff0456dc914d4758a43a1cc77d579421e4ad",
+        "symbols": [
+          "changeEvent",
+          "fixture",
+          "fixtureWithFatal",
+          "isEvent",
+          "request",
+          "steps"
+        ],
+        "physical_lines": 388
+      },
+      {
+        "path": "web/tests/helpers/browser-response-count.mts",
+        "sha256": "48bcbad17906aae774342afa38c747929c7b78a5a83232f874bf0fc9784385c7",
+        "symbols": [
+          "waitForMapCount",
+          "waitForMinimumMapCount"
+        ],
+        "physical_lines": 31
       }
     ]
   },
@@ -1347,16 +1384,14 @@
     "destinations": [
       {
         "path": "web/tests/helpers/browser-harness.mts",
-        "sha256": "84cd6803955b7b6e266518d13f6fd582842fbeb512b3cd449a8d4143e803b95c",
+        "sha256": "d540615b61cc1a50b01cb19fd4768993d7e11b84548eb26dc9fd298031735f35",
         "symbols": [
           "BrowserHarness",
           "removeOwnedBrowserDirectory",
-          "resolveBrowserPath",
           "terminateChildProcess",
-          "waitForChildExit",
-          "waitForMapCount"
+          "waitForChildExit"
         ],
-        "physical_lines": 793
+        "physical_lines": 768
       },
       {
         "path": "web/tests/helpers/browser-command-deadline.mts",
@@ -1517,6 +1552,45 @@
         "sha256": "c3954fe799716b971140668b7b735cc3272a06532ac085ba065ec9980138c2d7",
         "symbols": [],
         "physical_lines": 44
+      },
+      {
+        "path": "web/tests/helpers/browser-executable.mts",
+        "sha256": "8909f360e74c87176927b03cdfccb1d4426329d88f51d8644858cead6da4ed5c",
+        "symbols": [
+          "resolveBrowserPath"
+        ],
+        "physical_lines": 26
+      },
+      {
+        "path": "web/tests/helpers/browser-network-cancel-proof.mts",
+        "sha256": "153e3926590e0a62fabfe270b4b10837119ce9ac618e17ddb141c0bb964040b0",
+        "symbols": [
+          "requestURL",
+          "takeNetworkCancellationTicket"
+        ],
+        "physical_lines": 178
+      },
+      {
+        "path": "web/tests/helpers/browser-network-cancel-proof.test.mts",
+        "sha256": "43739c7956ee9e1826ee1b742528ff0456dc914d4758a43a1cc77d579421e4ad",
+        "symbols": [
+          "changeEvent",
+          "fixture",
+          "fixtureWithFatal",
+          "isEvent",
+          "request",
+          "steps"
+        ],
+        "physical_lines": 388
+      },
+      {
+        "path": "web/tests/helpers/browser-response-count.mts",
+        "sha256": "48bcbad17906aae774342afa38c747929c7b78a5a83232f874bf0fc9784385c7",
+        "symbols": [
+          "waitForMapCount",
+          "waitForMinimumMapCount"
+        ],
+        "physical_lines": 31
       }
     ]
   },
@@ -5122,7 +5196,7 @@
     "destinations": [
       {
         "path": "web/tests/helpers/browser-harness.mts",
-        "sha256": "84cd6803955b7b6e266518d13f6fd582842fbeb512b3cd449a8d4143e803b95c",
+        "sha256": "d540615b61cc1a50b01cb19fd4768993d7e11b84548eb26dc9fd298031735f35",
         "symbols": [
           "BrowserHarness",
           "assertNoFatalError",
@@ -5157,7 +5231,6 @@
           "reload",
           "removeOwnedBrowserDirectory",
           "reportFetchGenerationFailure",
-          "resolveBrowserPath",
           "runBoundedOperation",
           "send",
           "sendBrowser",
@@ -5170,12 +5243,11 @@
           "terminateChildProcess",
           "waitFor",
           "waitForChildExit",
-          "waitForMapCount",
           "waitForRequestCount",
           "waitForRequestHandlersIdle",
           "waitForResponseCount"
         ],
-        "physical_lines": 793
+        "physical_lines": 768
       },
       {
         "path": "web/tests/helpers/browser-command-deadline.mts",
@@ -5222,6 +5294,45 @@
           "withTimeout"
         ],
         "physical_lines": 23
+      },
+      {
+        "path": "web/tests/helpers/browser-executable.mts",
+        "sha256": "8909f360e74c87176927b03cdfccb1d4426329d88f51d8644858cead6da4ed5c",
+        "symbols": [
+          "resolveBrowserPath"
+        ],
+        "physical_lines": 26
+      },
+      {
+        "path": "web/tests/helpers/browser-network-cancel-proof.mts",
+        "sha256": "153e3926590e0a62fabfe270b4b10837119ce9ac618e17ddb141c0bb964040b0",
+        "symbols": [
+          "requestURL",
+          "takeNetworkCancellationTicket"
+        ],
+        "physical_lines": 178
+      },
+      {
+        "path": "web/tests/helpers/browser-network-cancel-proof.test.mts",
+        "sha256": "43739c7956ee9e1826ee1b742528ff0456dc914d4758a43a1cc77d579421e4ad",
+        "symbols": [
+          "changeEvent",
+          "fixture",
+          "fixtureWithFatal",
+          "isEvent",
+          "request",
+          "steps"
+        ],
+        "physical_lines": 388
+      },
+      {
+        "path": "web/tests/helpers/browser-response-count.mts",
+        "sha256": "48bcbad17906aae774342afa38c747929c7b78a5a83232f874bf0fc9784385c7",
+        "symbols": [
+          "waitForMapCount",
+          "waitForMinimumMapCount"
+        ],
+        "physical_lines": 31
       }
     ]
   },
@@ -5321,16 +5432,14 @@
       },
       {
         "path": "web/tests/helpers/browser-harness.mts",
-        "sha256": "84cd6803955b7b6e266518d13f6fd582842fbeb512b3cd449a8d4143e803b95c",
+        "sha256": "d540615b61cc1a50b01cb19fd4768993d7e11b84548eb26dc9fd298031735f35",
         "symbols": [
           "BrowserHarness",
           "removeOwnedBrowserDirectory",
-          "resolveBrowserPath",
           "terminateChildProcess",
-          "waitForChildExit",
-          "waitForMapCount"
+          "waitForChildExit"
         ],
-        "physical_lines": 793
+        "physical_lines": 768
       },
       {
         "path": "web/tests/helpers/browser-command-deadline.mts",
@@ -5354,6 +5463,45 @@
         "sha256": "b0d7c4b455a72d750dfe6c0a679ad6d7fa6124b57731dffd57597d8373fbcdf7",
         "symbols": [],
         "physical_lines": 23
+      },
+      {
+        "path": "web/tests/helpers/browser-executable.mts",
+        "sha256": "8909f360e74c87176927b03cdfccb1d4426329d88f51d8644858cead6da4ed5c",
+        "symbols": [
+          "resolveBrowserPath"
+        ],
+        "physical_lines": 26
+      },
+      {
+        "path": "web/tests/helpers/browser-network-cancel-proof.mts",
+        "sha256": "153e3926590e0a62fabfe270b4b10837119ce9ac618e17ddb141c0bb964040b0",
+        "symbols": [
+          "requestURL",
+          "takeNetworkCancellationTicket"
+        ],
+        "physical_lines": 178
+      },
+      {
+        "path": "web/tests/helpers/browser-network-cancel-proof.test.mts",
+        "sha256": "43739c7956ee9e1826ee1b742528ff0456dc914d4758a43a1cc77d579421e4ad",
+        "symbols": [
+          "changeEvent",
+          "fixture",
+          "fixtureWithFatal",
+          "isEvent",
+          "request",
+          "steps"
+        ],
+        "physical_lines": 388
+      },
+      {
+        "path": "web/tests/helpers/browser-response-count.mts",
+        "sha256": "48bcbad17906aae774342afa38c747929c7b78a5a83232f874bf0fc9784385c7",
+        "symbols": [
+          "waitForMapCount",
+          "waitForMinimumMapCount"
+        ],
+        "physical_lines": 31
       }
     ]
   },

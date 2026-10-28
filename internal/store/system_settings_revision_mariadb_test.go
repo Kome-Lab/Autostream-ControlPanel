@@ -91,12 +91,12 @@ func TestMariaDBSystemSettingsInitialAndExistingRowCAS(t *testing.T) {
 			if initial.err != nil || initial.stamp != UnconfiguredSystemSettingsRevision {
 				t.Fatal("isolated settings row was not initially unconfigured")
 			}
-			unlock := systemSettingsInitialInsertBarrier(t, ctx, db, kind)
+			lockName, ownerID, unlock := systemSettingsInitialInsertBarrier(t, ctx, db, kind)
 			outcomes := make(chan systemSettingsCASResult, 2)
 			for tag := 1; tag <= 2; tag++ {
 				go func(tag int) { outcomes <- write(&initial.stamp, tag) }(tag)
 			}
-			waitForSystemSettingsQueries(t, ctx, db, "INSERT INTO system_settings", 2)
+			waitForSystemSettingsInitialUserLocks(t, ctx, db, lockName, ownerID)
 			unlock()
 			winner := systemSettingsOneWinner(t, outcomes)
 			actual := read()
@@ -186,7 +186,37 @@ func waitForSystemSettingsQueries(t *testing.T, ctx context.Context, db *sql.DB,
 	t.Fatal("both settings operations did not reach the actual database lock barrier")
 }
 
-func systemSettingsInitialInsertBarrier(t *testing.T, ctx context.Context, db *sql.DB, kind string) func() {
+func waitForSystemSettingsInitialUserLocks(t *testing.T, ctx context.Context, db *sql.DB, lockName string, ownerID int64) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	waiting, ownerMatches := 0, false
+	for {
+		var actualOwner sql.NullInt64
+		err := db.QueryRowContext(ctx, `SELECT IS_USED_LOCK(?),(SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE DB=DATABASE() AND STATE='User lock' AND ID<>CONNECTION_ID() AND ID<>?)`, lockName, ownerID).Scan(&actualOwner, &waiting)
+		if err != nil {
+			if ctx.Err() != nil {
+				t.Fatalf("initial settings lock observation timed out: waiting=%d owner_matches=%t", waiting, ownerMatches)
+			}
+			t.Fatal("cannot observe the initial settings named-lock barrier")
+		}
+		ownerMatches = actualOwner.Valid && actualOwner.Int64 == ownerID
+		if !ownerMatches {
+			t.Fatalf("initial settings barrier owner changed: waiting=%d owner_matches=false", waiting)
+		}
+		if waiting == 2 {
+			t.Log("observed 2 initial settings writers in User lock with matching barrier owner")
+			return
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("initial settings lock observation timed out: waiting=%d owner_matches=%t", waiting, ownerMatches)
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+}
+
+func systemSettingsInitialInsertBarrier(t *testing.T, ctx context.Context, db *sql.DB, kind string) (string, int64, func()) {
 	t.Helper()
 	name := "system89_" + strings.ReplaceAll(newUUID(), "-", "")
 	conn, err := db.Conn(ctx)
@@ -194,7 +224,9 @@ func systemSettingsInitialInsertBarrier(t *testing.T, ctx context.Context, db *s
 		t.Fatal(err)
 	}
 	var acquired int
-	if err = conn.QueryRowContext(ctx, `SELECT GET_LOCK(?,10)`, name).Scan(&acquired); err != nil || acquired != 1 {
+	var ownerID int64
+	if err = conn.QueryRowContext(ctx, `SELECT CONNECTION_ID(),GET_LOCK(?,10)`, name).Scan(&ownerID, &acquired); err != nil || acquired != 1 || ownerID <= 0 {
+		_ = conn.Close()
 		t.Fatal("initial settings fixture lock unavailable")
 	}
 	// The trigger only schedules two legitimate initial writes. It changes no
@@ -217,5 +249,5 @@ func systemSettingsInitialInsertBarrier(t *testing.T, ctx context.Context, db *s
 		unlock()
 		_, _ = db.ExecContext(context.WithoutCancel(ctx), "DROP TRIGGER IF EXISTS `"+name+"`")
 	})
-	return unlock
+	return name, ownerID, unlock
 }

@@ -117,6 +117,7 @@ export function createNextReadinessFixture(options: NextReadinessOptions = {}) {
   // Only OS, HTTP and clock boundaries are controlled; there is no alternate readiness algorithm.
   nextReadinessHarnessJavascript ??= new Map([
     "browser-harness.mts", "browser-next-server.mts", "browser-process-timing.mts", "browser-command-deadline.mts",
+    "browser-network-cancel-proof.mts", "browser-executable.mts", "browser-response-count.mts",
   ].map((name) => ["./" + name, ts.transpileModule(readFileSync(resolve(dirname(browserHarnessPath), name), "utf8"), {
     fileName: name.replace(/\.mts$/, ".ts"),
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },

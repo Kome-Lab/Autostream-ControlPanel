@@ -218,7 +218,7 @@ test("CP174 release layouts retain readable records and keyboard-operable Japane
     if (property !== "setRouteResolver") return Reflect.get(target, property, receiver);
     return (fallback: RouteResolver) => target.setRouteResolver(request => {
       const path = new URL(request.url).pathname.replace(/\/$/, "");
-      if (request.method !== "GET" && path !== "/auth/session/refresh") {
+      if (request.method !== "GET" && request.method !== "HEAD" && path !== "/auth/session/refresh") {
         unexpectedWrites.push(request.method + " " + path);
         return { status: 405, body: { code: "unexpected_layout_mutation" } };
       }

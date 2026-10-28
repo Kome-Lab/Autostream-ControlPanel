@@ -72,6 +72,9 @@ export function createUIFixture(baseURL: string) {
       response = { body: { theme_id: condition?.theme || "autostream", color_mode: condition?.exercise === "system-mode" ? "system" : condition?.mode || "light", revision: 4 } };
     } else if (request.method === "GET" && path === "/streams") {
       response = { body: structuredClone(streams) };
+    } else if (request.method === "GET" && url.search === "" && streams.some(stream => path === "/streams/" + stream.id)) {
+      const selected = streams.find(stream => path === "/streams/" + stream.id)!;
+      response = { body: structuredClone(phase === "unknown" ? unknownInput("/streams", selected) : selected) };
     } else if (request.method === "GET" && url.pathname === "/video-cover-presets" && url.search === "") {
       response = { body: { items: [] } };
     } else if (request.method === "GET" && Object.hasOwn(extras, path)) {

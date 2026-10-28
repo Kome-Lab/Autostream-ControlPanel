@@ -4,6 +4,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { BrowserHarness, ensureWebServer, type RouteResolver, type StubResponse } from "./helpers/browser-harness.mts";
+import { waitForMinimumMapCount } from "./helpers/browser-response-count.mts";
 import { createBrowserRouteFixture, localeStorageKey, permissionUser, requestedBaseUrl, webRoot } from "./ui-browser-fixture.mts";
 import { waitForShell } from "./ui-browser-query-auth-helpers.mts";
 import { waitForAnimationFrames } from "./ui-browser-navigation-helpers.mts";
@@ -53,7 +54,7 @@ test("CP live polling preserves OAuth drafts, node confirmation and Workers page
       return (fallback: RouteResolver) => target.setRouteResolver(request => {
         const path = new URL(request.url).pathname.replace(/\/$/, "");
         requestMethods.push({ path, method: request.method });
-        if (request.method !== "GET" && path !== "/auth/session/refresh") {
+        if (request.method !== "GET" && request.method !== "HEAD" && path !== "/auth/session/refresh") {
           return { status: 405, body: { code: "unexpected_ui_mutation" } };
         }
         if (request.method === "GET" && path === oauthPath) return { ...oauthResponse, requiredResponse: false };
@@ -91,8 +92,12 @@ test("CP live polling preserves OAuth drafts, node confirmation and Workers page
   const oauthBefore = browser.responses.get(oauthPath) || 0;
   oauthResponse = { body: [{ ...oauthAccount, email: "after-poll@example.test" }], delayMs: 150 };
   await browser.waitForResponseCount(oauthPath, oauthBefore + 1, 15_000);
-  await browser.waitFor(`document.querySelector('[role="dialog"]')?.textContent.includes('after-poll@example.test')`, Boolean, "OAuth polling response reached the existing editor");
+  await browser.waitForRequestHandlersIdle({ pathname: oauthPath, method: "GET" });
   await waitForAnimationFrames(browser);
+  assert.deepEqual(await browser.evaluate(`(() => {
+    const text = document.querySelector('[role="dialog"]')?.textContent || '';
+    return { originalEmail: text.includes('before@example.test'), polledEmail: text.includes('after-poll@example.test') };
+  })()`), { originalEmail: true, polledEmail: false }, "the existing editor retains its original baseline after the scheduled GET");
   assert.deepEqual(await browser.evaluate(`(() => {
     const old = globalThis.__refreshOAuth, input = document.querySelector(${JSON.stringify(editInput)});
     return { sameInput: input === old.input && input.isConnected, sameDialog: input?.closest('[role="dialog"]') === old.dialog && old.dialog.isConnected,
@@ -104,6 +109,11 @@ test("CP live polling preserves OAuth drafts, node confirmation and Workers page
   await browser.pressNativeKey("Escape");
   await browser.waitFor(`document.querySelector('[role="dialog"]') === null`, Boolean, "OAuth editor closed without saving");
   await browser.evaluate("delete globalThis.__refreshOAuth; true");
+  await clickVisible(browser, 'main button', /^Edit Poll OAuth account$/);
+  await browser.waitFor(`document.querySelector('[role="dialog"]')?.textContent.includes('after-poll@example.test')`, Boolean, "a new edit observes the polled row after the retained draft is closed");
+  assert.equal(await browser.evaluate(`document.querySelector('[role="dialog"]')?.textContent.includes('before@example.test')`), false, "the new editor baseline comes from the completed query");
+  await browser.pressNativeKey("Escape");
+  await browser.waitFor(`document.querySelector('[role="dialog"]') === null`, Boolean, "the fresh-baseline editor closes without mutation");
 
   fixture.nodesResponse = { body: [node], delayMs: 150 };
   await browser.navigate(`${server.baseUrl}/admin/registered-nodes/`);
@@ -184,7 +194,7 @@ test("CP live polling preserves OAuth drafts, node confirmation and Workers page
     assert.ok(requestMethods.filter(request => request.path === path && request.method === "GET").length >= 2, `${path}: real repeated GETs observed`);
     assert.ok(browser.responseStatuses.get(path)?.every(status => status === 200), `${path}: successful responses required`);
   }
-  assert.deepEqual(requestMethods.filter(request => request.method !== "GET" && request.path !== "/auth/session/refresh"), [], "no application or token mutation may be sent");
+  assert.deepEqual(requestMethods.filter(request => request.method !== "GET" && request.method !== "HEAD" && request.path !== "/auth/session/refresh"), [], "no application or token mutation may be sent");
   assert.equal(browser.consoleErrorCount, 0, "no application console errors");
   browser.assertNoFatalError();
 });
@@ -208,7 +218,7 @@ test("idle notification regions retain the required forced-colors observation co
     await run(condition, surface, async (browser, fixture) => {
       await browser.navigate(server.baseUrl + condition.route);
       await waitForShell(browser, "Account menu");
-      await browser.waitForResponseCount(surface.primary, 1);
+      await waitForMinimumMapCount(browser.responses, surface.primary, 1, "initial rendered response", 10_000, () => browser.assertNoFatalError());
       await browser.waitForRequestHandlersIdle();
       await paint(browser);
       const observation = await browser.evaluate<UIObservation>(observationExpression);
@@ -216,7 +226,7 @@ test("idle notification regions retain the required forced-colors observation co
       assertObservation(observation, condition);
       assert.equal(observation.media.forcedColors, true);
       assert.ok(observation.notices.every(notice => notice.text.trim()), "every exposed status notification has real text");
-      assert.deepEqual(fixture.trace.filter(request => request.method !== "GET" && request.path !== "/auth/session/refresh"), [], "notification checks cannot mutate application state");
+      assert.deepEqual(fixture.trace.filter(request => request.method !== "GET" && request.method !== "HEAD" && request.path !== "/auth/session/refresh"), [], "notification checks cannot mutate application state");
       if (evidence) await writeFile(join(resolve(evidence), `forced-colors-${family}-390.png`), await browser.captureScreenshot(), { flag: "wx" });
       browser.assertNoFatalError();
     });
@@ -241,7 +251,7 @@ test("magnified stream visual controls remain reachable with the original layout
   for (const condition of planned) await run(condition, surface, async (browser, fixture) => {
     await browser.navigate(server.baseUrl + condition.route);
     await waitForShell(browser, condition.locale === "ja" ? "アカウントメニュー" : "Account menu");
-    await browser.waitForResponseCount(surface.primary, 1);
+    await waitForMinimumMapCount(browser.responses, surface.primary, 1, "initial rendered response", 10_000, () => browser.assertNoFatalError());
     await browser.waitFor(`document.querySelectorAll('main [data-stream-create-view] #create-stream-visual').length`, value => value === 1, "the full-page stream creation form");
     assert.deepEqual(await browser.evaluate(`({
       owners: document.querySelectorAll('main [data-stream-create-view]').length,
@@ -258,7 +268,7 @@ test("magnified stream visual controls remain reachable with the original layout
     const observation = await browser.evaluate<UIObservation>(observationExpression);
     persist(condition.id + ".observation.json", observation);
     assertObservation(observation, condition);
-    assert.deepEqual(fixture.trace.filter(request => request.method !== "GET" && request.path !== "/auth/session/refresh"), [], "magnified layout checks cannot mutate application state");
+    assert.deepEqual(fixture.trace.filter(request => request.method !== "GET" && request.method !== "HEAD" && request.path !== "/auth/session/refresh"), [], "magnified layout checks cannot mutate application state");
     if (evidence) await writeFile(join(resolve(evidence), `magnified-create-${condition.locale}-${condition.mode}-390.png`), await browser.captureScreenshot(), { flag: "wx" });
     browser.assertNoFatalError();
     t.diagnostic(`stream-create-edit/390/${condition.locale}/${condition.mode}/CSS 200%: original layout and observation contracts passed`);
@@ -268,84 +278,87 @@ test("magnified stream visual controls remain reachable with the original layout
 test("Monitoring and Dashboard retain geometry during real scheduled GETs at desktop and mobile widths", { timeout: 120_000 }, async t => {
   const server = await ensureWebServer(webRoot, requestedBaseUrl);
   t.after(() => server.close());
-  const browser = await BrowserHarness.launch();
-  t.after(() => browser.close());
-  const writes: string[] = [];
-  const registration = new Proxy(browser, { get(target, property, receiver) {
-    if (property !== "setRouteResolver") return Reflect.get(target, property, receiver);
-    return (fallback: RouteResolver) => target.setRouteResolver(request => {
-      const path = new URL(request.url).pathname.replace(/\/$/, "");
-      if (request.method !== "GET" && path !== "/auth/session/refresh") {
-        writes.push(request.method + " " + path);
-        return { status: 405, body: { code: "unexpected_polling_mutation" } };
-      }
-      if (request.method === "GET" && ["/observability/incidents", "/observability/diagnostics"].includes(path)) return { body: [], requiredResponse: false };
-      return fallback(request);
-    });
-  } });
-  const fixture = createBrowserRouteFixture(registration);
-  fixture.healthResponse = { body: [node], delayMs: 1_200 };
-  fixture.streamsResponse = { body: [] };
-  // Use the existing browser matrix wall clock so a minute rollover does not
-  // change the intentional Last updated value in the full-text comparison.
-  // Native timers and performance.now still advance; scheduled GETs stay real.
-  await browser.configureDeterministicDocument({
-    source: "const UIClock=Date;const uiNow=UIClock.parse('2026-09-01T01:00:00Z');globalThis.Date=class extends UIClock{constructor(...args){super(...(args.length?args:[uiNow]));}static now(){return uiNow;}};" +
-      `localStorage.setItem(${JSON.stringify(localeStorageKey)}, "ja");`,
-    timezone: "Asia/Tokyo", locale: "ja-JP",
-  });
   for (const [route, family, anchors] of [
     ["/admin/monitoring/", "monitoring", ['[data-slot="detail-section"]', '[data-slot="detail-section"]:last-child']],
     ["/admin/", "dashboard", ["#dashboard-waiting", "#dashboard-recent"]],
   ] as const) for (const width of [1440, 390]) {
-    await browser.setViewport(width, width === 1440 ? 900 : 1024);
-    await browser.navigate(server.baseUrl + route);
-    await waitForShell(browser, "アカウントメニュー");
-    const root = `main [data-screen-family="${family}"]`;
-    await browser.waitFor(`document.querySelector(${JSON.stringify(root + ' [data-freshness="fresh"]')}) !== null`, Boolean, "successful initial operational data", 10_000);
-    await browser.waitForRequestHandlersIdle({ pathname: "/service-health", method: "GET" });
-    await paint(browser);
-    assert.equal(await browser.evaluate("Date.now()"), Date.parse("2026-09-01T01:00:00Z"), "the display clock is deterministic");
-    const elapsedBefore = await browser.evaluate<number>("performance.now()");
-    const snapshot = () => browser.evaluate<{ y: number[]; scrollY: number; text: string; overflow: boolean }>(`(() => {
-      const root = document.querySelector(${JSON.stringify(root)});
-      const nodes = ${JSON.stringify(anchors)}.map(selector => root.querySelector(selector));
-      if (nodes.some(node => !node)) throw Error('operational layout anchors missing');
-      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT), text = [];
-      for (let part = walker.nextNode(); part; part = walker.nextNode()) if (!part.parentElement.closest('.sr-only,[hidden]') && part.parentElement.getClientRects().length) text.push(part.textContent.trim());
-      return { y: nodes.map(node => node.getBoundingClientRect().top + window.scrollY), scrollY: window.scrollY, text: text.filter(Boolean).join(' '), overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth + 1 };
-    })()`);
-    const before = await snapshot();
-    assert.equal(before.overflow, false, `${family}/${width}: no document overflow`);
-    const responses = browser.responses.get("/service-health") || 0;
-    const requests = browser.requests.get("/service-health") || 0;
-    await browser.waitForRequestCount("/service-health", requests + 1, 15_000);
-    await browser.waitFor(`document.querySelector(${JSON.stringify(root + ' [data-freshness="refreshing"]')}) !== null`, Boolean, "actual operational GET is fetching", 5_000);
-    await waitForAnimationFrames(browser);
-    const fetching = await snapshot();
-    assert.equal(browser.responses.get("/service-health") || 0, responses, "fetching geometry is measured before the delayed response");
-    await browser.waitForResponseCount("/service-health", responses + 1, 5_000);
-    await browser.waitFor(`document.querySelector(${JSON.stringify(root + ' [data-freshness="fresh"]')}) !== null`, Boolean, "scheduled GET settled successfully", 5_000);
-    await paint(browser);
-    const after = await snapshot();
-    assert.ok(await browser.evaluate<number>("performance.now()") - elapsedBefore >= 1_000, "scheduled GETs and delayed responses still consume real elapsed time");
-    for (const state of [fetching, after]) {
-      assert.equal(state.text, before.text, `${family}/${width}: loaded wording remains stable`);
-      assert.equal(state.scrollY, before.scrollY, `${family}/${width}: viewport scroll remains stable`);
-      assert.equal(state.overflow, false);
-      state.y.forEach((y, index) => assert.ok(Math.abs(y - before.y[index]) <= 0.5, `${family}/${width}: anchor ${index} must not jump: ${before.y[index]} -> ${y}`));
-    }
-    t.diagnostic(`${family}/${width}: actual GET ${responses} -> ${browser.responses.get("/service-health")}; Y ${before.y} -> fetching ${fetching.y} -> refreshed ${after.y}`);
-    const evidence = process.env.AUTOSTREAM_UI174_EVIDENCE_DIR;
-    if (evidence) {
-      const directory = resolve(evidence);
-      await mkdir(directory, { recursive: true });
-      await writeFile(join(directory, `${family}-${width}.png`), await browser.captureScreenshot());
+    const browser = await BrowserHarness.launch();
+    try {
+      const writes: string[] = [];
+      const registration = new Proxy(browser, { get(target, property, receiver) {
+        if (property !== "setRouteResolver") return Reflect.get(target, property, receiver);
+        return (fallback: RouteResolver) => target.setRouteResolver(request => {
+          const path = new URL(request.url).pathname.replace(/\/$/, "");
+          if (request.method !== "GET" && request.method !== "HEAD" && path !== "/auth/session/refresh") {
+            writes.push(request.method + " " + path);
+            return { status: 405, body: { code: "unexpected_polling_mutation" } };
+          }
+          if (request.method === "GET" && ["/observability/incidents", "/observability/diagnostics"].includes(path)) return { body: [], requiredResponse: false };
+          return fallback(request);
+        });
+      } });
+      const fixture = createBrowserRouteFixture(registration);
+      fixture.healthResponse = { body: [node], delayMs: 1_200 };
+      fixture.streamsResponse = { body: [] };
+      // Use the existing browser matrix wall clock so a minute rollover does not
+      // change the intentional Last updated value in the full-text comparison.
+      // Native timers and performance.now still advance; scheduled GETs stay real.
+      await browser.configureDeterministicDocument({
+        source: "const UIClock=Date;const uiNow=UIClock.parse('2026-09-01T01:00:00Z');globalThis.Date=class extends UIClock{constructor(...args){super(...(args.length?args:[uiNow]));}static now(){return uiNow;}};" +
+          `localStorage.setItem(${JSON.stringify(localeStorageKey)}, "ja");`,
+        timezone: "Asia/Tokyo", locale: "ja-JP",
+      });
+      await browser.setViewport(width, width === 1440 ? 900 : 1024);
+      await browser.navigate(server.baseUrl + route);
+      await waitForShell(browser, "アカウントメニュー");
+      const root = `main [data-screen-family="${family}"]`;
+      await browser.waitFor(`document.querySelector(${JSON.stringify(root + ' [data-freshness="fresh"]')}) !== null`, Boolean, "successful initial operational data", 10_000);
+      await browser.waitForRequestHandlersIdle({ pathname: "/service-health", method: "GET" });
+      await paint(browser);
+      assert.equal(await browser.evaluate("Date.now()"), Date.parse("2026-09-01T01:00:00Z"), "the display clock is deterministic");
+      const elapsedBefore = await browser.evaluate<number>("performance.now()");
+      const snapshot = () => browser.evaluate<{ y: number[]; scrollY: number; text: string; overflow: boolean }>(`(() => {
+        const root = document.querySelector(${JSON.stringify(root)});
+        const nodes = ${JSON.stringify(anchors)}.map(selector => root.querySelector(selector));
+        if (nodes.some(node => !node)) throw Error('operational layout anchors missing');
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT), text = [];
+        for (let part = walker.nextNode(); part; part = walker.nextNode()) if (!part.parentElement.closest('.sr-only,[hidden]') && part.parentElement.getClientRects().length) text.push(part.textContent.trim());
+        return { y: nodes.map(node => node.getBoundingClientRect().top + window.scrollY), scrollY: window.scrollY, text: text.filter(Boolean).join(' '), overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth + 1 };
+      })()`);
+      const before = await snapshot();
+      assert.equal(before.overflow, false, `${family}/${width}: no document overflow`);
+      const responses = browser.responses.get("/service-health") || 0;
+      const requests = browser.requests.get("/service-health") || 0;
+      await browser.waitForRequestCount("/service-health", requests + 1, 15_000);
+      await browser.waitFor(`document.querySelector(${JSON.stringify(root + ' [data-freshness="refreshing"]')}) !== null`, Boolean, "actual operational GET is fetching", 5_000);
+      await waitForAnimationFrames(browser);
+      const fetching = await snapshot();
+      assert.equal(browser.responses.get("/service-health") || 0, responses, "fetching geometry is measured before the delayed response");
+      await browser.waitForResponseCount("/service-health", responses + 1, 5_000);
+      await browser.waitFor(`document.querySelector(${JSON.stringify(root + ' [data-freshness="fresh"]')}) !== null`, Boolean, "scheduled GET settled successfully", 5_000);
+      await paint(browser);
+      const after = await snapshot();
+      assert.ok(await browser.evaluate<number>("performance.now()") - elapsedBefore >= 1_000, "scheduled GETs and delayed responses still consume real elapsed time");
+      for (const state of [fetching, after]) {
+        assert.equal(state.text, before.text, `${family}/${width}: loaded wording remains stable`);
+        assert.equal(state.scrollY, before.scrollY, `${family}/${width}: viewport scroll remains stable`);
+        assert.equal(state.overflow, false);
+        state.y.forEach((y, index) => assert.ok(Math.abs(y - before.y[index]) <= 0.5, `${family}/${width}: anchor ${index} must not jump: ${before.y[index]} -> ${y}`));
+      }
+      t.diagnostic(`${family}/${width}: actual GET ${responses} -> ${browser.responses.get("/service-health")}; Y ${before.y} -> fetching ${fetching.y} -> refreshed ${after.y}`);
+      const evidence = process.env.AUTOSTREAM_UI174_EVIDENCE_DIR;
+      if (evidence) {
+        const directory = resolve(evidence);
+        await mkdir(directory, { recursive: true });
+        await writeFile(join(directory, `${family}-${width}.png`), await browser.captureScreenshot());
+      }
+      assert.deepEqual(writes, []);
+      assert.equal(browser.consoleErrorCount, 0);
+      browser.assertNoFatalError();
+    } finally {
+      await browser.close();
     }
   }
-  assert.deepEqual(writes, []);
-  assert.equal(browser.consoleErrorCount, 0);
-  browser.assertNoFatalError();
 });
 
 test("v2 preset screens enforce permissions, distinguish failed and empty reads, and retain drafts on revision conflict", { timeout: 90_000 }, async t => {
@@ -368,7 +381,7 @@ test("v2 preset screens enforce permissions, distinguish failed and empty reads,
         // A concurrent update occurs after the final authority read, at dispatch.
         return { status: 409, body: { code: "revision_conflict" } };
       }
-      if (request.method !== "GET" && path !== "/auth/session/refresh") {
+      if (request.method !== "GET" && request.method !== "HEAD" && path !== "/auth/session/refresh") {
         writes.push({ method: request.method, path, body: null });
         return { status: 405, body: { code: "unexpected_acceptance_mutation" } };
       }

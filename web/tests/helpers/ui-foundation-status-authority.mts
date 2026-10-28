@@ -139,11 +139,21 @@ export function verifyStatusAuthoritySources(webRoot: string, authority: StatusA
       assert.equal(commit, source.currentSource.revision, `${source.id}: current authority must name the exact code commit`);
       verifyStatusAuthoritySourceLocators(root, source.id, commit, source.currentSource.locators, authority.vocabularies);
       for (const locator of source.currentSource.locators) {
-        const current: Buffer = source.id === "control-panel-stream-store" && locator.path === "internal/store/stream_queries_mariadb.go"
-          ? inverseR9ArchiveProcessingSource(
-            execFileSync("git", ["-C", root, "cat-file", "blob", `a9efbed3e058bf016b171e50c22650075f20ef50:${locator.path}`]),
-            readFileSync(join(root, locator.path)),
-          )
+        const current: Buffer = source.repository === "Autostream-ControlPanel" && source.id === "control-panel-stream-store" && locator.path === "internal/store/stream_queries_mariadb.go"
+          ? (() => {
+            const currentRaw: Buffer = readFileSync(join(root, locator.path));
+            // Reviewed settings-revision projection only. This independent raw
+            // pin prevents a future outer-fixture refresh from hiding status edits.
+            assert.equal(sha256(currentRaw), "e150c7afc136eddd09c9cd7c7307f5b1ac9e4539ae96e3166e5fff852ef948ff", `${source.id}:${locator.path} current product source digest`);
+            const beforePolling = (() => {
+              try { return createPollingCurrentAdapter(controlPanelRoot).inverse(locator.path, currentRaw); }
+              catch (cause) { throw new Error(`${source.id}:${locator.path} current product source digest`, { cause }); }
+            })();
+            return inverseR9ArchiveProcessingSource(
+              execFileSync("git", ["-C", root, "cat-file", "blob", `a9efbed3e058bf016b171e50c22650075f20ef50:${locator.path}`]),
+              beforePolling,
+            );
+          })()
           : execFileSync("git", ["-C", root, "cat-file", "blob", `HEAD:${locator.path}`]);
         assert.equal(sha256(current), locator.sourceSha256, `${source.id}:${locator.path} current product source digest`);
       }
@@ -173,6 +183,20 @@ export function verifyStatusAuthoritySources(webRoot: string, authority: StatusA
         withoutMetadata = withoutMetadata.replace(line, "");
       }
       assert.equal(withoutMetadata, normalizeNewlines(historical.toString("utf8")), "status domain may differ only by the two optional polling metadata fields");
+      for (const vocabulary of authority.vocabularies.filter((entry) => entry.authorityId === source.id)) {
+        assert.ok(normalizeNewlines(currentBytes.toString("utf8")).includes(normalizeNewlines(vocabulary.excerpt)), `${vocabulary.id}: actual current status vocabulary changed`);
+      }
+      bytes = historical;
+    }
+    if (source.repository === "Autostream-ControlPanel" && source.id === "control-panel-http" && source.path === "internal/httpapi/server_status_projection.go") {
+      // Reviewed additions: metadata revision and transport fields/projection.
+      // Preserve the old status source SHA instead of accepting a refreshed oracle.
+      assert.equal(sha256(currentBytes), "3724871d1102e8d4a2d402f2f28b7dca9d98d4755bebabd99f25ccfd5bb264d1", `${source.repository}:${source.path} source digest`);
+      const historical = (() => {
+        try { return createPollingCurrentAdapter(controlPanelRoot).inverse(source.path, currentBytes); }
+        catch (cause) { throw new Error(`${source.repository}:${source.path} source digest`, { cause }); }
+      })();
+      assert.ok(historical, "HTTP status source must retain its immutable pre-polling bytes");
       for (const vocabulary of authority.vocabularies.filter((entry) => entry.authorityId === source.id)) {
         assert.ok(normalizeNewlines(currentBytes.toString("utf8")).includes(normalizeNewlines(vocabulary.excerpt)), `${vocabulary.id}: actual current status vocabulary changed`);
       }

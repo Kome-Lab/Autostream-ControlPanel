@@ -2,12 +2,15 @@ import type { BrowserOperationBoundary, BrowserOperationOptions, BrowserOperatio
 import { CommandDeadlines, commandTimeoutMs, createCommandSender, type CDPResponse, type PendingCommand } from "./browser-command-deadline.mts";
 import { NativeFocusObserver } from "./browser-ua-focus.mts";
 import { spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { existsSync, rmSync } from "node:fs";
+import { rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, resolve } from "node:path";
 import { FetchRequestLifecycle, RejectableEventWaiters, type FetchDiagnosticContext, type FetchSettlementCommand, type RequestHandlerIdleOptions } from "./browser-request-lifecycle.mts";
 import { BrowserLaunchError, launchBrowserProcessWithRetry, type BrowserLaunchSession } from "./browser-process-attempt.mts";
 import { collectBrowserLaunchFacts } from "./browser-launch-profile.mts";
+import { BrowserNetworkCancelProof } from "./browser-network-cancel-proof.mts";
+import { resolveBrowserPath } from "./browser-executable.mts";
+import { waitForMapCount } from "./browser-response-count.mts";
 import { asError, delay, withTimeout } from "./browser-process-timing.mts";
 
 
@@ -69,20 +72,6 @@ const browserNativeKeyInputs = {
   },
 } satisfies Readonly<Record<BrowserNativeKey, BrowserNativeKeyInput>>;
 
-const defaultBrowserCandidates = process.platform === "win32"
-  ? [
-      "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-      "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
-      "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
-      "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
-    ]
-  : process.platform === "darwin"
-    ? [
-        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-        "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-      ]
-    : ["/usr/bin/google-chrome", "/usr/bin/google-chrome-stable", "/usr/bin/chromium", "/usr/bin/chromium-browser"];
-
 export class BrowserHarness {
   readonly requests = new Map<string, number>();
   readonly responses = new Map<string, number>();
@@ -109,6 +98,7 @@ export class BrowserHarness {
   private closePromise: Promise<void> | undefined;
   private readonly eventWaiters = new RejectableEventWaiters();
   private readonly requestLifecycle = new FetchRequestLifecycle();
+  private readonly networkCancellation?: BrowserNetworkCancelProof;
   private consoleErrorEvents = 0;
   private topLevelNavigationEvents = 0;
   private topLevelNavigationPending = false;
@@ -129,6 +119,7 @@ export class BrowserHarness {
     this.userDataDirectory = userDataDirectory;
     this.socket = socket;
     this.sessionId = sessionId;
+    this.networkCancellation = new BrowserNetworkCancelProof(this.requestLifecycle, sessionId);
     this.browserLaunchSession = browserLaunchSession;
     this.socket.addEventListener("message", (event) => this.receive(String(event.data)));
     this.socket.addEventListener("close", () => this.handleSocketClose());
@@ -164,6 +155,7 @@ export class BrowserHarness {
       harness.manualHeaded = options.manualZoom === "headed";
       await harness.send("Page.enable");
       await harness.send("Runtime.enable");
+      await harness.send("Network.enable");
       await harness.send("Fetch.enable", { patterns: [{ urlPattern: "*" }] });
       return harness;
     } catch (error) {
@@ -346,6 +338,7 @@ export class BrowserHarness {
   get safeFetchCancellationCount() {
     return this.requestLifecycle.safeCancellationCount;
   }
+  get preSettlementFetchCancellationCount() { return this.requestLifecycle.preSettlementCancellationCount; }
 
   assertNoFatalError() {
     if (this.fatalError) throw this.fatalError;
@@ -591,6 +584,7 @@ export class BrowserHarness {
       return;
     }
     if (!message.method || (message.sessionId && message.sessionId !== this.sessionId)) return;
+    this.networkCancellation?.observe(message, this.requestLifecycle.generation);
     if (!this.operationBoundary && message.method === "Page.javascriptDialogOpening") {
       this.recordFatalError(new Error("UNEXPECTED_JAVASCRIPT_DIALOG"));
     }
@@ -633,7 +627,7 @@ export class BrowserHarness {
     const requestId = typeof params.requestId === "string" ? params.requestId : "";
 		const request = params.request as { method: string; url: string; postData?: string };
     const pathname = new URL(request.url).pathname.replace(/\/$/, "") || "/";
-    this.requestLifecycle.register({
+    const generation = this.requestLifecycle.register({
       requestId,
       method: request.method,
       pathname,
@@ -643,6 +637,7 @@ export class BrowserHarness {
     this.requests.set(pathname, (this.requests.get(pathname) || 0) + 1);
 		const response = this.routeResolver({ method: request.method, url: request.url, postData: request.postData });
     this.requestLifecycle.setRequiredResponse(requestId, response !== null && response.requiredResponse !== false);
+    this.networkCancellation?.registerContract(requestId, { generation, pathname, optionalFixture: response !== null && response.requiredResponse === false });
     if (!response) {
       const settled = await this.settleFetchRequest(requestId, "Fetch.continueRequest", { requestId });
       if (!settled) return;
@@ -671,6 +666,14 @@ export class BrowserHarness {
     command: FetchSettlementCommand,
     params: Record<string, unknown>,
   ) {
+    if (!this.closed && !this.fatalError && this.networkCancellation) {
+      this.assertNoFatalError();
+      const ticket = this.networkCancellation.claimBeforeSettlement(requestId, command, { generation: this.requestLifecycle.generation, frameId: this.mainFrameId });
+      if (ticket) {
+        this.requestLifecycle.completePreSettlementCancellation(requestId, command, ticket);
+        return false;
+      }
+    }
     const attempt = this.requestLifecycle.beginSettlement(requestId, command);
     this.requestLifecycle.observeSettlement(requestId, this.fetchNavigationObservation());
     try {
@@ -723,17 +726,6 @@ export class BrowserHarness {
   }
 }
 
-export function resolveBrowserPath() {
-  const configuredPath = process.env.AUTOSTREAM_BROWSER_PATH;
-  if (configuredPath) {
-    if (!existsSync(configuredPath)) throw new Error("Configured Chrome/Chromium executable was not found");
-    return configuredPath;
-  }
-  const browserPath = defaultBrowserCandidates.find((candidate) => existsSync(candidate));
-  if (!browserPath) throw new Error("Chrome/Chromium was not found; set AUTOSTREAM_BROWSER_PATH");
-  return browserPath;
-}
-
 async function removeOwnedBrowserDirectory(path: string) {
   const resolved = resolve(path);
   if (dirname(resolved) !== resolve(tmpdir()) || !basename(resolved).startsWith("autostream-ui-browser-")) {
@@ -772,22 +764,5 @@ function waitForChildExit(process: ChildProcessWithoutNullStreams) {
   return new Promise<void>((resolveExit) => process.once("exit", () => resolveExit()));
 }
 
-async function waitForMapCount(
-  counts: Map<string, number>,
-  pathname: string,
-  expected: number,
-  description: string,
-  timeoutMs: number,
-  assertHealthy: () => void,
-) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    assertHealthy();
-    if ((counts.get(pathname) || 0) === expected) return;
-    await delay(20);
-  }
-  assertHealthy();
-  throw new Error(`${description} did not become ${expected}; last count: ${counts.get(pathname) || 0}`);
-}
-
+export { resolveBrowserPath };
 export { ensureWebServer, captureNextGeneratedFiles, restoreNextGeneratedFiles, nextGeneratedFilesMatch, type NextGeneratedFilesSnapshot } from "./browser-next-server.mts";
