@@ -43,7 +43,7 @@ function fixture(input: Step[] = steps(), options: { limit?: number; required?: 
   return { lifecycle, proof, claim: () => proof.claimBeforeSettlement(id, fulfill, current) };
 }
 
-for (const pathname of [path, "/integrations/oauth-providers", "/roles", "/nodes", "/workers"]) {
+for (const pathname of [path, "/integrations/oauth-providers", "/roles", "/nodes", "/workers", "/auth/me"]) {
   test(`exact owned pre-send cancellation admits only its optional fixture: ${pathname}`, async () => {
     const { lifecycle, claim, proof } = fixture(steps(pathname), { pathname });
     let idle = false;
@@ -385,4 +385,100 @@ test("initial readiness permits observed repeat GETs while exact waits and healt
   await assert.rejects(waitForMinimumMapCount(new Map(), path, 1, "initial response", 1, healthy), /did not reach 1; last count: 0/);
   const fatal = new Error("original health failure");
   await assert.rejects(waitForMinimumMapCount(counts, path, 1, "initial response", 10, () => { throw fatal; }), value => value === fatal);
+});
+
+test("Auth cancellation retains every existing tuple and pre-send boundary rejection", () => {
+  const pathname = "/auth/me";
+  for (const [name, mutate] of negatives) {
+    const input = steps(pathname); mutate(input);
+    // Existing mutants insert the original fixture route. Keep their intended
+    // same-path mismatch or duplicate at the Auth route rather than changing it.
+    for (const step of input) {
+      if (isEvent(step)) {
+        const value = step.params.request as Record<string, unknown> | undefined;
+        if (typeof value?.url === "string") value.url = value.url.replace(path, pathname);
+      } else if (step.contract.pathname === path) step.contract.pathname = pathname;
+    }
+    const { lifecycle, claim } = fixture(input, { pathname });
+    assert.equal(claim(), undefined, name);
+    const original = new Error(invalidInterceptionIdMessage);
+    assert.throws(() => lifecycle.handleSettlementError(lifecycle.beginSettlement(id, fulfill), original), error => error === original, name);
+    assert.equal(lifecycle.activeCount, 1);
+    assert.equal(lifecycle.safeCancellationCount, 0);
+    assert.equal(lifecycle.preSettlementCancellationCount, 0);
+  }
+});
+
+test("required Auth and every non-GET Auth method retain the original fatal rule", () => {
+  const pathname = "/auth/me", input = steps(pathname);
+  (input[2] as { contract: Contract }).contract.optionalFixture = false;
+  const required = fixture(input, { pathname, required: true });
+  assert.equal(required.claim(), undefined);
+  const requiredError = new Error(invalidInterceptionIdMessage);
+  assert.throws(() => required.lifecycle.handleSettlementError(required.lifecycle.beginSettlement(id, fulfill), requiredError), error => error === requiredError);
+  assert.equal(required.lifecycle.preSettlementCancellationCount, 0);
+  const inconsistent = fixture(steps(pathname), { pathname, required: true }), ticket = inconsistent.claim();
+  assert.ok(ticket, "required lifecycle ownership independently rejects a contradictory optional fixture capability");
+  assert.throws(() => inconsistent.lifecycle.completePreSettlementCancellation(id, fulfill, ticket), /Invalid pre-settlement/);
+  assert.equal(inconsistent.lifecycle.activeCount, 1);
+  assert.equal(inconsistent.lifecycle.safeCancellationCount, 0);
+  for (const method of ["HEAD", "POST", "PUT", "PATCH", "DELETE"]) {
+    const input = steps(pathname);
+    for (const eventName of ["Fetch.requestPaused", "Network.requestWillBeSent"]) changeEvent(input, eventName, value => { request(value).method = method; });
+    const { lifecycle, claim } = fixture(input, { pathname, method });
+    assert.equal(claim(), undefined, method);
+    const original = new Error(invalidInterceptionIdMessage);
+    assert.throws(() => lifecycle.handleSettlementError(lifecycle.beginSettlement(id, fulfill), original), error => error === original);
+    assert.equal(lifecycle.activeCount, 1);
+    assert.equal(lifecycle.safeCancellationCount, 0);
+  }
+});
+
+test("unknown Auth routes, continue commands and late Auth cancellation cannot claim", () => {
+  for (const pathname of ["/auth", "/auth/me/private", "/auth/me-other", "/auth/session/refresh"]) {
+    for (const method of ["GET", "POST"]) {
+      const input = steps(pathname);
+      for (const eventName of ["Fetch.requestPaused", "Network.requestWillBeSent"]) changeEvent(input, eventName, value => { request(value).method = method; });
+      const { lifecycle, claim } = fixture(input, { pathname, method });
+      assert.equal(claim(), undefined);
+      const original = new Error(invalidInterceptionIdMessage);
+      assert.throws(() => lifecycle.handleSettlementError(lifecycle.beginSettlement(id, fulfill), original), error => error === original);
+      assert.equal(lifecycle.preSettlementCancellationCount, 0);
+    }
+  }
+  const pathname = "/auth/me", continuing = fixture(steps(pathname), { pathname });
+  assert.equal(continuing.proof.claimBeforeSettlement(id, "Fetch.continueRequest", current), undefined);
+  const late = fixture(steps(pathname).slice(0, -1), { pathname });
+  assert.equal(late.claim(), undefined);
+  const original = new Error(invalidInterceptionIdMessage);
+  assert.throws(() => late.lifecycle.handleSettlementError(late.lifecycle.beginSettlement(id, fulfill), original), error => error === original);
+  late.proof.observe(cancelled(), 0);
+  assert.equal(late.claim(), undefined, "a later cancellation cannot repair the first failed boundary or clear fatal state");
+  assert.equal(late.lifecycle.safeCancellationCount, 0);
+});
+
+test("actual Auth harness path terminal-cancels without CDP send or a successful response", async () => {
+  const pathname = "/auth/me";
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const lifecycle = new FetchRequestLifecycle(), proof = new BrowserNetworkCancelProof(lifecycle, session), sends: string[] = [];
+  const browser = Object.assign(Object.create(BrowserHarness.prototype), {
+    sessionId: session, requestLifecycle: lifecycle, networkCancellation: proof,
+    requests: new Map([[pathname, 1]]), responses: new Map([[pathname, 1]]), responseStatuses: new Map([[pathname, [200]]]),
+    eventWaiters: new RejectableEventWaiters(), pendingCommands: new Map(), topLevelNavigationEvents: 0,
+    topLevelNavigationPending: false, closed: false, fatalError: undefined,
+    routeResolver: () => ({ body: { permissions: ["streams.read"] }, requiredResponse: false, waitUntil: gate }),
+    send: async (command: string) => { sends.push(command); return {}; },
+  }) as BrowserHarness;
+  const receive = (value: Event) => (browser as unknown as { receive(raw: string): void }).receive(JSON.stringify(value));
+  receive(doc()); receive(start(pathname)); receive(pause(pathname)); receive(cancelled());
+  const idle = browser.waitForRequestHandlersIdle({ pathname, timeoutMs: 100 });
+  release(); await idle;
+  browser.assertNoFatalError();
+  assert.deepEqual(sends, []);
+  assert.equal(browser.requests.get(pathname), 2);
+  assert.equal(browser.responses.get(pathname), 1, "cancelled Auth contributes zero successful responses");
+  assert.deepEqual(browser.responseStatuses.get(pathname), [200], "prior Auth receipt remains unchanged");
+  assert.equal(browser.preSettlementFetchCancellationCount, 1);
+  assert.equal(lifecycle.activeCount, 0);
 });

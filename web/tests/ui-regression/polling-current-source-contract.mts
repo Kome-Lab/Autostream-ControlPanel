@@ -3,7 +3,7 @@
 export const pollingCurrentBase = "65a601fc9d4f15c93083e9be4ab9e71586fdba69";
 export const pollingCurrentTree = "2624414bc4e1cb4bd304faccf82e5d22e3201dd2";
 export const pollingCurrentFixturePath = "web/tests/fixtures/ui-regression/polling-current-source-delta.json";
-export const pollingCurrentFixtureSHA256 = "e3aeed7168e190955efbfc1030cb6c04483f20ca2543ecb7d90cbe3b98118aa9";
+export const pollingCurrentFixtureSHA256 = "c4acc92ba0e048bdaab905d58b5e6d976fa958fc93db7a831c7a4e57eea618dc";
 export const pollingLegacyFixturePath = "web/tests/fixtures/ui-regression/polling-legacy-parity.json";
 export const pollingLegacyFixtureSHA256 = "b2df0a26ef1f77a08a0ddbfe8762b7e77a583c21ba8ed03d22373e4ebce764a8";
 export const pollingCurrentPaths = Object.freeze([
@@ -192,6 +192,7 @@ export const pollingCurrentPaths = Object.freeze([
   "web/tests/helpers/sql-ui-authority.mts",
   "web/tests/helpers/sql-ui-proxy.mts",
   "web/tests/helpers/stream-create-ui-payload.mts",
+  "web/tests/helpers/streams-start-readiness-handler-guard.mts",
   "web/tests/helpers/ui-foundation-status-authority.mts",
   "web/tests/media-upload-browser.test.mts",
   "web/tests/media-upload-owner.test.mts",
@@ -213,6 +214,7 @@ export const pollingCurrentPaths = Object.freeze([
   "web/tests/stream-create-validation.test.mts",
   "web/tests/streams-visual-integration.test.mts",
   "web/tests/ui-browser-fixture.mts",
+  "web/tests/ui-browser-start-readiness-scenarios.mts",
   "web/tests/ui-browser-visual-settings-scenarios.mts",
   "web/tests/ui-refresh-layout-browser.test.mts",
   "web/tests/ui-regression/draft-exit.test.mts",

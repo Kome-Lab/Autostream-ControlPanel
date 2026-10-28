@@ -461,7 +461,7 @@
       },
       {
         "path": "web/tests/helpers/browser-network-cancel-proof.mts",
-        "sha256": "153e3926590e0a62fabfe270b4b10837119ce9ac618e17ddb141c0bb964040b0",
+        "sha256": "48bc15aa6378347b272b96d45b580c9e7f30f664bdfae4978c9f196326070d4d",
         "symbols": [
           "requestURL",
           "takeNetworkCancellationTicket"
@@ -470,7 +470,7 @@
       },
       {
         "path": "web/tests/helpers/browser-network-cancel-proof.test.mts",
-        "sha256": "43739c7956ee9e1826ee1b742528ff0456dc914d4758a43a1cc77d579421e4ad",
+        "sha256": "52d1fdd338b0bb03d4f8fbfdc2cd0bf0ef23df5901afbb97e07802334d490c7c",
         "symbols": [
           "changeEvent",
           "fixture",
@@ -479,7 +479,7 @@
           "request",
           "steps"
         ],
-        "physical_lines": 388
+        "physical_lines": 484
       },
       {
         "path": "web/tests/helpers/browser-response-count.mts",
@@ -1503,9 +1503,9 @@
       },
       {
         "path": "web/tests/ui-browser-start-readiness-scenarios.mts",
-        "sha256": "f2c88c954c4f71f9a42421c6c73079c5d0b28f517f32407741b0a13c2cabc854",
+        "sha256": "f73b2372a0214cbca7c25ba743d699c4309d5c0a731c79fb224d0e5a9de7b132",
         "symbols": [],
-        "physical_lines": 288
+        "physical_lines": 303
       },
       {
         "path": "web/tests/ui-browser-visual-settings-scenarios.mts",
@@ -1563,7 +1563,7 @@
       },
       {
         "path": "web/tests/helpers/browser-network-cancel-proof.mts",
-        "sha256": "153e3926590e0a62fabfe270b4b10837119ce9ac618e17ddb141c0bb964040b0",
+        "sha256": "48bc15aa6378347b272b96d45b580c9e7f30f664bdfae4978c9f196326070d4d",
         "symbols": [
           "requestURL",
           "takeNetworkCancellationTicket"
@@ -1572,7 +1572,7 @@
       },
       {
         "path": "web/tests/helpers/browser-network-cancel-proof.test.mts",
-        "sha256": "43739c7956ee9e1826ee1b742528ff0456dc914d4758a43a1cc77d579421e4ad",
+        "sha256": "52d1fdd338b0bb03d4f8fbfdc2cd0bf0ef23df5901afbb97e07802334d490c7c",
         "symbols": [
           "changeEvent",
           "fixture",
@@ -1581,7 +1581,7 @@
           "request",
           "steps"
         ],
-        "physical_lines": 388
+        "physical_lines": 484
       },
       {
         "path": "web/tests/helpers/browser-response-count.mts",
@@ -5305,7 +5305,7 @@
       },
       {
         "path": "web/tests/helpers/browser-network-cancel-proof.mts",
-        "sha256": "153e3926590e0a62fabfe270b4b10837119ce9ac618e17ddb141c0bb964040b0",
+        "sha256": "48bc15aa6378347b272b96d45b580c9e7f30f664bdfae4978c9f196326070d4d",
         "symbols": [
           "requestURL",
           "takeNetworkCancellationTicket"
@@ -5314,7 +5314,7 @@
       },
       {
         "path": "web/tests/helpers/browser-network-cancel-proof.test.mts",
-        "sha256": "43739c7956ee9e1826ee1b742528ff0456dc914d4758a43a1cc77d579421e4ad",
+        "sha256": "52d1fdd338b0bb03d4f8fbfdc2cd0bf0ef23df5901afbb97e07802334d490c7c",
         "symbols": [
           "changeEvent",
           "fixture",
@@ -5323,7 +5323,7 @@
           "request",
           "steps"
         ],
-        "physical_lines": 388
+        "physical_lines": 484
       },
       {
         "path": "web/tests/helpers/browser-response-count.mts",
@@ -5474,7 +5474,7 @@
       },
       {
         "path": "web/tests/helpers/browser-network-cancel-proof.mts",
-        "sha256": "153e3926590e0a62fabfe270b4b10837119ce9ac618e17ddb141c0bb964040b0",
+        "sha256": "48bc15aa6378347b272b96d45b580c9e7f30f664bdfae4978c9f196326070d4d",
         "symbols": [
           "requestURL",
           "takeNetworkCancellationTicket"
@@ -5483,7 +5483,7 @@
       },
       {
         "path": "web/tests/helpers/browser-network-cancel-proof.test.mts",
-        "sha256": "43739c7956ee9e1826ee1b742528ff0456dc914d4758a43a1cc77d579421e4ad",
+        "sha256": "52d1fdd338b0bb03d4f8fbfdc2cd0bf0ef23df5901afbb97e07802334d490c7c",
         "symbols": [
           "changeEvent",
           "fixture",
@@ -5492,7 +5492,7 @@
           "request",
           "steps"
         ],
-        "physical_lines": 388
+        "physical_lines": 484
       },
       {
         "path": "web/tests/helpers/browser-response-count.mts",

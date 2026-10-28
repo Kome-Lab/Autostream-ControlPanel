@@ -76,16 +76,18 @@ func TestMariaDBDraftUploadOperationConcurrentReplayAndReadOnlyRecovery(t *testi
 	// a goroutine-start barrier alone would not prove serialization.
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		var waiting int
-		err = st.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE DB=DATABASE() AND COMMAND='Query' AND ID<>CONNECTION_ID() AND INFO LIKE '%media_upload_sessions%' AND INFO LIKE '%FOR UPDATE%'`).Scan(&waiting)
+		var queryWaiting, executeWaiting, otherWaiting int
+		// The pinned driver uses prepared Execute commands for bound parameters;
+		// text-protocol Query commands represent the same production lock read.
+		err = st.db.QueryRowContext(ctx, `SELECT COUNT(CASE WHEN COMMAND='Query' THEN 1 END),COUNT(CASE WHEN COMMAND='Execute' THEN 1 END),COUNT(CASE WHEN COMMAND NOT IN ('Query','Execute') THEN 1 END) FROM information_schema.PROCESSLIST WHERE DB=DATABASE() AND ID<>CONNECTION_ID() AND INFO LIKE '%media_upload_sessions%' AND INFO LIKE '%FOR UPDATE%'`).Scan(&queryWaiting, &executeWaiting, &otherWaiting)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if waiting >= 2 {
+		if queryWaiting+executeWaiting >= 2 {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("both uploads did not reach the observed session lock")
+			t.Fatalf("both uploads did not reach the observed session lock: query=%d execute=%d other=%d", queryWaiting, executeWaiting, otherWaiting)
 		}
 		select {
 		case <-ctx.Done():

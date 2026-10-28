@@ -18,7 +18,10 @@ export type StreamsStartReadinessGuardMutation =
   | "add-alternate-unguarded-mutation";
 
 const permissionSnapshotWiring = "getPermissions: () => streamPermissionSnapshot(queryClient)";
-const preSubmitEvaluation = "const reason = evaluationReason(evaluateIgnoringPending(opened.intent));";
+const preSubmitEvaluation = "const reason = evaluationReason(evaluateIgnoringPending(opened.intent, proven));";
+const provenState = "const state = proven?.state ?? dependencies.getState(opened.intent);";
+const boundedRevalidation = 'if (dependencies.revalidate) { try { proven = await withBoundedActionRevalidation((signal) => dependencies.revalidate!(opened.intent, signal), operation.abort.signal); } catch { return blocked(current(scope, operation) ? "state-unavailable" : "cancelled"); } }';
+const currentOperation = 'if (!current(scope, operation)) return blocked("cancelled");';
 const guardedMutation = "const value = await dependencies.mutate(Object.freeze({ ...requestValue, signal: operation.abort.signal }));";
 
 export function assertStreamsStartReadinessHandlerGuard(sources: StreamsStartReadinessGuardSources) {
@@ -51,7 +54,7 @@ export function assertStreamsStartReadinessHandlerGuard(sources: StreamsStartRea
   const submit = sources.controller.slice(submitStart, submitEnd);
   const acquireIndex = submit.indexOf("const operation = acquire(scope);");
   const evaluationIndex = submit.indexOf(preSubmitEvaluation);
-  const stateIndex = submit.indexOf("const state = dependencies.getState(opened.intent);");
+  const stateIndex = submit.indexOf(provenState);
   const fingerprintIndex = submit.indexOf("if (state.fingerprint !== opened.authority)");
   const requestIndex = submit.indexOf("const requestValue = streamActionRequest(opened.intent);");
   const mutationIndex = submit.indexOf("dependencies.mutate(");
@@ -68,9 +71,55 @@ export function assertStreamsStartReadinessHandlerGuard(sources: StreamsStartRea
   );
   assert.match(
     sources.controller,
-    /snapshot:\s*dependencies\.getPermissions\(\)/,
-    "pre-submit evaluation must consume the current permission provider",
+    /snapshot:\s*proven\?\.permissions\s*\?\?\s*dependencies\.getPermissions\(\)/,
+    "pre-submit evaluation must consume proven permissions with the current permission provider fallback",
   );
+  assertCurrentRevalidatedSubmitPath(sources.controller);
+}
+
+function assertCurrentRevalidatedSubmitPath(source: string) {
+  const file = ts.createSourceFile("controller.ts", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const compact = (value: ts.Node | string): string => (typeof value === "string" ? value : value.getText(file)).replace(/\s+/g, "");
+  function one<T>(values: T[], label: string) { assert.equal(values.length, 1, label + " must have exactly one actual owner"); return values[0]; }
+  function variable(body: ts.Block, name: string) {
+    const node = one(body.statements.filter(ts.isVariableStatement).flatMap(statement => statement.declarationList.declarations).filter(node => ts.isIdentifier(node.name) && node.name.text === name), name);
+    assert.ok(node.initializer, name + " initializer missing"); return node.initializer;
+  }
+  function statement(body: ts.Block, text: string, label: string) {
+    return one(body.statements.filter(node => compact(node) === compact(text)), label);
+  }
+  const owner = one(file.statements.filter(ts.isFunctionDeclaration).filter(node => node.name?.text === "createStreamActionController"), "controller");
+  assert.ok(owner.body, "controller body missing");
+  const submit = variable(owner.body, "submit");
+  assert.ok(ts.isArrowFunction(submit) && ts.isBlock(submit.body), "actual submit body missing");
+  assert.equal(compact(variable(submit.body, "operation")), "acquire(scope)", "submit must acquire the real duplicate lock");
+  const duplicate = statement(submit.body, 'if (!operation) return blocked("duplicate");', "duplicate lock rejection");
+  const outerTry = one(submit.body.statements.filter(ts.isTryStatement), "submit protected try");
+  assert.ok(duplicate.getStart(file) < outerTry.getStart(file), "duplicate lock must precede protected submit");
+  const body = outerTry.tryBlock;
+  const proof = statement(body, boundedRevalidation, "direct bounded revalidation");
+  const current = statement(body, currentOperation, "direct current operation check");
+  const evaluation = statement(body, preSubmitEvaluation, "direct proven pre-submit evaluation");
+  const state = statement(body, provenState, "direct proven state read");
+  const fingerprint = statement(body, 'if (state.fingerprint !== opened.authority) return blocked("authority-changed", state);', "direct fingerprint guard");
+  const request = statement(body, "const requestValue = streamActionRequest(opened.intent);", "direct request construction");
+  const requestGuard = statement(body, 'if (!requestValue || !current(scope, operation)) return blocked("cancelled");', "direct pre-mutation current check");
+  const mutationTry = one(body.statements.filter(ts.isTryStatement), "guarded mutation try");
+  statement(mutationTry.tryBlock, guardedMutation, "actual guarded mutation");
+  const ordered = [proof, current, evaluation, state, fingerprint, request, requestGuard, mutationTry].map(node => node.getStart(file));
+  assert.ok(ordered.every((position, index) => index === 0 || position > ordered[index - 1]), "current proof must precede evaluation, state, authority and the only mutation");
+  const forwarder = one(owner.body.statements.filter(ts.isFunctionDeclaration).filter(node => node.name?.text === "evaluateIgnoringPending"), "pending evaluator");
+  assert.ok(forwarder.body, "pending evaluator body missing");
+  assert.equal(compact(variable(forwarder.body, "value")), "evaluateBase(intent,proven)", "pending evaluator must forward the proven authority");
+  const evaluator = variable(owner.body, "evaluateBase");
+  assert.ok(ts.isArrowFunction(evaluator) && ts.isBlock(evaluator.body), "actual permission evaluator missing");
+  statement(evaluator.body, "const state = proven?.state ?? dependencies.getState(intent);", "proven evaluator state");
+  const permissionReturn = one(evaluator.body.statements.filter(ts.isReturnStatement), "permission evaluation return");
+  assert.ok(permissionReturn.expression && ts.isCallExpression(permissionReturn.expression) && compact(permissionReturn.expression.expression) === "evaluateActionPermission", "return the real permission evaluator");
+  const options = permissionReturn.expression.arguments[0];
+  assert.ok(options && ts.isObjectLiteralExpression(options), "permission options missing");
+  const snapshot = one(options.properties.filter(ts.isPropertyAssignment).filter(node => node.name.getText(file) === "snapshot"), "actual permission snapshot");
+  assert.equal(compact(snapshot.initializer), "proven?.permissions??dependencies.getPermissions()", "permission evaluator must consume the proven snapshot and current fallback");
 }
 
 function assertReadinessOwnerBindings(sources: StreamsStartReadinessGuardSources) {

@@ -75,6 +75,21 @@ export async function runStartReadinessScenario(t: TestContext, browser: Browser
           `${fixture.name} must make the structural oracle Red`,
         );
       }
+      const proofStart = sources.controller.indexOf("if (dependencies.revalidate) {");
+      const currentCheck = 'if (!current(scope, operation)) return blocked("cancelled");';
+      const currentStart = sources.controller.indexOf(currentCheck, proofStart);
+      assert.ok(proofStart >= 0 && currentStart > proofStart, "actual revalidation/current boundaries exist");
+      const proof = sources.controller.slice(proofStart, currentStart);
+      const forwarder = "const value = evaluateBase(intent, proven);";
+      assert.equal(sources.controller.split(forwarder).length - 1, 1, "one actual proven-authority forwarder");
+      const currentProofMutants = [
+        { controller: sources.controller.replace(proof, `/*${proof}*/`), expected: /direct bounded revalidation/ },
+        { controller: sources.controller.replace(currentCheck, `/*${currentCheck}*/`), expected: /direct current operation check/ },
+        { controller: sources.controller.replace(forwarder, `const value = evaluateBase(intent); /*${forwarder}*/`), expected: /pending evaluator must forward the proven authority/ },
+      ];
+      for (const mutant of currentProofMutants) {
+        assert.throws(() => assertStreamsStartReadinessHandlerGuard({ ...sources, controller: mutant.controller }), mutant.expected, "commented source must not impersonate an executed current-proof guard");
+      }
     });
 
     try {
