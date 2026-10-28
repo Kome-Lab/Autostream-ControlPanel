@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {runInNewContext} from "node:vm";
 import {createHarnessFixture} from "../helpers/browser-cdp-socket-fixture.mts";
-import {MediaIdentityLedger,readUAAXComparison,type UARead,type UAAX,type UADOM} from "../helpers/browser-ua-identity.mts";
-import {readUADiagnostic,UAConditionDiagnostic} from "../helpers/browser-ua-diagnostic.mts";
+import {MediaIdentityLedger,readUAAXComparison,readUAOperationalComparison,inheritUAAXComparison,type UARead,type UAAX,type UADOM,type UAOperationalComparison} from "../helpers/browser-ua-identity.mts";
+import {readUADiagnostic,UAConditionDiagnostic,UAOutputFailure} from "../helpers/browser-ua-diagnostic.mts";
 import {exerciseUnavailableMedia} from "./media-keyboard-contract.mts";
 import {conditions} from "./matrix.mts";
 
@@ -36,6 +36,74 @@ test("UI-UA-PROPERTY-ORDER-044: actual observer normalizes property entry order 
         return true;
       });
     }finally{await owner.harness.close();}
+  });
+  for(const fault of ["ancestor-full","ancestor-compact","control-full","control-compact","cleanup"]as const)await t.test("owned-operational-record-"+fault,async()=>{
+    const compact=fault.endsWith("compact"),control=fault.startsWith("control"),before=reading(),next=reading(!compact),owner=protocolOwner();
+    const index=control?1:0;
+    before.nodes[index].properties!.push({name:"DO-NOT-LOG-property",value:{value:"SECRET-before https://fixture.invalid/?token=before"}});
+    next.nodes[index].properties!.push({name:"DO-NOT-LOG-property",value:{value:"SECRET-after https://fixture.invalid/?token=after"}});
+    const diagnostic=new UAConditionDiagnostic();let caught:unknown;
+    try{
+      await owner.observe(before);if(fault==="cleanup")owner.failRelease();
+      await assert.rejects(diagnostic.observe("negative-space-return",async()=>{try{return await owner.observe(next);}catch(error){caught=error;throw error;}}),error=>error===caught);
+      assert.ok(caught instanceof Error);
+      const primary=fault==="cleanup"?(caught as AggregateError).errors[0]:caught;
+      const rejection=primary instanceof AggregateError?primary.errors[1]:primary;
+      assert.ok(rejection instanceof assert.AssertionError);assert.match(rejection.message,/complete UA control\/focused ancestry changed/);
+      if(!compact){assert.ok(primary instanceof AggregateError);assert.equal(primary.cause,primary.errors[0]);assert.match((primary.cause as Error).message,/UA subtree identity/);}
+      if(fault==="cleanup"){assert.ok(caught instanceof AggregateError);assert.equal(caught.cause,primary);}
+      const record=readUAOperationalComparison(rejection);
+      const expected={oldControls:1,newControls:1,changed:1,overflow:false,rows:[{role:control?"Video":"RootWebArea",relation:control?"control":"ancestor",fields:["property-value-or-set"]}]};
+      assert.deepEqual(record,expected);assert.equal(readUAOperationalComparison(caught),record);assert.equal(readUAAXComparison(caught),undefined);
+      assert.ok(record&&Object.isFrozen(record)&&Object.isFrozen(record.rows)&&Object.isFrozen(record.rows[0])&&Object.isFrozen(record.rows[0].fields));
+      assert.equal(Reflect.set(record,"changed",999),false);assert.equal(Object.hasOwn(caught,"operational"),false);
+      const saved:unknown[]=[];diagnostic.write("owned-operational-record",value=>saved.push(value));
+      const output=saved[0]as {changed:boolean;failed:boolean;observations:{operational:UAOperationalComparison;delta?:number[];record?:{delta:number[]}}[]};
+      assert.equal(output.changed,!compact);assert.equal(output.failed,true);assert.deepEqual(output.observations[0].operational,expected);
+      if(compact)assert.deepEqual(output.observations[0].delta,[0,0,0]);else assert.ok(output.observations[0].record!.delta[0]>0);
+      assert.ok(Buffer.byteLength(JSON.stringify(saved,null,2)+"\n")<=4096);assert.doesNotMatch(JSON.stringify(saved),/SECRET|DO-NOT-LOG|https:|token=|nodeId|backendDOM|objectId/);
+      assert.equal((await owner.observe(before)).stable,true,"failed operational observation does not advance latest or original proof");
+    }finally{await owner.harness.close();}
+  });
+  await t.test("operational-record-rejects-forged-getter-and-cyclic-owners",async()=>{
+    let getterReads=0;const poison=Object.create(null);
+    for(const key of ["cause","errors","message","operational"])Object.defineProperty(poison,key,{get(){getterReads++;throw Error("SECRET getter");}});
+    const cycle:{cause?:unknown;operational?:unknown}={};cycle.cause=cycle;cycle.operational={rows:[{role:"SECRET"}]};
+    const forged=new assert.AssertionError({message:'complete UA control/focused ancestry changed {"rows":["SECRET"]}'});
+    const proxy=new Proxy({},{get(){getterReads++;throw Error("SECRET proxy");}});
+    for(const value of [undefined,null,42,"SECRET",poison,cycle,forged,proxy]){
+      assert.equal(readUAOperationalComparison(value),undefined);const target=Error("SECRET target");inheritUAAXComparison(value,target);assert.equal(readUAOperationalComparison(target),undefined);
+    }
+    assert.equal(getterReads,0,"new metadata reader and inheritance never traverse unknown graphs or read their properties");
+    const diagnostic=new UAConditionDiagnostic();await assert.rejects(diagnostic.observe("restore",async()=>{throw poison;}),error=>error===poison);
+    const saved:unknown[]=[];diagnostic.write("unowned-operational-record",value=>saved.push(value));
+    assert.equal(Object.hasOwn((saved[0]as {observations:object[]}).observations[0],"operational"),false);assert.equal(getterReads,0);
+  });
+  await t.test("operational-record-preserves-output-failure-and-byte-bound",async()=>{
+    const before=reading(),next=reading();next.nodes[0].properties!.push({name:"SECRET-private",value:{value:"SECRET-value"}});
+    const owner=new MediaIdentityLedger(before),first=owner.first;let actual:unknown;
+    try{owner.prepare(next,next,paint);}catch(error){actual=error;}
+    assert.ok(actual instanceof assert.AssertionError);assert.ok(readUAOperationalComparison(actual));assert.deepEqual(owner.first,first);
+    const wrapped=new AggregateError([actual,Error("SECRET cleanup")],"UA observation and cleanup failed",{cause:actual});inheritUAAXComparison(actual,wrapped);
+    assert.equal(readUAOperationalComparison(wrapped),readUAOperationalComparison(actual));
+    const diagnostic=new UAConditionDiagnostic();await assert.rejects(diagnostic.observe("restore",async()=>{throw wrapped;}),error=>error===wrapped);
+    const writerFailure=Error("SECRET writer");assert.throws(()=>diagnostic.write("owned-operational-record",()=>{throw writerFailure;}),error=>error instanceof UAOutputFailure&&error.cause===writerFailure);
+    for(const count of [16,129]){
+      const bounded=new UAConditionDiagnostic();for(let i=0;i<count;i++)await assert.rejects(bounded.observe("restore",async()=>{throw actual;}),error=>error===actual);
+      const saved:unknown[]=[];assert.throws(()=>bounded.write("owned-operational-record",value=>saved.push(value)),UAOutputFailure);
+      assert.equal((saved[0]as {code:string}).code,"UA_OBSERVATION_STABILITY_OVERFLOW");assert.ok(Buffer.byteLength(JSON.stringify(saved,null,2)+"\n")<4096);
+    }
+    assert.equal(owner.verify(before,before,paint).accepted,true,"failed diagnostic never commits the rejected operational read");
+  });
+  await t.test("operational-record-truncation-remains-incomplete-failure",async()=>{
+    const before=reading();before.nodes[0].childIds=["ancestor0"];
+    for(let i=0;i<10;i++)before.nodes.push({nodeId:"ancestor"+i,backendDOMNodeId:100+i,role:{value:"generic"},ignored:false,childIds:[i===9?"host":"ancestor"+(i+1)],properties:[]});
+    const next=structuredClone(before);for(const node of next.nodes.filter(n=>n.nodeId.startsWith("ancestor")))node.properties!.push({name:"SECRET-private",value:{value:"SECRET-value"}});
+    let actual:unknown;try{new MediaIdentityLedger(before).prepare(next,next,paint);}catch(error){actual=error;}
+    assert.ok(actual instanceof assert.AssertionError);const record=readUAOperationalComparison(actual);assert.ok(record);assert.equal(record.changed,10);assert.equal(record.rows.length,8);assert.equal(record.overflow,true);
+    const diagnostic=new UAConditionDiagnostic();await assert.rejects(diagnostic.observe("restore",async()=>{throw actual;}),error=>error===actual);
+    const saved:unknown[]=[];assert.throws(()=>diagnostic.write("owned-operational-record",value=>saved.push(value)),/incomplete\/overflow/);
+    assert.equal((saved[0]as {overflow:boolean}).overflow,true);assert.doesNotMatch(JSON.stringify(saved),/SECRET|ancestor[0-9]|nodeId|backendDOM/);
   });
 });
 const children=(r:UARead)=>r.host.shadowRoots![0].children!;

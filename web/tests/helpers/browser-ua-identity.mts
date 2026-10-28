@@ -81,6 +81,19 @@ export type UAAXComparison = Readonly<{
   fields:Readonly<{mapping:number;frame:number;role:number;ignored:number;flags:number;properties:number;parent:number;childOrder:number}>;
 }>;
 const axComparisonFailures=new WeakMap<object,UAAXComparison>();
+export type UAOperationalComparison=Readonly<{
+  oldControls:number;newControls:number;changed:number;overflow:boolean;
+  rows:readonly Readonly<{role:string;relation:string;fields:readonly string[]}>[];
+}>;
+const operationalComparisonFailures=new WeakMap<object,UAOperationalComparison>();
+function bindUAOperationalComparison(error:unknown,before:Proof,next:Proof){
+  if(!(error instanceof assert.AssertionError))return;
+  const record=operationalDifference(before,next);
+  operationalComparisonFailures.set(error,Object.freeze({...record,rows:Object.freeze(record.rows.map(row=>Object.freeze({...row,fields:Object.freeze(row.fields.slice())})))}));
+}
+export function readUAOperationalComparison(value:unknown):UAOperationalComparison|undefined{
+  return value!==null&&(typeof value==="object"||typeof value==="function")?operationalComparisonFailures.get(value):undefined;
+}
 // The actual failed comparison owns this finite record. It contains neither
 // protocol identities nor property names/values and cannot authorize a delta.
 export function bindUAAXComparison(error:unknown,before:ReturnType<typeof inspectUAAX>,after:ReturnType<typeof inspectUAAX>,stage:UAAXComparison["stage"]){
@@ -105,6 +118,8 @@ export function readUAAXComparison(value:unknown):UAAXComparison|undefined{
 export function inheritUAAXComparison(source:unknown,target:unknown){
   const record=readUAAXComparison(source);
   if(record&&target!==null&&(typeof target==="object"||typeof target==="function"))axComparisonFailures.set(target,record);
+  const operational=readUAOperationalComparison(source);
+  if(operational&&target!==null&&(typeof target==="object"||typeof target==="function"))operationalComparisonFailures.set(target,operational);
 }
 
 export function classifyUANode(node:UADOM, matches:UAAX[]):"stylesheet"|"text"|"container"|"interactive-or-unknown" {
@@ -256,7 +271,9 @@ export class MediaIdentityLedger {
     assert.ok(encode([...end.facts])===encode([...next.facts]),"UA DOM/AX changed inside semantic observation");
     try{assert.ok(end.axis.topology===next.axis.topology,"UA AX topology changed inside observation");}
     catch(error){bindUAAXComparison(error,next.axis,end.axis,"ledger-proof");throw error;}
-    if(next.operational!==original.operational)assert.fail("complete UA control/focused ancestry changed "+encode(operationalDifference(original,next)));
+    try{
+      if(next.operational!==original.operational)assert.fail("complete UA control/focused ancestry changed "+encode(operationalDifference(original,next)));
+    }catch(error){try{bindUAOperationalComparison(error,original,next);}catch{/* Diagnostic attachment must not replace the original assertion. */}throw error;}
     assert.ok(end.operational===next.operational,"UA operational snapshot race");
     for(const p of [original,before]){
       compareEdges(p,next);

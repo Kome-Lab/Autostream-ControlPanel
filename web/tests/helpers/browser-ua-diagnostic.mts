@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import {AssertionError} from "node:assert";
-import {classifyUANode,readUAAXComparison,type UADOM,type UAAXComparison} from "./browser-ua-identity.mts";
+import {classifyUANode,readUAAXComparison,readUAOperationalComparison,type UADOM,type UAAXComparison,type UAOperationalComparison} from "./browser-ua-identity.mts";
 
 type DOM = UADOM;
 type AX = {nodeId:string;backendDOMNodeId?:number;role?:{value?:string};ignored?:boolean;childIds?:string[];properties?:{name:string;value:{value?:unknown}}[]};
@@ -101,20 +101,20 @@ export function isUAOutputFailure(error:unknown):boolean{
  return error instanceof UAOutputFailure||error instanceof AggregateError&&error.errors.some(isUAOutputFailure);
 }
 export class UAConditionDiagnostic{
- private readonly rows:{phase:UAPhase;record:UADiagnostic|null;failed:boolean;secondary?:Secondary;comparison?:UAAXComparison}[]=[];
+ private readonly rows:{phase:UAPhase;record:UADiagnostic|null;failed:boolean;secondary?:Secondary;comparison?:UAAXComparison;operational?:UAOperationalComparison}[]=[];
  private overflow=false;private changed=false;private failed=false;
  async observe<T>(phase:UAPhase,action:()=>Promise<T>):Promise<T>{
   let value:unknown,failed=false,secondary:Secondary|undefined;
   try{const result=await action();value=result;return result;}catch(error){secondary=closedUASecondary(error);value=error;failed=true;this.failed=true;throw error;}
-  finally{const record=readUADiagnostic(value),comparison=readUAAXComparison(value);this.changed ||=!!record?.delta.some(n=>n>0);this.overflow ||=!!record?.overflow;
-   if(this.rows.length<128)this.rows.push({phase,record:record||null,failed,...(secondary?{secondary}:{}),...(comparison?{comparison}:{})});else this.overflow=true;}
+  finally{const record=readUADiagnostic(value),comparison=readUAAXComparison(value),operational=readUAOperationalComparison(value);this.changed ||=!!record?.delta.some(n=>n>0);this.overflow ||=!!record?.overflow||!!operational?.overflow;
+   if(this.rows.length<128)this.rows.push({phase,record:record||null,failed,...(secondary?{secondary}:{}),...(comparison?{comparison}:{}),...(operational?{operational}:{})});else this.overflow=true;}
  }
  fail(){if(this.rows.length)this.failed=true;}
  write(condition:string,writer:(value:unknown)=>void){
   if(!this.changed&&!this.failed&&!this.overflow)return;
   if(condition.length>256||!/^[A-Za-z0-9-]+$/.test(condition))throw new UAOutputFailure("UA diagnostic condition outside closed ID contract");
   const emit=(value:unknown)=>{try{writer(value);}catch(error){throw new UAOutputFailure("UA diagnostic writer failed",{cause:error});}};
-  const record={schemaVersion:1,condition,code:"UA_OBSERVATION_STABILITY",changed:this.changed,failed:this.failed,overflow:this.overflow,observations:this.rows.map(r=>r.record&&!r.record.delta.some(n=>n>0)?{phase:r.phase,failed:r.failed,total:r.record.total,focusable:r.record.focusable,focused:r.record.focused,delta:r.record.delta,...(r.secondary?{secondary:r.secondary}:{}),...(r.comparison?{comparison:r.comparison}:{})}:r)};
+  const record={schemaVersion:1,condition,code:"UA_OBSERVATION_STABILITY",changed:this.changed,failed:this.failed,overflow:this.overflow,observations:this.rows.map(r=>r.record&&!r.record.delta.some(n=>n>0)?{phase:r.phase,failed:r.failed,total:r.record.total,focusable:r.record.focusable,focused:r.record.focused,delta:r.record.delta,...(r.secondary?{secondary:r.secondary}:{}),...(r.comparison?{comparison:r.comparison}:{}),...(r.operational?{operational:r.operational}:{})}:r)};
   if(Buffer.byteLength(JSON.stringify(record,null,2)+"\n")>4096){emit({schemaVersion:1,condition,code:"UA_OBSERVATION_STABILITY_OVERFLOW",overflow:true,changed:this.changed,failed:this.failed,observationsUnavailable:true});throw new UAOutputFailure("UA diagnostic output bound exceeded");}
   emit(record);assert.equal(this.overflow,false,"UA diagnostic incomplete/overflow");
  }

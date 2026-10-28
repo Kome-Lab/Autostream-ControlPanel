@@ -482,3 +482,181 @@ test("actual Auth harness path terminal-cancels without CDP send or a successful
   assert.equal(browser.preSettlementFetchCancellationCount, 1);
   assert.equal(lifecycle.activeCount, 0);
 });
+
+test("Network failure metadata reads neither probe health nor invalidate an unconsumed ticket", () => {
+  const { lifecycle, proof, claim } = fixture();
+  let probes = 0;
+  const healthy = lifecycle.assertHealthy.bind(lifecycle);
+  lifecycle.assertHealthy = () => { probes += 1; healthy(); };
+  const before = proof.failureDiagnostic(id, lifecycle, session, current);
+  assert.ok(before);
+  assert.equal(before.first, null);
+  assert.equal(probes, 0);
+  const ticket = claim();
+  assert.ok(ticket);
+  const after = proof.failureDiagnostic(id, lifecycle, session, current);
+  assert.ok(after?.first);
+  assert.equal(after.first.flags[3], 0, "used: capture precedes the original ticket mutation");
+  assert.equal(after.failure.flags[3], 1);
+  assert.equal(after.first.at, after.failure.at, "reading must not advance the proof clock");
+  for (let read = 0; read < 3; read += 1) {
+    assert.deepEqual(proof.failureDiagnostic(id, lifecycle, session, current), after);
+  }
+  assert.equal(probes, 1, "only the original claim calls assertHealthy");
+  assert.equal(Object.isFrozen(after), true);
+  assert.equal(Object.isFrozen(after.first), true);
+  assert.equal(Object.isFrozen(after.first.same), true);
+  assert.equal(lifecycle.safeCancellationCount, 0);
+  assert.deepEqual(lifecycle.completePreSettlementCancellation(id, fulfill, ticket), { cancelled: true });
+  assert.equal(lifecycle.preSettlementCancellationCount, 1);
+  assert.equal(proof.claimBeforeSettlement(id, fulfill, current), undefined);
+});
+
+test("a late cancellation is visible only in failure metadata and never repairs the first claim", () => {
+  const { lifecycle, proof, claim } = fixture(steps().slice(0, -1));
+  assert.equal(claim(), undefined);
+  const first = proof.failureDiagnostic(id, lifecycle, session, current)?.first;
+  assert.ok(first);
+  assert.equal(first.present[4], 0, "cancel present");
+  assert.equal(first.orders[4], null, "cancel order");
+  proof.observe(cancelled(), 0);
+  const after = proof.failureDiagnostic(id, lifecycle, session, current);
+  assert.ok(after);
+  assert.equal(after.first, first, "later peek must retain the exact immutable first snapshot");
+  assert.equal(after.first.present[4], 0);
+  assert.equal(after.failure.present[4], 1);
+  assert.equal(after.failure.flags[5], 1, "canceled");
+  assert.equal(after.failure.flags[6], 1, "ERR_ABORTED");
+  assert.ok(after.failure.orders[4]! > first.at);
+  assert.equal(claim(), undefined);
+  const original = new Error(invalidInterceptionIdMessage);
+  assert.throws(() => lifecycle.handleSettlementError(lifecycle.beginSettlement(id, fulfill), original), error => error === original);
+  assert.equal(lifecycle.activeCount, 1);
+  assert.equal(lifecycle.safeCancellationCount, 0);
+});
+
+test("closed Network route diagnostics classify fixed reads without expanding cancellation authority", () => {
+  const routes = [
+    ["/auth/me", "AUTH_ME"], ["/setup/status", "SETUP_STATUS"], ["/settings/app", "APP_SETTINGS"],
+    ["/auth/oauth/providers", "AUTH_OAUTH_PROVIDERS"], ["/auth/mfa/status", "AUTH_MFA_STATUS"],
+    ["/auth/passkeys", "AUTH_PASSKEYS"], ["/auth/oauth-links", "AUTH_OAUTH_LINKS"],
+    ["/integrations/oauth-accounts", "OAUTH_ACCOUNTS"], ["/archive/destinations", "ARCHIVE_DESTINATIONS"],
+    ["/discord/configs", "DISCORD_CONFIGS"], ["/youtube/outputs", "YOUTUBE_OUTPUTS"],
+    ["/profiles/archive", "ARCHIVE_PROFILES"], ["/profiles/overlay", "OVERLAY_PROFILES"],
+    ["/account/preferences/ui", "UI_PREFERENCES"], ["/streams", "STREAMS"], ["/workers", "WORKERS"],
+    ["/nodes", "NODES"], ["/observability/incidents", "INCIDENTS"], ["/service-health", "SERVICE_HEALTH"], ["/version", "VERSION"],
+    ["/_next/static/private-script.js", "NEXT_STATIC"], ["/admin/private-tree.txt", "ADMIN_TEXT"],
+    ["/admin/private-tree.json", "ADMIN_JSON"], ["/admin/private-stream", "ADMIN_ROUTE"],
+    ["/favicon.ico", "FAVICON"], ["/streams/private-id", "OTHER"], ["/auth/me/private-id", "OTHER"],
+  ];
+  const allowed = new Set([path, "/auth/me", "/workers", "/nodes"]);
+  for (const [pathname, route] of routes) {
+    const { lifecycle, proof, claim } = fixture(steps(pathname), { pathname });
+    const ticket = claim(), metadata = proof.failureDiagnostic(id, lifecycle, session, current);
+    assert.ok(metadata?.first);
+    assert.equal(metadata.route, route);
+    assert.equal(metadata.method, "GET");
+    assert.equal(metadata.matches[2], allowed.has(pathname) ? 1 : 0);
+    assert.equal(!!ticket, allowed.has(pathname), "diagnostic membership grants no new ticket");
+    if (ticket) lifecycle.completePreSettlementCancellation(id, fulfill, ticket);
+    else {
+      const original = new Error(invalidInterceptionIdMessage);
+      assert.throws(() => lifecycle.handleSettlementError(lifecycle.beginSettlement(id, fulfill), original), error => error === original);
+    }
+  }
+});
+
+test("Network diagnostics contain only closed primitive metadata and capture failures do not change a valid claim", () => {
+  const input = steps();
+  for (const method of ["Fetch.requestPaused", "Network.requestWillBeSent"]) {
+    changeEvent(input, method, value => {
+      request(value).url = `https://secret-host.invalid${path}?private-query-marker=private-value`;
+      request(value).headers = { Authorization: "private-header-marker" };
+    });
+  }
+  const { lifecycle, proof, claim } = fixture(input);
+  const ticket = claim();
+  assert.ok(ticket);
+  const metadata = proof.failureDiagnostic(id, lifecycle, session, current);
+  assert.ok(metadata?.first);
+  assert.deepEqual(metadata.first.present, [1, 1, 1, 1, 1]);
+  assert.deepEqual(metadata.first.counts, [1, 1]);
+  assert.deepEqual(metadata.first.same, [1, 1, 1, 1, 1, 1, 1, 1, 1, 1]);
+  assert.deepEqual(metadata.first.flags, [0, 0, 0, 0, 1, 1, 1, 0, 0]);
+  const json = JSON.stringify(metadata);
+  for (const privateValue of [id, networkID, session, frame, loader, "secret-host", "private-query-marker", "private-value", "private-header-marker", path]) {
+    assert.equal(json.includes(privateValue), false, privateValue);
+  }
+  assert.ok(Buffer.byteLength(json, "utf8") < 2048);
+  lifecycle.completePreSettlementCancellation(id, fulfill, ticket);
+
+  const broken = fixture();
+  Object.defineProperty(broken.proof, "diagnosticSnapshot", { value: () => { throw new Error("private-capture-marker"); } });
+  const unaffected = broken.claim();
+  assert.ok(unaffected, "an observation exception cannot disable a valid original claim");
+  assert.equal(broken.proof.failureDiagnostic(id, broken.lifecycle, session, current), undefined);
+  assert.equal(broken.proof.overflowed, false);
+  assert.deepEqual(broken.lifecycle.completePreSettlementCancellation(id, fulfill, unaffected), { cancelled: true });
+});
+
+test("actual failing settlement preserves error identity, counters and bounded diagnostics for every rejected class", async t => {
+  for (const [pathname, method, required] of [[path, "GET", false], [path, "GET", true], ["/streams", "GET", false], [path, "PUT", false]] as const) {
+    const late = pathname === path && method === "GET" && !required;
+    const input = late ? steps(pathname).slice(0, -1) : steps(pathname);
+    (input[2] as { contract: Contract }).contract.optionalFixture = !required;
+    for (const eventName of ["Fetch.requestPaused", "Network.requestWillBeSent"]) changeEvent(input, eventName, value => { request(value).method = method; });
+    const { lifecycle, proof } = fixture(input, { pathname, method, required });
+    const original = new Error(invalidInterceptionIdMessage), lines: string[] = [], sends: string[] = [];
+    const logger = t.mock.method(console, "error", (line: string) => { lines.push(line); });
+    const browser = Object.assign(Object.create(BrowserHarness.prototype), {
+      sessionId: session, mainFrameId: frame, requestLifecycle: lifecycle, networkCancellation: proof,
+      closed: false, fatalError: undefined,
+      send: async (command: string) => { sends.push(command); throw original; },
+    }) as BrowserHarness;
+    const settle = (browser as unknown as { settleFetchRequest(requestId: string, command: typeof fulfill, params: Record<string, unknown>): Promise<boolean> }).settleFetchRequest.bind(browser);
+    await assert.rejects(settle(id, fulfill, { requestId: id }), error => error === original);
+    logger.mock.restore();
+    assert.deepEqual(sends, [fulfill]);
+    assert.equal(lifecycle.activeCount, 1);
+    assert.equal(lifecycle.safeCancellationCount, 0);
+    assert.equal(lifecycle.preSettlementCancellationCount, 0);
+    assert.equal(lines.length, 1);
+    assert.ok(Buffer.byteLength(lines[0] + "\n", "utf8") <= 2048);
+    const metadata = JSON.parse(lines[0].slice("BROWSER_FETCH_FAILURE ".length)).network_cancellation_diagnostic;
+    assert.equal(metadata.schema, "network-cancel-boundary-v2");
+    assert.equal(metadata.first.flags[4], required ? 0 : 1, "optional contract");
+    assert.equal(metadata.method, method === "PUT" ? "WRITE" : "GET");
+    assert.equal(metadata.first.flags[3], 0, "used");
+    assert.equal(metadata.failure.flags[3], 0);
+    assert.equal(metadata.first.present[4], late ? 0 : 1, "normal optional GET retains the missing first cancellation");
+    assert.deepEqual(Object.keys(metadata.first), ["at", "present", "counts", "orders", "same", "flags"]);
+    assert.deepEqual(Object.keys(metadata.failure), ["at", "present", "counts", "orders", "same", "flags"]);
+    assert.deepEqual([metadata.first.present.length, metadata.first.counts.length, metadata.first.orders.length, metadata.first.same.length, metadata.first.flags.length], [5, 2, 5, 10, 9]);
+  }
+});
+
+test("extra diagnostic capture, serialization, size and print failures cannot replace the original settlement error", async t => {
+  for (const mode of ["capture", "serialize", "oversized", "print"] as const) {
+    const { lifecycle, proof } = fixture(steps("/streams"), { pathname: "/streams" });
+    if (mode === "capture") Object.defineProperty(proof, "failureDiagnostic", { value: () => { throw new Error("private-capture-marker"); } });
+    if (mode === "serialize") Object.defineProperty(proof, "failureDiagnostic", { value: () => ({ toJSON() { throw new Error("private-serialize-marker"); } }) });
+    if (mode === "oversized") Object.defineProperty(proof, "failureDiagnostic", { value: () => ({ privateMarker: "private-oversized-marker".repeat(4096) }) });
+    const original = new Error(invalidInterceptionIdMessage), lines: string[] = [];
+    const logger = t.mock.method(console, "error", (line: string) => { lines.push(line); if (mode === "print") throw new Error("private-print-marker"); });
+    const browser = Object.assign(Object.create(BrowserHarness.prototype), {
+      sessionId: session, mainFrameId: frame, requestLifecycle: lifecycle, networkCancellation: proof,
+      closed: false, fatalError: undefined, send: async () => { throw original; },
+    }) as BrowserHarness;
+    const settle = (browser as unknown as { settleFetchRequest(requestId: string, command: typeof fulfill, params: Record<string, unknown>): Promise<boolean> }).settleFetchRequest.bind(browser);
+    await assert.rejects(settle(id, fulfill, { requestId: id }), error => error === original);
+    logger.mock.restore();
+    assert.equal(lifecycle.safeCancellationCount, 0);
+    assert.equal(lifecycle.activeCount, 1);
+    assert.equal(lines.length, 1);
+    assert.ok(Buffer.byteLength(lines[0] + "\n", "utf8") <= 2048);
+    assert.equal(lines[0].includes("private-"), false);
+    const metadata = JSON.parse(lines[0].slice("BROWSER_FETCH_FAILURE ".length));
+    assert.ok(metadata.generation_diagnostic, "the established failure diagnostic is retained");
+    if (mode === "oversized") assert.equal(metadata.network_cancellation_diagnostic_unavailable, "oversized");
+  }
+});

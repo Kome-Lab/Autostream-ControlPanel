@@ -299,7 +299,21 @@ export class BrowserHarness {
       let generation;
       try { generation = this.requestLifecycle.generationFailureDiagnostic(requestId, this.fetchNavigationObservation()); }
       catch { /* Preserve the established diagnostic if the extra collection fails. */ }
-      const json = JSON.stringify({ ...legacy, generation_diagnostic: generation });
+      const base = { ...legacy, generation_diagnostic: generation };
+      let json = JSON.stringify(base);
+      try {
+        const network = requestId && this.networkCancellation?.failureDiagnostic(requestId, this.requestLifecycle, this.sessionId,
+          { generation: this.requestLifecycle.generation, frameId: this.mainFrameId });
+        if (network) {
+          const enriched = JSON.stringify({ ...base, network_cancellation_diagnostic: network });
+          const prefix = legacy ? "BROWSER_FETCH_FAILURE " : "BROWSER_FETCH_GENERATION_DIAGNOSTIC ";
+          if (Buffer.byteLength(prefix + enriched + "\n", "utf8") <= 2048) json = enriched;
+          else {
+            const bounded = JSON.stringify({ ...base, network_cancellation_diagnostic_unavailable: "oversized" });
+            if (Buffer.byteLength(prefix + bounded + "\n", "utf8") <= 2048) json = bounded;
+          }
+        }
+      } catch { /* Keep the established diagnostic and original settlement failure. */ }
       const line = `${legacy ? "BROWSER_FETCH_FAILURE" : "BROWSER_FETCH_GENERATION_DIAGNOSTIC"} ${json}`;
       if (Buffer.byteLength(line + "\n", "utf8") > 4096) return;
       this.generationFailureJSON = json;

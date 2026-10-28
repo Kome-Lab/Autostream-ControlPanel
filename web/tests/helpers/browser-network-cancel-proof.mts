@@ -12,6 +12,54 @@ type Pause = {
   invalid: boolean; order: number; generation: number; networkID?: string;
   frame?: string; url?: string; path?: string; method?: string; type?: string;
   scope?: DocumentScope; contract?: Readonly<{ order: number; generation: number; path: string; optionalFixture: boolean }>;
+  firstClaimDiagnostic?: NetworkBoundaryDiagnostic;
+};
+type Tri = boolean | null;
+type DiagnosticBit = 0 | 1;
+type DiagnosticTri = DiagnosticBit | null;
+type NetworkBoundaryDiagnostic = Readonly<{
+  at:number;
+  present:readonly [pause:DiagnosticBit,network:DiagnosticBit,scope:DiagnosticBit,contract:DiagnosticBit,cancel:DiagnosticBit];
+  counts:readonly [starts:number,links:number];
+  orders:readonly [scope:number|null,start:number|null,pause:number|null,contract:number|null,cancel:number|null];
+  same:readonly [link:DiagnosticTri,scope:DiagnosticTri,frame:DiagnosticTri,loader:DiagnosticTri,generation:DiagnosticTri,
+    failure_generation:DiagnosticTri,url:DiagnosticTri,method:DiagnosticTri,types:DiagnosticTri,contract_path:DiagnosticTri];
+  flags:readonly [disabled:DiagnosticBit,pause_invalid:DiagnosticTri,network_invalid:DiagnosticTri,used:DiagnosticTri,
+    optional:DiagnosticTri,canceled:DiagnosticTri,aborted:DiagnosticTri,response:DiagnosticTri,finished:DiagnosticTri];
+}>;
+// v2 tuple slots are named above; 1/0/null mean true/false/unobserved.
+const diagnosticTuple = <const T extends readonly unknown[]>(...values:T):Readonly<T> => Object.freeze(values);
+const diagnosticBit = (value:boolean):DiagnosticBit => value?1:0;
+const diagnosticTri = (value:Tri):DiagnosticTri => value===null?null:diagnosticBit(value);
+const diagnosticReadRoutes = [
+  ["/auth/me","AUTH_ME"],["/setup/status","SETUP_STATUS"],["/settings/app","APP_SETTINGS"],
+  ["/auth/oauth/providers","AUTH_OAUTH_PROVIDERS"],["/auth/mfa/status","AUTH_MFA_STATUS"],
+  ["/auth/passkeys","AUTH_PASSKEYS"],["/auth/oauth-links","AUTH_OAUTH_LINKS"],
+  ["/integrations/oauth-accounts","OAUTH_ACCOUNTS"],["/archive/destinations","ARCHIVE_DESTINATIONS"],
+  ["/discord/configs","DISCORD_CONFIGS"],["/youtube/outputs","YOUTUBE_OUTPUTS"],
+  ["/profiles/archive","ARCHIVE_PROFILES"],["/profiles/overlay","OVERLAY_PROFILES"],
+  ["/account/preferences/ui","UI_PREFERENCES"],["/streams","STREAMS"],["/workers","WORKERS"],
+  ["/nodes","NODES"],["/observability/incidents","INCIDENTS"],["/service-health","SERVICE_HEALTH"],["/version","VERSION"],
+] as const;
+type DiagnosticRoute = typeof diagnosticReadRoutes[number][1] | "NEXT_STATIC" | "ADMIN_TEXT" | "ADMIN_JSON" | "ADMIN_ROUTE" | "FAVICON" | "OTHER";
+const diagnosticRoutes = new Map<string,DiagnosticRoute>(diagnosticReadRoutes);
+const diagnosticRoute = (path:string|undefined):DiagnosticRoute => {
+  const known=path&&diagnosticRoutes.get(path);if(known)return known;
+  if(path?.startsWith("/_next/static/"))return "NEXT_STATIC";
+  if(path?.startsWith("/admin/")&&path.endsWith(".txt"))return "ADMIN_TEXT";
+  if(path?.startsWith("/admin/")&&path.endsWith(".json"))return "ADMIN_JSON";
+  if(path==="/admin"||path?.startsWith("/admin/"))return "ADMIN_ROUTE";
+  return path==="/favicon.ico"?"FAVICON":"OTHER";
+};
+const diagnosticMethod = (method:string|undefined) => method==="GET"||method==="HEAD"?method:["POST","PUT","PATCH","DELETE"].includes(method||"")?"WRITE":"OTHER";
+type NetworkFailureDiagnostic = Readonly<{
+  schema:"network-cancel-boundary-v2";route:DiagnosticRoute;method:ReturnType<typeof diagnosticMethod>;
+  matches:readonly [owner:DiagnosticBit,session:DiagnosticBit,allowed_path:DiagnosticBit];
+  first:NetworkBoundaryDiagnostic|null;failure:NetworkBoundaryDiagnostic;
+}>;
+const diagnosticEqual = (...values:unknown[]):Tri => values.some(value=>value===undefined)?null:values.every(value=>value===values[0]);
+const diagnosticData = (value:object,key:string):unknown => {
+  const descriptor=Object.getOwnPropertyDescriptor(value,key);return descriptor&&"value"in descriptor?descriptor.value:undefined;
 };
 declare const ticketBrand: unique symbol;
 export type NetworkCancellationTicket = Readonly<{ [ticketBrand]: true }>;
@@ -57,6 +105,34 @@ export class BrowserNetworkCancelProof {
     this.owner = owner; this.session = session; this.limit = limit;
   }
   get overflowed() { return this.disabled; }
+  private diagnosticSnapshot(id:string,current:{generation:number;frameId:string|undefined},at:number):NetworkBoundaryDiagnostic {
+    const pause=this.pauses.get(id),scope=this.scope,network=pause?.networkID?this.networks.get(pause.networkID):undefined;
+    const contract=pause?.contract,cancel=network?.failure;
+    const generation=diagnosticData(current,"generation"),frame=diagnosticData(current,"frameId");
+    return Object.freeze({at,
+      present:diagnosticTuple(diagnosticBit(!!pause),diagnosticBit(!!network),diagnosticBit(!!scope),diagnosticBit(!!contract),diagnosticBit(!!cancel)),
+      counts:diagnosticTuple(network?.starts||0,network?.pauseIDs.size||0),
+      orders:diagnosticTuple(scope?.order??null,network?.order??null,pause?.order??null,contract?.order??null,cancel?.order??null),
+      same:diagnosticTuple(diagnosticTri(network&&pause?network.pauseIDs.size===1&&network.pauseIDs.has(id):null),
+        diagnosticTri(pause?.scope&&scope?pause.scope===scope:null),
+        diagnosticTri(diagnosticEqual(pause?.frame,network?.frame,scope?.frame,frame)),
+        diagnosticTri(diagnosticEqual(network?.loader,pause?.scope?.loader,scope?.loader)),
+        diagnosticTri(diagnosticEqual(pause?.generation,network?.generation,scope?.generation,contract?.generation,generation)),
+        diagnosticTri(diagnosticEqual(cancel?.generation,generation)),diagnosticTri(diagnosticEqual(pause?.url,network?.url)),diagnosticTri(diagnosticEqual(pause?.method,network?.method)),
+        diagnosticTri(pause&&network?pause.type==="XHR"&&network.type==="Fetch":null),diagnosticTri(diagnosticEqual(contract?.path,pause?.path))),
+      flags:diagnosticTuple(diagnosticBit(this.disabled),diagnosticTri(pause?.invalid??null),diagnosticTri(network?.invalid??null),diagnosticTri(network?.used??null),
+        diagnosticTri(contract?.optionalFixture??null),diagnosticTri(cancel?.canceled??null),diagnosticTri(cancel?.aborted??null),diagnosticTri(network?.response??null),diagnosticTri(network?.finished??null))});
+  }
+
+  // Read-only metadata. No clock tick, health probe, ticket use or acceptance.
+  failureDiagnostic(id:string,owner:object,session:string,current:{generation:number;frameId:string|undefined}):NetworkFailureDiagnostic|undefined {
+    try {
+      const pause=this.pauses.get(id);
+      return Object.freeze({schema:"network-cancel-boundary-v2",route:diagnosticRoute(pause?.path),method:diagnosticMethod(pause?.method),
+        matches:diagnosticTuple(diagnosticBit(this.owner===owner),diagnosticBit(this.session===session),diagnosticBit(!!pause?.path&&optionalFixturePaths.has(pause.path))),
+        first:pause?.firstClaimDiagnostic??null,failure:this.diagnosticSnapshot(id,current,this.order)});
+    } catch { return; }
+  }
   private next() {
     if (this.order >= Number.MAX_SAFE_INTEGER) { this.disabled = true; return this.order; }
     return ++this.order;
@@ -155,6 +231,8 @@ export class BrowserNetworkCancelProof {
       const boundary = this.next(), pause = this.pauses.get(id), scope = this.scope;
       const network = pause?.networkID ? this.networks.get(pause.networkID) : undefined;
       const contract = pause?.contract, failure = network?.failure;
+      try { if(pause&&!pause.firstClaimDiagnostic)pause.firstClaimDiagnostic=this.diagnosticSnapshot(id,current,boundary); }
+      catch { /* Metadata collection cannot change the original claim or send. */ }
       if (this.disabled || command !== "Fetch.fulfillRequest" || !pause || !network || !scope || !contract || !failure
         || pause.invalid || network.invalid || network.used || network.starts !== 1 || network.pauseIDs.size !== 1 || !network.pauseIDs.has(id)
         || !contract.optionalFixture || !pause.path || !optionalFixturePaths.has(pause.path) || contract.path !== pause.path

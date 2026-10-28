@@ -53,9 +53,13 @@ export async function createSQLUIProxy(webOrigin: string, apiOrigin: string) {
           });
         }
       }
-      if (shouldLose) {
+      if (shouldLose && incoming.statusCode === 201) {
         incoming.resume();
-        incoming.on("end", () => { lostUploads++; res.destroy(); });
+        incoming.on("end", () => {
+          lostUploads++;
+          res.writeHead(201, { "Content-Type": "application/json", "Content-Length": "0" });
+          res.end();
+        });
         return;
       }
       res.writeHead(incoming.statusCode || 502, incoming.headers);
