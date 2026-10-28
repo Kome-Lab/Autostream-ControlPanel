@@ -65,7 +65,7 @@ declare const ticketBrand: unique symbol;
 export type NetworkCancellationTicket = Readonly<{ [ticketBrand]: true }>;
 type TicketData = Readonly<{ owner: object; id: string; generation: number; path: string; validate: () => boolean }>;
 const tickets = new WeakMap<object, TicketData>();
-const optionalFixturePaths = new Set(["/integrations/oauth-accounts", "/integrations/oauth-providers", "/roles", "/nodes", "/workers", "/auth/me", "/version"]);
+const optionalFixturePaths = new Set(["/integrations/oauth-accounts", "/integrations/oauth-providers", "/roles", "/nodes", "/workers", "/auth/me", "/version", "/settings/app"]);
 const object = (value: unknown): ObjectValue | undefined => value !== null && typeof value === "object" && !Array.isArray(value) ? value as ObjectValue : undefined;
 const identifier = (value: unknown) => typeof value === "string" && value.length > 0 && value.length <= 256 ? value : undefined;
 const generationNumber = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;

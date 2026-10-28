@@ -9,9 +9,10 @@ import { deferred, setStoredDisplay, waitForAnimationFrames } from "./ui-browser
 
 
 
-export async function runQueryStatesScenario(t: TestContext, browser: BrowserHarness, server: { baseUrl: string }, fixture: Pick<BrowserRouteFixture, "authResponse" | "healthResponse" | "versionFixture">) {
+export async function runQueryStatesScenario(t: TestContext, browser: BrowserHarness, server: { baseUrl: string }, fixture: Pick<BrowserRouteFixture, "authResponse" | "healthResponse" | "versionFixture" | "observeAppSettingsCancellation">) {
 
   await t.test("query states distinguish loading, empty, unhealthy, error, stale, recovery, and update variants", async () => {
+    const previousObservation = fixture.observeAppSettingsCancellation;
     const paths = ["/auth/me", "/settings/app", "/service-health", "/version"];
     const nextDocument = async () => {
       await browser.waitForRequestHandlersIdle({ method: "GET" });
@@ -28,6 +29,7 @@ export async function runQueryStatesScenario(t: TestContext, browser: BrowserHar
       await browser.waitForRequestHandlersIdle({ method: "GET" });
     };
     try {
+      fixture.observeAppSettingsCancellation = true;
       fixture.authResponse = { body: currentUser };
       await browser.setViewport(1440, 900);
       fixture.healthResponse = { body: healthyRows, delayMs: 1_200 };
@@ -127,6 +129,7 @@ export async function runQueryStatesScenario(t: TestContext, browser: BrowserHar
       await completedState(dashboardReads, 200, 200);
       assert.equal(browser.requests.get("/service-health"), 1, "Shell and Dashboard must share the service-health request");
     } finally {
+      fixture.observeAppSettingsCancellation = previousObservation;
       fixture.authResponse = { body: currentUser };
       fixture.healthResponse = { body: healthyRows };
       fixture.versionFixture = { body: currentVersion };

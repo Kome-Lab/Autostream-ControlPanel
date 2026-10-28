@@ -3,7 +3,7 @@
 export const pollingCurrentBase = "65a601fc9d4f15c93083e9be4ab9e71586fdba69";
 export const pollingCurrentTree = "2624414bc4e1cb4bd304faccf82e5d22e3201dd2";
 export const pollingCurrentFixturePath = "web/tests/fixtures/ui-regression/polling-current-source-delta.json";
-export const pollingCurrentFixtureSHA256 = "e50ccfd2e4b11d2ce60cb3efa137d34a1354cea587fb554919b988e1f749ea05";
+export const pollingCurrentFixtureSHA256 = "3708688fdbb013c96c7fcf8e89b1a2bbd072943e804bf3178ea1157e73dd0f70";
 export const pollingLegacyFixturePath = "web/tests/fixtures/ui-regression/polling-legacy-parity.json";
 export const pollingLegacyFixtureSHA256 = "b2df0a26ef1f77a08a0ddbfe8762b7e77a583c21ba8ed03d22373e4ebce764a8";
 export const pollingCurrentPaths = Object.freeze([
@@ -169,12 +169,14 @@ export const pollingCurrentPaths = Object.freeze([
   "web/tests/generic-resource-polling.test.mts",
   "web/tests/generic-resource-security-cas.test.mts",
   "web/tests/generic-resource-security-draft.test.mts",
+  "web/tests/helpers/browser-app-settings-cancellation-cases.mts",
   "web/tests/helpers/browser-executable.mts",
   "web/tests/helpers/browser-harness.mts",
   "web/tests/helpers/browser-native-media-settlement.mts",
   "web/tests/helpers/browser-network-cancel-proof.mts",
   "web/tests/helpers/browser-network-cancel-proof.test.mts",
   "web/tests/helpers/browser-next-readiness-fixture.mts",
+  "web/tests/helpers/browser-optional-app-cancellation.mts",
   "web/tests/helpers/browser-request-lifecycle.mts",
   "web/tests/helpers/browser-response-count.mts",
   "web/tests/helpers/browser-ua-diagnostic.mts",

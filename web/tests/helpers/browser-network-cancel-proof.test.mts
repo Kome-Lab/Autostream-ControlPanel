@@ -4,6 +4,7 @@ import { BrowserHarness } from "./browser-harness.mts";
 import { BrowserNetworkCancelProof, takeNetworkCancellationTicket } from "./browser-network-cancel-proof.mts";
 import { FetchRequestLifecycle, RejectableEventWaiters, invalidInterceptionIdMessage } from "./browser-request-lifecycle.mts";
 import { waitForMapCount, waitForMinimumMapCount } from "./browser-response-count.mts";
+import { registerAppSettingsCancellationCases } from "./browser-app-settings-cancellation-cases.mts";
 
 type Event = { sessionId: string; method: string; params: Record<string, unknown>; generation: number };
 type Contract = { generation: number; pathname: string; optionalFixture: boolean };
@@ -549,7 +550,7 @@ test("closed Network route diagnostics classify fixed reads without expanding ca
     ["/admin/private-tree.json", "ADMIN_JSON"], ["/admin/private-stream", "ADMIN_ROUTE"],
     ["/favicon.ico", "FAVICON"], ["/streams/private-id", "OTHER"], ["/auth/me/private-id", "OTHER"],
   ];
-  const allowed = new Set([path, "/auth/me", "/workers", "/nodes", "/version"]);
+  const allowed = new Set([path, "/auth/me", "/workers", "/nodes", "/version", "/settings/app"]);
   for (const [pathname, route] of routes) {
     const { lifecycle, proof, claim } = fixture(steps(pathname), { pathname });
     const ticket = claim(), metadata = proof.failureDiagnostic(id, lifecycle, session, current);
@@ -758,3 +759,5 @@ test("Version required reads, writes, unknown routes, continue, and late cancell
   assert.throws(() => late.lifecycle.handleSettlementError(late.lifecycle.beginSettlement(id, fulfill), lateError), error => error === lateError);
   assert.equal(late.lifecycle.safeCancellationCount, 0);
 });
+
+registerAppSettingsCancellationCases(negatives);

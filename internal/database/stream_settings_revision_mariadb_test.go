@@ -69,27 +69,43 @@ func TestMariaDBStreamSettingsRevisionConcurrentWritersAndLifecycleIsolation(t *
 		}()
 	}
 	// Bind the actual wait graph to this transaction's one held PRIMARY row.
+	// An exclusive waiter can queue behind another waiter on that same row;
+	// both direct and queued predecessors must lead back to our held lock.
 	// Prepared-statement INFO can retain '?' rather than the stream ID.
-	const waitQuery = `SELECT COUNT(DISTINCT requesting.trx_mysql_thread_id)
+	const waitQuery = `WITH RECURSIVE edges AS (
+SELECT requesting.trx_mysql_thread_id AS requesting_thread,
+       blocking.trx_mysql_thread_id AS blocking_thread,
+       requested.lock_space, requested.lock_page, requested.lock_rec
 FROM information_schema.INNODB_LOCK_WAITS waits
 JOIN information_schema.INNODB_TRX requesting ON requesting.trx_id = waits.requesting_trx_id
 JOIN information_schema.INNODB_TRX blocking ON blocking.trx_id = waits.blocking_trx_id
 JOIN information_schema.INNODB_LOCKS requested ON requested.lock_id = waits.requested_lock_id AND requested.lock_trx_id = waits.requesting_trx_id
 JOIN information_schema.INNODB_LOCKS held ON held.lock_id = waits.blocking_lock_id AND held.lock_trx_id = waits.blocking_trx_id
-WHERE blocking.trx_mysql_thread_id = ? AND requesting.trx_mysql_thread_id <> ?
-  AND requested.lock_table = ? AND held.lock_table = ?
+WHERE requested.lock_table = ? AND held.lock_table = ?
   AND requested.lock_index = 'PRIMARY' AND held.lock_index = 'PRIMARY'
   AND requested.lock_type = 'RECORD' AND held.lock_type = 'RECORD'
   AND requested.lock_space = held.lock_space
-  AND requested.lock_page = held.lock_page AND requested.lock_rec = held.lock_rec`
+  AND requested.lock_page = held.lock_page AND requested.lock_rec = held.lock_rec
+), blocked AS (
+SELECT requesting_thread, blocking_thread, lock_space, lock_page, lock_rec
+FROM edges WHERE blocking_thread = ?
+UNION DISTINCT
+SELECT successor_edge.requesting_thread, successor_edge.blocking_thread, successor_edge.lock_space, successor_edge.lock_page, successor_edge.lock_rec
+FROM edges successor_edge JOIN blocked predecessor_edge ON successor_edge.blocking_thread = predecessor_edge.requesting_thread
+  AND successor_edge.lock_space = predecessor_edge.lock_space
+  AND successor_edge.lock_page = predecessor_edge.lock_page AND successor_edge.lock_rec = predecessor_edge.lock_rec
+)
+SELECT COUNT(DISTINCT requesting_thread),
+       COUNT(DISTINCT CASE WHEN blocking_thread = ? THEN requesting_thread END)
+FROM blocked WHERE requesting_thread <> ?`
 	observeCtx, cancelObservation := context.WithTimeout(ctx, 5*time.Second)
 	defer cancelObservation()
 	table := "`" + schema + "`.`streams`"
-	waiting := 0
+	waiting, directWaiting := 0, 0
 	for {
-		if err = diagnostic.QueryRowContext(observeCtx, waitQuery, blockerID, blockerID, table, table).Scan(&waiting); err != nil {
+		if err = diagnostic.QueryRowContext(observeCtx, waitQuery, table, table, blockerID, blockerID, blockerID).Scan(&waiting, &directWaiting); err != nil {
 			if observeCtx.Err() != nil {
-				t.Fatalf("both writers did not actually reach the held stream lock: waiting=%d", waiting)
+				t.Fatalf("both writers did not actually reach the held stream lock: waiting=%d direct=%d", waiting, directWaiting)
 			}
 			t.Fatal("cannot observe the real competing settings row-lock waits")
 		}
@@ -99,7 +115,7 @@ WHERE blocking.trx_mysql_thread_id = ? AND requesting.trx_mysql_thread_id <> ?
 		}
 		select {
 		case <-observeCtx.Done():
-			t.Fatalf("both writers did not actually reach the held stream lock: waiting=%d", waiting)
+			t.Fatalf("both writers did not actually reach the held stream lock: waiting=%d direct=%d", waiting, directWaiting)
 		case <-time.After(10 * time.Millisecond):
 		}
 	}

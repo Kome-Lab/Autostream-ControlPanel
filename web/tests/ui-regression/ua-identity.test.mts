@@ -6,7 +6,7 @@ import {MediaIdentityLedger,readUAAXComparison,readUAOperationalComparison,readU
 import {readUADiagnostic,UAConditionDiagnostic,UAOutputFailure} from "../helpers/browser-ua-diagnostic.mts";
 import {exerciseUnavailableMedia} from "./media-keyboard-contract.mts";
 import {conditions} from "./matrix.mts";
-import {settleNativeMediaLoading} from "../helpers/browser-native-media-settlement.mts";
+import {settleNativeMediaLoading,nativePublicMediaReadyExpression} from "../helpers/browser-native-media-settlement.mts";
 
 const p=(name:string,value:boolean)=>({name,value:{value}});
 function reading(removed=false):UARead {
@@ -434,5 +434,58 @@ test("UI-UA-PROPERTY-BOUNDARIES-044: normalization preserves negative evidence a
     if(["order-only","unknown-stable-order","immutable"].includes(fault))assert.equal(owner.verify(next,final,paint).accepted,true);
     else assert.throws(()=>owner.verify(next,final,paint));
     assert.equal(JSON.stringify(before),rawBefore);assert.equal(JSON.stringify(next),rawNext);assert.deepEqual(owner.first,immutable);
+  });
+});
+
+test("UI-UA-FIXTURE-READINESS: actual delegate waits for the independent mounted error fixture before strict native sampling",async t=>{
+  const source="data:video/mp4;base64,independent-fixture";
+  const context=(fault:string)=>{
+    const document={querySelectorAll:(selector:string)=>{assert.equal(selector,"main[data-screen-family=archive-share] video[controls]");return nodes;}};
+    const host={isConnected:true as boolean|undefined,ownerDocument:document as object,getAttribute:(name:string)=>{assert.equal(name,"src");return fault==="wrong-src"?"different-source":source;},currentSrc:source,readyState:0 as number|undefined,networkState:3,error:{code:4}as {code:number}|null,paused:true as boolean|undefined,currentTime:0};
+    if(fault==="disconnected")host.isConnected=false;
+    if(fault==="unknown-connected")host.isConnected=undefined;
+    if(fault==="foreign-document")host.ownerDocument={};
+    if(fault==="empty-current-src")host.currentSrc="";
+    if(fault==="different-current-src")host.currentSrc="different-current-source";
+    if(fault==="loaded")host.readyState=4;
+    if(fault==="unknown-ready")host.readyState=undefined;
+    if(fault==="loading")host.networkState=2;
+    if(fault==="no-error")host.error=null;
+    if(fault==="wrong-error")host.error={code:3};
+    if(fault==="playing")host.paused=false;
+    if(fault==="unknown-paused")host.paused=undefined;
+    if(fault==="moved-time")host.currentTime=1;
+    const nodes=fault==="unmounted"?[]:fault==="multiple"?[host,{...host}]:[host];
+    return {document};
+  };
+  for(const fault of ["ready","unmounted","multiple","disconnected","unknown-connected","foreign-document","wrong-src","empty-current-src","different-current-src","loaded","unknown-ready","loading","no-error","wrong-error","playing","unknown-paused","moved-time"])await t.test("predicate-"+fault,()=>{
+    assert.equal(runInNewContext(nativePublicMediaReadyExpression(source),context(fault)),fault==="ready");
+  });
+  for(const scenario of ["delayed-mount-error","permanent-unready","fatal-during-readiness"])await t.test(scenario,async()=>{
+    const {harness}=createHarnessFixture(),send=Reflect.get(harness,"send"),fatal=Error("owned preparation fatal"),entered=Error("strict helper entered");
+    const outcomes:boolean[]=[];let samples=0;
+    if(scenario==="permanent-unready"){
+      const wait=harness.waitFor.bind(harness);
+      harness.waitFor=async<T,>(expression:string,accept:(value:T)=>boolean,description:string)=>wait(expression,accept,description,50);
+    }
+    Reflect.set(harness,"send",async(method:string,params:Record<string,unknown>)=>{
+      if(method==="Runtime.evaluate"){
+        if(scenario==="fatal-during-readiness")throw fatal;
+        assert.equal(params.awaitPromise,true);assert.equal(params.returnByValue,true);
+        assert.equal(params.expression,nativePublicMediaReadyExpression(source),"actual delegate must execute the tested atomic predicate");
+        const state=scenario==="permanent-unready"?"unmounted":["unmounted","loading","ready"][Math.min(outcomes.length,2)];
+        const value=runInNewContext(String(params.expression),context(state));outcomes.push(value);return {result:{value}};
+      }
+      assert.equal(method,"DOM.enable","the unchanged strict helper is entered only after readiness");samples++;throw entered;
+    });
+    try{
+      await assert.rejects(harness.settleNativePublicMedia(source),error=>{
+        if(scenario==="delayed-mount-error")assert.equal(error,entered);
+        else if(scenario==="fatal-during-readiness")assert.equal(error,fatal);
+        else{assert.ok(error instanceof Error);assert.match(error.message,/public media fixture error state before native baseline/);}return true;
+      });
+      if(scenario==="delayed-mount-error"){assert.deepEqual(outcomes,[false,false,true]);assert.equal(samples,1);}
+      else{assert.equal(samples,0);assert.ok(outcomes.every(value=>value===false));if(scenario==="permanent-unready")assert.ok(outcomes.length>0);}
+    }finally{Reflect.set(harness,"send",send);await harness.close();}
   });
 });

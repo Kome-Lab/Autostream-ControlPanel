@@ -118,6 +118,7 @@ export function escapeRegExp(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 export type BrowserRouteFixture = {
+  observeAppSettingsCancellation?: true;
   authResponse: StubResponse;
   authNextResponse?: StubResponse;
   setupResponse: StubResponse;
@@ -201,7 +202,7 @@ export function createBrowserRouteFixture(browser: BrowserHarness, resolveAdditi
       return { ...response, requiredResponse: response.requiredResponse ?? false };
     }
     if (pathname === "/setup/status" && method === "GET") return { ...fixture.setupResponse, requiredResponse: fixture.setupResponse.requiredResponse ?? false };
-    if (pathname === "/settings/app" && method === "GET") return { body: { app_name: "AutoStream", timezone: "Asia/Tokyo" }, requiredResponse: false };
+    if (pathname === "/settings/app" && method === "GET") return { body: { app_name: "AutoStream", timezone: "Asia/Tokyo" }, requiredResponse: false, observeAppSettingsCancellation: fixture.observeAppSettingsCancellation };
     if (pathname === "/auth/oauth/providers" && method === "GET") return { body: [], requiredResponse: false };
     if (pathname === "/auth/mfa/status" && method === "GET") return { body: { enabled: false }, requiredResponse: false };
     if (pathname === "/auth/passkeys" && method === "GET") return { body: [], requiredResponse: false };

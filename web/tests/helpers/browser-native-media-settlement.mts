@@ -134,3 +134,9 @@ export async function settleNativeMediaLoading(send: Send, source: string, now: 
   }
   throw new Error("native media loading settlement exceeded its read bound");
 }
+
+// Product hydration/error preparation precedes every strict identity sample.
+// This is one atomic read, not a retry of a rejected native observation.
+export function nativePublicMediaReadyExpression(source: string): string {
+  return `(() => {const nodes=[...document.querySelectorAll(${JSON.stringify(selector)})],host=nodes[0];return nodes.length===1&&host.isConnected===true&&host.ownerDocument===document&&host.getAttribute('src')===${JSON.stringify(source)}&&host.currentSrc===${JSON.stringify(source)}&&host.readyState===0&&host.networkState===3&&host.error?.code===4&&host.paused===true&&host.currentTime===0;})()`;
+}

@@ -372,7 +372,7 @@ export class RejectableEventWaiters {
     return count;
   }
 
-  wait(method: string, timeoutMs: number, timeoutMessage: string): EventWaiter {
+  wait(method: string, timeoutMs: number, timeoutMessage: string | Error): EventWaiter {
     let waiter: PendingEventWaiter;
     const promise = new Promise<Record<string, unknown>>((resolveEvent, rejectEvent) => {
       waiter = {
@@ -380,7 +380,7 @@ export class RejectableEventWaiters {
         reject: rejectEvent,
         timer: setTimeout(() => {
           this.remove(method, waiter);
-          rejectEvent(new Error(timeoutMessage));
+          rejectEvent(timeoutMessage instanceof Error ? timeoutMessage : new Error(timeoutMessage));
         }, timeoutMs),
       };
       const methodWaiters = this.waiters.get(method) || new Set<PendingEventWaiter>();
