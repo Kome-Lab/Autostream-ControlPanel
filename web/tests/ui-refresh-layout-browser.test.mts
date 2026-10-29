@@ -80,6 +80,7 @@ test("CP live polling preserves OAuth drafts, node confirmation and Workers page
     },
   });
   const fixture = createBrowserRouteFixture(routeRegistration);
+  fixture.observeBootstrapCancellation = true;
   fixture.healthResponse = { body: [] };
   fixture.workersResponse = { body: [] };
   fixture.nodesResponse = { body: [] };
@@ -313,6 +314,7 @@ test("Monitoring and Dashboard retain geometry during real scheduled GETs at des
         });
       } });
       const fixture = createBrowserRouteFixture(registration);
+      fixture.observeBootstrapCancellation = true;
       fixture.healthResponse = { body: [node], delayMs: 1_200 };
       fixture.streamsResponse = { body: [] };
       // Use the existing browser matrix wall clock so a minute rollover does not
@@ -406,6 +408,8 @@ test("v2 preset screens enforce permissions, distinguish failed and empty reads,
     });
   } });
   const fixture = createBrowserRouteFixture(registration);
+  const previousBootstrapObservation = fixture.observeBootstrapCancellation;
+  fixture.observeBootstrapCancellation = true;
   fixture.healthResponse = { body: [] };
   fixture.streamsResponse = { body: [] };
   fixture.workersResponse = { body: [] };
@@ -476,7 +480,15 @@ test("v2 preset screens enforce permissions, distinguish failed and empty reads,
 
   coverResponse = { body: [preset] };
   fixture.authResponse = { body: permissionUser(["video_cover_presets.read", "video_cover_presets.update"]) };
+  const bootstrapReads = new Map(["/auth/me", "/settings/app", "/version"].map(path => [path, browser.responses.get(path) || 0]));
   await navigate("/admin/overlay/#video-cover-presets");
+  for (const [path, before] of bootstrapReads) await waitForMinimumMapCount(browser.responses, path, before + 1, `completed preset bootstrap GET ${path}`, 10_000, () => browser.assertNoFatalError());
+  await browser.waitForRequestHandlersIdle({ method: "GET" });
+  for (const [path, before] of bootstrapReads) {
+    const statuses = (browser.responseStatuses.get(path) || []).slice(before);
+    assert.ok(statuses.length > 0 && statuses.every(status => status === 200), `${path}: bootstrap succeeds before preset edit authority reads`);
+  }
+  fixture.observeBootstrapCancellation = previousBootstrapObservation;
   await clickVisible(browser, 'main button', /^Edit Browser cover preset$/);
   await browser.waitFor(`document.querySelector('[role="dialog"] input[type="text"]')?.value === 'Browser cover preset'`, Boolean, "preset editor opens with its saved baseline", 5_000);
   await browser.waitFor(`(() => { const image = document.querySelector('[role="dialog"] img'); return image instanceof HTMLImageElement && image.complete && image.naturalWidth > 0; })()`, Boolean, "saved preview is decoded before update", 5_000);

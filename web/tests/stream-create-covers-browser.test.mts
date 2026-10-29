@@ -64,11 +64,17 @@ test("Stream create and all cover candidates operate in real desktop and mobile 
   const navigateList = async (mode: "navigate" | "reload") => {
     await settleGETBoundary();
     navigationBaseline = snapshotGETs(navigationGETs);
-    if (mode === "reload") await browser.reload();
-    else await browser.navigate(`${server.baseUrl}/admin/streams/`);
-    await waitGETResponses(["/auth/me", "/streams"], navigationBaseline);
-    await browser.waitFor(`document.documentElement.lang==='ja'&&!!document.querySelector('main')`, Boolean, "the localized stream list must commit after this navigation");
-    await settleGETBoundary();
+    const previousBootstrapObservation = fixture.observeBootstrapCancellation;
+    fixture.observeBootstrapCancellation = true;
+    try {
+      if (mode === "reload") await browser.reload();
+      else await browser.navigate(`${server.baseUrl}/admin/streams/`);
+      await waitGETResponses(["/auth/me", "/streams"], navigationBaseline);
+      await browser.waitFor(`document.documentElement.lang==='ja'&&!!document.querySelector('main')`, Boolean, "the localized stream list must commit after this navigation");
+      await settleGETBoundary();
+    } finally {
+      fixture.observeBootstrapCancellation = previousBootstrapObservation;
+    }
   };
   const openEdit = async () => {
     const selector = 'button[aria-label$=" を編集"]';

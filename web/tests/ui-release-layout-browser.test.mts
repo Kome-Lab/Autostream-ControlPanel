@@ -78,28 +78,47 @@ async function settledLayoutRead(browser: BrowserHarness, path: string, minimum:
 
 async function checkTabs(browser: BrowserHarness, route: string, expected: readonly string[], width: number, baseline: ReadonlyMap<string, number>) {
   const [firstRead, secondRead] = tabReadPaths[route];
-  const settledPanel = async (path: string) => {
-    await settledLayoutRead(browser, path, (baseline.get(path) || 0) + 1);
-    await browser.waitFor(`(() => { const panel=document.querySelector('main [role="tabpanel"][data-state="active"]');return !!panel&&!panel.querySelector('[role="status"][aria-label="読込中"],[role="status"][aria-label="Loading"],button[aria-busy="true"]'); })()`, Boolean, `${route}: selected data panel has completed its GET`, 5_000);
+  const readEpoch = (path: string) => ({ requests: browser.requests.get(path) || 0, responses: browser.responses.get(path) || 0 });
+  const initialEpoch = readEpoch(firstRead);
+  const settledPanel = async (path: string, label: string, epoch: ReturnType<typeof readEpoch>) => {
+    const minimum = (baseline.get(path) || 0) + 1;
+    const ownerReady = `(() => {
+      const tabs = [...document.querySelectorAll('main [role="tab"]')].filter(tab => tab.textContent.trim() === ${JSON.stringify(label)});
+      if (tabs.length !== 1) return false;
+      const tab = tabs[0], panel = document.getElementById(tab.getAttribute('aria-controls'));
+      return tab.isConnected && tab.getClientRects().length > 0 && tab.getAttribute('aria-selected') === 'true'
+        && panel?.isConnected && panel.getClientRects().length > 0 && panel.getAttribute('data-state') === 'active'
+        && panel.getAttribute('aria-labelledby') === tab.id && !panel.closest('[hidden],[inert],[aria-hidden="true"]')
+        && !panel.querySelector('[role="status"][aria-label="読込中"],[role="status"][aria-label="Loading"],button[aria-busy="true"],[role="alert"]');
+    })()`;
+    await settledLayoutRead(browser, path, minimum);
+    await browser.waitFor(ownerReady, Boolean, `${route}: selected data panel has completed its GET`, 5_000);
+    await paint(browser);
     await browser.waitForRequestHandlersIdle({ method: "GET" });
+    // A new activation can reuse fresh cached data without issuing another GET.
+    // If it did issue a GET, require a positive response from this activation epoch.
+    const activationMinimum = epoch.responses + Number((browser.requests.get(path) || 0) > epoch.requests);
+    await settledLayoutRead(browser, path, Math.max(minimum, activationMinimum));
+    await browser.waitFor(ownerReady, Boolean, `${route}: same selected data panel is ready after rendering and GET settlement`, 5_000);
   };
-  await settledPanel(firstRead);
+  await settledPanel(firstRead, expected[0], initialEpoch);
   const snapshot = await tabSnapshot(browser);
   assert.deepEqual(snapshot.issues, [], `${route} at ${width}px`);
   assert.deepEqual(snapshot.tabs.map(tab => tab.name), expected);
   const [first, second] = snapshot.tabs;
   await clickVisible(browser, `main [role="tab"][id=${JSON.stringify(first.id)}]`);
+  const secondEpoch = readEpoch(secondRead);
   await browser.pressKey("ArrowRight");
   await browser.waitFor(`(() => {
     const tab = document.getElementById(${JSON.stringify(second.id)}), panel = document.getElementById(${JSON.stringify(second.panel)});
     return document.activeElement === tab && tab?.getAttribute('aria-selected') === 'true' && panel?.getClientRects().length > 0;
   })()`, Boolean, `${route}: native ArrowRight selects the second tab`, 5_000);
-  await settledPanel(secondRead);
-  await paint(browser);
+  await settledPanel(secondRead, expected[1], secondEpoch);
   assert.deepEqual((await tabSnapshot(browser)).issues, [], `${route}: selected panel must not disturb tab geometry`);
+  const restoredFirstEpoch = readEpoch(firstRead);
   await browser.pressKey("ArrowLeft");
   await browser.waitFor(`document.activeElement?.id === ${JSON.stringify(first.id)} && document.activeElement?.getAttribute('aria-selected') === 'true'`, Boolean, `${route}: native ArrowLeft restores the first tab`, 5_000);
-  await settledPanel(firstRead);
+  await settledPanel(firstRead, expected[0], restoredFirstEpoch);
 }
 
 async function expandRow(browser: BrowserHarness, row: string) {
@@ -226,7 +245,7 @@ test("CP174 release layouts retain readable records and keyboard-operable Japane
   const resources: Readonly<Record<string, unknown>> = {
     "/discord/configs": [], "/discord/target-presets": [], "/roles": [], "/permissions": [],
     // Match the API enum; an unsupported select value can itself create a draft.
-    "/security/settings": { password_min_length: 12, mfa_mode: "totp" }, "/secrets/status": [],
+    "/security/settings": { password_min_length: 12, mfa_mode: "totp", updated_at: timestamp }, "/secrets/status": [],
     "/profiles/overlay": [],
     "/video-cover-presets": [{ id: "layout-video-cover-174", name: videoCoverName, asset_id: "layout-cover-asset-174", asset_variant_id: "layout-cover-variant-174", enabled: true, revision: 1 }],
     "/integrations/oauth-providers": [{ id: "layout-provider-174", name: "Layout Google provider", provider_type: "google", enabled: true }],
@@ -249,6 +268,7 @@ test("CP174 release layouts retain readable records and keyboard-operable Japane
     });
   } });
   const fixture = createBrowserRouteFixture(registration);
+  fixture.observeBootstrapCancellation = true;
   fixture.nodesResponse = { body: [node] };
   fixture.workersResponse = { body: [node] };
   fixture.healthResponse = { body: [] };
