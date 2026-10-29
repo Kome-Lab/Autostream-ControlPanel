@@ -418,13 +418,15 @@ export async function runSetupUnmountScenario(t: TestContext, browser: BrowserHa
 }
 
 
-export async function runLoginReturnScenario(t: TestContext, browser: BrowserHarness, server: { baseUrl: string }, fixture: Pick<BrowserRouteFixture, "observeBootstrapCancellation" | "authResponse" | "loginResponse" | "setupResponse">) {
+export async function runLoginReturnScenario(t: TestContext, browser: BrowserHarness, server: { baseUrl: string }, fixture: Pick<BrowserRouteFixture, "observeBootstrapCancellation" | "authResponse" | "loginResponse" | "setupResponse" | "versionFixture">) {
 
   await t.test("login rejects external return URL variants", async () => {
     const previousAuthResponse = fixture.authResponse;
     const previousBootstrapObservation = fixture.observeBootstrapCancellation;
+    const previousVersionFixture = fixture.versionFixture;
     try {
     fixture.observeBootstrapCancellation = true;
+    fixture.versionFixture = { body: currentVersion };
     fixture.authResponse = { body: currentUser, observeBootstrapCancellation: true };
     fixture.loginResponse = { body: { csrf_token: "login-fixture-csrf" } };
     fixture.setupResponse = { body: { setup_enabled: true, setup_required: false } };
@@ -451,8 +453,8 @@ export async function runLoginReturnScenario(t: TestContext, browser: BrowserHar
       await browser.fillSelector('input[autocomplete="current-password"]', "browser-fixture-password");
       browser.clearRequestCounts();
       browser.clearConsoleErrors();
-      const dashboardReads = new Map(["/auth/me", "/streams"].map(path => [path, browser.responses.get(path) || 0]));
-      const authPhase = browser.declareLoginReturnAuthPhase(new URL("/auth/me", server.baseUrl).href);
+      const dashboardReads = new Map(["/auth/me", "/streams", "/version"].map(path => [path, browser.responses.get(path) || 0]));
+      const authPhase = browser.declareLoginReturnBootstrapPhase(server.baseUrl);
       try {
       await browser.clickSelector('form button[type="submit"]:not([disabled])');
       const href = await browser.waitFor(
@@ -463,13 +465,13 @@ export async function runLoginReturnScenario(t: TestContext, browser: BrowserHar
       );
       assertLoginNavigationOutcome({ href, expectedOrigin: server.baseUrl, expectedPathname: "/admin/" });
       await waitForShell(browser, "Account menu");
-      for (const path of ["/auth/me", "/streams"]) await waitForInitialGET(browser, path, dashboardReads.get(path)!, 200);
+      for (const path of ["/auth/me", "/streams", "/version"]) await waitForInitialGET(browser, path, dashboardReads.get(path)!, 200);
       await waitForAnimationFrames(browser);
       await browser.waitForRequestHandlersIdle({ method: "GET" });
       assert.equal(browser.requests.get("/auth/login"), 1);
       assertNoBrowserConsoleErrors(browser.consoleErrorCount);
       } finally { authPhase.dispose(); }
     }
-    } finally { fixture.authResponse = previousAuthResponse; fixture.observeBootstrapCancellation = previousBootstrapObservation; }
+    } finally { fixture.authResponse = previousAuthResponse; fixture.observeBootstrapCancellation = previousBootstrapObservation; fixture.versionFixture = previousVersionFixture; }
   });
 }
