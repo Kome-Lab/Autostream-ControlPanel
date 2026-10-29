@@ -8,6 +8,7 @@ import { registerAppSettingsCancellationCases } from "./browser-app-settings-can
 import { registerNetworkScopeRetirementCases } from "./browser-network-scope-retirement-cases.mts";
 import { registerDeclaredAuthRetirementCases } from "./browser-declared-auth-retirement-cases.mts";
 import { registerDeclaredVersionRetirementCases } from "./browser-declared-version-retirement-cases.mts";
+import { registerInFlightOAuthCancellationCases } from "./browser-inflight-oauth-cancellation-cases.mts";
 
 type Event = { sessionId: string; method: string; params: Record<string, unknown>; generation: number };
 type Contract = { generation: number; pathname: string; optionalFixture: boolean };
@@ -767,3 +768,4 @@ registerAppSettingsCancellationCases(negatives);
 registerNetworkScopeRetirementCases();
 registerDeclaredAuthRetirementCases();
 registerDeclaredVersionRetirementCases();
+registerInFlightOAuthCancellationCases();

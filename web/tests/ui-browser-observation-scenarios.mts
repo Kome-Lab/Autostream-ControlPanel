@@ -26,12 +26,37 @@ async function settledBootstrapReads(browser: BrowserHarness, baseline: Readonly
   }
 }
 
-export async function runResponsiveSurfacesScenario(t: TestContext, browser: BrowserHarness, server: { baseUrl: string }, fixture: Pick<BrowserRouteFixture, "observeBootstrapCancellation" | "authResponse" | "streamsResponse" | "healthResponse" | "workersResponse" | "nodesResponse">) {
+const streamsOwnerReadyExpression = (capture: boolean) => `(() => {
+  if (location.pathname !== '/admin/streams/') return false;
+  const visible = (element) => element instanceof HTMLElement && element.isConnected && element.getClientRects().length > 0;
+  const owners = [...document.querySelectorAll('main [data-screen-family="streams"]')].filter(visible);
+  if (owners.length !== 1) return false;
+  const owner = owners[0];
+  if (!visible(owner.querySelector('section[aria-label="配信状態の集計"]'))
+    || !visible(owner.querySelector('[data-slot="data-table"]')) || !owner.querySelector('time[datetime]')) return false;
+  ${capture ? 'globalThis.__uiResponsiveStreamsOwner = owner;' : 'if (globalThis.__uiResponsiveStreamsOwner !== owner) return false;'}
+  return true;
+})()`;
+
+async function settledPageReads(browser: BrowserHarness, baseline: ReadonlyMap<string, number>) {
+  for (const [path, previous] of baseline) {
+    await waitForMinimumMapCount(browser.responses, path, previous + 1, `completed responsive page GET ${path}`, 10_000, () => browser.assertNoFatalError());
+    await browser.waitForRequestHandlersIdle({ pathname: path, method: "GET" });
+    const statuses = (browser.responseStatuses.get(path) || []).slice(previous);
+    assert.ok(statuses.length > 0, `${path}: responsive page must complete a new response`);
+    assert.equal(statuses.length, (browser.responses.get(path) || 0) - previous, `${path}: responsive page statuses match completed responses`);
+    assert.deepEqual(statuses, statuses.map(() => 200), `${path}: every responsive page response must succeed`);
+  }
+}
+
+export async function runResponsiveSurfacesScenario(t: TestContext, browser: BrowserHarness, server: { baseUrl: string }, fixture: Pick<BrowserRouteFixture, "observeBootstrapCancellation" | "observeInFlightOAuthCancellation" | "authResponse" | "streamsResponse" | "healthResponse" | "workersResponse" | "nodesResponse">) {
 
   await t.test("Bundle 7 affected surfaces are responsive at every canonical width", async () => {
     const previousBootstrapObservation = fixture.observeBootstrapCancellation;
+    const previousInFlightOAuthObservation = fixture.observeInFlightOAuthCancellation;
     try {
     fixture.observeBootstrapCancellation = true;
+    fixture.observeInFlightOAuthCancellation = true;
     const affectedRoutes = [
       "/admin/",
       "/admin/streams/",
@@ -62,6 +87,8 @@ export async function runResponsiveSurfacesScenario(t: TestContext, browser: Bro
     for (const route of affectedRoutes) {
       await browser.waitForRequestHandlersIdle({ method: "GET" });
       const baseline = bootstrapReadBaseline(browser);
+      const pageReads = route === "/admin/streams/" ? ["/streams", "/integrations/oauth-accounts"] : [];
+      const pageBaseline = new Map(pageReads.map(path => [path, browser.responses.get(path) || 0]));
       await browser.navigate(`${server.baseUrl}${route}`);
       await waitForShell(browser, "アカウントメニュー");
       await browser.waitFor(
@@ -70,9 +97,16 @@ export async function runResponsiveSurfacesScenario(t: TestContext, browser: Bro
         `${route}: main content did not render`,
       );
       await settledBootstrapReads(browser, baseline);
+      await settledPageReads(browser, pageBaseline);
+      if (route === "/admin/streams/") await browser.waitFor(streamsOwnerReadyExpression(true), value => value === true, "Streams loaded page owner did not become ready");
+      await paint(browser);
+      await browser.waitForRequestHandlersIdle({ method: "GET" });
+      if (route === "/admin/streams/") await browser.waitFor(streamsOwnerReadyExpression(false), value => value === true, "Streams loaded page owner changed after page reads");
       for (const viewport of viewports) {
         await browser.setViewport(viewport.width, viewport.height);
         await waitForAnimationFrames(browser);
+        await browser.waitForRequestHandlersIdle({ method: "GET" });
+        if (route === "/admin/streams/") await browser.waitFor(streamsOwnerReadyExpression(false), value => value === true, "Streams loaded page owner changed at a canonical width");
         const snapshot = await browser.evaluate<{
           width: number;
           mainVisible: boolean;
@@ -94,7 +128,7 @@ export async function runResponsiveSurfacesScenario(t: TestContext, browser: Bro
         assert.ok(snapshot.visibleInteractiveCount > 0, `${route} at ${viewport.width}px exposed no usable controls`);
       }
     }
-    } finally { fixture.observeBootstrapCancellation = previousBootstrapObservation; }
+    } finally { fixture.observeBootstrapCancellation = previousBootstrapObservation; fixture.observeInFlightOAuthCancellation = previousInFlightOAuthObservation; }
   });
 }
 

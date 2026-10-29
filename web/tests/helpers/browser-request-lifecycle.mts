@@ -1,5 +1,6 @@
 import { takeNetworkCancellationTicket } from "./browser-network-cancel-proof.mts";
 import { takeDeclaredAuthRetirement, takeDeclaredVersionRetirement } from "./browser-declared-auth-retirement.mts";
+import { takeInFlightOAuthCancellation } from "./browser-inflight-oauth-cancellation.mts";
 
 export const invalidInterceptionIdMessage = "Invalid InterceptionId.";
 
@@ -96,6 +97,8 @@ export class FetchRequestLifecycle {
   private preSettlementCount = 0;
   private declaredAuthRetiredCount = 0;
   private declaredVersionRetiredCount = 0;
+  private observedInFlightOAuthCount = 0;
+  private readonly actualAttempts = new WeakMap<FetchSettlementAttempt, ActiveFetchRequest>();
   private fatalError: Error | undefined;
   private diagnosticOrder = 0;
   private navigationBeginOrder = 0;
@@ -151,6 +154,7 @@ export class FetchRequestLifecycle {
   get preSettlementCancellationCount() { return this.preSettlementCount; }
   get declaredAuthRetirementCount() { return this.declaredAuthRetiredCount; }
   get declaredVersionRetirementCount() { return this.declaredVersionRetiredCount; }
+  get observedInFlightOAuthCancellationCount() { return this.observedInFlightOAuthCount; }
 
   get safeCancellationCount() {
     return this.cancellationCount;
@@ -200,7 +204,9 @@ export class FetchRequestLifecycle {
     request.settlementAttemptCount += 1;
     request.settlementCommand = command;
     request.terminalState = "settling";
-    return { requestId, command, attempt: request.settlementAttemptCount };
+    const attempt = { requestId, command, attempt: request.settlementAttemptCount };
+    this.actualAttempts.set(attempt, request);
+    return attempt;
   }
 
   completeSettlement(attempt: FetchSettlementAttempt) {
@@ -253,6 +259,38 @@ export class FetchRequestLifecycle {
     this.declaredVersionRetiredCount += 1;
     this.flushIdleWaiters();
     return { cancelled: true } as const;
+  }
+
+  prepareInFlightOAuthCancellation(requestId: string) {
+    this.assertHealthy();
+    const request = this.activeRequests.get(requestId);
+    if (!request || request.requiredResponse || request.method !== "GET" || request.pathname !== "/integrations/oauth-accounts"
+      || request.generation !== this.navigationGeneration || request.terminalState !== "active" || request.settlementAttemptCount !== 0) return;
+    return (attempt: FetchSettlementAttempt) => {
+      this.assertHealthy();
+      return this.activeRequests.get(requestId) === request && this.actualAttempts.get(attempt) === request
+        && !request.requiredResponse && request.method === "GET" && request.pathname === "/integrations/oauth-accounts"
+        && request.generation === this.navigationGeneration && request.terminalState === "settling"
+        && request.settlementAttemptCount === 1 && request.settlementCommand === "Fetch.fulfillRequest"
+        && attempt.requestId === requestId && attempt.command === "Fetch.fulfillRequest" && attempt.attempt === 1;
+    };
+  }
+
+  completeObservedInFlightOAuthCancellation(attempt: FetchSettlementAttempt, error: unknown) {
+    const request = this.activeRequests.get(attempt.requestId);
+    const valid = !!request && this.actualAttempts.get(attempt) === request && !request.requiredResponse
+      && request.method === "GET" && request.pathname === "/integrations/oauth-accounts" && request.generation === this.navigationGeneration
+      && request.terminalState === "settling" && request.settlementAttemptCount === 1 && request.settlementCommand === "Fetch.fulfillRequest"
+      && attempt.attempt === 1 && attempt.command === "Fetch.fulfillRequest";
+    const proved = takeInFlightOAuthCancellation(error, this, attempt, valid);
+    this.assertHealthy();
+    if (!valid || !proved || !request) return false;
+    this.recordTerminal(request, "cancelled");
+    this.activeRequests.delete(request.requestId);
+    this.cancellationCount += 1;
+    this.observedInFlightOAuthCount += 1;
+    this.flushIdleWaiters();
+    return true;
   }
 
   handleSettlementError(attempt: FetchSettlementAttempt, error: unknown) {

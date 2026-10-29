@@ -119,6 +119,7 @@ export function escapeRegExp(value: string) {
 }
 export type BrowserRouteFixture = {
   observeBootstrapCancellation?: true;
+  observeInFlightOAuthCancellation: boolean;
   authResponse: StubResponse;
   authNextResponse?: StubResponse;
   setupResponse: StubResponse;
@@ -148,7 +149,10 @@ export type BrowserRouteFixture = {
 };
 
 export function createBrowserRouteFixture(browser: BrowserHarness, resolveAdditionalRoute?: RouteResolver): BrowserRouteFixture {
+  let inFlightOAuthObservation = false;
   const fixture: BrowserRouteFixture = {
+    get observeInFlightOAuthCancellation() { return inFlightOAuthObservation; },
+    set observeInFlightOAuthCancellation(value: boolean) { inFlightOAuthObservation = value === true; },
     authResponse: { body: currentUser },
     setupResponse: { body: { setup_enabled: true, setup_required: false } },
     healthResponse: { body: healthyRows },
@@ -207,7 +211,7 @@ export function createBrowserRouteFixture(browser: BrowserHarness, resolveAdditi
     if (pathname === "/auth/mfa/status" && method === "GET") return { body: { enabled: false }, requiredResponse: false };
     if (pathname === "/auth/passkeys" && method === "GET") return { body: [], requiredResponse: false };
     if (pathname === "/auth/oauth-links" && method === "GET") return { body: [], requiredResponse: false };
-    if (pathname === "/integrations/oauth-accounts" && method === "GET") return { body: [], requiredResponse: false };
+    if (pathname === "/integrations/oauth-accounts" && method === "GET") return { body: [], requiredResponse: false, ...(fixture.observeInFlightOAuthCancellation ? { observeInFlightOAuthCancellation: true as const } : {}) };
     if (pathname === "/archive/destinations" && method === "GET") return { body: [], requiredResponse: false };
     if (["/discord/configs", "/youtube/outputs", "/profiles/archive", "/profiles/overlay", "/profiles/encoder", "/profiles/caption"].includes(pathname) && method === "GET") return { body: [], requiredResponse: false };
     if (["/discord/target-presets", "/video-cover-presets"].includes(pathname) && method === "GET") return { body: { items: [] }, requiredResponse: false };

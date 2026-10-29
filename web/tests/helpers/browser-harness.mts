@@ -11,6 +11,8 @@ import { collectBrowserLaunchFacts } from "./browser-launch-profile.mts";
 import { BrowserNetworkCancelProof } from "./browser-network-cancel-proof.mts";
 import { declareLoginReturnAuthPhase, declareLoginReturnBootstrapPhase, retireDeclaredBootstrap } from "./browser-declared-auth-retirement.mts";
 import { optionalBootstrapCancellationEvent, waitForOptionalBootstrapCancellation } from "./browser-optional-app-cancellation.mts";
+import { settleBrowserFetchRequest } from "./browser-fetch-settlement.mts";
+import { bindInFlightOAuthCommand, discardInFlightOAuthCommand, markInFlightOAuthSend, observeInFlightOAuthWire, sealInFlightOAuthRejection } from "./browser-inflight-oauth-cancellation.mts";
 import { resolveBrowserPath } from "./browser-executable.mts";
 import { waitForMapCount } from "./browser-response-count.mts";
 import { asError, delay, withTimeout } from "./browser-process-timing.mts";
@@ -25,6 +27,7 @@ export type StubResponse = {
   waitUntil?: Promise<void>;
   requiredResponse?: boolean;
   observeBootstrapCancellation?: true;
+  observeInFlightOAuthCancellation?: boolean;
 };
 
 export type StubRequest = {
@@ -588,11 +591,12 @@ export class BrowserHarness {
         resolve: value => { cancel(); resolveCommand(value); },
         reject: error => { cancel(); rejectCommand(error); },
       });
+      bindInFlightOAuthCommand(this, id, this.pendingCommands.get(id), method, params, sessionId);
       if (method === "Page.navigate") {
         this.diagnosticNavigateId = id;
         this.diagnosticNavigateResponded = false;
       }
-      try { this.socket.send(JSON.stringify(payload)); }
+      try { this.socket.send(JSON.stringify(payload)); markInFlightOAuthSend(this, id, this.pendingCommands.get(id)); }
       catch (error) { this.recordFatalError(error); this.rejectPendingCommands(asError(error)); }
     });
     if (!scope || observed === undefined) return result;
@@ -603,12 +607,13 @@ export class BrowserHarness {
   private receive(rawMessage: string) {
     const message = JSON.parse(rawMessage) as CDPResponse;
     if (message.id) {
+      observeInFlightOAuthWire(this, message.id);
       const command = this.pendingCommands.get(message.id);
       if (!command) return;
       if (message.id === this.diagnosticNavigateId) this.diagnosticNavigateResponded = true;
       this.pendingCommands.delete(message.id);
-      if (message.error) command.reject(new Error(message.error.message || "CDP command failed"));
-      else command.resolve(message.result || {});
+      if (message.error) command.reject(sealInFlightOAuthRejection(this, message.id, command, new Error(message.error.message || "CDP command failed"), message.sessionId));
+      else { discardInFlightOAuthCommand(this, message.id, command); command.resolve(message.result || {}); }
       return;
     }
     if (!message.method || (message.sessionId && message.sessionId !== this.sessionId)) return;
@@ -685,7 +690,7 @@ export class BrowserHarness {
       responseCode: responseStatus,
       responseHeaders: [{ name: "content-type", value: response.contentType ?? "application/json; charset=utf-8" }],
       body: response.bodyBase64 ?? Buffer.from(body).toString("base64"),
-    });
+    }, response.observeInFlightOAuthCancellation === true);
     if (!settled) return;
     this.responses.set(pathname, (this.responses.get(pathname) || 0) + 1);
     const statuses = this.responseStatuses.get(pathname) || [];
@@ -693,41 +698,31 @@ export class BrowserHarness {
     this.responseStatuses.set(pathname, statuses);
   }
 
-  private async settleFetchRequest(
+  private settleFetchRequest(
     requestId: string,
     command: FetchSettlementCommand,
     params: Record<string, unknown>,
+    optedIn = false,
   ) {
-    if (!this.closed && !this.fatalError && this.networkCancellation) {
-      this.assertNoFatalError();
-      const ticket = this.networkCancellation.claimBeforeSettlement(requestId, command, { generation: this.requestLifecycle.generation, frameId: this.mainFrameId });
-      if (ticket) {
-        this.requestLifecycle.completePreSettlementCancellation(requestId, command, ticket);
-        return false;
-      }
-    }
-    const attempt = this.requestLifecycle.beginSettlement(requestId, command);
-    this.requestLifecycle.observeSettlement(requestId, this.fetchNavigationObservation());
-    try {
-      await this.send(command, params);
-    } catch (error) {
-      try {
-        this.requestLifecycle.handleSettlementError(attempt, error);
-      } catch (fatalError) {
+    return settleBrowserFetchRequest({
+      observation: {
+        owner: this, lifecycle: this.requestLifecycle, proof: this.networkCancellation, session: this.sessionId,
+        current: () => ({ generation: this.requestLifecycle.generation, frameId: this.mainFrameId, closed: this.closed }),
+        assertHealthy: () => this.assertNoFatalError(),
+      },
+      closed: () => this.closed, fatal: () => !!this.fatalError, navigation: () => this.fetchNavigationObservation(),
+      send: (method, values) => this.send(method, values),
+      reportFailure: (attempt, fatalError) => {
         if (!this.closed && !this.fatalError && !this.fetchFailureReported) {
           this.fetchFailureReported = true;
           try {
             this.reportFetchGenerationFailure(attempt.requestId, this.requestLifecycle.settlementFailureDiagnostic(attempt, fatalError));
           } catch {
-            // Diagnostics must never replace the original settlement failure.
+            // Diagnostics must never replace the original Fetch failure.
           }
         }
-        throw fatalError;
-      }
-      return false;
-    }
-    this.requestLifecycle.completeSettlement(attempt);
-    return true;
+      },
+    }, requestId, command, params, optedIn);
   }
 
   private recordFatalError(error: unknown) {

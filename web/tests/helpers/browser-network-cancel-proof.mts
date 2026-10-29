@@ -1,4 +1,5 @@
 import { isKnownForeignDocumentLoader, observeDeclaredAuthRetirement } from "./browser-declared-auth-retirement.mts";
+import { observeInFlightOAuthDocument } from "./browser-inflight-oauth-cancellation.mts";
 
 type ObjectValue = Record<string, unknown>;
 type Owner = object & { assertHealthy(): void };
@@ -154,6 +155,55 @@ export class BrowserNetworkCancelProof {
     network.used = true;
     return true;
   }
+  prepareInFlightOAuthCancellation(id: string, current: { generation: number; frameId: string | undefined }, url: string) {
+    this.owner.assertHealthy();
+    const pause = this.pauses.get(id), scope = this.scope;
+    const networkID = pause?.networkID, network = networkID ? this.networks.get(networkID) : undefined, contract = pause?.contract;
+    if (!pause || !scope || !network || !networkID || !contract || this.attempted.has(id) || network.failure) return;
+    const base = () => !this.disabled && this.scope === scope && this.pauses.get(id) === pause && this.networks.get(networkID) === network
+      && !pause.invalid && !network.invalid && !network.used && network.starts === 1 && network.pauseIDs.size === 1 && network.pauseIDs.has(id)
+      && pause.scope === scope && pause.frame === scope.frame && network.frame === scope.frame && network.loader === scope.loader && current.frameId === scope.frame
+      && pause.generation === current.generation && network.generation === current.generation && scope.generation === current.generation && contract.generation === current.generation
+      && pause.contract === contract && contract.optionalFixture && contract.path === "/integrations/oauth-accounts" && pause.path === contract.path
+      && pause.method === "GET" && network.method === "GET" && pause.type === "XHR" && network.type === "Fetch" && pause.url === url && network.url === url
+      && !network.response && !network.finished && network.order !== undefined && scope.order < network.order && scope.order < pause.order && pause.order < contract.order;
+    if (!base()) return;
+    const before = this.order;
+    let armed: number | undefined, sent: number | undefined, sealed = false, eligible = false, discarded = false;
+    let failure: Network["failure"];
+    return Object.freeze({
+      arm: () => {
+        this.owner.assertHealthy();
+        if (discarded || armed !== undefined || !base() || network.failure || !this.attempted.has(id) || this.order !== before + 1) return false;
+        armed = this.next();
+        return !this.disabled;
+      },
+      sent: () => {
+        this.owner.assertHealthy();
+        if (discarded || armed === undefined || sent !== undefined || sealed || !base() || network.failure) return false;
+        sent = this.next();
+        return !this.disabled;
+      },
+      seal: () => {
+        this.owner.assertHealthy();
+        if (discarded || sealed) return false;
+        sealed = true;
+        const rejected = this.next();
+        failure = network.failure;
+        eligible = base() && armed !== undefined && sent !== undefined && !!failure && failure.generation === current.generation
+          && failure.canceled && failure.aborted && armed < sent && sent < failure.order && failure.order < rejected;
+        return eligible;
+      },
+      consume: () => {
+        this.owner.assertHealthy();
+        if (discarded || !sealed || !eligible || !base() || network.failure !== failure) return false;
+        discarded = true;
+        network.used = true;
+        return true;
+      },
+      discard: () => { discarded = true; },
+    });
+  }
   private diagnosticSnapshot(id:string,current:{generation:number;frameId:string|undefined},at:number):NetworkBoundaryDiagnostic {
     const pause=this.pauses.get(id),scope=this.scope,network=pause?.networkID?this.networks.get(pause.networkID):undefined;
     const contract=pause?.contract,cancel=network?.failure;
@@ -268,7 +318,7 @@ export class BrowserNetworkCancelProof {
         value.finished = true;
       }
     } catch { this.disable("observe"); }
-    finally { observeDeclaredAuthRetirement(this, message, generation); }
+    finally { observeDeclaredAuthRetirement(this, message, generation); observeInFlightOAuthDocument(this, message, generation); }
   }
 
   registerContract(id: string, input: { generation: number; pathname: string; optionalFixture: boolean }) {
