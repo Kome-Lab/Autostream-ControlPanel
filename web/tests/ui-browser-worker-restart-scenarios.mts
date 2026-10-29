@@ -1,13 +1,29 @@
 import type { TestContext } from "node:test";
 import assert from "node:assert/strict";
+import { setTimeout as delay } from "node:timers/promises";
 import { BrowserHarness } from "./helpers/browser-harness.mts";
 import { assertNoBrowserConsoleErrors } from "./helpers/ui-foundation-assertions.mts";
 import { type BrowserRouteFixture, permissionUser, workerPilotRows, currentUser } from "./ui-browser-fixture.mts";
 import { deferred, setStoredDisplay, waitForAnimationFrames } from "./ui-browser-navigation-helpers.mts";
 import { waitForShell } from "./ui-browser-query-auth-helpers.mts";
 import { waitForWorkerAction, clickWorkerAction, workerRestartDialogCount, waitForWorkerRestartReady, workerRestartTriggerCount, waitForWorkerRestartDialog, assertWorkerRestartSingleOpenEvidence, waitForWorkerRestartDialogClosed, waitForWorkerRestartTriggerFocus, tabToWorkerAction, waitForWorkerRestartOutcomeFocus } from "./ui-browser-worker-helpers.mts";
-
-
+// Initial document readiness accepts completed background reads. Operation
+// POSTs and submit-time Worker GET proofs below retain their exact counts.
+async function loadWorkerDocument(browser: BrowserHarness, navigate: () => Promise<void>) {
+  await browser.waitForRequestHandlersIdle({ method: "GET" });
+  const before = browser.responses.get("/workers") || 0;
+  await navigate();
+  const deadline = performance.now() + 10_000;
+  while ((browser.responses.get("/workers") || 0) < before + 1) {
+    browser.assertNoFatalError();
+    assert.ok(performance.now() < deadline, "initial Worker response did not complete");
+    await delay(50);
+  }
+  browser.assertNoFatalError();
+  await browser.waitForRequestHandlersIdle({ method: "GET" });
+  const received = (browser.responseStatuses.get("/workers") || []).slice(before);
+  assert.ok(received.length >= 1 && received.every(status => status === 200), "initial Worker reads must settle successfully");
+}
 
 export async function runWorkerRestartScenario(t: TestContext, browser: BrowserHarness, server: { baseUrl: string }, fixture: Pick<BrowserRouteFixture, "workersResponse" | "nodesResponse" | "restartResponse" | "authResponse" | "workerRestartMethods">) {
 
@@ -17,6 +33,7 @@ export async function runWorkerRestartScenario(t: TestContext, browser: BrowserH
     let authRefreshRelease: ReturnType<typeof deferred> | undefined;
     let restartRelease: ReturnType<typeof deferred> | undefined;
     try {
+      await browser.waitForRequestHandlersIdle({ method: "GET" });
       await browser.setViewport(1440, 900);
       await browser.setMediaFeatures([]);
       browser.clearConsoleErrors();
@@ -25,7 +42,7 @@ export async function runWorkerRestartScenario(t: TestContext, browser: BrowserH
       fixture.nodesResponse = { body: workerPilotRows };
       fixture.restartResponse = { status: 202, body: { status: "accepted" }, requiredResponse: true };
       fixture.authResponse = { body: permittedUser };
-      await browser.navigate(`${server.baseUrl}/admin/workers/`);
+      await loadWorkerDocument(browser, () => browser.navigate(`${server.baseUrl}/admin/workers/`));
       await waitForShell(browser, "Account menu");
       await waitForWorkerAction(browser, "Restart worker", "Worker One", (value) => value.disabled === false);
 
@@ -61,18 +78,45 @@ export async function runWorkerRestartScenario(t: TestContext, browser: BrowserH
       };
       await browser.waitForRequestCount("/auth/me", refreshingAuthRequestCount, 20_000);
       browser.clearRequestCounts(restartPath);
+      fixture.workerRestartMethods = [];
+      await waitForWorkerAction(browser, "Restart worker", "Worker One", (value) => value.disabled === false);
       await clickWorkerAction(browser, "Restart worker");
-      const unknown = await waitForWorkerAction(browser, "Restart worker", "Worker One", (value) => value.disabled && /permission could not be verified/i.test(value.reason));
-      assert.match(unknown.reason, /permission could not be verified/i);
-      assert.equal(await workerRestartDialogCount(browser), 0, "an unknown restart permission must not open a confirmation");
-      assert.equal(browser.requests.get(restartPath) || 0, 0, "an unknown restart permission must not send POST");
+      await waitForWorkerRestartDialog(browser);
+      assert.equal(browser.requests.get(restartPath) || 0, 0, "opening from a known cached permission must not send POST");
+      const freshAuthRequestCount = (browser.requests.get("/auth/me") || 0) + 1;
+      await browser.clickSelector('[data-confirm-action]');
+      await browser.waitForRequestCount("/auth/me", freshAuthRequestCount);
+      assert.equal(browser.requests.get(restartPath) || 0, 0, "submit must await its fresh authority read even while cached permission is allowed");
+      assert.equal(await workerRestartDialogCount(browser), 1, "one intent retains its confirmation while fresh authority is pending");
       authRefreshRelease.resolve();
       fixture.authResponse = { body: permittedUser };
       await browser.waitForRequestHandlersIdle({ pathname: "/auth/me", method: "GET" });
       authRefreshRelease = undefined;
+      await browser.waitForResponseCount(restartPath, 1);
+      await browser.waitFor("document.body.textContent || ''", (value: string) => value.includes("The worker restart request was accepted."), "the original intent must complete after its fresh permission read");
+      await waitForWorkerRestartDialogClosed(browser);
+      await waitForWorkerRestartTriggerFocus(browser, "Worker One", "background auth completion");
+      assert.deepEqual(fixture.workerRestartMethods, ["POST"], "background auth does not require a second restart intent");
+
+      // A failed query is genuine unavailable authority even with retained data;
+      // an in-flight successful cache by itself is not permission revocation.
+      const unavailableAuthResponseCount = (browser.responses.get("/auth/me") || 0) + 1;
+      fixture.authResponse = { status: 503, body: { code: "auth_unavailable" } };
+      await browser.waitForResponseCount("/auth/me", unavailableAuthResponseCount, 20_000);
+      await browser.waitFor("document.body.textContent || ''", (value: string) => value.includes("Worker read permissions are unavailable."), "the actual auth query error must be visible while cached Worker rows remain");
+      const unknown = await waitForWorkerAction(browser, "Restart worker", "Worker One", (value) => value.disabled && /permission could not be verified/i.test(value.reason));
+      assert.match(unknown.reason, /permission could not be verified/i);
+      assert.equal(browser.responseStatuses.get("/auth/me")?.at(-1), 503);
+      browser.clearRequestCounts(restartPath);
+      fixture.workerRestartMethods = [];
+      await clickWorkerAction(browser, "Restart worker");
+      await waitForAnimationFrames(browser);
+      assert.equal(await workerRestartDialogCount(browser), 0, "genuine unavailable restart permission must not open a confirmation");
+      assert.equal(browser.requests.get(restartPath) || 0, 0, "genuine unavailable restart permission must not send POST");
+      assert.deepEqual(fixture.workerRestartMethods, []);
 
       fixture.authResponse = { body: permissionUser(["workers.read"]) };
-      await browser.reload();
+      await loadWorkerDocument(browser, () => browser.reload());
       const denied = await waitForWorkerAction(browser, "Restart worker", "Worker One", (value) => value.disabled && /do not have permission to restart workers/i.test(value.reason));
       assert.match(denied.reason, /do not have permission to restart workers/i);
       browser.clearRequestCounts(restartPath);
@@ -86,9 +130,7 @@ export async function runWorkerRestartScenario(t: TestContext, browser: BrowserH
         : row);
       fixture.workersResponse = { body: permissionRestoredRows };
       fixture.authResponse = { body: permittedUser };
-      browser.clearRequestCounts("/workers");
-      await browser.reload();
-      await browser.waitForResponseCount("/workers", 1);
+      await loadWorkerDocument(browser, () => browser.reload());
       await waitForWorkerRestartReady(browser, "Worker One Permission Restored");
 
       const trigger = await waitForWorkerAction(
@@ -162,6 +204,7 @@ export async function runWorkerRestartScenario(t: TestContext, browser: BrowserH
       await browser.waitForRequestHandlersIdle({ pathname: "/auth/me", method: "GET" });
       const revoked = await waitForWorkerAction(browser, "Restart worker", "Worker One", (value) => value.disabled && /do not have permission to restart workers/i.test(value.reason));
       assert.match(revoked.reason, /do not have permission to restart workers/i);
+      await browser.waitForRequestHandlersIdle({ method: "GET" });
       fixture.workerRestartMethods = [];
       browser.clearRequestCounts(restartPath);
       browser.clearRequestCounts("/workers");
@@ -181,13 +224,12 @@ export async function runWorkerRestartScenario(t: TestContext, browser: BrowserH
       fixture.authResponse = { body: permittedUser };
       await browser.waitForResponseCount("/auth/me", restoredAuthResponseCount, 20_000);
       fixture.workersResponse = { body: workerPilotRows };
-      browser.clearRequestCounts("/workers");
-      await browser.reload();
-      await browser.waitForResponseCount("/workers", 1);
+      await loadWorkerDocument(browser, () => browser.reload());
       await waitForWorkerRestartReady(browser);
 
       await clickWorkerAction(browser, "Restart worker");
       await waitForWorkerRestartDialog(browser);
+      await browser.waitForRequestHandlersIdle({ method: "GET" });
       browser.clearRequestCounts("/workers");
       await browser.evaluate("window.dispatchEvent(new Event('focus')); true");
       await browser.waitForResponseCount("/workers", 1, 20_000);
@@ -208,13 +250,12 @@ export async function runWorkerRestartScenario(t: TestContext, browser: BrowserH
       fixture.workersResponse = { body: workerPilotRows };
       await browser.pressNativeKey("Escape");
       await waitForWorkerRestartDialogClosed(browser);
-      browser.clearRequestCounts("/workers");
-      await browser.reload();
-      await browser.waitForResponseCount("/workers", 1);
+      await loadWorkerDocument(browser, () => browser.reload());
       await waitForWorkerRestartReady(browser);
 
       await clickWorkerAction(browser, "Restart worker");
       await waitForWorkerRestartDialog(browser);
+      await browser.waitForRequestHandlersIdle({ method: "GET" });
       fixture.workersResponse = { body: workerPilotRows.map((row, index) => index === 0 ? { ...row, service_type: "encoder_recorder" } : row) };
       fixture.workerRestartMethods = [];
       browser.clearRequestCounts(restartPath);
@@ -231,9 +272,7 @@ export async function runWorkerRestartScenario(t: TestContext, browser: BrowserH
       fixture.workersResponse = { body: workerPilotRows };
       await browser.pressNativeKey("Escape");
       await waitForWorkerRestartDialogClosed(browser);
-      browser.clearRequestCounts("/workers");
-      await browser.reload();
-      await browser.waitForResponseCount("/workers", 1);
+      await loadWorkerDocument(browser, () => browser.reload());
       await waitForWorkerRestartReady(browser);
 
       restartRelease = deferred();
@@ -292,6 +331,7 @@ export async function runWorkerRestartScenario(t: TestContext, browser: BrowserH
       ] as const) {
         fixture.restartResponse = failure.response;
         fixture.workerRestartMethods = [];
+        await browser.waitForRequestHandlersIdle({ method: "GET" });
         browser.clearRequestCounts(restartPath);
         browser.clearRequestCounts("/workers");
         await waitForWorkerRestartReady(browser);
@@ -341,6 +381,7 @@ export async function runWorkerRestartScenario(t: TestContext, browser: BrowserH
         await waitForWorkerRestartDialogClosed(browser);
         await waitForWorkerRestartTriggerFocus(browser, "Worker One", `${failure.name} Escape`);
       }
+      await browser.waitForRequestHandlersIdle({ method: "GET" });
       assertNoBrowserConsoleErrors(browser.consoleErrorCount);
     } finally {
       authRefreshRelease?.resolve();

@@ -118,7 +118,7 @@ export function escapeRegExp(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 export type BrowserRouteFixture = {
-  observeAppSettingsCancellation?: true;
+  observeBootstrapCancellation?: true;
   authResponse: StubResponse;
   authNextResponse?: StubResponse;
   setupResponse: StubResponse;
@@ -199,17 +199,18 @@ export function createBrowserRouteFixture(browser: BrowserHarness, resolveAdditi
     if (pathname === "/auth/me" && method === "GET") {
       const response = fixture.authNextResponse ?? fixture.authResponse;
       fixture.authNextResponse = undefined;
-      return { ...response, requiredResponse: response.requiredResponse ?? false };
+      return { ...response, requiredResponse: response.requiredResponse ?? false, observeBootstrapCancellation: fixture.observeBootstrapCancellation };
     }
     if (pathname === "/setup/status" && method === "GET") return { ...fixture.setupResponse, requiredResponse: fixture.setupResponse.requiredResponse ?? false };
-    if (pathname === "/settings/app" && method === "GET") return { body: { app_name: "AutoStream", timezone: "Asia/Tokyo" }, requiredResponse: false, observeAppSettingsCancellation: fixture.observeAppSettingsCancellation };
+    if (pathname === "/settings/app" && method === "GET") return { body: { app_name: "AutoStream", timezone: "Asia/Tokyo" }, requiredResponse: false, observeBootstrapCancellation: fixture.observeBootstrapCancellation };
     if (pathname === "/auth/oauth/providers" && method === "GET") return { body: [], requiredResponse: false };
     if (pathname === "/auth/mfa/status" && method === "GET") return { body: { enabled: false }, requiredResponse: false };
     if (pathname === "/auth/passkeys" && method === "GET") return { body: [], requiredResponse: false };
     if (pathname === "/auth/oauth-links" && method === "GET") return { body: [], requiredResponse: false };
     if (pathname === "/integrations/oauth-accounts" && method === "GET") return { body: [], requiredResponse: false };
     if (pathname === "/archive/destinations" && method === "GET") return { body: [], requiredResponse: false };
-    if (["/discord/configs", "/youtube/outputs", "/profiles/archive", "/profiles/overlay"].includes(pathname) && method === "GET") return { body: [], requiredResponse: false };
+    if (["/discord/configs", "/youtube/outputs", "/profiles/archive", "/profiles/overlay", "/profiles/encoder", "/profiles/caption"].includes(pathname) && method === "GET") return { body: [], requiredResponse: false };
+    if (["/discord/target-presets", "/video-cover-presets"].includes(pathname) && method === "GET") return { body: { items: [] }, requiredResponse: false };
     if (pathname === "/account/preferences/ui") {
       fixture.uiPreferenceMethods.push(method);
       if (method === "GET") return { ...fixture.uiPreferenceResponse, requiredResponse: fixture.uiPreferenceResponse.requiredResponse ?? false };
@@ -297,7 +298,7 @@ export function createBrowserRouteFixture(browser: BrowserHarness, resolveAdditi
     // UI renewal section 7.1: the permission-gated Dashboard incident GET.
     if (pathname === "/observability/incidents" && method === "GET") return { body: [], requiredResponse: false };
     if (pathname === "/service-health" && method === "GET") return { ...fixture.healthResponse, requiredResponse: fixture.healthResponse.requiredResponse ?? false };
-    if (pathname === "/version" && method === "GET") return { ...fixture.versionFixture, requiredResponse: fixture.versionFixture.requiredResponse ?? false };
+    if (pathname === "/version" && method === "GET") return { ...fixture.versionFixture, requiredResponse: fixture.versionFixture.requiredResponse ?? false, observeBootstrapCancellation: fixture.observeBootstrapCancellation };
     if (pathname === "/auth/session/refresh" && method === "POST") return fixture.refreshResponse;
     return null;
   });

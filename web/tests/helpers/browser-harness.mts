@@ -9,7 +9,7 @@ import { FetchRequestLifecycle, RejectableEventWaiters, type FetchDiagnosticCont
 import { BrowserLaunchError, launchBrowserProcessWithRetry, type BrowserLaunchSession } from "./browser-process-attempt.mts";
 import { collectBrowserLaunchFacts } from "./browser-launch-profile.mts";
 import { BrowserNetworkCancelProof } from "./browser-network-cancel-proof.mts";
-import { optionalAppCancellationEvent, waitForOptionalAppCancellation } from "./browser-optional-app-cancellation.mts";
+import { optionalBootstrapCancellationEvent, waitForOptionalBootstrapCancellation } from "./browser-optional-app-cancellation.mts";
 import { resolveBrowserPath } from "./browser-executable.mts";
 import { waitForMapCount } from "./browser-response-count.mts";
 import { asError, delay, withTimeout } from "./browser-process-timing.mts";
@@ -23,7 +23,7 @@ export type StubResponse = {
   delayMs?: number;
   waitUntil?: Promise<void>;
   requiredResponse?: boolean;
-  observeAppSettingsCancellation?: true;
+  observeBootstrapCancellation?: true;
 };
 
 export type StubRequest = {
@@ -609,7 +609,7 @@ export class BrowserHarness {
     }
     if (!message.method || (message.sessionId && message.sessionId !== this.sessionId)) return;
     this.networkCancellation?.observe(message, this.requestLifecycle.generation);
-    const cancellationEvent = optionalAppCancellationEvent(message.params?.requestId);
+    const cancellationEvent = optionalBootstrapCancellationEvent(message.params?.requestId);
     if (message.sessionId === this.sessionId && message.method === "Network.loadingFailed" && message.params?.canceled === true && message.params?.errorText === "net::ERR_ABORTED" && cancellationEvent) this.eventWaiters.resolve(cancellationEvent, message.params);
     if (!this.operationBoundary && message.method === "Page.javascriptDialogOpening") {
       this.recordFatalError(new Error("UNEXPECTED_JAVASCRIPT_DIALOG"));
@@ -670,7 +670,7 @@ export class BrowserHarness {
       this.responses.set(pathname, (this.responses.get(pathname) || 0) + 1);
       return;
     }
-    if (response.observeAppSettingsCancellation) { this.assertNoFatalError(); await waitForOptionalAppCancellation(this.eventWaiters, request, response, params.networkId); }
+    if (response.observeBootstrapCancellation) { this.assertNoFatalError(); await waitForOptionalBootstrapCancellation(this.eventWaiters, request, response, params.networkId); }
     if (response.delayMs) await delay(response.delayMs);
     if (response.waitUntil) await response.waitUntil;
     const body = response.body === undefined ? "" : JSON.stringify(response.body);

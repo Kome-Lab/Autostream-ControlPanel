@@ -3,7 +3,7 @@ import test from "node:test";
 import { BrowserHarness } from "./browser-harness.mts";
 import { BrowserNetworkCancelProof } from "./browser-network-cancel-proof.mts";
 import { FetchRequestLifecycle, RejectableEventWaiters, invalidInterceptionIdMessage } from "./browser-request-lifecycle.mts";
-import { optionalAppCancellationEvent, waitForOptionalAppCancellation } from "./browser-optional-app-cancellation.mts";
+import { optionalBootstrapCancellationEvent, waitForOptionalBootstrapCancellation } from "./browser-optional-app-cancellation.mts";
 
 type Event = { sessionId: string; method: string; params: Record<string, unknown>; generation: number };
 type Contract = { generation: number; pathname: string; optionalFixture: boolean };
@@ -43,7 +43,7 @@ function fixture(input: Step[] = steps(), options: { required?: boolean; pathnam
 }
 
 // Reuse all original tuple mutations unchanged; this module owns only the new
-// app-settings observation and exact eighth-path regression cases.
+// bootstrap observation and exact eighth-path app-settings regression cases.
 export function registerAppSettingsCancellationCases(negatives: readonly [string, (input: Step[]) => void][]) {
   test("app-settings observation waits for its owned cancellation before the unchanged first claim", async () => {
     const pathname = "/settings/app", lifecycle = new FetchRequestLifecycle();
@@ -53,7 +53,7 @@ export function registerAppSettingsCancellationCases(negatives: readonly [string
       requests: new Map([[pathname, 1]]), responses: new Map([[pathname, 1]]), responseStatuses: new Map([[pathname, [200]]]),
       eventWaiters: waiters, pendingCommands: new Map(), topLevelNavigationEvents: 0,
       topLevelNavigationPending: false, closed: false, fatalError: undefined,
-      routeResolver: () => ({ body: { app_name: "AutoStream", timezone: "Asia/Tokyo" }, requiredResponse: false, observeAppSettingsCancellation: true }),
+      routeResolver: () => ({ body: { app_name: "AutoStream", timezone: "Asia/Tokyo" }, requiredResponse: false, observeBootstrapCancellation: true }),
       send: async (command: string) => { sends.push(command); return {}; },
     }) as BrowserHarness;
     const receive = (value: Event) => (browser as unknown as { receive(raw: string): void }).receive(JSON.stringify(value));
@@ -139,7 +139,7 @@ export function registerAppSettingsCancellationCases(negatives: readonly [string
       requests: new Map(), responses: new Map(), responseStatuses: new Map(),
       eventWaiters: waiters, pendingCommands: new Map(), topLevelNavigationEvents: 0,
       topLevelNavigationPending: false, closed: false, fatalError: undefined,
-      routeResolver: () => ({ body: { app_name: "AutoStream", timezone: "Asia/Tokyo" }, requiredResponse: false, observeAppSettingsCancellation: true }),
+      routeResolver: () => ({ body: { app_name: "AutoStream", timezone: "Asia/Tokyo" }, requiredResponse: false, observeBootstrapCancellation: true }),
       send: async (command: string) => { sends.push(command); return {}; },
     }) as BrowserHarness;
     const receive = (value: Event) => (browser as unknown as { receive(raw: string): void }).receive(JSON.stringify(value));
@@ -162,9 +162,9 @@ export function registerAppSettingsCancellationCases(negatives: readonly [string
   });
 
   test("app-settings observation propagates the exact fatal or close cause and releases its waiter", async () => {
-    for (const original of [new Error("fatal fixture failure"), new Error("Browser harness closed"), new Error("Optional app-settings cancellation observation window elapsed")]) {
+    for (const original of [new Error("fatal fixture failure"), new Error("Browser harness closed"), new Error("Optional bootstrap cancellation observation window elapsed")]) {
       const waiters = new RejectableEventWaiters();
-      const observation = waitForOptionalAppCancellation(waiters, { method: "GET", url: "http://fixture.invalid/settings/app" }, { requiredResponse: false, observeAppSettingsCancellation: true }, networkID);
+      const observation = waitForOptionalBootstrapCancellation(waiters, { method: "GET", url: "http://fixture.invalid/settings/app" }, { requiredResponse: false, observeBootstrapCancellation: true }, networkID);
       waiters.rejectAll(original);
       await assert.rejects(observation, error => error === original);
       assert.equal(waiters.pendingCount, 0);
@@ -176,12 +176,80 @@ export function registerAppSettingsCancellationCases(negatives: readonly [string
       ["GET", "/settings/app", true, true, networkID], ["GET", "/settings/app/private", false, true, networkID],
       ["POST", "/settings/app", false, true, networkID], ["GET", "/settings/app", false, undefined, networkID],
       ["GET", "/settings/app", false, true, undefined], ["GET", "/settings/app", false, true, ""],
+      ["GET", "/nodes", false, true, networkID], ["GET", "/workers", false, true, networkID],
+      ["GET", "/roles", false, true, networkID], ["GET", "/integrations/oauth-accounts", false, true, networkID],
     ] as const) {
       const waiters = new RejectableEventWaiters();
-      await waitForOptionalAppCancellation(waiters, { method, url: `http://fixture.invalid${pathname}` }, { requiredResponse: required, observeAppSettingsCancellation: enabled }, network);
+      const observation = waitForOptionalBootstrapCancellation(waiters, { method, url: `http://fixture.invalid${pathname}` }, { requiredResponse: required, observeBootstrapCancellation: enabled }, network);
+      assert.equal(waiters.pendingCount, 0, "excluded requests never register a cancellation wait");
+      await observation;
       assert.equal(waiters.pendingCount, 0);
     }
-    assert.equal(optionalAppCancellationEvent(""), undefined);
-    assert.equal(optionalAppCancellationEvent("x".repeat(257)), undefined);
+    assert.equal(optionalBootstrapCancellationEvent(""), undefined);
+    assert.equal(optionalBootstrapCancellationEvent("x".repeat(257)), undefined);
+  });
+
+  test("auth and version bootstrap observations wait for the actual pre-first owned cancellation", async () => {
+    for (const pathname of ["/auth/me", "/version"]) {
+      const lifecycle = new FetchRequestLifecycle(), proof = new BrowserNetworkCancelProof(lifecycle, session);
+      const waiters = new RejectableEventWaiters(), sends: string[] = [];
+      const browser = Object.assign(Object.create(BrowserHarness.prototype), {
+        sessionId: session, requestLifecycle: lifecycle, networkCancellation: proof,
+        requests: new Map([[pathname, 1]]), responses: new Map([[pathname, 1]]), responseStatuses: new Map([[pathname, [200]]]),
+        eventWaiters: waiters, pendingCommands: new Map(), topLevelNavigationEvents: 0,
+        topLevelNavigationPending: false, closed: false, fatalError: undefined,
+        routeResolver: () => ({ body: { unchanged_fixture: true }, requiredResponse: false, observeBootstrapCancellation: true }),
+        send: async (command: string) => { sends.push(command); return {}; },
+      }) as BrowserHarness;
+      const receive = (value: Event) => (browser as unknown as { receive(raw: string): void }).receive(JSON.stringify(value));
+      receive(doc()); receive(pause(pathname));
+      assert.equal(waiters.pendingCount, 1);
+      assert.equal(proof.failureDiagnostic(id, lifecycle, session, current)?.first, null);
+      receive(start(pathname)); receive(cancelled());
+      await browser.waitForRequestHandlersIdle({ pathname, timeoutMs: 100 });
+      browser.assertNoFatalError();
+      assert.equal(waiters.pendingCount, 0);
+      assert.deepEqual(sends, []);
+      assert.equal(browser.responses.get(pathname), 1);
+      assert.deepEqual(browser.responseStatuses.get(pathname), [200]);
+      assert.equal(lifecycle.preSettlementCancellationCount, 1);
+      assert.equal(lifecycle.safeCancellationCount, 1);
+      const first = proof.failureDiagnostic(id, lifecycle, session, current)?.first;
+      assert.deepEqual(first?.present, [1, 1, 1, 1, 1]);
+      assert.ok(first!.orders[4]! < first!.at);
+      assert.equal(proof.claimBeforeSettlement(id, fulfill, current), undefined);
+    }
+  });
+
+  test("auth and version bootstrap observations preserve every tuple, required, write and late rejection", async () => {
+    for (const pathname of ["/auth/me", "/version"]) {
+      const original = new Error(invalidInterceptionIdMessage);
+      for (const [name, mutate] of negatives) {
+        const input = steps(pathname); mutate(input);
+        for (const step of input) {
+          if (isEvent(step)) {
+            const value = step.params.request as Record<string, unknown> | undefined;
+            if (typeof value?.url === "string") value.url = value.url.replace(path, pathname);
+          } else if (step.contract.pathname === path) step.contract.pathname = pathname;
+        }
+        const { lifecycle, claim } = fixture(input, { pathname });
+        assert.equal(claim(), undefined, name);
+        assert.throws(() => lifecycle.handleSettlementError(lifecycle.beginSettlement(id, fulfill), original), error => error === original, name);
+        assert.equal(lifecycle.safeCancellationCount, 0);
+      }
+      for (const [method, required] of [["GET", true], ["HEAD", false], ["POST", false], ["PUT", false], ["PATCH", false], ["DELETE", false]] as const) {
+        const waiters = new RejectableEventWaiters();
+        const observation = waitForOptionalBootstrapCancellation(waiters, { method, url: `http://fixture.invalid${pathname}` }, { requiredResponse: required, observeBootstrapCancellation: true }, networkID);
+        assert.equal(waiters.pendingCount, 0, "required reads and writes never register a cancellation wait");
+        await observation;
+        assert.equal(waiters.pendingCount, 0);
+      }
+      const late = fixture(steps(pathname).slice(0, -1), { pathname });
+      assert.equal(late.claim(), undefined);
+      late.proof.observe(cancelled(), 0);
+      assert.equal(late.claim(), undefined);
+      assert.throws(() => late.lifecycle.handleSettlementError(late.lifecycle.beginSettlement(id, fulfill), original), error => error === original);
+      assert.equal(late.lifecycle.preSettlementCancellationCount, 0);
+    }
   });
 }

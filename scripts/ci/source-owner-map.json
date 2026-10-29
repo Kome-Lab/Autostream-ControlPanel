@@ -214,7 +214,7 @@
       },
       {
         "path": "web/tests/helpers/browser-harness.mts",
-        "sha256": "4a853a06703f6f35a78b7c3163b48abf687d02991c0275da49cb28acee877935",
+        "sha256": "36e9ba40cbefb8e2d1c971beb3edd7f61d1dd0d33ad081e449f48fedc1af31a1",
         "symbols": [
           "BrowserHarness",
           "removeOwnedBrowserDirectory",
@@ -461,16 +461,16 @@
       },
       {
         "path": "web/tests/helpers/browser-network-cancel-proof.mts",
-        "sha256": "0a1be0f16ea5c626717da6dc2613fdf683b3985700193456f74e933961d2ed59",
+        "sha256": "9369f019b5563a07478f0653d2fb55a95721bd21025c617162068168c0b5ccec",
         "symbols": [
           "requestURL",
           "takeNetworkCancellationTicket"
         ],
-        "physical_lines": 256
+        "physical_lines": 267
       },
       {
         "path": "web/tests/helpers/browser-network-cancel-proof.test.mts",
-        "sha256": "aa8c86111049e066d78b0761cec457775dc65ad7e1c6c2f50e17e497570b52aa",
+        "sha256": "a6dc5173e37eb398759ae7b39686f88fd03d30134b3b52994e07a5436733fc70",
         "symbols": [
           "changeEvent",
           "fixture",
@@ -479,7 +479,7 @@
           "request",
           "steps"
         ],
-        "physical_lines": 763
+        "physical_lines": 765
       },
       {
         "path": "web/tests/helpers/browser-response-count.mts",
@@ -1384,7 +1384,7 @@
     "destinations": [
       {
         "path": "web/tests/helpers/browser-harness.mts",
-        "sha256": "4a853a06703f6f35a78b7c3163b48abf687d02991c0275da49cb28acee877935",
+        "sha256": "36e9ba40cbefb8e2d1c971beb3edd7f61d1dd0d33ad081e449f48fedc1af31a1",
         "symbols": [
           "BrowserHarness",
           "removeOwnedBrowserDirectory",
@@ -1437,7 +1437,7 @@
       },
       {
         "path": "web/tests/ui-browser-fixture.mts",
-        "sha256": "da5b24c50335b69ac4d44deb553dadcdc63a4e80dffe3f3c3eabbe02bd551d66",
+        "sha256": "2757277c4107c4c054667e187d151689d3302b66b472c59dc9a7d3d3072de0ae",
         "symbols": [
           "controlPlatformCoverState",
           "createBrowserRouteFixture",
@@ -1448,7 +1448,7 @@
           "versionResponse",
           "workerConfiguration"
         ],
-        "physical_lines": 305
+        "physical_lines": 306
       },
       {
         "path": "web/tests/ui-browser-navigation-helpers.mts",
@@ -1467,9 +1467,9 @@
       },
       {
         "path": "web/tests/ui-browser-navigation-scenarios.mts",
-        "sha256": "41f98efed8026ee4b44942ee4ae099ae6fafd600878a63bdba137ae4897a0d85",
+        "sha256": "9e3e46749e195171cc047add4168f29c2966891097040f8858c7e9eed26d7e36",
         "symbols": [],
-        "physical_lines": 255
+        "physical_lines": 301
       },
       {
         "path": "web/tests/ui-browser-observation-scenarios.mts",
@@ -1497,9 +1497,9 @@
       },
       {
         "path": "web/tests/ui-browser-query-auth-scenarios.mts",
-        "sha256": "bdbd9887024cb1e2bfd2bf854763889aa54161b601f84abc5992e5f4d3107ce0",
+        "sha256": "887f542dde236f325ba8af7e325f61f4582456e8120639d9a60b37f25a12d3d2",
         "symbols": [],
-        "physical_lines": 442
+        "physical_lines": 467
       },
       {
         "path": "web/tests/ui-browser-start-readiness-scenarios.mts",
@@ -1515,9 +1515,9 @@
       },
       {
         "path": "web/tests/ui-browser-worker-configuration-scenarios.mts",
-        "sha256": "a4152e38e72a7864c56746181998b0ee6ff01b1000963d511924bacabfa5291c",
+        "sha256": "f02b13b3e8f94813fbccedcabf6a3a0d5d94db86857b41859566f5ce703450a3",
         "symbols": [],
-        "physical_lines": 222
+        "physical_lines": 261
       },
       {
         "path": "web/tests/ui-browser-worker-helpers.mts",
@@ -1543,9 +1543,9 @@
       },
       {
         "path": "web/tests/ui-browser-worker-restart-scenarios.mts",
-        "sha256": "ad57213c249e87577b977f955cf487fe9e238ff884433c08240df9de0d4f968a",
+        "sha256": "cd718461d3a244ac2ef9b99c908687a0664b152dcbae76e207da3971167bfc20",
         "symbols": [],
-        "physical_lines": 356
+        "physical_lines": 397
       },
       {
         "path": "web/tests/ui-foundation-browser.test.mts",
@@ -1563,16 +1563,16 @@
       },
       {
         "path": "web/tests/helpers/browser-network-cancel-proof.mts",
-        "sha256": "0a1be0f16ea5c626717da6dc2613fdf683b3985700193456f74e933961d2ed59",
+        "sha256": "9369f019b5563a07478f0653d2fb55a95721bd21025c617162068168c0b5ccec",
         "symbols": [
           "requestURL",
           "takeNetworkCancellationTicket"
         ],
-        "physical_lines": 256
+        "physical_lines": 267
       },
       {
         "path": "web/tests/helpers/browser-network-cancel-proof.test.mts",
-        "sha256": "aa8c86111049e066d78b0761cec457775dc65ad7e1c6c2f50e17e497570b52aa",
+        "sha256": "a6dc5173e37eb398759ae7b39686f88fd03d30134b3b52994e07a5436733fc70",
         "symbols": [
           "changeEvent",
           "fixture",
@@ -1581,7 +1581,7 @@
           "request",
           "steps"
         ],
-        "physical_lines": 763
+        "physical_lines": 765
       },
       {
         "path": "web/tests/helpers/browser-response-count.mts",
@@ -5196,7 +5196,7 @@
     "destinations": [
       {
         "path": "web/tests/helpers/browser-harness.mts",
-        "sha256": "4a853a06703f6f35a78b7c3163b48abf687d02991c0275da49cb28acee877935",
+        "sha256": "36e9ba40cbefb8e2d1c971beb3edd7f61d1dd0d33ad081e449f48fedc1af31a1",
         "symbols": [
           "BrowserHarness",
           "assertNoFatalError",
@@ -5305,16 +5305,16 @@
       },
       {
         "path": "web/tests/helpers/browser-network-cancel-proof.mts",
-        "sha256": "0a1be0f16ea5c626717da6dc2613fdf683b3985700193456f74e933961d2ed59",
+        "sha256": "9369f019b5563a07478f0653d2fb55a95721bd21025c617162068168c0b5ccec",
         "symbols": [
           "requestURL",
           "takeNetworkCancellationTicket"
         ],
-        "physical_lines": 256
+        "physical_lines": 267
       },
       {
         "path": "web/tests/helpers/browser-network-cancel-proof.test.mts",
-        "sha256": "aa8c86111049e066d78b0761cec457775dc65ad7e1c6c2f50e17e497570b52aa",
+        "sha256": "a6dc5173e37eb398759ae7b39686f88fd03d30134b3b52994e07a5436733fc70",
         "symbols": [
           "changeEvent",
           "fixture",
@@ -5323,7 +5323,7 @@
           "request",
           "steps"
         ],
-        "physical_lines": 763
+        "physical_lines": 765
       },
       {
         "path": "web/tests/helpers/browser-response-count.mts",
@@ -5432,7 +5432,7 @@
       },
       {
         "path": "web/tests/helpers/browser-harness.mts",
-        "sha256": "4a853a06703f6f35a78b7c3163b48abf687d02991c0275da49cb28acee877935",
+        "sha256": "36e9ba40cbefb8e2d1c971beb3edd7f61d1dd0d33ad081e449f48fedc1af31a1",
         "symbols": [
           "BrowserHarness",
           "removeOwnedBrowserDirectory",
@@ -5474,16 +5474,16 @@
       },
       {
         "path": "web/tests/helpers/browser-network-cancel-proof.mts",
-        "sha256": "0a1be0f16ea5c626717da6dc2613fdf683b3985700193456f74e933961d2ed59",
+        "sha256": "9369f019b5563a07478f0653d2fb55a95721bd21025c617162068168c0b5ccec",
         "symbols": [
           "requestURL",
           "takeNetworkCancellationTicket"
         ],
-        "physical_lines": 256
+        "physical_lines": 267
       },
       {
         "path": "web/tests/helpers/browser-network-cancel-proof.test.mts",
-        "sha256": "aa8c86111049e066d78b0761cec457775dc65ad7e1c6c2f50e17e497570b52aa",
+        "sha256": "a6dc5173e37eb398759ae7b39686f88fd03d30134b3b52994e07a5436733fc70",
         "symbols": [
           "changeEvent",
           "fixture",
@@ -5492,7 +5492,7 @@
           "request",
           "steps"
         ],
-        "physical_lines": 763
+        "physical_lines": 765
       },
       {
         "path": "web/tests/helpers/browser-response-count.mts",

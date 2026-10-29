@@ -17,6 +17,7 @@ type Pause = {
 type Tri = boolean | null;
 type DiagnosticBit = 0 | 1;
 type DiagnosticTri = DiagnosticBit | null;
+type DisableReason = "order" | "networks" | "pauses" | "attempts" | "message" | "pause-id" | "network-id" | "observe" | "contract";
 type NetworkBoundaryDiagnostic = Readonly<{
   at:number;
   present:readonly [pause:DiagnosticBit,network:DiagnosticBit,scope:DiagnosticBit,contract:DiagnosticBit,cancel:DiagnosticBit];
@@ -55,6 +56,7 @@ const diagnosticMethod = (method:string|undefined) => method==="GET"||method==="
 type NetworkFailureDiagnostic = Readonly<{
   schema:"network-cancel-boundary-v2";route:DiagnosticRoute;method:ReturnType<typeof diagnosticMethod>;
   matches:readonly [owner:DiagnosticBit,session:DiagnosticBit,allowed_path:DiagnosticBit];
+  ledger:readonly [firstDisableReason:DisableReason|null,networks:number,pauses:number,attempts:number,capacity:number];
   first:NetworkBoundaryDiagnostic|null;failure:NetworkBoundaryDiagnostic;
 }>;
 const diagnosticEqual = (...values:unknown[]):Tri => values.some(value=>value===undefined)?null:values.every(value=>value===values[0]);
@@ -96,6 +98,7 @@ export class BrowserNetworkCancelProof {
   private scope: DocumentScope | undefined;
   private order = 0;
   private disabled = false;
+  private disableReason: DisableReason | null = null;
   private readonly owner: Owner;
   private readonly session: string;
   private readonly limit: number;
@@ -130,17 +133,19 @@ export class BrowserNetworkCancelProof {
       const pause=this.pauses.get(id);
       return Object.freeze({schema:"network-cancel-boundary-v2",route:diagnosticRoute(pause?.path),method:diagnosticMethod(pause?.method),
         matches:diagnosticTuple(diagnosticBit(this.owner===owner),diagnosticBit(this.session===session),diagnosticBit(!!pause?.path&&optionalFixturePaths.has(pause.path))),
+        ledger:diagnosticTuple(this.disableReason,Math.min(this.limit,this.networks.size),Math.min(this.limit,this.pauses.size),Math.min(this.limit,this.attempted.size),this.limit),
         first:pause?.firstClaimDiagnostic??null,failure:this.diagnosticSnapshot(id,current,this.order)});
     } catch { return; }
   }
   private next() {
-    if (this.order >= Number.MAX_SAFE_INTEGER) { this.disabled = true; return this.order; }
+    if (this.order >= Number.MAX_SAFE_INTEGER) { this.disable("order"); return this.order; }
     return ++this.order;
   }
+  private disable(reason: DisableReason) { this.disabled = true; this.disableReason ??= reason; }
   private network(id: string) {
     let value = this.networks.get(id);
     if (!value) {
-      if (this.networks.size >= this.limit) { this.disabled = true; return; }
+      if (this.networks.size >= this.limit) { this.disable("networks"); return; }
       value = { starts: 0, invalid: false, pauseIDs: new Set(), used: false, response: false, finished: false };
       this.networks.set(id, value);
     }
@@ -151,7 +156,7 @@ export class BrowserNetworkCancelProof {
     try {
       if (message.sessionId !== this.session) return;
       const params = object(message.params);
-      if (!params || !generationNumber(generation)) { this.disabled = true; return; }
+      if (!params || !generationNumber(generation)) { this.disable("message"); return; }
       if (message.method === "Page.frameDetached") {
         const frame = identifier(params.frameId);
         if (!frame || frame === this.scope?.frame) { this.next(); this.scope = undefined; }
@@ -168,15 +173,21 @@ export class BrowserNetworkCancelProof {
           this.next(); this.scope = undefined; return;
         }
         const id = identifier(frame.id), loader = identifier(frame.loaderId), order = this.next();
+        const prior = this.scope;
         this.scope = id && loader ? Object.freeze({ frame: id, loader, generation, order }) : undefined;
+        // A genuinely new owned document invalidates old tickets first. Keep
+        // poison and the monotonic clock; same-document events never reclaim.
+        if (prior && this.scope && prior.frame === id && prior.loader !== loader && generation > prior.generation) {
+          this.networks.clear(); this.pauses.clear(); this.attempted.clear();
+        }
         return;
       }
       if (message.method === "Fetch.requestPaused") {
         const id = identifier(params.requestId), request = object(params.request), url = requestURL(request?.url), order = this.next();
-        if (!id) { this.disabled = true; return; }
+        if (!id) { this.disable("pause-id"); return; }
         const prior = this.pauses.get(id);
         if (prior) { prior.invalid = true; return; }
-        if (this.pauses.size >= this.limit) { this.disabled = true; return; }
+        if (this.pauses.size >= this.limit) { this.disable("pauses"); return; }
         const networkID = identifier(params.networkId), frame = identifier(params.frameId);
         const pause: Pause = { order, generation, networkID, frame, url: url?.raw, path: url?.path, method: typeof request?.method === "string" ? request.method : undefined,
           type: typeof params.resourceType === "string" ? params.resourceType : undefined, scope: this.scope,
@@ -190,7 +201,7 @@ export class BrowserNetworkCancelProof {
       }
       if (!["Network.requestWillBeSent", "Network.loadingFailed", "Network.loadingFinished", "Network.responseReceived"].includes(String(message.method))) return;
       const id = identifier(params.requestId), order = this.next();
-      if (!id) { this.disabled = true; return; }
+      if (!id) { this.disable("network-id"); return; }
       const value = this.network(id);
       if (!value) return;
       if (message.method === "Network.requestWillBeSent") {
@@ -210,7 +221,7 @@ export class BrowserNetworkCancelProof {
       } else {
         value.finished = true;
       }
-    } catch { this.disabled = true; }
+    } catch { this.disable("observe"); }
   }
 
   registerContract(id: string, input: { generation: number; pathname: string; optionalFixture: boolean }) {
@@ -219,14 +230,14 @@ export class BrowserNetworkCancelProof {
       if (!pause) return;
       if (pause.contract || !generationNumber(input.generation)) { pause.invalid = true; return; }
       pause.contract = Object.freeze({ order, generation: input.generation, path: input.pathname, optionalFixture: input.optionalFixture === true });
-    } catch { this.disabled = true; }
+    } catch { this.disable("contract"); }
   }
 
   claimBeforeSettlement(id: string, command: Command, current: { generation: number; frameId: string | undefined }): NetworkCancellationTicket | undefined {
     try {
       this.owner.assertHealthy();
       if (this.attempted.has(id)) return;
-      if (this.attempted.size >= this.limit) { this.disabled = true; return; }
+      if (this.attempted.size >= this.limit) { this.disable("attempts"); return; }
       this.attempted.add(id);
       const boundary = this.next(), pause = this.pauses.get(id), scope = this.scope;
       const network = pause?.networkID ? this.networks.get(pause.networkID) : undefined;

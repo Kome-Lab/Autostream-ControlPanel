@@ -7,12 +7,22 @@ import { type BrowserRouteFixture, currentUser, healthyRows, availableVersion, c
 import { statusSnapshotExpression, type StatusSnapshot, assertStatusSnapshot, waitForStatus, triggerReconnect, waitForShell, type LogoutBrowserSnapshot, logoutSnapshotExpression, type SessionExpirySnapshot, sessionExpirySnapshotExpression, type AuthMeExpiryBrowserSnapshot, authMeExpirySnapshotExpression } from "./ui-browser-query-auth-helpers.mts";
 import { deferred, setStoredDisplay, waitForAnimationFrames } from "./ui-browser-navigation-helpers.mts";
 
+// Bootstrap receipt counts may include several completed reads. Operation
+// periods keep their separate exact one-shot assertions below.
+async function waitForInitialGET(browser: BrowserHarness, pathname: string, previousResponses: number, status: number) {
+  await waitForMinimumMapCount(browser.responses, pathname, previousResponses + 1, `initial GET ${pathname}`, 10_000, () => browser.assertNoFatalError());
+  await browser.waitForRequestHandlersIdle({ pathname, method: "GET", timeoutMs: 10_000 });
+  const statuses = (browser.responseStatuses.get(pathname) || []).slice(previousResponses);
+  assert.ok(statuses.length > 0, `${pathname}: a new bootstrap response completed`);
+  assert.equal(statuses.length, (browser.responses.get(pathname) || 0) - previousResponses, `${pathname}: bootstrap status receipts match completed responses`);
+  assert.deepEqual(statuses, statuses.map(() => status), `${pathname}: every new bootstrap response has the expected status`);
+}
 
 
-export async function runQueryStatesScenario(t: TestContext, browser: BrowserHarness, server: { baseUrl: string }, fixture: Pick<BrowserRouteFixture, "authResponse" | "healthResponse" | "versionFixture" | "observeAppSettingsCancellation">) {
+export async function runQueryStatesScenario(t: TestContext, browser: BrowserHarness, server: { baseUrl: string }, fixture: Pick<BrowserRouteFixture, "authResponse" | "healthResponse" | "versionFixture" | "observeBootstrapCancellation">) {
 
   await t.test("query states distinguish loading, empty, unhealthy, error, stale, recovery, and update variants", async () => {
-    const previousObservation = fixture.observeAppSettingsCancellation;
+    const previousObservation = fixture.observeBootstrapCancellation;
     const paths = ["/auth/me", "/settings/app", "/service-health", "/version"];
     const nextDocument = async () => {
       await browser.waitForRequestHandlersIdle({ method: "GET" });
@@ -29,7 +39,7 @@ export async function runQueryStatesScenario(t: TestContext, browser: BrowserHar
       await browser.waitForRequestHandlersIdle({ method: "GET" });
     };
     try {
-      fixture.observeAppSettingsCancellation = true;
+      fixture.observeBootstrapCancellation = true;
       fixture.authResponse = { body: currentUser };
       await browser.setViewport(1440, 900);
       fixture.healthResponse = { body: healthyRows, delayMs: 1_200 };
@@ -129,7 +139,7 @@ export async function runQueryStatesScenario(t: TestContext, browser: BrowserHar
       await completedState(dashboardReads, 200, 200);
       assert.equal(browser.requests.get("/service-health"), 1, "Shell and Dashboard must share the service-health request");
     } finally {
-      fixture.observeAppSettingsCancellation = previousObservation;
+      fixture.observeBootstrapCancellation = previousObservation;
       fixture.authResponse = { body: currentUser };
       fixture.healthResponse = { body: healthyRows };
       fixture.versionFixture = { body: currentVersion };
@@ -222,11 +232,12 @@ export async function runAuthMeExpiryScenario(t: TestContext, browser: BrowserHa
     fixture.refreshResponse = { body: { status: "ok" } };
     await browser.setViewport(1440, 900);
     await setStoredDisplay(browser, "en", "light");
+    await browser.waitForRequestHandlersIdle({ method: "GET" });
     browser.clearRequestCounts();
+    const initialAuthResponses = browser.responses.get("/auth/me") || 0;
     await browser.navigate(`${server.baseUrl}${expectedAuthMeExpiryReturnURL}`);
     await waitForShell(browser, "Account menu");
-    await browser.waitForResponseCount("/auth/me", 1);
-    assert.deepEqual(browser.responseStatuses.get("/auth/me"), [200], "initial /auth/me response status");
+    await waitForInitialGET(browser, "/auth/me", initialAuthResponses, 200);
     const authenticatedShell = await browser.evaluate<{
       location: string;
       protectedAdminLandmarkPresent: boolean;
@@ -240,6 +251,9 @@ export async function runAuthMeExpiryScenario(t: TestContext, browser: BrowserHa
     assert.equal(authenticatedShell.protectedAdminLandmarkPresent, true);
     assert.equal(authenticatedShell.accountMenuPresent, true);
     await browser.evaluate(`sessionStorage.setItem(${JSON.stringify(csrfStorageKey)}, 'auth-me-expiry-fixture'); true`);
+    await waitForAnimationFrames(browser);
+    await browser.waitForRequestHandlersIdle({ method: "GET" });
+    await browser.waitForRequestHandlersIdle({ pathname: "/auth/session/refresh", method: "POST" });
 
     fixture.authResponse = { status: 401, body: { code: "unauthorized" } };
     browser.clearRequestCounts();
@@ -260,8 +274,7 @@ export async function runAuthMeExpiryScenario(t: TestContext, browser: BrowserHa
     await waitForAnimationFrames(browser);
     // LoginCard starts its own setup query after the expiry navigation. Settle it
     // before the next scenario leaves this document and cancels that request.
-    await browser.waitForResponseCount("/setup/status", 1);
-    await browser.waitForRequestHandlersIdle({ pathname: "/setup/status", method: "GET" });
+    await waitForInitialGET(browser, "/setup/status", 0, 200);
     assertAuthMeExpiryOutcome({
       ...outcome,
       authMeRequestCount: browser.requests.get("/auth/me") || 0,
@@ -303,8 +316,10 @@ export async function runRefreshGenerationScenario(t: TestContext, browser: Brow
         (value: string) => value.includes("previous-operator"),
         "previous authenticated session did not render",
       );
+      await browser.waitForRequestHandlersIdle({ method: "GET" });
       browser.clearRequestCounts();
       browser.clearConsoleErrors();
+      const loginSetupResponses = browser.responses.get("/setup/status") || 0;
 
       fixture.authResponse = { body: newerUser };
       await browser.evaluate("window.dispatchEvent(new Event('focus')); true");
@@ -321,12 +336,12 @@ export async function runRefreshGenerationScenario(t: TestContext, browser: Brow
       );
       // Form readiness depends on app settings, so it does not prove that the
       // separate setup query has settled before submitting this new session.
-      await browser.waitForResponseCount("/setup/status", 1);
-      await browser.waitForRequestHandlersIdle({ pathname: "/setup/status", method: "GET" });
+      await waitForInitialGET(browser, "/setup/status", loginSetupResponses, 200);
       await browser.fillSelector('input[autocomplete="username"]', "newer-operator");
       await browser.fillSelector('input[autocomplete="current-password"]', "browser-fixture-password");
       await browser.clickSelector('form button[type="submit"]:not([disabled])');
       await browser.waitFor("location.pathname", (value: string) => value === "/admin/", "new session did not reach the authenticated shell");
+      await browser.waitForRequestHandlersIdle({ method: "GET" });
       const nextAuthResponseCount = (browser.responses.get("/auth/me") || 0) + 1;
       await triggerReconnect(browser);
       await browser.waitForResponseCount("/auth/me", nextAuthResponseCount, 25_000);
@@ -370,15 +385,17 @@ export async function runSetupUnmountScenario(t: TestContext, browser: BrowserHa
       await browser.waitForRequestHandlersIdle({ pathname: "/setup/status", method: "GET" });
       browser.clearRequestCounts("/setup/status");
       browser.clearConsoleErrors();
+      await browser.waitForRequestHandlersIdle({ pathname: "/auth/me", method: "GET" });
+      const initialAuthResponses = browser.responses.get("/auth/me") || 0;
       await browser.navigate("about:blank");
       await browser.navigate(`${server.baseUrl}/admin/streams/?guard-unmount=1`);
-      await browser.waitForResponseCount("/auth/me", 1);
+      await waitForInitialGET(browser, "/auth/me", initialAuthResponses, 401);
       await browser.waitFor(
         `Boolean(document.querySelector('a[href="/login/"]'))`,
         Boolean,
         "authentication-pending login action did not render",
       );
-      await browser.waitForRequestCount("/setup/status", 1);
+      await waitForMinimumMapCount(browser.requests, "/setup/status", 1, "held setup GET arrived before unmount", 10_000, () => browser.assertNoFatalError());
       await browser.clickSelector('a[href="/login/"]');
       await browser.waitFor("location.pathname", (value: string) => value === "/login/", "login navigation did not unmount the guard");
 
@@ -417,16 +434,20 @@ export async function runLoginReturnScenario(t: TestContext, browser: BrowserHar
 
     for (const unsafeReturnURL of unsafeReturnURLs) {
       const query = new URLSearchParams({ redirect_after: unsafeReturnURL });
+      await browser.waitForRequestHandlersIdle({ method: "GET" });
+      const loginSetupResponses = browser.responses.get("/setup/status") || 0;
       await browser.navigate(`${server.baseUrl}/login/?${query}`);
       await browser.waitFor(
         `Boolean(document.querySelector('form input[autocomplete="username"]') && document.querySelector('form button[type="submit"]:not([disabled])'))`,
         Boolean,
         "login form did not become interactive",
       );
+      await waitForInitialGET(browser, "/setup/status", loginSetupResponses, 200);
       await browser.fillSelector('input[autocomplete="username"]', "browser-operator");
       await browser.fillSelector('input[autocomplete="current-password"]', "browser-fixture-password");
       browser.clearRequestCounts();
       browser.clearConsoleErrors();
+      const dashboardReads = new Map(["/auth/me", "/streams"].map(path => [path, browser.responses.get(path) || 0]));
       await browser.clickSelector('form button[type="submit"]:not([disabled])');
       const href = await browser.waitFor(
         "location.href",
@@ -435,6 +456,10 @@ export async function runLoginReturnScenario(t: TestContext, browser: BrowserHar
         15_000,
       );
       assertLoginNavigationOutcome({ href, expectedOrigin: server.baseUrl, expectedPathname: "/admin/" });
+      await waitForShell(browser, "Account menu");
+      for (const path of ["/auth/me", "/streams"]) await waitForInitialGET(browser, path, dashboardReads.get(path)!, 200);
+      await waitForAnimationFrames(browser);
+      await browser.waitForRequestHandlersIdle({ method: "GET" });
       assert.equal(browser.requests.get("/auth/login"), 1);
       assertNoBrowserConsoleErrors(browser.consoleErrorCount);
     }

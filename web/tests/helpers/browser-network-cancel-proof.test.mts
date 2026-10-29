@@ -5,6 +5,7 @@ import { BrowserNetworkCancelProof, takeNetworkCancellationTicket } from "./brow
 import { FetchRequestLifecycle, RejectableEventWaiters, invalidInterceptionIdMessage } from "./browser-request-lifecycle.mts";
 import { waitForMapCount, waitForMinimumMapCount } from "./browser-response-count.mts";
 import { registerAppSettingsCancellationCases } from "./browser-app-settings-cancellation-cases.mts";
+import { registerNetworkScopeRetirementCases } from "./browser-network-scope-retirement-cases.mts";
 
 type Event = { sessionId: string; method: string; params: Record<string, unknown>; generation: number };
 type Contract = { generation: number; pathname: string; optionalFixture: boolean };
@@ -761,3 +762,4 @@ test("Version required reads, writes, unknown routes, continue, and late cancell
 });
 
 registerAppSettingsCancellationCases(negatives);
+registerNetworkScopeRetirementCases();

@@ -1,13 +1,27 @@
 import type { TestContext } from "node:test";
 import assert from "node:assert/strict";
+import { setTimeout as delay } from "node:timers/promises";
 import { BrowserHarness } from "./helpers/browser-harness.mts";
 import { assertNoBrowserConsoleErrors } from "./helpers/ui-foundation-assertions.mts";
 import { type BrowserRouteFixture, workerPilotRows, permissionUser, workerConfiguration, currentUser, healthyRows } from "./ui-browser-fixture.mts";
 import { deferred, setStoredDisplay, waitForAnimationFrames } from "./ui-browser-navigation-helpers.mts";
 import { waitForShell } from "./ui-browser-query-auth-helpers.mts";
 import { waitForWorkerAction, clickWorkerAction, clickButtonWithText, browserContainsMarker, waitForWorkerStatus } from "./ui-browser-worker-helpers.mts";
-
-
+async function loadWorkerDocument(browser: BrowserHarness, navigate: () => Promise<void>) {
+  await browser.waitForRequestHandlersIdle({ method: "GET" });
+  const before = browser.responses.get("/workers") || 0;
+  await navigate();
+  const deadline = performance.now() + 10_000;
+  while ((browser.responses.get("/workers") || 0) < before + 1) {
+    browser.assertNoFatalError();
+    assert.ok(performance.now() < deadline, "initial Worker response did not complete");
+    await delay(50);
+  }
+  browser.assertNoFatalError();
+  await browser.waitForRequestHandlersIdle({ method: "GET" });
+  const received = (browser.responseStatuses.get("/workers") || []).slice(before);
+  assert.ok(received.length >= 1 && received.every(status => status === 200), "initial Worker reads must settle successfully");
+}
 
 export async function runWorkerConfigurationScenario(t: TestContext, browser: BrowserHarness, server: { baseUrl: string }, fixture: Pick<BrowserRouteFixture, "workersResponse" | "nodesResponse" | "healthResponse" | "authResponse" | "configurationResponse" | "workerConfigurationMethods">) {
 
@@ -16,6 +30,7 @@ export async function runWorkerConfigurationScenario(t: TestContext, browser: Br
     let authRefreshRelease: ReturnType<typeof deferred> | undefined;
     let configurationRefreshRelease: ReturnType<typeof deferred> | undefined;
     try {
+      await browser.waitForRequestHandlersIdle({ method: "GET" });
       await browser.setViewport(1440, 900);
       await browser.setMediaFeatures([]);
       browser.clearConsoleErrors();
@@ -34,7 +49,7 @@ export async function runWorkerConfigurationScenario(t: TestContext, browser: Br
         fixture.authResponse = { body: permissionUser([...permissionCase.permissions]) };
         fixture.configurationResponse = { body: workerConfiguration("worker-one", `CONFIG-${permissionCase.name}-MARKER`) };
         fixture.workerConfigurationMethods = [];
-        await browser.navigate(`${server.baseUrl}/admin/workers/`);
+        await loadWorkerDocument(browser, () => browser.navigate(`${server.baseUrl}/admin/workers/`));
         await waitForShell(browser, "Account menu");
         const action = await waitForWorkerAction(
           browser,
@@ -59,11 +74,12 @@ export async function runWorkerConfigurationScenario(t: TestContext, browser: Br
           assert.equal(browser.requests.get(configurationPath) || 0, 0, "workers.read alone must not authorize Configuration GET");
           assert.deepEqual(fixture.workerConfigurationMethods, []);
         }
+        await browser.waitForRequestHandlersIdle({ method: "GET" });
       }
 
       fixture.authResponse = { body: permissionUser(["workers.read", "service_health.read"]) };
       fixture.configurationResponse = { body: workerConfiguration("worker-one", "CACHED-CONFIGURATION-MARKER") };
-      await browser.navigate(`${server.baseUrl}/admin/workers/`);
+      await loadWorkerDocument(browser, () => browser.navigate(`${server.baseUrl}/admin/workers/`));
       await waitForShell(browser, "Account menu");
       await waitForWorkerAction(browser, "Show configuration", "Worker One", (value) => value.disabled === false);
 
@@ -75,16 +91,38 @@ export async function runWorkerConfigurationScenario(t: TestContext, browser: Br
         waitUntil: authRefreshRelease.promise,
       };
       await browser.waitForRequestCount("/auth/me", refreshingAuthRequestCount, 20_000);
-      await waitForWorkerAction(browser, "Show configuration", "Worker One", (value) => value.count >= 1);
+      await waitForWorkerAction(browser, "Show configuration", "Worker One", (value) => value.disabled === false);
       browser.clearRequestCounts(configurationPath);
+      fixture.workerConfigurationMethods = [];
+      const freshAuthRequestCount = (browser.requests.get("/auth/me") || 0) + 1;
       await clickWorkerAction(browser, "Show configuration");
-      const unknown = await waitForWorkerAction(browser, "Show configuration", "Worker One", (value) => value.disabled && value.reason.length > 0);
-      assert.match(unknown.reason, /permission could not be verified/i);
-      assert.equal(browser.requests.get(configurationPath) || 0, 0, "a refreshing permission snapshot must suppress Configuration GET");
+      await browser.waitForRequestCount("/auth/me", freshAuthRequestCount);
+      await waitForWorkerAction(browser, "Show configuration", "Worker One", (value) => value.disabled);
+      assert.equal(browser.requests.get(configurationPath) || 0, 0, "Configuration must await its own fresh permission read before GET");
       authRefreshRelease.resolve();
       fixture.authResponse = { body: permissionUser(["workers.read", "service_health.read"]) };
       await browser.waitForRequestHandlersIdle({ pathname: "/auth/me", method: "GET" });
-      await browser.reload();
+      authRefreshRelease = undefined;
+      await browser.waitForResponseCount(configurationPath, 1);
+      await browser.waitFor("document.body.textContent || ''", (value: string) => value.includes("CACHED-CONFIGURATION-MARKER"), "the original Configuration intent must finish after its fresh permission read");
+      assert.deepEqual(fixture.workerConfigurationMethods, ["GET"], "background auth does not require a second Configuration intent");
+
+      const unavailableAuthResponseCount = (browser.responses.get("/auth/me") || 0) + 1;
+      fixture.authResponse = { status: 503, body: { code: "auth_unavailable" } };
+      await browser.waitForResponseCount("/auth/me", unavailableAuthResponseCount, 20_000);
+      await browser.waitFor("document.body.textContent || ''", (value: string) => value.includes("Worker read permissions are unavailable."), "the actual auth query error must retain the cached Worker view");
+      const unknown = await waitForWorkerAction(browser, "Show configuration", "Worker One", (value) => value.disabled && value.reason.length > 0);
+      assert.match(unknown.reason, /permission could not be verified/i);
+      assert.equal(browser.responseStatuses.get("/auth/me")?.at(-1), 503);
+      browser.clearRequestCounts(configurationPath);
+      fixture.workerConfigurationMethods = [];
+      await clickWorkerAction(browser, "Show configuration");
+      await waitForAnimationFrames(browser);
+      assert.equal(browser.requests.get(configurationPath) || 0, 0, "genuine unavailable permission must suppress Configuration GET");
+      assert.deepEqual(fixture.workerConfigurationMethods, []);
+      fixture.authResponse = { body: permissionUser(["workers.read", "service_health.read"]) };
+      await browser.waitForRequestHandlersIdle({ pathname: "/auth/me", method: "GET" });
+      await loadWorkerDocument(browser, () => browser.reload());
       await waitForShell(browser, "Account menu");
       await waitForWorkerAction(browser, "Show configuration", "Worker One", (value) => value.disabled === false);
 
@@ -132,7 +170,7 @@ export async function runWorkerConfigurationScenario(t: TestContext, browser: Br
         body: { code: "get_node_failed", message: "RAW-CONFIGURATION-BLOCKING-MARKER" },
       };
       fixture.workerConfigurationMethods = [];
-      await browser.navigate(`${server.baseUrl}/admin/workers/`);
+      await loadWorkerDocument(browser, () => browser.navigate(`${server.baseUrl}/admin/workers/`));
       await waitForShell(browser, "Account menu");
       await waitForWorkerAction(browser, "Show configuration", "Worker One", (value) => value.disabled === false);
       browser.clearRequestCounts(configurationPath);
@@ -152,7 +190,7 @@ export async function runWorkerConfigurationScenario(t: TestContext, browser: Br
         ...healthyRows.filter((row) => row.service_type === "worker"),
         { id: "worker-malformed", service_type: "worker", service_name: "Malformed Status Worker", status: "future_connectivity", health_status: { known: true, labelKey: "statusNodeHealthy" } },
       ] };
-      await browser.navigate(`${server.baseUrl}/admin/workers/`);
+      await loadWorkerDocument(browser, () => browser.navigate(`${server.baseUrl}/admin/workers/`));
       await waitForShell(browser, "Account menu");
       const healthyStatus = await waitForWorkerStatus(browser, "Worker One", (value) => value.text.includes("Healthy"));
       assert.deepEqual(
@@ -199,13 +237,14 @@ export async function runWorkerConfigurationScenario(t: TestContext, browser: Br
       assert.equal(await browser.evaluate("document.activeElement?.getAttribute('aria-label')"), "Show configuration");
 
       await setStoredDisplay(browser, "ja", "light");
-      await browser.reload();
+      await loadWorkerDocument(browser, () => browser.reload());
       await waitForShell(browser, "アカウントメニュー");
       await waitForWorkerAction(browser, "Configuration を表示", "Worker One", (value) => value.disabled === false);
       const japaneseUnknown = await waitForWorkerStatus(browser, "Future Worker", (value) => value.text.includes("不明な状態"));
       assert.equal(japaneseUnknown.rowText.includes("future_online_v2"), false);
       const japaneseAssigned = await waitForWorkerStatus(browser, "Assigned Worker", (value) => value.text.includes("割り当て済み"));
       assert.equal(japaneseAssigned.text.includes("正常"), false);
+      await browser.waitForRequestHandlersIdle({ method: "GET" });
       assertNoBrowserConsoleErrors(browser.consoleErrorCount);
     } finally {
       authRefreshRelease?.resolve();

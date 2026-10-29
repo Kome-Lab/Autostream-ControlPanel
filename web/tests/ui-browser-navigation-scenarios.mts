@@ -1,13 +1,53 @@
 import { clickVisible } from "./ui-regression/visible-trigger.mts";
 import type { TestContext } from "node:test";
 import assert from "node:assert/strict";
+import { setTimeout as delay } from "node:timers/promises";
 import { BrowserHarness } from "./helpers/browser-harness.mts";
 import { assertNavigationBoundaryOutcome, type NavigationSnapshot } from "./helpers/ui-foundation-assertions.mts";
 import { type BrowserRouteFixture, currentUser, healthyRows, currentVersion, escapeRegExp } from "./ui-browser-fixture.mts";
 import { setStoredDisplay, waitForAnimationFrames, expandNavigationSections, sheetMotion, seconds, waitForSheetSettled } from "./ui-browser-navigation-helpers.mts";
 import { waitForShell, desktopNavigationSnapshotExpression, mobileNavigationSnapshotExpression, createSnapshotExpression, type CreateSnapshot, assertCreateOutcome, closeCreateAndAssertFocusReturn, type EnglishShellSnapshot } from "./ui-browser-query-auth-helpers.mts";
-
-
+const createReferencePaths = ["/profiles/encoder", "/profiles/caption", "/discord/target-presets", "/video-cover-presets"] as const;
+type CreateReadBaseline = ReadonlyMap<string, number>;
+async function waitForCreateReads(browser: BrowserHarness, before: CreateReadBaseline, paths: readonly string[]) {
+  const deadline = performance.now() + 10_000;
+  for (const path of paths) {
+    const baseline = before.get(path) || 0;
+    while ((browser.responses.get(path) || 0) < baseline + 1) {
+      browser.assertNoFatalError();
+      assert.ok(performance.now() < deadline, "create navigation reference read did not complete");
+      await delay(50);
+    }
+  }
+  browser.assertNoFatalError();
+  await browser.waitForRequestHandlersIdle();
+  for (const path of paths) {
+    const statuses = (browser.responseStatuses.get(path) || []).slice(before.get(path) || 0);
+    assert.ok(statuses.length >= 1 && statuses.every(status => status === 200), "create navigation reads must settle successfully");
+  }
+}
+async function navigateCreateDocument(browser: BrowserHarness, url: string) {
+  await browser.waitForRequestHandlersIdle();
+  const before = new Map<string, number>(["/auth/me", "/streams", ...createReferencePaths].map(path => [path, browser.responses.get(path) || 0]));
+  await browser.navigate(url);
+  await waitForCreateReads(browser, before, ["/auth/me", "/streams"]);
+  return before;
+}
+async function settleCreateReferences(browser: BrowserHarness, documentReads: CreateReadBaseline) {
+  // A completed successful receipt in this document is sufficient for a valid
+  // cached query. Do not demand a refetch on each same-document form mount.
+  await waitForAnimationFrames(browser);
+  await waitForCreateReads(browser, documentReads, createReferencePaths);
+}
+async function assertCreateBackList(browser: BrowserHarness, route: "same-route" | "cross-route" | "desktop") {
+  await browser.waitForRequestHandlersIdle();
+  const back = await browser.waitFor<{ url: string; listReady: boolean; createOpen: boolean; dialogs: number }>(`(() => {
+    const root=document.querySelector('main [data-screen-family="streams"]'),table=root?.querySelector('[data-slot="data-table"]');
+    const url=location.pathname+location.search+location.hash;
+    return {url:url==='/admin/streams/'?url:'OTHER',listReady:!!table&&table.getClientRects().length>0&&!table.closest('[hidden]'),createOpen:!!document.querySelector('[data-stream-create-view]'),dialogs:document.querySelectorAll('[role=dialog]').length};
+  })()`, value => value.url === "/admin/streams/" && value.listReady && !value.createOpen && value.dialogs === 0, "Back must expose the actual ready stream list URL and one list owner");
+  console.log("UI_CREATE_BACK " + JSON.stringify({ route, ...back }));
+}
 
 export async function runNavigationParityScenario(t: TestContext, browser: BrowserHarness, server: { baseUrl: string }, fixture: Pick<BrowserRouteFixture, "authResponse" | "healthResponse" | "versionFixture">) {
 
@@ -108,7 +148,7 @@ export async function runNavigationCreateFocusScenario(t: TestContext, browser: 
     fixture.healthResponse = { body: healthyRows };
     fixture.versionFixture = { body: currentVersion };
     await setStoredDisplay(browser, "ja", "light");
-    await browser.navigate(`${server.baseUrl}/admin/streams/`);
+    const sameDocumentReads = await navigateCreateDocument(browser, `${server.baseUrl}/admin/streams/`);
     await waitForShell(browser, "ナビゲーションを開く");
     await clickVisible(browser, 'button[aria-label="ナビゲーションを開く"]', undefined, true);
     await browser.waitFor("Boolean(document.querySelector('.mobile-navigation-sheet'))", Boolean, "mobile navigation did not open");
@@ -129,9 +169,11 @@ export async function runNavigationCreateFocusScenario(t: TestContext, browser: 
       /must not create a dialog/,
       "negative fixture: an unclosed navigation Sheet must fail",
     );
+    await settleCreateReferences(browser, sameDocumentReads);
     await closeCreateAndAssertFocusReturn(browser, "ナビゲーションを開く", "same-route");
+    await assertCreateBackList(browser, "same-route");
 
-    await browser.navigate(`${server.baseUrl}/admin/`);
+    const crossDocumentReads = await navigateCreateDocument(browser, `${server.baseUrl}/admin/`);
     await waitForShell(browser, "ナビゲーションを開く");
     await clickVisible(browser, 'button[aria-label="ナビゲーションを開く"]', undefined, true);
     await browser.waitFor("Boolean(document.querySelector('.mobile-navigation-sheet'))", Boolean, "cross-route navigation did not open");
@@ -144,10 +186,12 @@ export async function runNavigationCreateFocusScenario(t: TestContext, browser: 
       10_000,
     );
     assertCreateOutcome(crossRoute);
+    await settleCreateReferences(browser, crossDocumentReads);
     await closeCreateAndAssertFocusReturn(browser, "ナビゲーションを開く", "cross-route");
+    await assertCreateBackList(browser, "cross-route");
 
     await browser.setViewport(1440, 900);
-    await browser.navigate(`${server.baseUrl}/admin/streams/`);
+    const desktopDocumentReads = await navigateCreateDocument(browser, `${server.baseUrl}/admin/streams/`);
     await waitForShell(browser, "アカウントメニュー");
     await clickVisible(browser, 'header a[href="/admin/streams/#create-stream"]');
     const desktop = await browser.waitFor(
@@ -157,8 +201,10 @@ export async function runNavigationCreateFocusScenario(t: TestContext, browser: 
     );
     assert.equal(desktop.navigationOpen, false);
     assertCreateOutcome(desktop);
+    await settleCreateReferences(browser, desktopDocumentReads);
     await clickVisible(browser, 'button[aria-label="配信枠の一覧へ戻る"]');
     await browser.waitFor("!document.querySelector('[data-stream-create-view]')", Boolean, "desktop create did not close");
+    await assertCreateBackList(browser, "desktop");
   });
 }
 
