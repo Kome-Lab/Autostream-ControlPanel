@@ -282,6 +282,6 @@ export function registerAppSettingsCancellationCases(negatives: readonly [string
     assert.equal(waiters.pendingCount, 0);
     routes.authResponse = { body: currentUser };
     routes.observeBootstrapCancellation = true;
-    assert.equal(resolve("/auth/me")?.observeBootstrapCancellation, true, "the existing queryStates fixture fallback is preserved");
+    for (const pathname of ["/auth/me", "/settings/app", "/version"]) assert.equal(resolve(pathname)?.observeBootstrapCancellation, true, "the existing bootstrap fixture fallback is preserved");
   });
 }

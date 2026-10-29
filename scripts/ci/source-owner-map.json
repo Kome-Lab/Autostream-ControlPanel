@@ -1497,9 +1497,9 @@
       },
       {
         "path": "web/tests/ui-browser-query-auth-scenarios.mts",
-        "sha256": "6879383883fb99c8d3d4f1524679369602a6850391999903c91f524ceba6463c",
+        "sha256": "e68d4443c399abd4b12b0a87577282b9ac0bc01f90d687d96da48325af61f476",
         "symbols": [],
-        "physical_lines": 470
+        "physical_lines": 472
       },
       {
         "path": "web/tests/ui-browser-start-readiness-scenarios.mts",

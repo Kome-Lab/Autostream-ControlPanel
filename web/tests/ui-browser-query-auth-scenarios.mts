@@ -418,11 +418,13 @@ export async function runSetupUnmountScenario(t: TestContext, browser: BrowserHa
 }
 
 
-export async function runLoginReturnScenario(t: TestContext, browser: BrowserHarness, server: { baseUrl: string }, fixture: Pick<BrowserRouteFixture, "authResponse" | "loginResponse" | "setupResponse">) {
+export async function runLoginReturnScenario(t: TestContext, browser: BrowserHarness, server: { baseUrl: string }, fixture: Pick<BrowserRouteFixture, "observeBootstrapCancellation" | "authResponse" | "loginResponse" | "setupResponse">) {
 
   await t.test("login rejects external return URL variants", async () => {
     const previousAuthResponse = fixture.authResponse;
+    const previousBootstrapObservation = fixture.observeBootstrapCancellation;
     try {
+    fixture.observeBootstrapCancellation = true;
     fixture.authResponse = { body: currentUser, observeBootstrapCancellation: true };
     fixture.loginResponse = { body: { csrf_token: "login-fixture-csrf" } };
     fixture.setupResponse = { body: { setup_enabled: true, setup_required: false } };
@@ -465,6 +467,6 @@ export async function runLoginReturnScenario(t: TestContext, browser: BrowserHar
       assert.equal(browser.requests.get("/auth/login"), 1);
       assertNoBrowserConsoleErrors(browser.consoleErrorCount);
     }
-    } finally { fixture.authResponse = previousAuthResponse; }
+    } finally { fixture.authResponse = previousAuthResponse; fixture.observeBootstrapCancellation = previousBootstrapObservation; }
   });
 }
