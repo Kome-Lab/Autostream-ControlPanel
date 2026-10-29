@@ -214,14 +214,14 @@
       },
       {
         "path": "web/tests/helpers/browser-harness.mts",
-        "sha256": "36e9ba40cbefb8e2d1c971beb3edd7f61d1dd0d33ad081e449f48fedc1af31a1",
+        "sha256": "ad3ddb7e0b5b4dca443e533e2a3092587e8bcf149404365cf90a6476d87e8801",
         "symbols": [
           "BrowserHarness",
           "removeOwnedBrowserDirectory",
           "terminateChildProcess",
           "waitForChildExit"
         ],
-        "physical_lines": 795
+        "physical_lines": 799
       },
       {
         "path": "web/tests/helpers/browser-command-deadline.mts",
@@ -269,7 +269,7 @@
       },
       {
         "path": "web/tests/helpers/browser-next-readiness-fixture.mts",
-        "sha256": "1f67631bc9320e7a3d8908b1e35b0286583f94eca0a2fad6091b5f21aa6999a2",
+        "sha256": "cbb0a7b25e39e57a5cbb401a69c1a7fab87e6016b0e70d7d93c92b8ece7e4d28",
         "symbols": [
           "NextReadinessChild",
           "NextReadinessClock",
@@ -461,16 +461,16 @@
       },
       {
         "path": "web/tests/helpers/browser-network-cancel-proof.mts",
-        "sha256": "9369f019b5563a07478f0653d2fb55a95721bd21025c617162068168c0b5ccec",
+        "sha256": "5c0569e49f1cc4da170866ead857b8296e01c86e1951c7a933c7d108542547fe",
         "symbols": [
           "requestURL",
           "takeNetworkCancellationTicket"
         ],
-        "physical_lines": 267
+        "physical_lines": 296
       },
       {
         "path": "web/tests/helpers/browser-network-cancel-proof.test.mts",
-        "sha256": "a6dc5173e37eb398759ae7b39686f88fd03d30134b3b52994e07a5436733fc70",
+        "sha256": "f445fd0da3e78419aa1432e48cd3d8e6e7b9b72a27ef8d584e433f0aec2475b3",
         "symbols": [
           "changeEvent",
           "fixture",
@@ -479,7 +479,7 @@
           "request",
           "steps"
         ],
-        "physical_lines": 765
+        "physical_lines": 767
       },
       {
         "path": "web/tests/helpers/browser-response-count.mts",
@@ -489,6 +489,30 @@
           "waitForMinimumMapCount"
         ],
         "physical_lines": 31
+      },
+      {
+        "path": "web/tests/helpers/browser-declared-auth-retirement.mts",
+        "sha256": "a5de232c39084bb059cffa4d6aa2e1b10626a77fbb52005c78e40ef67366e79f",
+        "symbols": [
+          "exactAuthURL",
+          "takeDeclaredAuthRetirement",
+          "declareLoginReturnAuthPhase",
+          "observeDeclaredAuthRetirement",
+          "retireDeclaredAuth"
+        ],
+        "physical_lines": 199
+      },
+      {
+        "path": "web/tests/helpers/browser-declared-auth-retirement-cases.mts",
+        "sha256": "55bdd14aadb985fea7b042ac17e1b135b63366cce137baec9dd9abeae6e41c0b",
+        "symbols": [
+          "fixture",
+          "harnessFixture",
+          "observeCandidate",
+          "assertRejected",
+          "registerDeclaredAuthRetirementCases"
+        ],
+        "physical_lines": 353
       }
     ]
   },
@@ -1384,14 +1408,14 @@
     "destinations": [
       {
         "path": "web/tests/helpers/browser-harness.mts",
-        "sha256": "36e9ba40cbefb8e2d1c971beb3edd7f61d1dd0d33ad081e449f48fedc1af31a1",
+        "sha256": "ad3ddb7e0b5b4dca443e533e2a3092587e8bcf149404365cf90a6476d87e8801",
         "symbols": [
           "BrowserHarness",
           "removeOwnedBrowserDirectory",
           "terminateChildProcess",
           "waitForChildExit"
         ],
-        "physical_lines": 795
+        "physical_lines": 799
       },
       {
         "path": "web/tests/helpers/browser-command-deadline.mts",
@@ -1497,9 +1521,9 @@
       },
       {
         "path": "web/tests/ui-browser-query-auth-scenarios.mts",
-        "sha256": "e68d4443c399abd4b12b0a87577282b9ac0bc01f90d687d96da48325af61f476",
+        "sha256": "9d1e9bc5d42d2b8f048070f944244f3fdb5af0924a9f521c4473d4204d45e026",
         "symbols": [],
-        "physical_lines": 472
+        "physical_lines": 475
       },
       {
         "path": "web/tests/ui-browser-start-readiness-scenarios.mts",
@@ -1563,16 +1587,16 @@
       },
       {
         "path": "web/tests/helpers/browser-network-cancel-proof.mts",
-        "sha256": "9369f019b5563a07478f0653d2fb55a95721bd21025c617162068168c0b5ccec",
+        "sha256": "5c0569e49f1cc4da170866ead857b8296e01c86e1951c7a933c7d108542547fe",
         "symbols": [
           "requestURL",
           "takeNetworkCancellationTicket"
         ],
-        "physical_lines": 267
+        "physical_lines": 296
       },
       {
         "path": "web/tests/helpers/browser-network-cancel-proof.test.mts",
-        "sha256": "a6dc5173e37eb398759ae7b39686f88fd03d30134b3b52994e07a5436733fc70",
+        "sha256": "f445fd0da3e78419aa1432e48cd3d8e6e7b9b72a27ef8d584e433f0aec2475b3",
         "symbols": [
           "changeEvent",
           "fixture",
@@ -1581,7 +1605,7 @@
           "request",
           "steps"
         ],
-        "physical_lines": 765
+        "physical_lines": 767
       },
       {
         "path": "web/tests/helpers/browser-response-count.mts",
@@ -1591,6 +1615,30 @@
           "waitForMinimumMapCount"
         ],
         "physical_lines": 31
+      },
+      {
+        "path": "web/tests/helpers/browser-declared-auth-retirement.mts",
+        "sha256": "a5de232c39084bb059cffa4d6aa2e1b10626a77fbb52005c78e40ef67366e79f",
+        "symbols": [
+          "exactAuthURL",
+          "takeDeclaredAuthRetirement",
+          "declareLoginReturnAuthPhase",
+          "observeDeclaredAuthRetirement",
+          "retireDeclaredAuth"
+        ],
+        "physical_lines": 199
+      },
+      {
+        "path": "web/tests/helpers/browser-declared-auth-retirement-cases.mts",
+        "sha256": "55bdd14aadb985fea7b042ac17e1b135b63366cce137baec9dd9abeae6e41c0b",
+        "symbols": [
+          "fixture",
+          "harnessFixture",
+          "observeCandidate",
+          "assertRejected",
+          "registerDeclaredAuthRetirementCases"
+        ],
+        "physical_lines": 353
       }
     ]
   },
@@ -5196,7 +5244,7 @@
     "destinations": [
       {
         "path": "web/tests/helpers/browser-harness.mts",
-        "sha256": "36e9ba40cbefb8e2d1c971beb3edd7f61d1dd0d33ad081e449f48fedc1af31a1",
+        "sha256": "ad3ddb7e0b5b4dca443e533e2a3092587e8bcf149404365cf90a6476d87e8801",
         "symbols": [
           "BrowserHarness",
           "assertNoFatalError",
@@ -5247,7 +5295,7 @@
           "waitForRequestHandlersIdle",
           "waitForResponseCount"
         ],
-        "physical_lines": 795
+        "physical_lines": 799
       },
       {
         "path": "web/tests/helpers/browser-command-deadline.mts",
@@ -5305,16 +5353,16 @@
       },
       {
         "path": "web/tests/helpers/browser-network-cancel-proof.mts",
-        "sha256": "9369f019b5563a07478f0653d2fb55a95721bd21025c617162068168c0b5ccec",
+        "sha256": "5c0569e49f1cc4da170866ead857b8296e01c86e1951c7a933c7d108542547fe",
         "symbols": [
           "requestURL",
           "takeNetworkCancellationTicket"
         ],
-        "physical_lines": 267
+        "physical_lines": 296
       },
       {
         "path": "web/tests/helpers/browser-network-cancel-proof.test.mts",
-        "sha256": "a6dc5173e37eb398759ae7b39686f88fd03d30134b3b52994e07a5436733fc70",
+        "sha256": "f445fd0da3e78419aa1432e48cd3d8e6e7b9b72a27ef8d584e433f0aec2475b3",
         "symbols": [
           "changeEvent",
           "fixture",
@@ -5323,7 +5371,7 @@
           "request",
           "steps"
         ],
-        "physical_lines": 765
+        "physical_lines": 767
       },
       {
         "path": "web/tests/helpers/browser-response-count.mts",
@@ -5333,6 +5381,30 @@
           "waitForMinimumMapCount"
         ],
         "physical_lines": 31
+      },
+      {
+        "path": "web/tests/helpers/browser-declared-auth-retirement.mts",
+        "sha256": "a5de232c39084bb059cffa4d6aa2e1b10626a77fbb52005c78e40ef67366e79f",
+        "symbols": [
+          "exactAuthURL",
+          "takeDeclaredAuthRetirement",
+          "declareLoginReturnAuthPhase",
+          "observeDeclaredAuthRetirement",
+          "retireDeclaredAuth"
+        ],
+        "physical_lines": 199
+      },
+      {
+        "path": "web/tests/helpers/browser-declared-auth-retirement-cases.mts",
+        "sha256": "55bdd14aadb985fea7b042ac17e1b135b63366cce137baec9dd9abeae6e41c0b",
+        "symbols": [
+          "fixture",
+          "harnessFixture",
+          "observeCandidate",
+          "assertRejected",
+          "registerDeclaredAuthRetirementCases"
+        ],
+        "physical_lines": 353
       }
     ]
   },
@@ -5432,14 +5504,14 @@
       },
       {
         "path": "web/tests/helpers/browser-harness.mts",
-        "sha256": "36e9ba40cbefb8e2d1c971beb3edd7f61d1dd0d33ad081e449f48fedc1af31a1",
+        "sha256": "ad3ddb7e0b5b4dca443e533e2a3092587e8bcf149404365cf90a6476d87e8801",
         "symbols": [
           "BrowserHarness",
           "removeOwnedBrowserDirectory",
           "terminateChildProcess",
           "waitForChildExit"
         ],
-        "physical_lines": 795
+        "physical_lines": 799
       },
       {
         "path": "web/tests/helpers/browser-command-deadline.mts",
@@ -5474,16 +5546,16 @@
       },
       {
         "path": "web/tests/helpers/browser-network-cancel-proof.mts",
-        "sha256": "9369f019b5563a07478f0653d2fb55a95721bd21025c617162068168c0b5ccec",
+        "sha256": "5c0569e49f1cc4da170866ead857b8296e01c86e1951c7a933c7d108542547fe",
         "symbols": [
           "requestURL",
           "takeNetworkCancellationTicket"
         ],
-        "physical_lines": 267
+        "physical_lines": 296
       },
       {
         "path": "web/tests/helpers/browser-network-cancel-proof.test.mts",
-        "sha256": "a6dc5173e37eb398759ae7b39686f88fd03d30134b3b52994e07a5436733fc70",
+        "sha256": "f445fd0da3e78419aa1432e48cd3d8e6e7b9b72a27ef8d584e433f0aec2475b3",
         "symbols": [
           "changeEvent",
           "fixture",
@@ -5492,7 +5564,7 @@
           "request",
           "steps"
         ],
-        "physical_lines": 765
+        "physical_lines": 767
       },
       {
         "path": "web/tests/helpers/browser-response-count.mts",
@@ -5502,6 +5574,30 @@
           "waitForMinimumMapCount"
         ],
         "physical_lines": 31
+      },
+      {
+        "path": "web/tests/helpers/browser-declared-auth-retirement.mts",
+        "sha256": "a5de232c39084bb059cffa4d6aa2e1b10626a77fbb52005c78e40ef67366e79f",
+        "symbols": [
+          "exactAuthURL",
+          "takeDeclaredAuthRetirement",
+          "declareLoginReturnAuthPhase",
+          "observeDeclaredAuthRetirement",
+          "retireDeclaredAuth"
+        ],
+        "physical_lines": 199
+      },
+      {
+        "path": "web/tests/helpers/browser-declared-auth-retirement-cases.mts",
+        "sha256": "55bdd14aadb985fea7b042ac17e1b135b63366cce137baec9dd9abeae6e41c0b",
+        "symbols": [
+          "fixture",
+          "harnessFixture",
+          "observeCandidate",
+          "assertRejected",
+          "registerDeclaredAuthRetirementCases"
+        ],
+        "physical_lines": 353
       }
     ]
   },

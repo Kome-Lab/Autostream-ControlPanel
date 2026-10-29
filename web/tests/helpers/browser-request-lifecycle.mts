@@ -1,4 +1,5 @@
 import { takeNetworkCancellationTicket } from "./browser-network-cancel-proof.mts";
+import { takeDeclaredAuthRetirement } from "./browser-declared-auth-retirement.mts";
 
 export const invalidInterceptionIdMessage = "Invalid InterceptionId.";
 
@@ -93,6 +94,7 @@ export class FetchRequestLifecycle {
   private navigationGeneration = 0;
   private cancellationCount = 0;
   private preSettlementCount = 0;
+  private declaredAuthRetiredCount = 0;
   private fatalError: Error | undefined;
   private diagnosticOrder = 0;
   private navigationBeginOrder = 0;
@@ -146,6 +148,7 @@ export class FetchRequestLifecycle {
   }
   get generation() { return this.navigationGeneration; }
   get preSettlementCancellationCount() { return this.preSettlementCount; }
+  get declaredAuthRetirementCount() { return this.declaredAuthRetiredCount; }
 
   get safeCancellationCount() {
     return this.cancellationCount;
@@ -216,6 +219,21 @@ export class FetchRequestLifecycle {
     this.activeRequests.delete(requestId);
     this.cancellationCount += 1;
     this.preSettlementCount += 1;
+    this.flushIdleWaiters();
+    return { cancelled: true } as const;
+  }
+
+  completeDeclaredAuthRetirement(requestId: string, receipt: unknown) {
+    const request = this.activeRequests.get(requestId);
+    const proved = takeDeclaredAuthRetirement(receipt, this, requestId, this.navigationGeneration);
+    this.assertHealthy();
+    if (!proved || !request || request.requiredResponse || request.method !== "GET" || request.pathname !== "/auth/me"
+      || request.generation !== this.navigationGeneration || request.terminalState !== "active" || request.settlementAttemptCount !== 0) throw new Error("Invalid declared AUTH retirement receipt");
+    this.beginSettlement(requestId, "Fetch.fulfillRequest");
+    this.recordTerminal(request, "cancelled");
+    this.activeRequests.delete(requestId);
+    this.cancellationCount += 1;
+    this.declaredAuthRetiredCount += 1;
     this.flushIdleWaiters();
     return { cancelled: true } as const;
   }

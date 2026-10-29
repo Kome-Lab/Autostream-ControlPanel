@@ -3,7 +3,7 @@
 export const pollingCurrentBase = "65a601fc9d4f15c93083e9be4ab9e71586fdba69";
 export const pollingCurrentTree = "2624414bc4e1cb4bd304faccf82e5d22e3201dd2";
 export const pollingCurrentFixturePath = "web/tests/fixtures/ui-regression/polling-current-source-delta.json";
-export const pollingCurrentFixtureSHA256 = "360d69c61709edf7b8be0693b95ecc594235e30d763f7f0c259b714389fcf0ba";
+export const pollingCurrentFixtureSHA256 = "7f17e7205dd6cc0b3108688fefc85096b91db063fa55754c7f86498f64568b6a";
 export const pollingLegacyFixturePath = "web/tests/fixtures/ui-regression/polling-legacy-parity.json";
 export const pollingLegacyFixtureSHA256 = "b2df0a26ef1f77a08a0ddbfe8762b7e77a583c21ba8ed03d22373e4ebce764a8";
 export const pollingCurrentPaths = Object.freeze([
@@ -170,6 +170,8 @@ export const pollingCurrentPaths = Object.freeze([
   "web/tests/generic-resource-security-cas.test.mts",
   "web/tests/generic-resource-security-draft.test.mts",
   "web/tests/helpers/browser-app-settings-cancellation-cases.mts",
+  "web/tests/helpers/browser-declared-auth-retirement-cases.mts",
+  "web/tests/helpers/browser-declared-auth-retirement.mts",
   "web/tests/helpers/browser-executable.mts",
   "web/tests/helpers/browser-harness.mts",
   "web/tests/helpers/browser-native-media-settlement.mts",

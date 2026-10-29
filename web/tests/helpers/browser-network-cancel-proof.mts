@@ -1,3 +1,5 @@
+import { observeDeclaredAuthRetirement } from "./browser-declared-auth-retirement.mts";
+
 type ObjectValue = Record<string, unknown>;
 type Owner = object & { assertHealthy(): void };
 type Command = "Fetch.continueRequest" | "Fetch.fulfillRequest";
@@ -108,6 +110,32 @@ export class BrowserNetworkCancelProof {
     this.owner = owner; this.session = session; this.limit = limit;
   }
   get overflowed() { return this.disabled; }
+  ownsLifecycle(owner: object, session: string) { return this.owner === owner && this.session === session; }
+  ownsSession(session: unknown) { return this.session === session; }
+  ownedDocument(current: { generation: number; frameId: string | undefined }) {
+    return !this.disabled && this.scope !== undefined && this.scope.generation === current.generation && this.scope.frame === current.frameId ? this.scope : undefined;
+  }
+  canDeclareAuthBeforeStart(scope: object, url: string) {
+    return !this.disabled && this.scope === scope && ![...this.networks.values()].some(network => network.url === url && (network.loader === this.scope?.loader || network.generation === this.scope?.generation));
+  }
+  reserveDeclaredRetirementBoundary(id: string, scope: object) {
+    this.owner.assertHealthy();
+    if (this.disabled || this.attempted.has(id)) return false;
+    if (this.attempted.size >= this.limit) { this.disable("attempts"); return false; }
+    this.attempted.add(id);
+    const boundary = this.next(), pause = this.pauses.get(id), current = this.scope;
+    const network = pause?.networkID ? this.networks.get(pause.networkID) : undefined, contract = pause?.contract, failure = network?.failure;
+    if (!current || current !== scope || !pause || pause.invalid || pause.scope !== current || !network || network.invalid || network.used
+      || !contract?.optionalFixture || contract.path !== "/auth/me" || pause.path !== "/auth/me" || contract.generation !== current.generation
+      || pause.method !== "GET" || network.method !== "GET" || pause.type !== "XHR" || network.type !== "Fetch"
+      || pause.generation !== current.generation || network.generation !== current.generation || failure?.generation !== current.generation
+      || pause.frame !== current.frame || network.frame !== current.frame || network.loader !== current.loader || pause.url !== network.url
+      || network.starts !== 1 || network.pauseIDs.size !== 1 || !network.pauseIDs.has(id) || network.response || network.finished
+      || !failure?.canceled || !failure.aborted || network.order === undefined
+      || !(current.order < network.order && network.order < failure.order && failure.order < pause.order && pause.order < contract.order && contract.order < boundary)) return false;
+    network.used = true;
+    return true;
+  }
   private diagnosticSnapshot(id:string,current:{generation:number;frameId:string|undefined},at:number):NetworkBoundaryDiagnostic {
     const pause=this.pauses.get(id),scope=this.scope,network=pause?.networkID?this.networks.get(pause.networkID):undefined;
     const contract=pause?.contract,cancel=network?.failure;
@@ -222,6 +250,7 @@ export class BrowserNetworkCancelProof {
         value.finished = true;
       }
     } catch { this.disable("observe"); }
+    finally { observeDeclaredAuthRetirement(this, message, generation); }
   }
 
   registerContract(id: string, input: { generation: number; pathname: string; optionalFixture: boolean }) {

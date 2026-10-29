@@ -9,6 +9,7 @@ import { FetchRequestLifecycle, RejectableEventWaiters, type FetchDiagnosticCont
 import { BrowserLaunchError, launchBrowserProcessWithRetry, type BrowserLaunchSession } from "./browser-process-attempt.mts";
 import { collectBrowserLaunchFacts } from "./browser-launch-profile.mts";
 import { BrowserNetworkCancelProof } from "./browser-network-cancel-proof.mts";
+import { declareLoginReturnAuthPhase, retireDeclaredAuth } from "./browser-declared-auth-retirement.mts";
 import { optionalBootstrapCancellationEvent, waitForOptionalBootstrapCancellation } from "./browser-optional-app-cancellation.mts";
 import { resolveBrowserPath } from "./browser-executable.mts";
 import { waitForMapCount } from "./browser-response-count.mts";
@@ -281,6 +282,8 @@ export class BrowserHarness {
     return Buffer.from(screenshot.data, "base64");
   }
 
+  declareLoginReturnAuthPhase(url: string) { return declareLoginReturnAuthPhase(this.networkCancellation, { lifecycle: this.requestLifecycle, session: this.sessionId, current: () => ({ generation: this.requestLifecycle.generation, frameId: this.mainFrameId, closed: this.closed }), assertHealthy: () => this.assertNoFatalError() }, url); }
+  get declaredAuthRetirementCount() { return this.requestLifecycle.declaredAuthRetirementCount; }
   setRouteResolver(resolver: RouteResolver) {
     this.routeResolver = resolver;
   }
@@ -664,6 +667,7 @@ export class BrowserHarness {
 		const response = this.routeResolver({ method: request.method, url: request.url, postData: request.postData });
     this.requestLifecycle.setRequiredResponse(requestId, response !== null && response.requiredResponse !== false);
     this.networkCancellation?.registerContract(requestId, { generation, pathname, optionalFixture: response !== null && response.requiredResponse === false });
+    if (retireDeclaredAuth(this.networkCancellation, requestId, response)) return;
     if (!response) {
       const settled = await this.settleFetchRequest(requestId, "Fetch.continueRequest", { requestId });
       if (!settled) return;

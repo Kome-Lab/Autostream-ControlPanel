@@ -452,6 +452,8 @@ export async function runLoginReturnScenario(t: TestContext, browser: BrowserHar
       browser.clearRequestCounts();
       browser.clearConsoleErrors();
       const dashboardReads = new Map(["/auth/me", "/streams"].map(path => [path, browser.responses.get(path) || 0]));
+      const authPhase = browser.declareLoginReturnAuthPhase(new URL("/auth/me", server.baseUrl).href);
+      try {
       await browser.clickSelector('form button[type="submit"]:not([disabled])');
       const href = await browser.waitFor(
         "location.href",
@@ -466,6 +468,7 @@ export async function runLoginReturnScenario(t: TestContext, browser: BrowserHar
       await browser.waitForRequestHandlersIdle({ method: "GET" });
       assert.equal(browser.requests.get("/auth/login"), 1);
       assertNoBrowserConsoleErrors(browser.consoleErrorCount);
+      } finally { authPhase.dispose(); }
     }
     } finally { fixture.authResponse = previousAuthResponse; fixture.observeBootstrapCancellation = previousBootstrapObservation; }
   });
