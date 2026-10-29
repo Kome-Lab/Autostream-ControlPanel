@@ -1437,7 +1437,7 @@
       },
       {
         "path": "web/tests/ui-browser-fixture.mts",
-        "sha256": "2757277c4107c4c054667e187d151689d3302b66b472c59dc9a7d3d3072de0ae",
+        "sha256": "e12111713c9b848b22262fb294703bc16e4834f65755df84a04d1e0885b7f645",
         "symbols": [
           "controlPlatformCoverState",
           "createBrowserRouteFixture",
@@ -1497,9 +1497,9 @@
       },
       {
         "path": "web/tests/ui-browser-query-auth-scenarios.mts",
-        "sha256": "887f542dde236f325ba8af7e325f61f4582456e8120639d9a60b37f25a12d3d2",
+        "sha256": "6879383883fb99c8d3d4f1524679369602a6850391999903c91f524ceba6463c",
         "symbols": [],
-        "physical_lines": 467
+        "physical_lines": 470
       },
       {
         "path": "web/tests/ui-browser-start-readiness-scenarios.mts",

@@ -4,6 +4,7 @@ import { BrowserHarness } from "./browser-harness.mts";
 import { BrowserNetworkCancelProof } from "./browser-network-cancel-proof.mts";
 import { FetchRequestLifecycle, RejectableEventWaiters, invalidInterceptionIdMessage } from "./browser-request-lifecycle.mts";
 import { optionalBootstrapCancellationEvent, waitForOptionalBootstrapCancellation } from "./browser-optional-app-cancellation.mts";
+import { createBrowserRouteFixture, currentUser } from "../ui-browser-fixture.mts";
 
 type Event = { sessionId: string; method: string; params: Record<string, unknown>; generation: number };
 type Contract = { generation: number; pathname: string; optionalFixture: boolean };
@@ -251,5 +252,36 @@ export function registerAppSettingsCancellationCases(negatives: readonly [string
       assert.throws(() => late.lifecycle.handleSettlementError(late.lifecycle.beginSettlement(id, fulfill), original), error => error === original);
       assert.equal(late.lifecycle.preSettlementCancellationCount, 0);
     }
+  });
+
+  test("the actual shared factory preserves explicit Auth observation without changing default or other routes", async () => {
+    const browser = Object.create(BrowserHarness.prototype) as BrowserHarness;
+    const routes = createBrowserRouteFixture(browser);
+    const resolve = (pathname: string, method = "GET") => {
+      const resolver = Reflect.get(browser, "routeResolver") as (request: { method: string; url: string }) => import("./browser-harness.mts").StubResponse | null;
+      return resolver({ method, url: `http://fixture.invalid${pathname}` });
+    };
+    assert.equal(routes.observeBootstrapCancellation, undefined);
+    assert.equal(resolve("/auth/me")?.observeBootstrapCancellation, undefined);
+    assert.equal(resolve("/auth/me")?.requiredResponse, false);
+    routes.authResponse = { body: currentUser, observeBootstrapCancellation: true };
+    assert.equal(resolve("/auth/me")?.observeBootstrapCancellation, true);
+    assert.equal(resolve("/auth/me")?.body, currentUser);
+    for (const pathname of ["/settings/app", "/version", "/setup/status"]) assert.equal(resolve(pathname)?.observeBootstrapCancellation, undefined);
+    assert.equal(resolve("/auth/me", "POST"), null);
+    routes.authNextResponse = { status: 401, body: { code: "unauthorized" }, observeBootstrapCancellation: true };
+    assert.equal(resolve("/auth/me")?.observeBootstrapCancellation, true);
+    assert.equal(routes.authNextResponse, undefined);
+    routes.authResponse = { body: currentUser, requiredResponse: true, observeBootstrapCancellation: true };
+    const required = resolve("/auth/me")!;
+    assert.equal(required.requiredResponse, true);
+    const waiters = new RejectableEventWaiters();
+    const observation = waitForOptionalBootstrapCancellation(waiters, { method: "GET", url: "http://fixture.invalid/auth/me" }, required, networkID);
+    assert.equal(waiters.pendingCount, 0, "a forwarded opt-in cannot delay a required Auth response");
+    await observation;
+    assert.equal(waiters.pendingCount, 0);
+    routes.authResponse = { body: currentUser };
+    routes.observeBootstrapCancellation = true;
+    assert.equal(resolve("/auth/me")?.observeBootstrapCancellation, true, "the existing queryStates fixture fallback is preserved");
   });
 }

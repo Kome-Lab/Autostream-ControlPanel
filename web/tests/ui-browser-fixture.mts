@@ -199,7 +199,7 @@ export function createBrowserRouteFixture(browser: BrowserHarness, resolveAdditi
     if (pathname === "/auth/me" && method === "GET") {
       const response = fixture.authNextResponse ?? fixture.authResponse;
       fixture.authNextResponse = undefined;
-      return { ...response, requiredResponse: response.requiredResponse ?? false, observeBootstrapCancellation: fixture.observeBootstrapCancellation };
+      return { ...response, requiredResponse: response.requiredResponse ?? false, observeBootstrapCancellation: response.observeBootstrapCancellation ?? fixture.observeBootstrapCancellation };
     }
     if (pathname === "/setup/status" && method === "GET") return { ...fixture.setupResponse, requiredResponse: fixture.setupResponse.requiredResponse ?? false };
     if (pathname === "/settings/app" && method === "GET") return { body: { app_name: "AutoStream", timezone: "Asia/Tokyo" }, requiredResponse: false, observeBootstrapCancellation: fixture.observeBootstrapCancellation };
