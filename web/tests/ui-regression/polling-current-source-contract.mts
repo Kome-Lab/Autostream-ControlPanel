@@ -3,7 +3,7 @@
 export const pollingCurrentBase = "65a601fc9d4f15c93083e9be4ab9e71586fdba69";
 export const pollingCurrentTree = "2624414bc4e1cb4bd304faccf82e5d22e3201dd2";
 export const pollingCurrentFixturePath = "web/tests/fixtures/ui-regression/polling-current-source-delta.json";
-export const pollingCurrentFixtureSHA256 = "ae00c6042a60e5fdb521823b7c2ae4c3bc2806f3bd6e3a73cd917184b0ae7d4a";
+export const pollingCurrentFixtureSHA256 = "360d69c61709edf7b8be0693b95ecc594235e30d763f7f0c259b714389fcf0ba";
 export const pollingLegacyFixturePath = "web/tests/fixtures/ui-regression/polling-legacy-parity.json";
 export const pollingLegacyFixtureSHA256 = "b2df0a26ef1f77a08a0ddbfe8762b7e77a583c21ba8ed03d22373e4ebce764a8";
 export const pollingCurrentPaths = Object.freeze([
@@ -220,6 +220,7 @@ export const pollingCurrentPaths = Object.freeze([
   "web/tests/streams-visual-integration.test.mts",
   "web/tests/ui-browser-fixture.mts",
   "web/tests/ui-browser-navigation-scenarios.mts",
+  "web/tests/ui-browser-observation-scenarios.mts",
   "web/tests/ui-browser-query-auth-scenarios.mts",
   "web/tests/ui-browser-start-readiness-scenarios.mts",
   "web/tests/ui-browser-visual-settings-scenarios.mts",

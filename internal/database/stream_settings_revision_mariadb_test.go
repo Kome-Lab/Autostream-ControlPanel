@@ -61,6 +61,7 @@ func TestMariaDBStreamSettingsRevisionConcurrentWritersAndLifecycleIsolation(t *
 	}
 	diagnostic, closeDiagnostic := streamSettingsLockDiagnosticPool(t, db, schema)
 	defer closeDiagnostic()
+	poolBaseline := db.Stats()
 	results := make(chan error, 2)
 	for _, name := range []string{"first contender", "second contender"} {
 		go func() {
@@ -101,12 +102,17 @@ FROM blocked WHERE requesting_thread <> ?`
 	observeCtx, cancelObservation := context.WithTimeout(ctx, 5*time.Second)
 	defer cancelObservation()
 	table := "`" + schema + "`.`streams`"
+	diagnoseFailure := func() {
+		logStreamSettingsLockFailure(t, ctx, db, diagnostic, results, poolBaseline, table)
+	}
 	waiting, directWaiting := 0, 0
 	for {
 		if err = diagnostic.QueryRowContext(observeCtx, waitQuery, table, table, blockerID, blockerID, blockerID).Scan(&waiting, &directWaiting); err != nil {
 			if observeCtx.Err() != nil {
+				diagnoseFailure()
 				t.Fatalf("both writers did not actually reach the held stream lock: waiting=%d direct=%d", waiting, directWaiting)
 			}
+			diagnoseFailure()
 			t.Fatal("cannot observe the real competing settings row-lock waits")
 		}
 		if waiting == 2 {
@@ -115,6 +121,7 @@ FROM blocked WHERE requesting_thread <> ?`
 		}
 		select {
 		case <-observeCtx.Done():
+			diagnoseFailure()
 			t.Fatalf("both writers did not actually reach the held stream lock: waiting=%d direct=%d", waiting, directWaiting)
 		case <-time.After(10 * time.Millisecond):
 		}
@@ -160,6 +167,68 @@ FROM blocked WHERE requesting_thread <> ?`
 	if err != nil || after.Name != stream.Name || after.EncoderAudioGainDB != -3 || after.SettingsRevision != stream.SettingsRevision {
 		t.Fatalf("rejected writer changed retained settings: gain=%v revision=%q error=%v", after.EncoderAudioGainDB, after.SettingsRevision, err)
 	}
+}
+
+func logStreamSettingsLockFailure(t *testing.T, ctx context.Context, application, diagnostic *sql.DB, results <-chan error, baseline sql.DBStats, table string) {
+	t.Helper()
+	var outcomes [6]int
+	for range 2 {
+		select {
+		case result := <-results:
+			switch {
+			case result == nil:
+				outcomes[0]++
+			case errors.Is(result, store.ErrRevisionConflict):
+				outcomes[1]++
+			case errors.Is(result, context.DeadlineExceeded):
+				outcomes[2]++
+			case errors.Is(result, context.Canceled):
+				outcomes[3]++
+			default:
+				outcomes[4]++
+			}
+		default:
+			outcomes[5]++
+		}
+	}
+	t.Logf("settings lock diagnostic writers nil=%d revision_conflict=%d deadline=%d cancel=%d other=%d pending=%d", outcomes[0], outcomes[1], outcomes[2], outcomes[3], outcomes[4], outcomes[5])
+	current := application.Stats()
+	t.Logf("settings lock diagnostic pool before_max_open=%d before_open=%d before_in_use=%d before_idle=%d before_wait_count=%d after_max_open=%d after_open=%d after_in_use=%d after_idle=%d after_wait_count=%d wait_count_delta=%d", baseline.MaxOpenConnections, baseline.OpenConnections, baseline.InUse, baseline.Idle, baseline.WaitCount, current.MaxOpenConnections, current.OpenConnections, current.InUse, current.Idle, current.WaitCount, current.WaitCount-baseline.WaitCount)
+	// These categories identify a failed observation without disclosing SQL,
+	// connection identities, lock data, schema names or driver error text.
+	const lockClassesQuery = `SELECT
+COUNT(DISTINCT CASE WHEN index_class=0 AND type_class=0 THEN requesting_trx_id END),
+COUNT(DISTINCT CASE WHEN index_class=0 AND type_class=1 THEN requesting_trx_id END),
+COUNT(DISTINCT CASE WHEN index_class=0 AND type_class=2 THEN requesting_trx_id END),
+COUNT(DISTINCT CASE WHEN index_class=1 AND type_class=0 THEN requesting_trx_id END),
+COUNT(DISTINCT CASE WHEN index_class=1 AND type_class=1 THEN requesting_trx_id END),
+COUNT(DISTINCT CASE WHEN index_class=1 AND type_class=2 THEN requesting_trx_id END),
+COUNT(DISTINCT CASE WHEN index_class=2 AND type_class=0 THEN requesting_trx_id END),
+COUNT(DISTINCT CASE WHEN index_class=2 AND type_class=1 THEN requesting_trx_id END),
+COUNT(DISTINCT CASE WHEN index_class=2 AND type_class=2 THEN requesting_trx_id END)
+FROM (
+SELECT waits.requesting_trx_id,
+       CASE requested.lock_index WHEN 'PRIMARY' THEN 0 WHEN 'idx_streams_deleted_at' THEN 1 ELSE 2 END AS index_class,
+       CASE requested.lock_type WHEN 'RECORD' THEN 0 WHEN 'TABLE' THEN 1 ELSE 2 END AS type_class
+FROM information_schema.INNODB_LOCK_WAITS waits
+JOIN information_schema.INNODB_LOCKS requested ON requested.lock_id = waits.requested_lock_id AND requested.lock_trx_id = waits.requesting_trx_id
+WHERE requested.lock_table = ?
+) classified_waits`
+	diagnosticCtx, cancelDiagnostic := context.WithTimeout(ctx, 250*time.Millisecond)
+	defer cancelDiagnostic()
+	var classes [9]int
+	if err := diagnostic.QueryRowContext(diagnosticCtx, lockClassesQuery, table).Scan(&classes[0], &classes[1], &classes[2], &classes[3], &classes[4], &classes[5], &classes[6], &classes[7], &classes[8]); err != nil {
+		category := "query_error"
+		switch {
+		case errors.Is(err, context.DeadlineExceeded) || errors.Is(diagnosticCtx.Err(), context.DeadlineExceeded):
+			category = "deadline"
+		case errors.Is(err, context.Canceled) || errors.Is(diagnosticCtx.Err(), context.Canceled):
+			category = "cancel"
+		}
+		t.Logf("settings lock diagnostic waits status=%s", category)
+		return
+	}
+	t.Logf("settings lock diagnostic waits status=ok primary_record=%d primary_table=%d primary_other=%d deleted_record=%d deleted_table=%d deleted_other=%d other_record=%d other_table=%d other_other=%d", classes[0], classes[1], classes[2], classes[3], classes[4], classes[5], classes[6], classes[7], classes[8])
 }
 
 func streamSettingsLockDiagnosticPool(t *testing.T, application *sql.DB, schema string) (*sql.DB, func()) {

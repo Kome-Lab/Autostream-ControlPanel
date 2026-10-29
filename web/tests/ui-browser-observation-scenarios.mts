@@ -1,16 +1,37 @@
 import type { TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { BrowserHarness } from "./helpers/browser-harness.mts";
+import { waitForMinimumMapCount } from "./helpers/browser-response-count.mts";
 import { assertAuthMeExpiryOutcome, assertBrowserSuiteExecution, assertLoginNavigationOutcome, assertLogoutOutcome, assertNavigationBoundaryOutcome, authMeExpiryScenarioName, type BrowserSuiteSummary } from "./helpers/ui-foundation-assertions.mts";
 import { type BrowserRouteFixture, currentUser, controlPlatformStream, healthyRows, workerPilotRows, currentVersion, expectedAuthMeExpiryReturnURL } from "./ui-browser-fixture.mts";
 import { setStoredDisplay, waitForAnimationFrames } from "./ui-browser-navigation-helpers.mts";
 import { waitForShell, waitForStatus, type FocusSnapshot, focusSnapshotExpression } from "./ui-browser-query-auth-helpers.mts";
+import { paint } from "./ui-regression/navigation.mts";
 
 
 
-export async function runResponsiveSurfacesScenario(t: TestContext, browser: BrowserHarness, server: { baseUrl: string }, fixture: Pick<BrowserRouteFixture, "authResponse" | "streamsResponse" | "healthResponse" | "workersResponse" | "nodesResponse">) {
+const bootstrapReadPaths = ["/auth/me", "/settings/app", "/version"] as const;
+const bootstrapReadBaseline = (browser: BrowserHarness) => new Map(bootstrapReadPaths.map(path => [path, browser.responses.get(path) || 0]));
+
+async function settledBootstrapReads(browser: BrowserHarness, baseline: ReadonlyMap<string, number>) {
+  for (const path of bootstrapReadPaths) {
+    await waitForMinimumMapCount(browser.responses, path, (baseline.get(path) || 0) + 1, `completed observation bootstrap GET ${path}`, 10_000, () => browser.assertNoFatalError());
+    await browser.waitForRequestHandlersIdle({ pathname: path, method: "GET" });
+    assert.equal(browser.responseStatuses.get(path)?.at(-1), 200, `${path}: observation bootstrap GET must succeed`);
+  }
+  await paint(browser);
+  for (const path of bootstrapReadPaths) {
+    await browser.waitForRequestHandlersIdle({ pathname: path, method: "GET" });
+    assert.equal(browser.responseStatuses.get(path)?.at(-1), 200, `${path}: observation bootstrap GET remains successful after rendering`);
+  }
+}
+
+export async function runResponsiveSurfacesScenario(t: TestContext, browser: BrowserHarness, server: { baseUrl: string }, fixture: Pick<BrowserRouteFixture, "observeBootstrapCancellation" | "authResponse" | "streamsResponse" | "healthResponse" | "workersResponse" | "nodesResponse">) {
 
   await t.test("Bundle 7 affected surfaces are responsive at every canonical width", async () => {
+    const previousBootstrapObservation = fixture.observeBootstrapCancellation;
+    try {
+    fixture.observeBootstrapCancellation = true;
     const affectedRoutes = [
       "/admin/",
       "/admin/streams/",
@@ -39,6 +60,8 @@ export async function runResponsiveSurfacesScenario(t: TestContext, browser: Bro
     await setStoredDisplay(browser, "ja", "light");
 
     for (const route of affectedRoutes) {
+      await browser.waitForRequestHandlersIdle({ method: "GET" });
+      const baseline = bootstrapReadBaseline(browser);
       await browser.navigate(`${server.baseUrl}${route}`);
       await waitForShell(browser, "アカウントメニュー");
       await browser.waitFor(
@@ -46,6 +69,7 @@ export async function runResponsiveSurfacesScenario(t: TestContext, browser: Bro
         (value: number) => value > 0,
         `${route}: main content did not render`,
       );
+      await settledBootstrapReads(browser, baseline);
       for (const viewport of viewports) {
         await browser.setViewport(viewport.width, viewport.height);
         await waitForAnimationFrames(browser);
@@ -70,21 +94,28 @@ export async function runResponsiveSurfacesScenario(t: TestContext, browser: Bro
         assert.ok(snapshot.visibleInteractiveCount > 0, `${route} at ${viewport.width}px exposed no usable controls`);
       }
     }
+    } finally { fixture.observeBootstrapCancellation = previousBootstrapObservation; }
   });
 }
 
 
-export async function runStatusFocusScenario(t: TestContext, browser: BrowserHarness, fixture: Pick<BrowserRouteFixture, "authResponse" | "healthResponse" | "versionFixture">) {
+export async function runStatusFocusScenario(t: TestContext, browser: BrowserHarness, fixture: Pick<BrowserRouteFixture, "observeBootstrapCancellation" | "authResponse" | "healthResponse" | "versionFixture">) {
 
   await t.test("status focus remains visible in normal and forced-colors modes", async () => {
+    const previousBootstrapObservation = fixture.observeBootstrapCancellation;
+    try {
+    fixture.observeBootstrapCancellation = true;
     fixture.authResponse = { body: currentUser };
     await browser.setViewport(1440, 900);
     await browser.setMediaFeatures([]);
     fixture.healthResponse = { body: healthyRows };
     fixture.versionFixture = { body: currentVersion };
     await setStoredDisplay(browser, "en", "light");
+    await browser.waitForRequestHandlersIdle({ method: "GET" });
+    const baseline = bootstrapReadBaseline(browser);
     await browser.reload();
     await waitForStatus(browser, "1/2 services available", "Up to date");
+    await settledBootstrapReads(browser, baseline);
     const normal = await browser.evaluate<FocusSnapshot>(focusSnapshotExpression);
     assert.equal(normal.focused, true);
     assert.notEqual(normal.outlineStyle, "none");
@@ -98,6 +129,7 @@ export async function runStatusFocusScenario(t: TestContext, browser: BrowserHar
     assert.ok(Number.parseFloat(forced.outlineWidth) >= 2);
     assert.equal(forced.boxShadow, "none");
     await browser.setMediaFeatures([]);
+    } finally { fixture.observeBootstrapCancellation = previousBootstrapObservation; }
   });
 }
 
