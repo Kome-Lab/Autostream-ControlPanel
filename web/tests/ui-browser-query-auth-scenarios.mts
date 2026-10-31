@@ -272,32 +272,9 @@ export async function runAuthMeExpiryScenario(t: TestContext, browser: BrowserHa
 
     await browser.evaluate("document.dispatchEvent(new Event('visibilitychange')); window.dispatchEvent(new Event('focus')); true");
     await waitForAnimationFrames(browser);
-    // LoginCard may reuse a fresh React Query setup-status cache (global staleTime: 20s).
-    // The auth-expiry contract is the rendered login state and preserved return URL,
-    // not whether this route happens to issue another network GET.
-    const loginCard = await browser.waitFor<{
-      pathname: string;
-      reason: string | null;
-      loginFormPresent: boolean;
-      usernameInputPresent: boolean;
-      passwordInputPresent: boolean;
-    }>(`(() => ({
-      pathname: location.pathname,
-      reason: new URL(location.href).searchParams.get("reason"),
-      loginFormPresent: Boolean(document.querySelector("form")),
-      usernameInputPresent: Boolean(document.querySelector('input[autocomplete="username"]')),
-      passwordInputPresent: Boolean(document.querySelector('input[autocomplete="current-password"]')),
-    }))()`,
-    (value) => value.pathname === "/login/" && value.reason === "session_expired"
-      && value.loginFormPresent && value.usernameInputPresent && value.passwordInputPresent,
-    "LoginCard did not render the session-expired login form",
-    10_000,
-    );
-    assert.equal(loginCard.pathname, "/login/");
-    assert.equal(loginCard.reason, "session_expired");
-    assert.equal(loginCard.loginFormPresent, true);
-    assert.equal(loginCard.usernameInputPresent, true);
-    assert.equal(loginCard.passwordInputPresent, true);
+    // LoginCard starts its own setup query after the expiry navigation. Settle it
+    // before the next scenario leaves this document and cancels that request.
+    await waitForInitialGET(browser, "/setup/status", 0, 200);
     assertAuthMeExpiryOutcome({
       ...outcome,
       authMeRequestCount: browser.requests.get("/auth/me") || 0,
