@@ -98,7 +98,7 @@ function createCI017Recorder(browser: BrowserHarness) {
         "window.addEventListener('pageshow', event => record({ event: 'pageshow', target: location.pathname + location.search + location.hash, persisted: event.persisted }));",
         "window.addEventListener('visibilitychange', () => record({ event: 'visibilitychange', visibility: document.visibilityState, target: location.pathname + location.search + location.hash }));",
         "const formObserver = new MutationObserver(records => { for (const mutation of records) { for (const node of mutation.removedNodes) if (node instanceof Element && (node.matches('form') || node.querySelector('form'))) record({ event: 'login_form_removed' }); for (const node of mutation.addedNodes) if (node instanceof Element && (node.matches('form') || node.querySelector('form'))) record({ event: 'login_form_added' }); } });",
-        "formObserver.observe(document.documentElement, { childList: true, subtree: true });",
+        "formObserver.observe(document, { childList: true, subtree: true });",
         "const record = entry => { if (trace.length < 180) { trace.push({ at_ms: Math.round(performance.now() * 100) / 100, pathname: location.pathname, ...entry }); try { sessionStorage.setItem(traceKey, JSON.stringify(trace)); } catch {} } };",
         "window.fetch = function(input, init) {",
         "let pathname = ''; try { pathname = new URL(typeof input === 'string' ? input : input.url, location.href).pathname; } catch {}",
