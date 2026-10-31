@@ -39,8 +39,7 @@ test("CI017 auth/me expiry setup bootstrap diagnostic", { timeout: 420_000 }, as
       failure_message: error instanceof Error ? error.message.slice(0, 240) : "unknown",
       page, fetch_trace: fetchTrace.slice(0, 40), harness: browser.getCI017DiagnosticSnapshot() };
     const output = process.env.AUTOSTREAM_CI017_OUTPUT;
-    if (output) { mkdirSync(output, { recursive: true }); writeFileSync(resolve(output, "ci017-auth-expiry-diagnostic.json"), JSON.stringify(diagnostic, null, 2) + "
-", { flag: "wx" }); }
+    if (output) { mkdirSync(output, { recursive: true }); writeFileSync(resolve(output, "ci017-auth-expiry-diagnostic.json"), JSON.stringify(diagnostic, null, 2) + "\n", { flag: "wx" }); }
     console.error("CI017_AUTH_EXPIRY_DIAGNOSTIC " + JSON.stringify(diagnostic));
     throw error;
   }
