@@ -34,7 +34,16 @@ function createCI017Recorder(browser: BrowserHarness) {
         if (new URL(String(request.url || "")).pathname === "/setup/status" && request.method === "GET") {
           const id = String(params.requestId || "");
           networkRequestIds.add(id);
-          record("network_request", { request_id: id, loader_id_present: typeof params.loaderId === "string", frame_id_present: typeof params.frameId === "string" });
+          const initiator = params.initiator as { type?: string; stack?: { callFrames?: Array<{ functionName?: string; url?: string; lineNumber?: number; columnNumber?: number }> } } | undefined;
+          const callFrames = (initiator?.stack?.callFrames || []).slice(0, 8).map(frame => ({
+            function_name: String(frame.functionName || "").slice(0, 100),
+            url: String(frame.url || "").slice(0, 180),
+            line: Number(frame.lineNumber) || 0,
+            column: Number(frame.columnNumber) || 0
+          }));
+          record("network_request", { request_id: id, loader_id_present: typeof params.loaderId === "string",
+            frame_id_present: typeof params.frameId === "string", resource_type: String(params.type || "unknown"),
+            initiator_type: String(initiator?.type || "unknown"), initiator_frames: callFrames });
         }
       } catch {}
     }
@@ -57,6 +66,9 @@ function createCI017Recorder(browser: BrowserHarness) {
         });
       } catch {}
     }
+    if (packet.method === "Page.frameRequestedNavigation") {
+      record("frame_requested_navigation", { reason: String(params.reason || "unknown"), disposition: String(params.disposition || "unknown"), frame_id_present: typeof params.frameId === "string" });
+    }
     if (packet.method === "Page.frameNavigated" && params.frame && typeof params.frame === "object") {
       const frame = params.frame as { url?: string; parentId?: string };
       if (!frame.parentId) {
@@ -73,12 +85,17 @@ function createCI017Recorder(browser: BrowserHarness) {
         "(() => {",
         "const trace = globalThis.__ci017SetupFetchTrace = [];",
         "const original = window.fetch;",
+        "const stack = () => String(new Error().stack || '').split('\\n').slice(2, 12).map(line => line.slice(0, 240));",
+        "for (const method of ['pushState', 'replaceState']) { const originalMethod = history[method]; history[method] = function(state, title, url) { let target = null; try { const parsed = new URL(String(url || location.href), location.href); target = parsed.pathname + parsed.search + parsed.hash; } catch {} record({ event: 'history_' + method, target, stack: stack() }); return originalMethod.apply(this, arguments); }; }",
+        "window.addEventListener('popstate', () => record({ event: 'popstate', target: location.pathname + location.search + location.hash, stack: stack() }));",
+        "window.addEventListener('hashchange', () => record({ event: 'hashchange', target: location.pathname + location.search + location.hash, stack: stack() }));",
+        "window.addEventListener('pagehide', () => record({ event: 'pagehide', target: location.pathname + location.search + location.hash, stack: stack() }));",
         "const record = entry => { if (trace.length < 40) trace.push({ at_ms: Math.round(performance.now() * 100) / 100, ...entry }); };",
         "window.fetch = function(input, init) {",
         "let pathname = ''; try { pathname = new URL(typeof input === 'string' ? input : input.url, location.href).pathname; } catch {}",
         "if (pathname !== '/setup/status') return original.apply(this, arguments);",
         "const signal = init?.signal || (typeof Request !== 'undefined' && input instanceof Request ? input.signal : undefined);",
-        "record({ event: 'fetch_start', signal_present: !!signal, signal_aborted: signal?.aborted === true });",
+        "record({ event: 'fetch_start', signal_present: !!signal, signal_aborted: signal?.aborted === true, stack: stack() });",
         "if (signal) signal.addEventListener('abort', () => record({ event: 'fetch_abort', signal_aborted: signal.aborted === true }), { once: true });",
         "let pending; try { pending = original.apply(this, arguments); } catch (error) { record({ event: 'fetch_throw', error_name: error instanceof Error ? error.name : 'unknown' }); throw error; }",
         "return pending.then(response => { record({ event: 'fetch_response', status: response.status, signal_aborted: signal?.aborted === true }); return response; }, error => { record({ event: 'fetch_reject', error_name: error instanceof Error ? error.name : 'unknown', signal_aborted: signal?.aborted === true }); throw error; });",
@@ -100,7 +117,7 @@ function createCI017Recorder(browser: BrowserHarness) {
       return {
         schema_version: 2,
         page,
-        fetch_trace: fetchTrace.slice(0, 40),
+        fetch_trace: fetchTrace.slice(0, 80),
         cdp_events: [...events],
         harness: {
           setup_requests: internals.requests.get("/setup/status") || 0,
