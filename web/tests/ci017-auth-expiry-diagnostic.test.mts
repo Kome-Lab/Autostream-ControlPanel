@@ -102,7 +102,7 @@ function createCI017Recorder(browser: BrowserHarness) {
         "const record = entry => { if (trace.length < 180) { trace.push({ at_ms: Math.round(performance.now() * 100) / 100, pathname: location.pathname, ...entry }); try { sessionStorage.setItem(traceKey, JSON.stringify(trace)); } catch {} } };",
         "window.fetch = function(input, init) {",
         "let pathname = ''; try { pathname = new URL(typeof input === 'string' ? input : input.url, location.href).pathname; } catch {}",
-        "if (pathname !== '/setup/status') return original.apply(this, arguments);",
+        "if (pathname !== '/setup/status' && pathname !== '/auth/session/refresh') return original.apply(this, arguments);",
         "const signal = init?.signal || (typeof Request !== 'undefined' && input instanceof Request ? input.signal : undefined);",
         "record({ event: 'fetch_start', signal_present: !!signal, signal_aborted: signal?.aborted === true, stack: stack() });",
         "if (signal) signal.addEventListener('abort', () => record({ event: 'fetch_abort', signal_aborted: signal.aborted === true }), { once: true });",
@@ -136,6 +136,7 @@ function createCI017Recorder(browser: BrowserHarness) {
           auth_me_responses: internals.responses.get("/auth/me") || 0,
           refresh_requests: internals.requests.get("/auth/session/refresh") || 0,
           refresh_responses: internals.responses.get("/auth/session/refresh") || 0,
+          refresh_response_statuses: [...(internals.responseStatuses.get("/auth/session/refresh") || [])],
           navigation_count: internals.navigationCount,
           console_error_count: internals.consoleErrorCount
         }
