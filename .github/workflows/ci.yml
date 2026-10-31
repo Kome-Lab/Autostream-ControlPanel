@@ -2,7 +2,9 @@
 
 on:
   push:
-    branches: ['**']
+    branches:
+      - '**'
+      - '!diagnostic/ci017-auth-expiry'
   pull_request:
   workflow_dispatch:
 

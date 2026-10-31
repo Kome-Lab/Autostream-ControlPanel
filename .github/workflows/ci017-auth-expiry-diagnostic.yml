@@ -1,0 +1,50 @@
+name: CI017 auth expiry diagnostic
+on:
+  push:
+    branches:
+      - 'diagnostic/ci017-auth-expiry'
+permissions:
+  contents: read
+jobs:
+  auth-expiry-diagnostic:
+    name: CI017 auth expiry diagnostic
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 26
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install exact web dependencies
+        run: npm ci
+      - name: Prepare the same Japanese browser fonts
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y fontconfig fonts-noto-cjk=1:20230817+repack1-3
+          fc-list -q ':lang=ja'
+          test -x /usr/bin/google-chrome
+      - name: Run one CI017 diagnostic attempt
+        env:
+          AUTOSTREAM_BROWSER_PATH: /usr/bin/google-chrome
+          AUTOSTREAM_CI017_DIAGNOSTIC: "1"
+          AUTOSTREAM_CI017_OUTPUT: ${{ runner.temp }}/ci017-auth-expiry
+        run: |
+          set -euo pipefail
+          mkdir -p "${AUTOSTREAM_CI017_OUTPUT}"
+          node --no-warnings --test --test-concurrency=1 tests/ci017-auth-expiry-diagnostic.test.mts
+      - name: Preserve bounded CI017 diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ci017-auth-expiry-diagnostic-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ci017-auth-expiry/
+          if-no-files-found: warn
+          retention-days: 14
