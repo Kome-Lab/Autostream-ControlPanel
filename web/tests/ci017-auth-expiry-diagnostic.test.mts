@@ -166,6 +166,10 @@ test("CI017 auth/me expiry setup bootstrap diagnostic", { timeout: 420_000 }, as
     phase = "session-expiry";
     await runSessionExpiryScenario(t, browser, server, fixture);
     phase = "auth-me-401-expiry";
+    // The root QueryClient is shared across route changes. The preceding session-expiry scenario
+    // may leave a fresh setup-status cache entry; let the configured 20s staleTime elapse so
+    // the legacy auth-expiry scenario tests a real bootstrap refetch, not an assumed one.
+    await new Promise((resolve) => setTimeout(resolve, 20_100));
     await runAuthMeExpiryScenario(t, browser, server, fixture);
   } catch (error) {
     scenarioError = error;
