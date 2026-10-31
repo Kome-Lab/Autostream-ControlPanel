@@ -112,49 +112,7 @@ export class BrowserHarness {
   private fatalError: Error | undefined;
   private fetchFailureReported = false;
   private closed = false;
-  private readonly ci017SetupEvents: Array<Record<string, unknown>> = [];
-  private readonly ci017NetworkRequestIds = new Set<string>();
   private readonly nativeFocusObserver = new NativeFocusObserver((method, params) => this.send(method, params));
-
-  private recordCI017SetupEvent(event: string, detail: Record<string, unknown> = {}) {
-    if (process.env.AUTOSTREAM_CI017_DIAGNOSTIC !== "1" || this.ci017SetupEvents.length >= 120) return;
-    this.ci017SetupEvents.push({ at_ms: Math.round(performance.now() * 100) / 100, event, ...detail });
-  }
-
-  async installCI017FetchProbe() {
-    if (process.env.AUTOSTREAM_CI017_DIAGNOSTIC !== "1") throw new Error("CI017 diagnostic mode is not enabled");
-    const source = `(() => {
-      const trace = globalThis.__ci017SetupFetchTrace = [];
-      const original = window.fetch;
-      const record = (entry) => { if (trace.length < 40) trace.push({ at_ms: Math.round(performance.now() * 100) / 100, ...entry }); };
-      window.fetch = function(input, init) {
-        let pathname = "";
-        try { pathname = new URL(typeof input === "string" ? input : input.url, location.href).pathname; } catch {}
-        if (pathname !== "/setup/status") return original.apply(this, arguments);
-        const signal = init?.signal || (typeof Request !== "undefined" && input instanceof Request ? input.signal : undefined);
-        record({ event: "fetch_start", signal_present: !!signal, signal_aborted: signal?.aborted === true });
-        if (signal) signal.addEventListener("abort", () => record({ event: "fetch_abort", signal_aborted: signal.aborted === true }), { once: true });
-        let pending;
-        try { pending = original.apply(this, arguments); }
-        catch (error) { record({ event: "fetch_throw", error_name: error instanceof Error ? error.name : "unknown" }); throw error; }
-        return pending.then(response => { record({ event: "fetch_response", status: response.status, signal_aborted: signal?.aborted === true }); return response; },
-          error => { record({ event: "fetch_reject", error_name: error instanceof Error ? error.name : "unknown", signal_aborted: signal?.aborted === true }); throw error; });
-      };
-    })();`;
-    await this.send("Page.addScriptToEvaluateOnNewDocument", { source });
-  }
-
-  getCI017DiagnosticSnapshot() {
-    return {
-      events: [...this.ci017SetupEvents],
-      requests: this.requests.get("/setup/status") || 0,
-      responses: this.responses.get("/setup/status") || 0,
-      response_statuses: [...(this.responseStatuses.get("/setup/status") || [])],
-      active_fetches: JSON.parse(this.requestLifecycle.diagnostics({ pathname: "/setup/status", method: "GET" })),
-      generation: this.requestLifecycle.generation,
-      navigation_count: this.navigationCount,
-    };
-  }
 
   private constructor(
     browserProcess: ChildProcessWithoutNullStreams,
@@ -659,28 +617,6 @@ export class BrowserHarness {
       return;
     }
     if (!message.method || (message.sessionId && message.sessionId !== this.sessionId)) return;
-    const networkParams = message.params || {};
-    if (message.method === "Network.requestWillBeSent" && networkParams.request && typeof networkParams.request === "object") {
-      const request = networkParams.request as { url?: string; method?: string };
-      try {
-        if (new URL(String(request.url || "")).pathname === "/setup/status" && request.method === "GET") {
-          this.ci017NetworkRequestIds.add(String(networkParams.requestId || ""));
-          this.recordCI017SetupEvent("network_request", { request_id: String(networkParams.requestId || ""), loader_id_present: typeof networkParams.loaderId === "string", frame_id_present: typeof networkParams.frameId === "string" });
-        }
-      } catch {}
-    }
-    if (message.method === "Network.responseReceived" && networkParams.response && typeof networkParams.response === "object" && this.ci017NetworkRequestIds.has(String(networkParams.requestId || ""))) {
-      const response = networkParams.response as { status?: number };
-      this.recordCI017SetupEvent("network_response", { request_id: String(networkParams.requestId || ""), status: Number(response.status) || 0 });
-    }
-    if (message.method === "Network.loadingFinished" && typeof networkParams.requestId === "string" && this.ci017NetworkRequestIds.has(networkParams.requestId))
-      this.recordCI017SetupEvent("network_finished", { request_id: networkParams.requestId });
-    if (message.method === "Network.loadingFailed" && typeof networkParams.requestId === "string" && this.ci017NetworkRequestIds.has(networkParams.requestId))
-      this.recordCI017SetupEvent("network_failed", { request_id: networkParams.requestId, canceled: networkParams.canceled === true, error_text: typeof networkParams.errorText === "string" ? networkParams.errorText.slice(0, 80) : "unknown" });
-    if (message.method === "Page.frameNavigated" && networkParams.frame && typeof networkParams.frame === "object") {
-      const frame = networkParams.frame as { url?: string; parentId?: string };
-      if (!frame.parentId) { try { this.recordCI017SetupEvent("main_frame_navigated", { pathname: new URL(String(frame.url || "about:blank")).pathname }); } catch {} }
-    }
     this.networkCancellation?.observe(message, this.requestLifecycle.generation);
     const cancellationEvent = optionalBootstrapCancellationEvent(message.params?.requestId);
     if (message.sessionId === this.sessionId && message.method === "Network.loadingFailed" && message.params?.canceled === true && message.params?.errorText === "net::ERR_ABORTED" && cancellationEvent) this.eventWaiters.resolve(cancellationEvent, message.params);
@@ -734,14 +670,8 @@ export class BrowserHarness {
     });
     this.requestLifecycle.observeRegistration(requestId, params, this.mainFrameId, this.fetchNavigationObservation());
     this.requests.set(pathname, (this.requests.get(pathname) || 0) + 1);
-    if (pathname === "/setup/status" && request.method === "GET") this.recordCI017SetupEvent("fetch_paused", {
-      fetch_request_id: requestId, network_id: typeof params.networkId === "string" ? params.networkId : null,
-      frame_id_present: typeof params.frameId === "string", generation });
 		const response = this.routeResolver({ method: request.method, url: request.url, postData: request.postData });
     this.requestLifecycle.setRequiredResponse(requestId, response !== null && response.requiredResponse !== false);
-    if (pathname === "/setup/status" && request.method === "GET") this.recordCI017SetupEvent("fixture_resolved", {
-      fetch_request_id: requestId, fixture_matched: response !== null, fixture_status: response?.status ?? 200,
-      required_response: response !== null && response.requiredResponse !== false });
     this.networkCancellation?.registerContract(requestId, { generation, pathname, optionalFixture: response !== null && response.requiredResponse === false });
     if (retireDeclaredBootstrap(this.networkCancellation, requestId, response)) return;
     if (!response) {
@@ -755,19 +685,12 @@ export class BrowserHarness {
     if (response.waitUntil) await response.waitUntil;
     const body = response.body === undefined ? "" : JSON.stringify(response.body);
     const responseStatus = response.status ?? 200;
-    if (pathname === "/setup/status" && request.method === "GET") this.recordCI017SetupEvent("settlement_start", { fetch_request_id: requestId });
-    let settled: boolean;
-    try {
-      settled = await this.settleFetchRequest(requestId, "Fetch.fulfillRequest", {
-        requestId, responseCode: responseStatus,
-        responseHeaders: [{ name: "content-type", value: response.contentType ?? "application/json; charset=utf-8" }],
-        body: response.bodyBase64 ?? Buffer.from(body).toString("base64"),
-      }, response.observeInFlightOAuthCancellation === true);
-    } catch (error) {
-      if (pathname === "/setup/status" && request.method === "GET") this.recordCI017SetupEvent("settlement_error", { fetch_request_id: requestId, error_name: error instanceof Error ? error.name : "unknown" });
-      throw error;
-    }
-    if (pathname === "/setup/status" && request.method === "GET") this.recordCI017SetupEvent("settlement_complete", { fetch_request_id: requestId, settled });
+    const settled = await this.settleFetchRequest(requestId, "Fetch.fulfillRequest", {
+      requestId,
+      responseCode: responseStatus,
+      responseHeaders: [{ name: "content-type", value: response.contentType ?? "application/json; charset=utf-8" }],
+      body: response.bodyBase64 ?? Buffer.from(body).toString("base64"),
+    }, response.observeInFlightOAuthCancellation === true);
     if (!settled) return;
     this.responses.set(pathname, (this.responses.get(pathname) || 0) + 1);
     const statuses = this.responseStatuses.get(pathname) || [];
