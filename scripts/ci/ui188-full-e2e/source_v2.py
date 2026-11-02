@@ -183,7 +183,10 @@ def verify(root, component_name="all", authority_path=None):
     verified = {}
     for name, component in components.items():
         if name in PROTECTED_COMPONENTS:
-            expected_protected.update(row["path"] for row in component["files"])
+            expected_protected.update(
+                row["path"] for row in component["files"]
+                if any(row["path"].startswith(prefix) for prefix in authority["protected_path_roots"])
+            )
 
     actual_protected = set()
     tracked = subprocess.check_output(["git", "-C", str(root), "ls-files", "-z"])
@@ -235,8 +238,10 @@ def main():
     try:
         result = verify(args.root.resolve(), args.component, args.authority)
         print("SOURCE_V2_COMPONENTS_VERIFIED=" + json.dumps(result, sort_keys=True))
-    except (Blocked, OSError, ValueError, subprocess.SubprocessError, KeyError, TypeError):
-        raise SystemExit("BLOCKED_SOURCE_AUTHORITY_V2") from None
+    except Blocked as error:
+        raise SystemExit("BLOCKED_SOURCE_AUTHORITY_V2:" + str(error)) from None
+    except (OSError, ValueError, subprocess.SubprocessError, KeyError, TypeError) as error:
+        raise SystemExit("BLOCKED_SOURCE_AUTHORITY_V2:" + type(error).__name__) from None
 
 
 if __name__ == "__main__":
