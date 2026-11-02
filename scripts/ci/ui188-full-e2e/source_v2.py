@@ -62,7 +62,7 @@ def tree_hash(rows):
     for row in rows:
         parts = row["path"].split("/")
         require(
-            all(part not in ("", ".", "..") and ":" not in part and "\\\\" not in part for part in parts),
+            all(part not in ("", ".", "..") and ":" not in part and "\\" not in part for part in parts),
             "BLOCKED_V2_PATH",
         )
         node = tree
@@ -213,7 +213,7 @@ def verify(root, component_name="all", authority_path=None):
         verified[name] = len(rows)
 
     gomod = (root / "go.mod").read_text()
-    require(re.search(r"^go 1\\.26\\.5$", gomod, re.M), "BLOCKED_V2_GO_VERSION")
+    require(re.search(r"^go 1\.26\.5$", gomod, re.M), "BLOCKED_V2_GO_VERSION")
     require(authority["cross_repository_authority"]["cp_contracts_version"] in gomod, "BLOCKED_V2_CONTRACTS_PIN")
     return verified
 
