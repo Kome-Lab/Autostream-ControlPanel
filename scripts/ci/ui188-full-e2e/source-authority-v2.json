@@ -28,6 +28,21 @@
           "oid": "68cac3a605dc0949f6e3b9aa62770375000bde96"
         },
         {
+          "path": "Dockerfile",
+          "mode": "100644",
+          "oid": "4afe68584a09a696f81d8db7692ac48d825f92ab"
+        },
+        {
+          "path": "Makefile",
+          "mode": "100644",
+          "oid": "2ac83a555696c339f9d1d267cfbd2c733fb9cdb6"
+        },
+        {
+          "path": "authoring/README.md",
+          "mode": "100644",
+          "oid": "7ac510cde1670b7e5098bd78a6e78c246feb77e6"
+        },
+        {
           "path": "authoring/artifact-layout.json",
           "mode": "100644",
           "oid": "e216ec082268066619ea2a11cc8c8c44343cf510"
@@ -83,11 +98,6 @@
           "oid": "c2967f34eecf6be4181411bf7aac9e4e4dbde335"
         },
         {
-          "path": "authoring/README.md",
-          "mode": "100644",
-          "oid": "7ac510cde1670b7e5098bd78a6e78c246feb77e6"
-        },
-        {
           "path": "docker-compose.local.yml",
           "mode": "100644",
           "oid": "86694ba822e537a603df5f1a71e8e77fb1756992"
@@ -103,14 +113,9 @@
           "oid": "6b8964033d193a81deb707f1866f000c8cd56116"
         },
         {
-          "path": "Dockerfile",
+          "path": "release/README.install.md",
           "mode": "100644",
-          "oid": "4afe68584a09a696f81d8db7692ac48d825f92ab"
-        },
-        {
-          "path": "Makefile",
-          "mode": "100644",
-          "oid": "2ac83a555696c339f9d1d267cfbd2c733fb9cdb6"
+          "oid": "9d3ae4fe2cb7746f374473ff824d9721b07d2e9e"
         },
         {
           "path": "release/autostream-backup-control-panel.example",
@@ -121,11 +126,6 @@
           "path": "release/install-autostream-control-panel",
           "mode": "100644",
           "oid": "ad2819254d69b8955e82057c80845780ace0f618"
-        },
-        {
-          "path": "release/README.install.md",
-          "mode": "100644",
-          "oid": "9d3ae4fe2cb7746f374473ff824d9721b07d2e9e"
         },
         {
           "path": "release/test-control-platform-migration-contract.sh",
@@ -3443,6 +3443,11 @@
           "oid": "6c4a8132d956dac8d0bc9fea9fe73885133807ca"
         },
         {
+          "path": "internal/httpapi/server.go",
+          "mode": "100644",
+          "oid": "28b714d084779282b6f4fe5b76c3d40ccd9247d0"
+        },
+        {
           "path": "internal/httpapi/server_account.go",
           "mode": "100644",
           "oid": "87e8b0ee6d19856c692e2e47ed265c9b0eb3c2fd"
@@ -3573,14 +3578,14 @@
           "oid": "5c7c7f5471fd8ae94bc891fcebf08b79fa1638af"
         },
         {
-          "path": "internal/httpapi/server_routes_updater.go",
-          "mode": "100644",
-          "oid": "074233b87b8cba21d0787953f9bc0f892ab1322c"
-        },
-        {
           "path": "internal/httpapi/server_routes.go",
           "mode": "100644",
           "oid": "afd56b9f99d2da4561e7d4649d6157787c358b39"
+        },
+        {
+          "path": "internal/httpapi/server_routes_updater.go",
+          "mode": "100644",
+          "oid": "074233b87b8cba21d0787953f9bc0f892ab1322c"
         },
         {
           "path": "internal/httpapi/server_runtime_config.go",
@@ -3658,14 +3663,14 @@
           "oid": "39fc6833a1dd0fe7d1716b281c9aa8df9242b576"
         },
         {
-          "path": "internal/httpapi/server_stream_dispatch_errors.go",
-          "mode": "100644",
-          "oid": "382b2151f1bdbaf1060ca701f1a670d592a8ae60"
-        },
-        {
           "path": "internal/httpapi/server_stream_dispatch.go",
           "mode": "100644",
           "oid": "b9fd9de42e70f7b5812606773a8f9606954bf66c"
+        },
+        {
+          "path": "internal/httpapi/server_stream_dispatch_errors.go",
+          "mode": "100644",
+          "oid": "382b2151f1bdbaf1060ca701f1a670d592a8ae60"
         },
         {
           "path": "internal/httpapi/server_stream_lifecycle_lock.go",
@@ -3693,6 +3698,11 @@
           "oid": "6ebf384627bfd11de513434fae01c24237ddc1a8"
         },
         {
+          "path": "internal/httpapi/server_stream_start.go",
+          "mode": "100644",
+          "oid": "947ce25be656e3baefddceb4ee9b02b0f3ff0528"
+        },
+        {
           "path": "internal/httpapi/server_stream_start_completion.go",
           "mode": "100644",
           "oid": "32eecca7d256786453a433af9ebc2c27cfd2f6bc"
@@ -3708,19 +3718,14 @@
           "oid": "66bd01451dcdd1028020f17c89ce4d073e5b89ac"
         },
         {
-          "path": "internal/httpapi/server_stream_start.go",
+          "path": "internal/httpapi/server_stream_stop.go",
           "mode": "100644",
-          "oid": "947ce25be656e3baefddceb4ee9b02b0f3ff0528"
+          "oid": "48de6780751f6f5b02b3f407bac6995843d33b3d"
         },
         {
           "path": "internal/httpapi/server_stream_stop_outcome.go",
           "mode": "100644",
           "oid": "af78c1d2c43f646d78d38554e0b38ad509af30cd"
-        },
-        {
-          "path": "internal/httpapi/server_stream_stop.go",
-          "mode": "100644",
-          "oid": "48de6780751f6f5b02b3f407bac6995843d33b3d"
         },
         {
           "path": "internal/httpapi/server_streams.go",
@@ -3761,11 +3766,6 @@
           "path": "internal/httpapi/server_youtube_recovery.go",
           "mode": "100644",
           "oid": "4dd3a5415b9d5d7988a1d32430024cd682358655"
-        },
-        {
-          "path": "internal/httpapi/server.go",
-          "mode": "100644",
-          "oid": "28b714d084779282b6f4fe5b76c3d40ccd9247d0"
         },
         {
           "path": "internal/httpapi/service_email.go",
@@ -3838,14 +3838,14 @@
           "oid": "b6c364157a7839879b6cca3c5fe22cee9b44e43a"
         },
         {
-          "path": "internal/httpapi/update_host_bootstrap_broker.go",
-          "mode": "100644",
-          "oid": "a3362a8980808ea880a76926a698225327673b17"
-        },
-        {
           "path": "internal/httpapi/update_host_bootstrap.go",
           "mode": "100644",
           "oid": "5c9464e5dc139c59cb3c9994110f218b424409f6"
+        },
+        {
+          "path": "internal/httpapi/update_host_bootstrap_broker.go",
+          "mode": "100644",
+          "oid": "a3362a8980808ea880a76926a698225327673b17"
         },
         {
           "path": "internal/httpapi/updater_policy.go",
@@ -3903,14 +3903,14 @@
           "oid": "746b4db3c9ead54b8646dd5e69d6e0b33d54ba74"
         },
         {
-          "path": "internal/mediaassets/upload_operation_sql.go",
-          "mode": "100644",
-          "oid": "27a850f579418f71e8dfa5dcfc9c7914c8a81ba5"
-        },
-        {
           "path": "internal/mediaassets/upload_operation.go",
           "mode": "100644",
           "oid": "b43d4d16148b2422da871ca0a136ff522e0d2771"
+        },
+        {
+          "path": "internal/mediaassets/upload_operation_sql.go",
+          "mode": "100644",
+          "oid": "27a850f579418f71e8dfa5dcfc9c7914c8a81ba5"
         },
         {
           "path": "internal/netpolicy/service_url.go",
@@ -3941,6 +3941,11 @@
           "path": "internal/security/totp.go",
           "mode": "100644",
           "oid": "2d5e93a86a883f1a1628cbf7800f563104f1e2ac"
+        },
+        {
+          "path": "internal/servicecall/client.go",
+          "mode": "100644",
+          "oid": "fe93bf197976b6da9ebf6418e36e1cd7f40f6028"
         },
         {
           "path": "internal/servicecall/client_archive_transfer.go",
@@ -3993,9 +3998,9 @@
           "oid": "4a1c6688b5b5d6636d2ec16fd5ffdaa19c2a05e3"
         },
         {
-          "path": "internal/servicecall/client.go",
+          "path": "internal/servicecall/start_preparation.go",
           "mode": "100644",
-          "oid": "fe93bf197976b6da9ebf6418e36e1cd7f40f6028"
+          "oid": "142310b4b0c9f961032045959ae7be96274815b0"
         },
         {
           "path": "internal/servicecall/start_preparation_cleanup.go",
@@ -4006,11 +4011,6 @@
           "path": "internal/servicecall/start_preparation_transport.go",
           "mode": "100644",
           "oid": "ca7e97095e8a10005b99084d9a948379400835b6"
-        },
-        {
-          "path": "internal/servicecall/start_preparation.go",
-          "mode": "100644",
-          "oid": "142310b4b0c9f961032045959ae7be96274815b0"
         },
         {
           "path": "internal/servicecall/video_cover.go",
@@ -4028,6 +4028,11 @@
           "oid": "0dc78a9ee73e3d51df4f3b4df21b2e7a966e2f7f"
         },
         {
+          "path": "internal/store/app_settings.go",
+          "mode": "100644",
+          "oid": "23cbcf71bb0476fac93dfa722d76bb56c8d2efb9"
+        },
+        {
           "path": "internal/store/app_settings_mutation_mariadb.go",
           "mode": "100644",
           "oid": "f5b14c08128e235bf40f30e4eff8a7d07282d262"
@@ -4038,11 +4043,6 @@
           "oid": "44a91e774dc513fd99affbad05e1842ec0507c1a"
         },
         {
-          "path": "internal/store/app_settings.go",
-          "mode": "100644",
-          "oid": "23cbcf71bb0476fac93dfa722d76bb56c8d2efb9"
-        },
-        {
           "path": "internal/store/audit_events_mariadb.go",
           "mode": "100644",
           "oid": "9683de3a623f9f688bc9642f16a3289f22af3810"
@@ -4051,6 +4051,11 @@
           "path": "internal/store/audit_redaction.go",
           "mode": "100644",
           "oid": "2422592adde046dfa88c8d4b2595e5b2ef8a6b2f"
+        },
+        {
+          "path": "internal/store/auth.go",
+          "mode": "100644",
+          "oid": "d10c92034285ba0005cbabd733bd63abadd45132"
         },
         {
           "path": "internal/store/auth_credential_values.go",
@@ -4083,19 +4088,14 @@
           "oid": "fe830886f9b43babf42859103bcfbbfc9306fe47"
         },
         {
-          "path": "internal/store/auth.go",
+          "path": "internal/store/current_discord_credential_binding.go",
           "mode": "100644",
-          "oid": "d10c92034285ba0005cbabd733bd63abadd45132"
+          "oid": "4bfb8777aff4998cfa2fe9e3e2d7cab56a05db72"
         },
         {
           "path": "internal/store/current_discord_credential_binding_mariadb.go",
           "mode": "100644",
           "oid": "40af18052f0f5b7d5e6940cfb27054a5601144f6"
-        },
-        {
-          "path": "internal/store/current_discord_credential_binding.go",
-          "mode": "100644",
-          "oid": "4bfb8777aff4998cfa2fe9e3e2d7cab56a05db72"
         },
         {
           "path": "internal/store/database_errors.go",
@@ -4166,6 +4166,11 @@
           "path": "internal/store/integrations.go",
           "mode": "100644",
           "oid": "cd01490292f18e0d801ab80feb9ec68fa3df6a17"
+        },
+        {
+          "path": "internal/store/memory.go",
+          "mode": "100644",
+          "oid": "98e3d76ae39bebbee91707a414d7b0849366bc65"
         },
         {
           "path": "internal/store/memory_admin.go",
@@ -4243,14 +4248,14 @@
           "oid": "47a432bff6b1cf7e5836378522d3f1f2f133cd24"
         },
         {
-          "path": "internal/store/memory.go",
-          "mode": "100644",
-          "oid": "98e3d76ae39bebbee91707a414d7b0849366bc65"
-        },
-        {
           "path": "internal/store/oauth_login.go",
           "mode": "100644",
           "oid": "811370ddc0484e5ef612bc538c48ab251cec7595"
+        },
+        {
+          "path": "internal/store/profile_mutation.go",
+          "mode": "100644",
+          "oid": "78ad0b46f5aaa5676a5c547b6c395cafb9fb3b6b"
         },
         {
           "path": "internal/store/profile_mutation_mariadb.go",
@@ -4261,11 +4266,6 @@
           "path": "internal/store/profile_mutation_memory.go",
           "mode": "100644",
           "oid": "f206b534f426c188f55e5c58db4d323291dbc8ce"
-        },
-        {
-          "path": "internal/store/profile_mutation.go",
-          "mode": "100644",
-          "oid": "78ad0b46f5aaa5676a5c547b6c395cafb9fb3b6b"
         },
         {
           "path": "internal/store/profiles.go",
@@ -4328,14 +4328,19 @@
           "oid": "8bd445cf1110e01dab28a62d98d7b49575508bb1"
         },
         {
+          "path": "internal/store/security_settings.go",
+          "mode": "100644",
+          "oid": "50ec603839ef19d47a3d71f16f76f0b80b236420"
+        },
+        {
           "path": "internal/store/security_settings_mutation.go",
           "mode": "100644",
           "oid": "e8c7192a1c2529cdeeebb26d2d9124188efe67f3"
         },
         {
-          "path": "internal/store/security_settings.go",
+          "path": "internal/store/service_assignment_guard.go",
           "mode": "100644",
-          "oid": "50ec603839ef19d47a3d71f16f76f0b80b236420"
+          "oid": "81502cb0b6c248b4ae0d9107c93a0ff2e5ae0539"
         },
         {
           "path": "internal/store/service_assignment_guard_locks_mariadb.go",
@@ -4358,11 +4363,6 @@
           "oid": "4d3445df76643933474f69fa40e094c98bc2eebd"
         },
         {
-          "path": "internal/store/service_assignment_guard.go",
-          "mode": "100644",
-          "oid": "81502cb0b6c248b4ae0d9107c93a0ff2e5ae0539"
-        },
-        {
           "path": "internal/store/service_assignments_events_mariadb.go",
           "mode": "100644",
           "oid": "4eb8a62ec1ca1956f97a383d84e963b2b4c908ce"
@@ -4373,6 +4373,11 @@
           "oid": "753837f08f62f37c4e4847de36dbaa366f9f900b"
         },
         {
+          "path": "internal/store/service_endpoint_ownership.go",
+          "mode": "100644",
+          "oid": "4b2ee23c49839786f92707b5346d2d15d378173b"
+        },
+        {
           "path": "internal/store/service_endpoint_ownership_mariadb.go",
           "mode": "100644",
           "oid": "669ff902d0c0b3ca3c193df1d1029717d245c43d"
@@ -4381,11 +4386,6 @@
           "path": "internal/store/service_endpoint_ownership_memory.go",
           "mode": "100644",
           "oid": "8b330d5eeb22514b3ecb13fcd492d082461fd1bd"
-        },
-        {
-          "path": "internal/store/service_endpoint_ownership.go",
-          "mode": "100644",
-          "oid": "4b2ee23c49839786f92707b5346d2d15d378173b"
         },
         {
           "path": "internal/store/service_metadata_revision.go",
@@ -4513,14 +4513,14 @@
           "oid": "e09c9ffd9089e20ee5be25aee9d2ca9865a95d16"
         },
         {
-          "path": "internal/store/system_settings_mutation_mariadb.go",
-          "mode": "100644",
-          "oid": "b96675e1a233f0966d764047ba2fa8b548110f02"
-        },
-        {
           "path": "internal/store/system_settings_mutation.go",
           "mode": "100644",
           "oid": "a50c55dcae6eb81abb4b50b59662870910372188"
+        },
+        {
+          "path": "internal/store/system_settings_mutation_mariadb.go",
+          "mode": "100644",
+          "oid": "b96675e1a233f0966d764047ba2fa8b548110f02"
         },
         {
           "path": "internal/store/system_update_claim_mariadb.go",
@@ -4563,6 +4563,11 @@
           "oid": "0568a7c592a522719cd95ea0ae875b1248e1b6e3"
         },
         {
+          "path": "internal/store/system_update_host_self_updates.go",
+          "mode": "100644",
+          "oid": "e5b60aca07f925443e750a645cb0865d5fdbb0fb"
+        },
+        {
           "path": "internal/store/system_update_host_self_updates_mariadb.go",
           "mode": "100644",
           "oid": "535c44c9a8cd540b59c3d5e6d0f4fb7b18365516"
@@ -4571,11 +4576,6 @@
           "path": "internal/store/system_update_host_self_updates_memory.go",
           "mode": "100644",
           "oid": "e9a3f761489d89b51608cef955802caa68ce21e3"
-        },
-        {
-          "path": "internal/store/system_update_host_self_updates.go",
-          "mode": "100644",
-          "oid": "e5b60aca07f925443e750a645cb0865d5fdbb0fb"
         },
         {
           "path": "internal/store/system_update_identity_fence_mariadb.go",
@@ -4593,6 +4593,11 @@
           "oid": "e636897b1b39a354b7b87fc1a82ca5967f2aefe8"
         },
         {
+          "path": "internal/store/system_update_port_reconfiguration.go",
+          "mode": "100644",
+          "oid": "7826adc13f203267d599de1560bede5cbf9de50e"
+        },
+        {
           "path": "internal/store/system_update_port_reconfiguration_completion.go",
           "mode": "100644",
           "oid": "55d04f95758e516a0ef3c0b2841ad0f0d1be2bb1"
@@ -4603,9 +4608,9 @@
           "oid": "740fc2554a4a835b9d7ef78892200ff39d69b65f"
         },
         {
-          "path": "internal/store/system_update_port_reconfiguration.go",
+          "path": "internal/store/system_update_port_v2.go",
           "mode": "100644",
-          "oid": "7826adc13f203267d599de1560bede5cbf9de50e"
+          "oid": "30a7551e478b075d45f5843d8dc133bc0ba896cf"
         },
         {
           "path": "internal/store/system_update_port_v2_mariadb.go",
@@ -4623,11 +4628,6 @@
           "oid": "b216b5c008392b55f02192eb92b109fe0f00dd86"
         },
         {
-          "path": "internal/store/system_update_port_v2.go",
-          "mode": "100644",
-          "oid": "30a7551e478b075d45f5843d8dc133bc0ba896cf"
-        },
-        {
           "path": "internal/store/system_update_report_mariadb.go",
           "mode": "100644",
           "oid": "66cdf133ed805e17fb448f9cf0f6940001c2709d"
@@ -4638,6 +4638,11 @@
           "oid": "d7c5bf7da977e0329872ecd2259cf12a0299c303"
         },
         {
+          "path": "internal/store/system_update_runtime_token_rotations.go",
+          "mode": "100644",
+          "oid": "c12c48357ea15739f324c08adab9133b0f7e8577"
+        },
+        {
           "path": "internal/store/system_update_runtime_token_rotations_mariadb.go",
           "mode": "100644",
           "oid": "00bc2033cbb01cc7d413c81cee5752481f3b2d95"
@@ -4646,11 +4651,6 @@
           "path": "internal/store/system_update_runtime_token_rotations_memory.go",
           "mode": "100644",
           "oid": "a0ae90cbd72eee144219921bc52212dae7a24748"
-        },
-        {
-          "path": "internal/store/system_update_runtime_token_rotations.go",
-          "mode": "100644",
-          "oid": "c12c48357ea15739f324c08adab9133b0f7e8577"
         },
         {
           "path": "internal/store/system_update_validation.go",
@@ -4683,6 +4683,11 @@
           "oid": "df5ab68e8e0c3ddc655c6e3f9444558c2b331ef5"
         },
         {
+          "path": "internal/store/updater_policy.go",
+          "mode": "100644",
+          "oid": "44b2f1791eb14c55be1ef6fcfe2644e1064ffb6f"
+        },
+        {
           "path": "internal/store/updater_policy_mariadb.go",
           "mode": "100644",
           "oid": "b245f9c3fb36bbb90ec1957948f85bcbae47e120"
@@ -4696,11 +4701,6 @@
           "path": "internal/store/updater_policy_projections_mariadb.go",
           "mode": "100644",
           "oid": "0b2c4acc15413c14586f65c00f2a0c33584c4ee9"
-        },
-        {
-          "path": "internal/store/updater_policy.go",
-          "mode": "100644",
-          "oid": "44b2f1791eb14c55be1ef6fcfe2644e1064ffb6f"
         },
         {
           "path": "internal/store/user_ui_preferences.go",
@@ -4788,6 +4788,11 @@
           "oid": "4e473bbe75d0139a239655addd352a6aecdb2567"
         },
         {
+          "path": "internal/updateradapter/release.go",
+          "mode": "100644",
+          "oid": "3bcab7aed2899c8530024c7702d680c65ea6b04a"
+        },
+        {
           "path": "internal/updateradapter/release_asset.go",
           "mode": "100644",
           "oid": "ca46f16592b84e1b80332b222dd6e4072292cde4"
@@ -4796,11 +4801,6 @@
           "path": "internal/updateradapter/release_provenance.go",
           "mode": "100644",
           "oid": "2cb1dcadeb48889c3816db428349d3f76aa8811e"
-        },
-        {
-          "path": "internal/updateradapter/release.go",
-          "mode": "100644",
-          "oid": "3bcab7aed2899c8530024c7702d680c65ea6b04a"
         },
         {
           "path": "internal/updateradapter/wire.go",
@@ -6859,6 +6859,11 @@
       "file_count": 14,
       "files": [
         {
+          "path": "README.md",
+          "mode": "100644",
+          "oid": "2fab7d9d6273fd2d27885e0e230d53e3b4a19f2c"
+        },
+        {
           "path": "docs/history/ui-renewal-verification-through-047.md",
           "mode": "100644",
           "oid": "4c2c7d5f66facbed54329781031a973410cffa57"
@@ -6922,11 +6927,6 @@
           "path": "docs/ui-renewal/verification.md",
           "mode": "100644",
           "oid": "0bc17be7987e3f7279d98065532e319ce7eb6abe"
-        },
-        {
-          "path": "README.md",
-          "mode": "100644",
-          "oid": "2fab7d9d6273fd2d27885e0e230d53e3b4a19f2c"
         }
       ]
     },
@@ -7472,11 +7472,6 @@
           "oid": "a682082e3c7f2aea6c50e59a60576fd524d5229c"
         },
         {
-          "path": "scripts/ci/test_artifact_assembly.py",
-          "mode": "100644",
-          "oid": "931283252c9aa864bc531a7e67261e9d4a6118b0"
-        },
-        {
           "path": "scripts/ci/test-physical-eol-resume-mariadb.sh",
           "mode": "100644",
           "oid": "ad3b0e7900046771c82398fb0c679b2716514613"
@@ -7490,6 +7485,11 @@
           "path": "scripts/ci/test-polling-create-upload-web.sh",
           "mode": "100644",
           "oid": "d3961e226bc47ddb7f5d13cede53d616b6bc3f76"
+        },
+        {
+          "path": "scripts/ci/test_artifact_assembly.py",
+          "mode": "100644",
+          "oid": "931283252c9aa864bc531a7e67261e9d4a6118b0"
         },
         {
           "path": "scripts/ci/ui-regression/export-provenance.mjs",
@@ -7520,6 +7520,21 @@
           "path": "scripts/ci/ui-regression/typecheck.mjs",
           "mode": "100644",
           "oid": "8cb91d4e3866e047f7457bc6bb08d2e04b59d690"
+        },
+        {
+          "path": "scripts/ci/ui188-full-e2e/Dockerfile",
+          "mode": "100644",
+          "oid": "79723f5fe76e5439228f08dd1dd9b51e64079550"
+        },
+        {
+          "path": "scripts/ci/ui188-full-e2e/Dockerfile.smoke",
+          "mode": "100644",
+          "oid": "cf6c7abfd9c08b2851d7d507067235fefd285cfc"
+        },
+        {
+          "path": "scripts/ci/ui188-full-e2e/README.md",
+          "mode": "100644",
+          "oid": "7966f63b730a06ec08fb74a485a506bd7c1376c4"
         },
         {
           "path": "scripts/ci/ui188-full-e2e/acceptance.py",
@@ -7582,24 +7597,14 @@
           "oid": "c0ec5e18c96558c72e400088f44847a87d980d5c"
         },
         {
-          "path": "scripts/ci/ui188-full-e2e/Dockerfile",
+          "path": "scripts/ci/ui188-full-e2e/entry.sh",
           "mode": "100644",
-          "oid": "79723f5fe76e5439228f08dd1dd9b51e64079550"
-        },
-        {
-          "path": "scripts/ci/ui188-full-e2e/Dockerfile.smoke",
-          "mode": "100644",
-          "oid": "cf6c7abfd9c08b2851d7d507067235fefd285cfc"
+          "oid": "22d2bd31043e4885d97a1676e51ca255f840e7d1"
         },
         {
           "path": "scripts/ci/ui188-full-e2e/entry_handoff.py",
           "mode": "100644",
           "oid": "325dfa7fea797ecde599807731f858c12b15d4a9"
-        },
-        {
-          "path": "scripts/ci/ui188-full-e2e/entry.sh",
-          "mode": "100644",
-          "oid": "22d2bd31043e4885d97a1676e51ca255f840e7d1"
         },
         {
           "path": "scripts/ci/ui188-full-e2e/evaluate.py",
@@ -7672,11 +7677,6 @@
           "oid": "a1c47c90c6c06394e6efea9c17ef9563b4d4d550"
         },
         {
-          "path": "scripts/ci/ui188-full-e2e/README.md",
-          "mode": "100644",
-          "oid": "7966f63b730a06ec08fb74a485a506bd7c1376c4"
-        },
-        {
           "path": "scripts/ci/ui188-full-e2e/receiver_contract.py",
           "mode": "100644",
           "oid": "07ce1146ab0c997534299f70684206709edc28d3"
@@ -7747,6 +7747,11 @@
           "oid": "374e5076cb88d7bdf485f93778c83bd5a67510d7"
         },
         {
+          "path": "scripts/ci/ui188-r4-chain/README.md",
+          "mode": "100644",
+          "oid": "623ea38534fd0c529a5452af34c7adff345daeb9"
+        },
+        {
           "path": "scripts/ci/ui188-r4-chain/api_client.py",
           "mode": "100644",
           "oid": "d2a46582d0b6e8df111513d7e72ad0be6a297515"
@@ -7812,14 +7817,14 @@
           "oid": "b67d50b87b50ac65ed0f8859067b302208250ffc"
         },
         {
-          "path": "scripts/ci/ui188-r4-chain/media_independent.py",
-          "mode": "100644",
-          "oid": "3d1f71bd9cc8c7c0e9cd9eb5fd82c04b7028f19c"
-        },
-        {
           "path": "scripts/ci/ui188-r4-chain/media.py",
           "mode": "100644",
           "oid": "b1677d56d8679d67b45bccfaff21ca92834b0cf0"
+        },
+        {
+          "path": "scripts/ci/ui188-r4-chain/media_independent.py",
+          "mode": "100644",
+          "oid": "3d1f71bd9cc8c7c0e9cd9eb5fd82c04b7028f19c"
         },
         {
           "path": "scripts/ci/ui188-r4-chain/native_zoom.mts",
@@ -7845,11 +7850,6 @@
           "path": "scripts/ci/ui188-r4-chain/probe_cover_cache.mts",
           "mode": "100644",
           "oid": "dbbd79047fb8cbc08054404793a5106cde7ed2eb"
-        },
-        {
-          "path": "scripts/ci/ui188-r4-chain/README.md",
-          "mode": "100644",
-          "oid": "623ea38534fd0c529a5452af34c7adff345daeb9"
         },
         {
           "path": "scripts/ci/ui188-r4-chain/real_browser.mts",
@@ -7897,6 +7897,11 @@
           "oid": "6a3e85afbded95a2aec6898fee99c1f7da28342f"
         },
         {
+          "path": "scripts/ci/ui188-r4-chain/s4.mts",
+          "mode": "100644",
+          "oid": "93041284183fcb253eab0275a8a7a0c4bbb37f24"
+        },
+        {
           "path": "scripts/ci/ui188-r4-chain/s4_delete.mts",
           "mode": "100644",
           "oid": "296082ead36ae89c9c60abd47472b6c6a30fe14b"
@@ -7905,11 +7910,6 @@
           "path": "scripts/ci/ui188-r4-chain/s4_state.py",
           "mode": "100644",
           "oid": "994d5300ad8703bc76480bbe935c8acce62710a8"
-        },
-        {
-          "path": "scripts/ci/ui188-r4-chain/s4.mts",
-          "mode": "100644",
-          "oid": "93041284183fcb253eab0275a8a7a0c4bbb37f24"
         },
         {
           "path": "scripts/ci/ui188-r4-chain/s5.mts",
@@ -7952,11 +7952,6 @@
           "oid": "dd763d3fa6f0342d3a12770f2dc3913e912558a2"
         },
         {
-          "path": "scripts/ci/verify_source_integrity.py",
-          "mode": "100644",
-          "oid": "44935ddfc6d9ade0f17f1283e8a210c080fc5c88"
-        },
-        {
           "path": "scripts/ci/verify-no-embedded-updater.sh",
           "mode": "100644",
           "oid": "e3b9212fd58249774779049a824a39baa28d1fbe"
@@ -7965,6 +7960,11 @@
           "path": "scripts/ci/verify-polling-create-upload-evidence.py",
           "mode": "100644",
           "oid": "837b414aaab9646385899d2b51fcc2077dd8410e"
+        },
+        {
+          "path": "scripts/ci/verify_source_integrity.py",
+          "mode": "100644",
+          "oid": "44935ddfc6d9ade0f17f1283e8a210c080fc5c88"
         },
         {
           "path": "web/scripts/test-i18n.mjs",
