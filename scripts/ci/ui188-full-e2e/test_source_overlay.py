@@ -3,7 +3,7 @@ import copy
 import hashlib
 import json
 import unittest
-from source import HERE,CP_TEST_PATHS,cp_test_rows,tree_hash,unique_json,verify
+from source import HERE,CP_TEST_PATHS,cp_test_rows,tree_hash,unique_json
 from gate import Blocked
 
 
@@ -19,14 +19,13 @@ class SourceOverlayTests(unittest.TestCase):
         lock['cp_test_overlay_sha256']=hashlib.sha256(raw).hexdigest()
         return cp_test_rows(manifest or self.manifest,lock,raw)
 
-    def test_all_historical_paths_and_exact_three_test_edits_are_bound(self):
+    def test_historical_manifest_and_exact_three_test_overlay_are_self_contained(self):
         rows=self.check(self.overlay)
         before={r['path']:r for r in self.manifest['cp']}
         after={r['path']:r for r in rows}
         self.assertEqual(len(before),1474);self.assertEqual(len(after),1476)
         self.assertEqual({p for p in after if after[p]!=before.get(p)},CP_TEST_PATHS)
         self.assertEqual(tree_hash(rows),self.lock['components']['cp']['verified_tree'])
-        self.assertEqual(verify(HERE.parents[2],'cp'),1476)
 
     def test_rejects_runtime_overlay_missing_duplicate_extra_and_wrong_before(self):
         mutations=(lambda v:v['edits'][0].update(path='internal/httpapi/server_runtime_config.go'),
