@@ -174,11 +174,11 @@ test("CI017 auth/me expiry setup bootstrap diagnostic", { timeout: 420_000 }, as
     browsers.push(expiryBrowser);
     recorder = createCI017Recorder(expiryBrowser);
     await recorder.installFetchProbe();
-    // A fresh Chrome target starts at about:blank, where localStorage is unavailable.
-    // Navigate to a same-origin static document before the scenario seeds display preferences.
-    await expiryBrowser.navigate(`${server.baseUrl}/favicon.ico`);
-    await expiryBrowser.evaluate("localStorage.setItem('__ci017_origin_probe', '1'); localStorage.removeItem('__ci017_origin_probe'); true");
+    // Initialize the fresh target on the real login route (not a static asset which may 404).
+    // Register API fixtures before navigation so all bootstrap requests are deterministic.
     const expiryFixture = createBrowserRouteFixture(expiryBrowser);
+    await expiryBrowser.navigate(`${server.baseUrl}/login/`);
+    await expiryBrowser.evaluate("localStorage.setItem('__ci017_origin_probe', '1'); localStorage.removeItem('__ci017_origin_probe'); true");
     await runAuthMeExpiryScenario(t, expiryBrowser, server, expiryFixture);
     const finalLoginState = await expiryBrowser.evaluate<{ pathname: string; reason: string | null; form: boolean }>(
       "(() => ({ pathname: location.pathname, reason: new URL(location.href).searchParams.get('reason'), form: Boolean(document.querySelector('form input[autocomplete=\\\"username\\\"]')) }))()"
