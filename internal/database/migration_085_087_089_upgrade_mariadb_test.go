@@ -31,28 +31,36 @@ func TestMariaDBRevisionPrecisionMigrationsPreserveExistingRows(t *testing.T) {
     conn, err := db.Conn(ctx)
     if err != nil { t.Fatal(err) }
     defer conn.Close()
-    fixtures := []struct { name string; create string; insert string; migration string; table string }{
-        {"087", `CREATE TEMPORARY TABLE stream_settings (stream_id CHAR(36) PRIMARY KEY, updated_at DATETIME(0) NOT NULL)`, `INSERT INTO stream_settings VALUES('legacy-stream','2026-11-02 10:11:12')`, "087_stream_settings_revision_precision.sql", "stream_settings"},
-        {"088_profiles", `CREATE TEMPORARY TABLE profiles (id CHAR(36) PRIMARY KEY, kind VARCHAR(40) NOT NULL, updated_at DATETIME(0) NOT NULL)`, `INSERT INTO profiles VALUES('legacy-profile','discord','2026-11-02 10:11:12')`, "088_profile_and_drive_revision_precision.sql", "profiles"},
-        {"088_drive", `CREATE TEMPORARY TABLE drive_destinations (id CHAR(36) PRIMARY KEY, updated_at DATETIME(0) NOT NULL)`, `INSERT INTO drive_destinations VALUES('legacy-drive','2026-11-02 10:11:12')`, "088_profile_and_drive_revision_precision.sql", "drive_destinations"},
-        {"089", `CREATE TEMPORARY TABLE system_settings (name VARCHAR(100) PRIMARY KEY, updated_at DATETIME(0) NOT NULL)`, `INSERT INTO system_settings VALUES('legacy-setting','2026-11-02 10:11:12')`, "089_system_settings_revision_precision.sql", "system_settings"},
+    fixtures := []struct { create string; insert string; table string; key string }{
+        {`CREATE TEMPORARY TABLE stream_settings (stream_id CHAR(36) PRIMARY KEY, updated_at DATETIME(0) NOT NULL)`, `INSERT INTO stream_settings VALUES('legacy-stream','2026-11-02 10:11:12')`, "stream_settings", "legacy-stream"},
+        {`CREATE TEMPORARY TABLE profiles (id CHAR(36) PRIMARY KEY, kind VARCHAR(40) NOT NULL, updated_at DATETIME(0) NOT NULL)`, `INSERT INTO profiles VALUES('legacy-profile','discord','2026-11-02 10:11:12')`, "profiles", "legacy-profile"},
+        {`CREATE TEMPORARY TABLE drive_destinations (id CHAR(36) PRIMARY KEY, updated_at DATETIME(0) NOT NULL)`, `INSERT INTO drive_destinations VALUES('legacy-drive','2026-11-02 10:11:12')`, "drive_destinations", "legacy-drive"},
+        {`CREATE TEMPORARY TABLE system_settings (name VARCHAR(100) PRIMARY KEY, updated_at DATETIME(0) NOT NULL)`, `INSERT INTO system_settings VALUES('legacy-setting','2026-11-02 10:11:12')`, "system_settings", "legacy-setting"},
     }
     for _, fixture := range fixtures {
-        t.Run(fixture.name, func(t *testing.T) {
-            if _, err := conn.ExecContext(ctx, fixture.create); err != nil { t.Fatal(err) }
-            if _, err := conn.ExecContext(ctx, fixture.insert); err != nil { t.Fatal(err) }
-            body, err := embeddedMigrations.ReadFile("migrations/" + fixture.migration)
-            if err != nil { t.Fatal(err) }
-            for attempt, statement := range splitSQLStatements(string(body)) {
-                if _, err := conn.ExecContext(ctx, statement); err != nil { t.Fatalf("migration statement %d: %v", attempt+1, err) }
-            }
+        if _, err := conn.ExecContext(ctx, fixture.create); err != nil { t.Fatal(err) }
+        if _, err := conn.ExecContext(ctx, fixture.insert); err != nil { t.Fatal(err) }
+    }
+    for _, migration := range []string{
+        "087_stream_settings_revision_precision.sql",
+        "088_profile_and_drive_revision_precision.sql",
+        "089_system_settings_revision_precision.sql",
+    } {
+        body, err := embeddedMigrations.ReadFile("migrations/" + migration)
+        if err != nil { t.Fatal(err) }
+        for index, statement := range splitSQLStatements(string(body)) {
+            if _, err := conn.ExecContext(ctx, statement); err != nil { t.Fatalf("%s statement %d: %v", migration,index+1,err) }
+        }
+    }
+    for _, fixture := range fixtures {
+        t.Run(fixture.table, func(t *testing.T) {
             var precision int
             if err := conn.QueryRowContext(ctx, `SELECT DATETIME_PRECISION FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=? AND COLUMN_NAME='updated_at'`, fixture.table).Scan(&precision); err != nil || precision != 6 {
                 t.Fatalf("%s updated_at precision=%d err=%v", fixture.table,precision,err)
             }
             var preserved string
-            query := fmt.Sprintf(`SELECT DATE_FORMAT(updated_at,'%%Y-%%m-%%d %%H:%%i:%%s.%%f') FROM %s`, fixture.table)
-            if err := conn.QueryRowContext(ctx, query).Scan(&preserved); err != nil || preserved != "2026-11-02 10:11:12.000000" {
+            query := fmt.Sprintf(`SELECT DATE_FORMAT(updated_at,'%%Y-%%m-%%d %%H:%%i:%%s.%%f') FROM %s WHERE %s=?`, fixture.table, map[string]string{"stream_settings":"stream_id","profiles":"id","drive_destinations":"id","system_settings":"name"}[fixture.table])
+            if err := conn.QueryRowContext(ctx, query, fixture.key).Scan(&preserved); err != nil || preserved != "2026-11-02 10:11:12.000000" {
                 t.Fatalf("%s legacy timestamp not preserved: %q err=%v", fixture.table,preserved,err)
             }
         })
