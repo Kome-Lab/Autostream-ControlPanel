@@ -128,3 +128,22 @@ Disposition: conditional approval after populated legacy-row preservation test.
 
 G3 is not approved as a whole. Migration 086 is a hard blocker. Migrations 085 and 087–089 remain conditional pending the stated evidence. This review does not authorize editing migrations, regenerating the manifest/source lock, running migrations on production, changing the default branch, creating a release tag, or deploying.
 
+## 7. Follow-up — migration 086 remediation verification
+
+**Fix branch:** `fix/ui188-migration-086-resumable`
+**Verified commit:** `0b47336be86276c61e02008709f90da0d7626e08`
+**CI run:** `41412414583`
+
+Migration 086 was changed to use MariaDB-supported replay-safe DDL:
+- `ADD COLUMN IF NOT EXISTS` for both operation identity columns;
+- `ADD UNIQUE INDEX IF NOT EXISTS` for the operation identity pair;
+- repeatable `MODIFY COLUMN display_name VARCHAR(255) NOT NULL` for the second statement.
+
+A new MariaDB test, `TestMariaDBUploadOperationMigrationResumesAfterPartialDDL`, passed on the pinned MariaDB 11.4.12 CI service. It applies the first DDL, replays it as if the runner restarted before recording the migration, applies and replays the second DDL, and checks legacy rows, duplicate non-NULL operation identity rejection, nullable legacy identity, and 255-character display-name round trip.
+
+The same Go job passed `go test ./...`, MariaDB persistence, SQL-backed polling/upload recovery, `go build ./...`, and all ST-PORT integration evidence gates.
+
+Updated disposition for 086: **REMEDIATION VERIFIED IN CI; READY FOR BASELINE REVIEW**. This is not production migration approval. A populated historical database upgrade/restore rehearsal and exact final-baseline verification remain required before release.
+
+CI run `41412414583` was still processing browser-regression matrix jobs at the time of this update. The UI188 historical Source Integrity preflight remains a separate failure because its verifier still pins the old source authority; no manifest or source-lock change was made.
+
