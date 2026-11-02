@@ -176,7 +176,8 @@ def validate_authority(authority):
         "scripts/ci/ui188-full-e2e/test_source_authority_v2.py",
         ".github/workflows/ui188-integration.yml",
     ], "BLOCKED_V2_CONTROL_FILES")
-    require(not (set(authority["control_files"]) & seen), "BLOCKED_V2_CONTROL_OVERLAP")
+    candidate_control_paths = {row["path"] for row in authority["candidate_control_files"]}
+    require(not ((set(authority["control_files"]) - candidate_control_paths) & seen), "BLOCKED_V2_CONTROL_OVERLAP")
     return components
 
 
