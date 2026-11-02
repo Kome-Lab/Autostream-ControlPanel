@@ -206,14 +206,11 @@ def verify(root, component_name="all", authority_path=None):
             destination = root / path
             require(not destination.is_symlink(), "BLOCKED_V2_SYMLINK")
             require(destination.is_file(), "BLOCKED_V2_MISSING")
-            index = subprocess.check_output(
-                ["git", "-C", str(root), "ls-files", "--stage", "-z", "--", path]
-            )
-            records = [record for record in index.split(b"\0") if record]
-            require(len(records) == 1, "BLOCKED_V2_INDEX_ENTRY")
-            metadata, indexed_path = records[0].split(b"\\t", 1)
-            mode, oid, stage = metadata.decode("ascii").split()
-            require(indexed_path.decode("utf-8") == path and stage == "0", "BLOCKED_V2_INDEX_PATH")
+            entry = subprocess.check_output(["git", "-C", str(root), "ls-tree", "HEAD", "--", path], text=True).rstrip("\n")
+            require(bool(entry), "BLOCKED_V2_INDEX_ENTRY")
+            metadata, indexed_path = entry.split("\t", 1)
+            mode, object_type, oid = metadata.split()
+            require(indexed_path == path and object_type == "blob", "BLOCKED_V2_INDEX_PATH")
             require(mode == row["mode"] and oid == row["oid"], "BLOCKED_V2_GIT_BLOB")
             actual_oid = subprocess.check_output(
                 ["git", "-C", str(root), "hash-object", "--no-filters", "--", path], text=True
