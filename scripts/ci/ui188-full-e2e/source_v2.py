@@ -148,6 +148,8 @@ def validate_authority(authority):
         require(actual_tree == component["tree_sha1"], "BLOCKED_V2_COMPONENT_TREE:" + name + ":" + actual_tree + ":" + component["tree_sha1"])
         total += len(paths)
     require(total == candidate["blob_count"] == len(seen), "BLOCKED_V2_BLOB_COUNT")
+    all_rows = [row for component in components.values() for row in component["files"]]
+    require(tree_hash(all_rows) == candidate["git_tree"], "BLOCKED_V2_CANDIDATE_TREE")
     require(authority["acceptance"] == EXPECTED_ACCEPTANCE, "BLOCKED_V2_ACCEPTANCE_RELAXED")
     require(authority["excluded_components"] == ["diagnostic-excluded"], "BLOCKED_V2_EXCLUSION_POLICY")
     require(
@@ -175,8 +177,6 @@ def verify(root, component_name="all", authority_path=None):
     for control_path in authority["control_files"]:
         control_file = root / control_path
         require(not control_file.is_symlink() and control_file.is_file(), "BLOCKED_V2_CONTROL_FILE_MISSING")
-    candidate_tree = git_output(root, "rev-parse", candidate["commit"] + "^{tree}")
-    require(candidate_tree == candidate["git_tree"], "BLOCKED_V2_CANDIDATE_TREE")
 
     selected = list(components) if component_name == "all" else [component_name]
     require(all(name in components for name in selected), "BLOCKED_V2_UNKNOWN_COMPONENT")
