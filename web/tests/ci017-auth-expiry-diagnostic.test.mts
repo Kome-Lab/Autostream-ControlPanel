@@ -150,10 +150,11 @@ test("CI017 auth/me expiry setup bootstrap diagnostic", { timeout: 420_000 }, as
   if (process.env.CI !== "true" || process.platform !== "linux") throw new Error("CI017 diagnostic requires the blocking Linux CI runtime");
   if (process.env.AUTOSTREAM_CI017_DIAGNOSTIC !== "1") throw new Error("CI017 diagnostic mode must be explicitly enabled");
   const server = await ensureWebServer(webRoot, requestedBaseUrl);
-  const browserPromise = BrowserHarness.launch();
-  t.after(async () => { const browser = await browserPromise.catch(() => undefined); await browser?.close(); await server.close(); });
-  const browser = await browserPromise;
-  const recorder = createCI017Recorder(browser);
+  const browsers: BrowserHarness[] = [];
+  t.after(async () => { for (const browser of browsers.reverse()) await browser.close(); await server.close(); });
+  const browser = await BrowserHarness.launch();
+  browsers.push(browser);
+  let recorder = createCI017Recorder(browser);
   let phase = "query-states";
   let scenarioError: unknown;
   let observation: Record<string, unknown> = { observation_error: true };
@@ -166,11 +167,15 @@ test("CI017 auth/me expiry setup bootstrap diagnostic", { timeout: 420_000 }, as
     phase = "session-expiry";
     await runSessionExpiryScenario(t, browser, server, fixture);
     phase = "auth-me-401-expiry";
-    // The root QueryClient is shared across route changes. The preceding session-expiry scenario
-    // may leave a fresh setup-status cache entry; let the configured 20s staleTime elapse so
-    // the legacy auth-expiry scenario tests a real bootstrap refetch, not an assumed one.
-    await new Promise((resolve) => setTimeout(resolve, 20_100));
-    await runAuthMeExpiryScenario(t, browser, server, fixture);
+    // Run the auth-expiry scenario in a new browser context so it receives a fresh QueryClient.
+    // This removes cross-scenario cache coupling without sleeping for staleTime or changing app policy.
+    recorder.close();
+    const expiryBrowser = await BrowserHarness.launch();
+    browsers.push(expiryBrowser);
+    recorder = createCI017Recorder(expiryBrowser);
+    await recorder.installFetchProbe();
+    const expiryFixture = createBrowserRouteFixture(expiryBrowser);
+    await runAuthMeExpiryScenario(t, expiryBrowser, server, expiryFixture);
   } catch (error) {
     scenarioError = error;
   } finally {
@@ -180,6 +185,7 @@ test("CI017 auth/me expiry setup bootstrap diagnostic", { timeout: 420_000 }, as
       schema_version: 2,
       code: "CI017_AUTH_EXPIRY_SETUP",
       source_commit: process.env.GITHUB_SHA || "unknown",
+      auth_expiry_context: "fresh-browser-query-client",
       scenario_phase: phase,
       scenario_status: scenarioError === undefined ? "PASS" : "FAIL",
       failure_name: scenarioError instanceof Error ? scenarioError.name : scenarioError === undefined ? null : "unknown",
