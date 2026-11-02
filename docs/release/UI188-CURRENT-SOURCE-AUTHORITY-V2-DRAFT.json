@@ -21,8 +21,9 @@
     "documentation": 14,
     "dependency-lock": 4,
     "database-schema": 96,
-    "ci-integration-harness": 61,
-    "source-governance": 54,
+    "ci-integration-harness": 105,
+    "source-governance": 8,
+    "source-governance-tests": 2,
     "web-tooling": 2,
     "browser-test-harness": 94
   },
@@ -4933,7 +4934,7 @@
       "path": "scripts/ci/polling-create-upload-inventory.json",
       "mode": "100644",
       "oid": "73f895d372b22e66f925c76235cce7d869b8e29b",
-      "component": "ci-integration-harness"
+      "component": "source-governance"
     },
     {
       "path": "scripts/ci/required-st-port-store-tests.txt",
@@ -4969,7 +4970,7 @@
       "path": "scripts/ci/test_verify_source_integrity.py",
       "mode": "100644",
       "oid": "babade5b701cb099a36e48608bd65ac8fec51382",
-      "component": "source-governance"
+      "component": "source-governance-tests"
     },
     {
       "path": "scripts/ci/test-physical-eol-resume-mariadb.sh",
@@ -5029,73 +5030,73 @@
       "path": "scripts/ci/ui188-full-e2e/acceptance.py",
       "mode": "100644",
       "oid": "6e6fb33b24b6daee59cf1175b7ddaadedcc1bbdd",
-      "component": "source-governance"
+      "component": "ci-integration-harness"
     },
     {
       "path": "scripts/ci/ui188-full-e2e/actionlint-config.yaml",
       "mode": "100644",
       "oid": "a775059b9aab7f4cb56e23e86aa5fe33ea54a947",
-      "component": "source-governance"
+      "component": "ci-integration-harness"
     },
     {
       "path": "scripts/ci/ui188-full-e2e/adapter_smoke.py",
       "mode": "100644",
       "oid": "3c96f144ee1d5a1f2d13fcca6862390769a7dd00",
-      "component": "source-governance"
+      "component": "ci-integration-harness"
     },
     {
       "path": "scripts/ci/ui188-full-e2e/bootstrap_probe.py",
       "mode": "100644",
       "oid": "10459b290746b0e774be999cf16f8abb2a5be8c0",
-      "component": "source-governance"
+      "component": "ci-integration-harness"
     },
     {
       "path": "scripts/ci/ui188-full-e2e/bot-adapter.patch",
       "mode": "100644",
       "oid": "98046f95003a65287fb65ff31639fe519ca06434",
-      "component": "source-governance"
+      "component": "ci-integration-harness"
     },
     {
       "path": "scripts/ci/ui188-full-e2e/build.sh",
       "mode": "100644",
       "oid": "aea8f9085914a83bcbf20bfaa65411ccbf90c0f8",
-      "component": "source-governance"
+      "component": "ci-integration-harness"
     },
     {
       "path": "scripts/ci/ui188-full-e2e/canary.mts",
       "mode": "100644",
       "oid": "4722c5dc9e5ec54508768f773e0af7c1ff577c4a",
-      "component": "source-governance"
+      "component": "ci-integration-harness"
     },
     {
       "path": "scripts/ci/ui188-full-e2e/checkpoints.py",
       "mode": "100644",
       "oid": "4db27e76161e74d0007db1d8cda6d815b4e2fb00",
-      "component": "source-governance"
+      "component": "ci-integration-harness"
     },
     {
       "path": "scripts/ci/ui188-full-e2e/compose.smoke.yml",
       "mode": "100644",
       "oid": "a7ed68be3da8bca6bb5bcaa91cdaa652b5088d80",
-      "component": "source-governance"
+      "component": "ci-integration-harness"
     },
     {
       "path": "scripts/ci/ui188-full-e2e/compose.yml",
       "mode": "100644",
       "oid": "84e94f9f353813439b526566d83a69d275c0aad6",
-      "component": "source-governance"
+      "component": "ci-integration-harness"
     },
     {
       "path": "scripts/ci/ui188-full-e2e/cover_contract.py",
       "mode": "100644",
       "oid": "c9ca17278259f951eac5c32c05d44f1a48d375f0",
-      "component": "source-governance"
+      "component": "ci-integration-harness"
     },
     {
       "path": "scripts/ci/ui188-full-e2e/cover_proof.mts",
       "mode": "100644",
       "oid": "c0ec5e18c96558c72e400088f44847a87d980d5c",
-      "component": "source-governance"
+      "component": "ci-integration-harness"
     },
     {
       "path": "scripts/ci/ui188-full-e2e/cp-test-overlay.json",
@@ -5107,97 +5108,97 @@
       "path": "scripts/ci/ui188-full-e2e/Dockerfile",
       "mode": "100644",
       "oid": "79723f5fe76e5439228f08dd1dd9b51e64079550",
-      "component": "source-governance"
+      "component": "ci-integration-harness"
     },
     {
       "path": "scripts/ci/ui188-full-e2e/Dockerfile.smoke",
       "mode": "100644",
       "oid": "cf6c7abfd9c08b2851d7d507067235fefd285cfc",
-      "component": "source-governance"
+      "component": "ci-integration-harness"
     },
     {
       "path": "scripts/ci/ui188-full-e2e/entry_handoff.py",
       "mode": "100644",
       "oid": "325dfa7fea797ecde599807731f858c12b15d4a9",
-      "component": "source-governance"
+      "component": "ci-integration-harness"
     },
     {
       "path": "scripts/ci/ui188-full-e2e/entry.sh",
       "mode": "100644",
       "oid": "22d2bd31043e4885d97a1676e51ca255f840e7d1",
-      "component": "source-governance"
+      "component": "ci-integration-harness"
     },
     {
       "path": "scripts/ci/ui188-full-e2e/evaluate.py",
       "mode": "100644",
       "oid": "1ead9d464504122b6e8fed08c582347c8643974a",
-      "component": "source-governance"
+      "component": "ci-integration-harness"
     },
     {
       "path": "scripts/ci/ui188-full-e2e/execute.py",
       "mode": "100644",
       "oid": "f11c38229f49e6363272d9ae8825b6ac64922705",
-      "component": "source-governance"
+      "component": "ci-integration-harness"
     },
     {
       "path": "scripts/ci/ui188-full-e2e/gate.py",
       "mode": "100644",
       "oid": "ccdf484935522e3865c190c04b3291b8755bb5b3",
-      "component": "source-governance"
+      "component": "ci-integration-harness"
     },
     {
       "path": "scripts/ci/ui188-full-e2e/host.py",
       "mode": "100644",
       "oid": "a143d1d0a3d46c5f5d56a8f344ee5acf88da4872",
-      "component": "source-governance"
+      "component": "ci-integration-harness"
     },
     {
       "path": "scripts/ci/ui188-full-e2e/launch_parent.py",
       "mode": "100644",
       "oid": "eefcd2dea27754e4f53700433e9a8e7096370299",
-      "component": "source-governance"
+      "component": "ci-integration-harness"
     },
     {
       "path": "scripts/ci/ui188-full-e2e/launcher_compare.py",
       "mode": "100644",
       "oid": "457359b352b8652242c9cb2c41e1ffd43c99368f",
-      "component": "source-governance"
+      "component": "ci-integration-harness"
     },
     {
       "path": "scripts/ci/ui188-full-e2e/launcher_probe.py",
       "mode": "100644",
       "oid": "9939c708404aa6c049f93b5d919b84591a1d0029",
-      "component": "source-governance"
+      "component": "ci-integration-harness"
     },
     {
       "path": "scripts/ci/ui188-full-e2e/linux_smoke.py",
       "mode": "100644",
       "oid": "efd586cf828c303280961c8af2664dbabbb4c6f9",
-      "component": "source-governance"
+      "component": "ci-integration-harness"
     },
     {
       "path": "scripts/ci/ui188-full-e2e/port-inputs.json",
       "mode": "100644",
       "oid": "e6ab2f8df56cc17026671e8c2036b9d0089e973e",
-      "component": "source-governance"
+      "component": "ci-integration-harness"
     },
     {
       "path": "scripts/ci/ui188-full-e2e/port.py",
       "mode": "100644",
       "oid": "4eae145041d502a9d7d439b3673358b9e98203c8",
-      "component": "source-governance"
+      "component": "ci-integration-harness"
     },
     {
       "path": "scripts/ci/ui188-full-e2e/producer_contract.py",
       "mode": "100644",
       "oid": "93e448289796f1cc64b71eac7f7c1f0d55e0b672",
-      "component": "source-governance"
+      "component": "ci-integration-harness"
     },
     {
       "path": "scripts/ci/ui188-full-e2e/producer_runner.py",
       "mode": "100644",
       "oid": "32962d96a391527af62d90d1f0c1b40fb7eee3a4",
-      "component": "source-governance"
+      "component": "ci-integration-harness"
     },
     {
       "path": "scripts/ci/ui188-full-e2e/product-files.json",
@@ -5209,49 +5210,49 @@
       "path": "scripts/ci/ui188-full-e2e/public-summary.schema.json",
       "mode": "100644",
       "oid": "af1dba6637e13113301454d1cad09cf852f94956",
-      "component": "source-governance"
+      "component": "ci-integration-harness"
     },
     {
       "path": "scripts/ci/ui188-full-e2e/publish.py",
       "mode": "100644",
       "oid": "a1c47c90c6c06394e6efea9c17ef9563b4d4d550",
-      "component": "source-governance"
+      "component": "ci-integration-harness"
     },
     {
       "path": "scripts/ci/ui188-full-e2e/README.md",
       "mode": "100644",
       "oid": "7966f63b730a06ec08fb74a485a506bd7c1376c4",
-      "component": "source-governance"
+      "component": "ci-integration-harness"
     },
     {
       "path": "scripts/ci/ui188-full-e2e/receiver_contract.py",
       "mode": "100644",
       "oid": "07ce1146ab0c997534299f70684206709edc28d3",
-      "component": "source-governance"
+      "component": "ci-integration-harness"
     },
     {
       "path": "scripts/ci/ui188-full-e2e/resource_snapshot.py",
       "mode": "100644",
       "oid": "f45d4e3ebdb891a9814c8f18bfadc8fddaecc45a",
-      "component": "source-governance"
+      "component": "ci-integration-harness"
     },
     {
       "path": "scripts/ci/ui188-full-e2e/run_identity.py",
       "mode": "100644",
       "oid": "65a6486485e5b2e45614421ba2580fc0bf3537dd",
-      "component": "source-governance"
+      "component": "ci-integration-harness"
     },
     {
       "path": "scripts/ci/ui188-full-e2e/runtime_supervisor.py",
       "mode": "100644",
       "oid": "67212dde42a6db3591dba8cf9480271bc69f21f5",
-      "component": "source-governance"
+      "component": "ci-integration-harness"
     },
     {
       "path": "scripts/ci/ui188-full-e2e/seal.py",
       "mode": "100644",
       "oid": "c663bc3f94bcef345c1115bb787aa2af7c1dd225",
-      "component": "source-governance"
+      "component": "ci-integration-harness"
     },
     {
       "path": "scripts/ci/ui188-full-e2e/source-lock.json",
@@ -5275,61 +5276,61 @@
       "path": "scripts/ci/ui188-full-e2e/stages26.py",
       "mode": "100644",
       "oid": "7e0007921f291c892fd8848982dd641eff17dfde",
-      "component": "source-governance"
+      "component": "ci-integration-harness"
     },
     {
       "path": "scripts/ci/ui188-full-e2e/tap_broker.py",
       "mode": "100644",
       "oid": "fba310f2e6dff850e2d1be9a7379daecfb5e2955",
-      "component": "source-governance"
+      "component": "ci-integration-harness"
     },
     {
       "path": "scripts/ci/ui188-full-e2e/test_contracts.py",
       "mode": "100644",
       "oid": "f390cd8d968fea319633a36005dd05b1af5cc845",
-      "component": "source-governance"
+      "component": "ci-integration-harness"
     },
     {
       "path": "scripts/ci/ui188-full-e2e/test_cover_producer.mts",
       "mode": "100644",
       "oid": "1e13b37043aa4768eb3cac0bde3da2b721f9bf8b",
-      "component": "source-governance"
+      "component": "ci-integration-harness"
     },
     {
       "path": "scripts/ci/ui188-full-e2e/test_evidence_gates.py",
       "mode": "100644",
       "oid": "5d0635c7bf45f625d2137e87751fa1a72b77198b",
-      "component": "source-governance"
+      "component": "ci-integration-harness"
     },
     {
       "path": "scripts/ci/ui188-full-e2e/test_pipeline.py",
       "mode": "100644",
       "oid": "d36a42dfc8564fb3dadd935ddb7822934b7f499e",
-      "component": "source-governance"
+      "component": "ci-integration-harness"
     },
     {
       "path": "scripts/ci/ui188-full-e2e/test_runtime_closure.py",
       "mode": "100644",
       "oid": "916168441875057cd272b4e374d77d2c86c95fe5",
-      "component": "source-governance"
+      "component": "ci-integration-harness"
     },
     {
       "path": "scripts/ci/ui188-full-e2e/test_smoke_closure.py",
       "mode": "100644",
       "oid": "35c21b191c155dcd459da0e2e3a16919d2829133",
-      "component": "source-governance"
+      "component": "ci-integration-harness"
     },
     {
       "path": "scripts/ci/ui188-full-e2e/test_source_overlay.py",
       "mode": "100644",
       "oid": "7b3ef2c76961e2645ed748a8feca5153d0a2aace",
-      "component": "source-governance"
+      "component": "source-governance-tests"
     },
     {
       "path": "scripts/ci/ui188-full-e2e/worker_b.py",
       "mode": "100644",
       "oid": "374e5076cb88d7bdf485f93778c83bd5a67510d7",
-      "component": "source-governance"
+      "component": "ci-integration-harness"
     },
     {
       "path": "scripts/ci/ui188-r4-chain/api_client.py",
@@ -10155,14 +10156,16 @@
     "tests": "Executable Go/Web tests and fixtures; separate from runtime.",
     "browser_harness": "Reusable browser harness and test helpers; separate from test cases.",
     "database_schema": "All SQL migrations; separate schema authority.",
-    "ci": "CI and integration scripts; never part of runtime product tree.",
-    "source_governance": "Source verifier, historical product manifest, source lock, overlays and ownership maps; separate governance authority.",
-    "diagnostics": "CI017 diagnostic-only assets explicitly excluded from product and standard test baselines."
+    "ci": "Full E2E orchestration, evidence generation, smoke fixtures and integration scripts; not product runtime.",
+    "source_governance": "Only manifests, source locks, overlays, owner maps, source-origin inventories and verifier entrypoints; separate authority from runtime.",
+    "diagnostics": "CI017 diagnostic-only assets explicitly excluded from product and standard test baselines.",
+    "source_governance_tests": "Negative/positive tests for the source verifier; test authority, not product runtime."
   },
   "unresolved": [
     "Path-based classification is provisional and needs owner review.",
     "Build reachability and embed dependencies have not yet been proven for every runtime path.",
     "Cross-repository BOT, Encoder, Worker and Contracts pins remain separate authorities.",
-    "Git blob OIDs are recorded; SHA-256 byte digests will be generated by the verifier/build process."
+    "Git blob OIDs are recorded; SHA-256 byte digests will be generated by the verifier/build process.",
+    "The 335-path G1/G2 diff inventory remains the review delta; this 1,687-path draft is the complete candidate-tree classification."
   ]
 }
