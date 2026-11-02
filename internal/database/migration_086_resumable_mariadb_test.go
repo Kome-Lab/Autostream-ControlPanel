@@ -1,12 +1,8 @@
 package database
 
 import (
-    "context"
-    "errors"
     "strings"
     "testing"
-
-    "github.com/go-sql-driver/mysql"
 )
 
 func TestMariaDBUploadOperationMigrationResumesAfterPartialDDL(t *testing.T) {
@@ -30,8 +26,6 @@ func TestMariaDBUploadOperationMigrationResumesAfterPartialDDL(t *testing.T) {
     if err != nil { t.Fatal(err) }
     statements := splitSQLStatements(string(body))
     if len(statements) != 2 { t.Fatalf("migration 086 statement count=%d, want 2", len(statements)) }
-    statements[0] = strings.ReplaceAll(statements[0], "media_assets", "media_assets")
-    statements[1] = strings.ReplaceAll(statements[1], "stream_video_cover_candidates", "stream_video_cover_candidates")
 
     // Simulate interruption after DDL statement 1 committed, before statement 2.
     if _, err := conn.ExecContext(ctx, statements[0]); err != nil { t.Fatalf("initial first DDL: %v", err) }
@@ -66,6 +60,4 @@ func TestMariaDBUploadOperationMigrationResumesAfterPartialDDL(t *testing.T) {
     if _, err := conn.ExecContext(ctx, `INSERT INTO media_assets(id,upload_session_id,client_operation_session_id,client_operation_id) VALUES ('op-null','s3',NULL,NULL)`); err != nil {
         t.Fatalf("legacy NULL operation identity must remain allowed: %v", err)
     }
-    var duplicate mysql.MySQLError
-    _ = errors.As(nil, &duplicate) // Keep the MySQL driver type available for actionable failure decoding if needed.
 }
