@@ -174,8 +174,18 @@ test("CI017 auth/me expiry setup bootstrap diagnostic", { timeout: 420_000 }, as
     browsers.push(expiryBrowser);
     recorder = createCI017Recorder(expiryBrowser);
     await recorder.installFetchProbe();
+    // A fresh Chrome target starts at about:blank, where localStorage is unavailable.
+    // Navigate to a same-origin static document before the scenario seeds display preferences.
+    await expiryBrowser.navigate(`${server.baseUrl}/favicon.ico`);
+    await expiryBrowser.evaluate("localStorage.setItem('__ci017_origin_probe', '1'); localStorage.removeItem('__ci017_origin_probe'); true");
     const expiryFixture = createBrowserRouteFixture(expiryBrowser);
     await runAuthMeExpiryScenario(t, expiryBrowser, server, expiryFixture);
+    const finalLoginState = await expiryBrowser.evaluate<{ pathname: string; reason: string | null; form: boolean }>(
+      "(() => ({ pathname: location.pathname, reason: new URL(location.href).searchParams.get('reason'), form: Boolean(document.querySelector('form input[autocomplete=\\\"username\\\"]')) }))()"
+    );
+    if (finalLoginState.pathname !== "/login/" || finalLoginState.reason !== "session_expired" || !finalLoginState.form) {
+      throw new Error("Auth expiry scenario did not finish on the session-expired login form");
+    }
   } catch (error) {
     scenarioError = error;
   } finally {
