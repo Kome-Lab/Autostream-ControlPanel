@@ -242,7 +242,7 @@ def main():
     except Blocked as error:
         raise SystemExit("BLOCKED_SOURCE_AUTHORITY_V2:" + str(error)) from None
     except (OSError, ValueError, subprocess.SubprocessError, KeyError, TypeError) as error:
-        raise SystemExit("BLOCKED_SOURCE_AUTHORITY_V2:" + type(error).__name__) from None
+        raise SystemExit("BLOCKED_SOURCE_AUTHORITY_V2:" + type(error).__name__ + ":" + str(error)[:240]) from None
 
 
 if __name__ == "__main__":
