@@ -166,3 +166,20 @@ The migration-focused MariaDB step is therefore PASS on candidate `a193492`. Rem
 
 Updated G3 status: migrations 085–089 have focused migration/replay/legacy-row test evidence on the pinned MariaDB 11.4.12 CI service. G3 may be closed for source-baseline inclusion after the remaining full CI run completes successfully. Production upgrade/restore rehearsal and broader MariaDB version support are still release operational checks, not evidence already obtained.
 
+## 9. G3 closure — focused MariaDB migration suite passed
+
+**Verified candidate:** `a1934923cdf3c98a5b223209956ecaa949a3587b`
+**CI run:** `41438118480`
+
+The workflow step `Test MariaDB OAuth and Configure Token migrations` discovers every `TestMariaDB*` test in `internal/database`, excludes only the separately run physical-EOL suite, executes the discovered set with the MariaDB 11.4.12 service, and fails if any discovered migration test is skipped.
+
+That step completed successfully on the candidate SHA. This includes:
+- `TestMariaDBUploadOperationMigrationResumesAfterPartialDDL` (086)
+- `TestMariaDBAdditiveDeletionQueueMigrationPreservesExistingQueueRows` (085)
+- `TestMariaDBRevisionPrecisionMigrationsPreserveExistingRows` (087–089)
+- the pre-existing MariaDB migration/replay tests.
+
+The Go job also passed `go test ./...`, MariaDB persistence, UI188 atomic-role/cover/stop/safe-delete MariaDB witness, SQL-backed polling/upload recovery, OAuth/Configure Token migration checks, `go build ./...`, and ST-PORT full-chain evidence gates through the currently reported successful steps.
+
+**G3 disposition: CLOSED for source-baseline inclusion.** Migrations 085–089 have focused migration/replay/legacy-data evidence on the pinned MariaDB 11.4.12 CI service. This closure does not claim a broader MariaDB version matrix or production upgrade/restore rehearsal; those remain Release Candidate operational checks. No production database was modified.
+
