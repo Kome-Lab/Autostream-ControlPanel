@@ -23,11 +23,11 @@ class SourceAuthorityV2Tests(unittest.TestCase):
             "source-governance", "source-governance-tests", "web-tooling",
             "diagnostic-excluded",
         })
-        self.assertEqual(sum(c["file_count"] for c in components.values()), 1687)
+        self.assertEqual(sum(c["file_count"] for c in components.values()) + len(self.authority["candidate_control_files"]), 1687)
 
     def test_reject_duplicate_path_across_components(self):
         value = copy.deepcopy(self.authority)
-        row = copy.deepcopy(value["components"]["runtime-source"]["files"][0])
+        row = copy.deepcopy(value["components"]["build-packaging-config"]["files"][0])
         target = value["components"]["test-source"]
         target["files"].append(row)
         target["files"].sort(key=lambda item: item["path"])
