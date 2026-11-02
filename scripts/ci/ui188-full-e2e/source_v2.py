@@ -211,7 +211,7 @@ def verify(root, component_name="all", authority_path=None):
             metadata, indexed_path = entry.split("\t", 1)
             mode, object_type, oid = metadata.split()
             require(indexed_path == path and object_type == "blob", "BLOCKED_V2_INDEX_PATH")
-            require(mode == row["mode"] and oid == row["oid"], "BLOCKED_V2_GIT_BLOB")
+            require(mode == row["mode"] and oid == row["oid"], "BLOCKED_V2_GIT_BLOB:" + path + ":" + mode + ":" + oid + ":" + row["mode"] + ":" + row["oid"])
             actual_oid = subprocess.check_output(
                 ["git", "-C", str(root), "hash-object", "--no-filters", "--", path], text=True
             ).strip()
