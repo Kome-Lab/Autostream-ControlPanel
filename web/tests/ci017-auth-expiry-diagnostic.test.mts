@@ -177,7 +177,7 @@ test("CI017 auth/me expiry setup bootstrap diagnostic", { timeout: 420_000 }, as
     // Initialize the fresh target on the real login route (not a static asset which may 404).
     // Register API fixtures before navigation so all bootstrap requests are deterministic.
     const expiryFixture = createBrowserRouteFixture(expiryBrowser);
-    await expiryBrowser.navigate(`${server.baseUrl}/login/`);
+    await expiryBrowser.navigate(`${server.baseUrl}/favicon.svg`);
     await expiryBrowser.evaluate("localStorage.setItem('__ci017_origin_probe', '1'); localStorage.removeItem('__ci017_origin_probe'); true");
     await runAuthMeExpiryScenario(t, expiryBrowser, server, expiryFixture);
     const finalLoginState = await expiryBrowser.evaluate<{ pathname: string; reason: string | null; form: boolean }>(
