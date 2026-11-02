@@ -144,7 +144,7 @@ def validate_authority(authority):
             seen.add(row["path"])
             paths.append(row["path"])
         require(paths == sorted(paths), "BLOCKED_V2_PATH_ORDER")
-        require(tree_hash(component["files"]) == component["tree_sha1"], "BLOCKED_V2_COMPONENT_TREE")
+        require(tree_hash(component["files"]) == component["tree_sha1"], "BLOCKED_V2_COMPONENT_TREE:" + name)
         total += len(paths)
     require(total == candidate["blob_count"] == len(seen), "BLOCKED_V2_BLOB_COUNT")
     require(authority["acceptance"] == EXPECTED_ACCEPTANCE, "BLOCKED_V2_ACCEPTANCE_RELAXED")
