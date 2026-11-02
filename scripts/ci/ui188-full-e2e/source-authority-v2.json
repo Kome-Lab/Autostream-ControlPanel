@@ -8608,5 +8608,12 @@
     "Runtime, tests, browser harness, database schema, CI harness, workflow, build, dependency, documentation and source-governance trees are independently pinned.",
     "CI017 diagnostic assets are excluded from runtime and standard test baselines.",
     "The candidate commit is the immutable product source snapshot; verifier/control files added later are separately governed."
+  ],
+  "candidate_control_files": [
+    {
+      "path": ".github/workflows/ui188-integration.yml",
+      "mode": "100644",
+      "oid": "0b80c1bbaca8b07ced5261411796d9082639039c"
+    }
   ]
 }
