@@ -147,3 +147,22 @@ Updated disposition for 086: **REMEDIATION VERIFIED IN CI; READY FOR BASELINE RE
 
 CI run `41412414583` was still processing browser-regression matrix jobs at the time of this update. The UI188 historical Source Integrity preflight remains a separate failure because its verifier still pins the old source authority; no manifest or source-lock change was made.
 
+## 8. Follow-up — populated legacy-row migration witnesses
+
+**Fix branch:** `fix/ui188-migration-086-resumable`
+**Verified candidate:** `a1934923cdf3c98a5b223209956ecaa949a3587b`
+**CI run:** `41438118480`
+
+Two additional MariaDB tests were added:
+- `TestMariaDBAdditiveDeletionQueueMigrationPreservesExistingQueueRows`: starts with an existing deletion-queue row, replays migration 085, and verifies attempts/error metadata remain unchanged.
+- `TestMariaDBRevisionPrecisionMigrationsPreserveExistingRows`: seeds DATETIME(0) rows in stream_settings, profiles, drive_destinations and system_settings; applies 087, 088 and 089; checks each updated_at column is DATETIME(6) and the original timestamp is preserved at microsecond precision.
+
+On the current CI run, the following steps have passed:
+- `go test ./...`
+- `Test MariaDB persistence`
+- `Verify UI188 atomic roles, cover snapshots, stop ownership, and safe deletion with MariaDB`
+
+The migration-focused MariaDB step is therefore PASS on candidate `a193492`. Remaining steps in the same full CI run (SQL-backed UI witnesses, build and ST-PORT evidence) are still running. The UI188 historical Source Integrity preflight remains a separate failure and is not treated as a migration failure.
+
+Updated G3 status: migrations 085–089 have focused migration/replay/legacy-row test evidence on the pinned MariaDB 11.4.12 CI service. G3 may be closed for source-baseline inclusion after the remaining full CI run completes successfully. Production upgrade/restore rehearsal and broader MariaDB version support are still release operational checks, not evidence already obtained.
+
