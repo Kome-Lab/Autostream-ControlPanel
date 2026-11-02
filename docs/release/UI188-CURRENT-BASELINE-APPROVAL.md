@@ -208,3 +208,42 @@ Requested decision: approve the B direction and the gated reconstruction process
 - [ ] Approve the final regenerated manifest/source-lock only after G1–G9 pass.
 
 **Explicit exclusions:** No Manifest or Source Lock replacement, no default-branch update, no PR merge, no tag, no Release, no paid Full E2E runner allocation, no migration against production, and no production deployment is authorized by this document.
+
+## 11. G1 complete path inventory (provisional classification)
+
+The full 335-path inventory is committed separately:
+
+- `docs/release/UI188-CURRENT-BASELINE-INVENTORY.csv`
+- Inventory commit: `18853f9bae96e65da12223b50a618febbf7a0f0a`
+- Review branch: `review/ui188-baseline-reapproval`
+
+Exact Git Tree comparison:
+- Historical tree: `5879ad5924c892a128ea9e764b85edcc554a2ab1` (1,521 blobs)
+- Candidate tree: `7eaccacad50fd5ca0470593226b2bff4175316f0` (1,685 blobs)
+- Added 164; modified 171; deleted 0; total changed paths 335.
+
+Path-based provisional classification (change entries, not approvals):
+
+| Classification | Paths |
+|---|---:|
+| Product source candidates | 127 |
+| Test source candidates | 166 |
+| CI/integration harness | 26 |
+| Database migrations | 5 |
+| Workflow security | 2 |
+| Dependency manifests | 3 |
+| Documentation | 2 |
+| Web build configuration | 2 |
+| Diagnostic-only | 2 |
+| **Total** | **335** |
+
+These are initial routing labels based on path and filename. They are not owner acceptance. In particular, test fixtures, generated evidence helpers, build scripts, migration tests, and release tooling require file-level review. The inventory records base and candidate Git blob IDs plus file mode so the review can be reconciled against exact source bytes.
+
+G1 is complete for exact path enumeration and provisional routing only. G1 is not complete for final per-file disposition or owner approval. G2 remains open until the product/test/harness/diagnostic boundaries are approved.
+
+## 12. Review branch record
+
+- Review branch: `review/ui188-baseline-reapproval`
+- Inventory commit: `18853f9bae96e65da12223b50a618febbf7a0f0a`
+- This branch contains review documentation only; it does not alter product code, source manifest, source lock, source verifier, default branch, or release workflows.
+
