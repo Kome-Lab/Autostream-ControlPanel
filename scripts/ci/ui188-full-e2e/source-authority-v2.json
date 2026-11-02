@@ -196,8 +196,8 @@
       ]
     },
     "workflow-policy": {
-      "tree_sha1": "7b339e495c13e0812207e6b7c941bb651184db5b",
-      "file_count": 5,
+      "tree_sha1": "57e8ef485adae36a4b18ced09fbbc03ff3ac3bfc",
+      "file_count": 4,
       "files": [
         {
           "path": ".github/workflows/ci.yml",
@@ -218,11 +218,6 @@
           "path": ".github/workflows/ui188-full-e2e.yml",
           "mode": "100644",
           "oid": "de2ec0a09c4ded40abd9fd45288779749e9ce79a"
-        },
-        {
-          "path": ".github/workflows/ui188-integration.yml",
-          "mode": "100644",
-          "oid": "0b80c1bbaca8b07ced5261411796d9082639039c"
         }
       ]
     },
@@ -8605,7 +8600,8 @@
   "control_files": [
     "scripts/ci/ui188-full-e2e/source-authority-v2.json",
     "scripts/ci/ui188-full-e2e/source_v2.py",
-    "scripts/ci/ui188-full-e2e/test_source_authority_v2.py"
+    "scripts/ci/ui188-full-e2e/test_source_authority_v2.py",
+    ".github/workflows/ui188-integration.yml"
   ],
   "notes": [
     "Candidate source authority only; does not replace historical manifest/source-lock.",
