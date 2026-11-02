@@ -153,7 +153,12 @@ def validate_authority(authority):
         authority["protected_path_roots"] == ["cmd/", "internal/", "web/src/", "web/public/", "web/tests/"],
         "BLOCKED_V2_PROTECTED_ROOTS",
     )
-    require(type(authority["control_files"]) is list and len(set(authority["control_files"])) == len(authority["control_files"]), "BLOCKED_V2_CONTROL_FILES")
+    require(authority["control_files"] == [
+        "scripts/ci/ui188-full-e2e/source-authority-v2.json",
+        "scripts/ci/ui188-full-e2e/source_v2.py",
+        "scripts/ci/ui188-full-e2e/test_source_authority_v2.py",
+    ], "BLOCKED_V2_CONTROL_FILES")
+    require(not (set(authority["control_files"]) & seen), "BLOCKED_V2_CONTROL_OVERLAP")
     return components
 
 
@@ -166,6 +171,9 @@ def verify(root, component_name="all", authority_path=None):
     authority = unique_json(authority_path.read_bytes())
     components = validate_authority(authority)
     candidate = authority["candidate"]
+    for control_path in authority["control_files"]:
+        control_file = root / control_path
+        require(not control_file.is_symlink() and control_file.is_file(), "BLOCKED_V2_CONTROL_FILE_MISSING")
     candidate_tree = git_output(root, "rev-parse", candidate["commit"] + "^{tree}")
     require(candidate_tree == candidate["git_tree"], "BLOCKED_V2_CANDIDATE_TREE")
 
