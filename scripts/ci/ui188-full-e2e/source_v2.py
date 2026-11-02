@@ -83,10 +83,10 @@ def tree_hash(rows):
             data.extend(mode.encode("ascii"))
             data.extend(b" ")
             data.extend(name.encode("utf-8"))
-            data.extend(b"\\0")
+            data.extend(b"\0")
             data.extend(bytes.fromhex(oid))
         payload = bytes(data)
-        header = b"tree " + str(len(payload)).encode("ascii") + b"\\0"
+        header = b"tree " + str(len(payload)).encode("ascii") + b"\0"
         return hashlib.sha1(header + payload).hexdigest()
 
     return digest(tree)
@@ -191,7 +191,7 @@ def verify(root, component_name="all", authority_path=None):
 
     actual_protected = set()
     tracked = subprocess.check_output(["git", "-C", str(root), "ls-files", "-z"])
-    for raw_path in tracked.split(b"\\0"):
+    for raw_path in tracked.split(b"\0"):
         if not raw_path:
             continue
         path = raw_path.decode("utf-8")
@@ -209,7 +209,7 @@ def verify(root, component_name="all", authority_path=None):
             index = subprocess.check_output(
                 ["git", "-C", str(root), "ls-files", "--stage", "-z", "--", path]
             )
-            records = [record for record in index.split(b"\\0") if record]
+            records = [record for record in index.split(b"\0") if record]
             require(len(records) == 1, "BLOCKED_V2_INDEX_ENTRY")
             metadata, indexed_path = records[0].split(b"\\t", 1)
             mode, oid, stage = metadata.decode("ascii").split()
