@@ -247,3 +247,44 @@ G1 is complete for exact path enumeration and provisional routing only. G1 is no
 - Inventory commit: `18853f9bae96e65da12223b50a618febbf7a0f0a`
 - This branch contains review documentation only; it does not alter product code, source manifest, source lock, source verifier, default branch, or release workflows.
 
+## 13. G2 product / test / harness boundary map
+
+A second, more precise boundary map has been created from the exact 335-path inventory:
+
+- `docs/release/UI188-CURRENT-BASELINE-BOUNDARY-MAP.csv`
+- Boundary map commit: `120137b139cdbd870dc005eec452a4f94d22593a`
+- Review branch: `review/ui188-baseline-reapproval`
+
+Provisional component counts (335 changed paths):
+
+| Component | Paths |
+|---|---:|
+| Go runtime | 60 |
+| Web runtime | 67 |
+| Go test source | 42 |
+| Web test source | 49 |
+| Browser test harness | 39 |
+| Web test support | 31 |
+| Test fixture data | 5 |
+| CI integration harness | 20 |
+| Source governance | 6 |
+| Database schema | 5 |
+| CI / release policy | 2 |
+| Go dependency lock | 2 |
+| Web tooling | 1 |
+| Web build configuration | 2 |
+| Documentation | 2 |
+| Diagnostic-only | 2 |
+| **Total** | **335** |
+
+Important boundary refinements:
+- `web/tests/helpers/**` is classified as browser test harness, not test-case source.
+- `web/tests/**` is separated into executable test cases, test support/scenario modules, and fixture data.
+- `scripts/ci/ui188-full-e2e/**`, polling evidence scripts, source-owner-map and source inventories are CI/integration or source-governance components, not product runtime.
+- The two CI017 diagnostic files are excluded from both the runtime product tree and the standard test baseline unless separately retained as a diagnostics component.
+- `web/package.json` is treated as Web tooling because the observed change is in scripts/test commands; dependency versions in that file are unchanged.
+- `go.mod` and `go.sum` are a separate dependency authority because the Contracts replacement version changed.
+- The five database migrations form a separate schema authority and remain subject to G3.
+
+G2 status: the path-level component map is complete for the 335 changed paths, but runtime reachability, owner approval, and final inclusion/exclusion decisions remain open. No new product tree has been generated.
+
