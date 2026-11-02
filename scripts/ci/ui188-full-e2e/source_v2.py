@@ -97,7 +97,7 @@ def validate_authority(authority):
     require(
         set(authority) == {
             "schema_version", "status", "candidate", "components",
-            "cross_repository_authority", "acceptance", "protected_path_roots",
+            "cross_repository_authority", "acceptance", "protected_path_roots", "candidate_control_files",
             "excluded_components", "control_files", "notes",
         },
         "BLOCKED_V2_SCHEMA",
@@ -147,8 +147,22 @@ def validate_authority(authority):
         actual_tree = tree_hash(component["files"])
         require(actual_tree == component["tree_sha1"], "BLOCKED_V2_COMPONENT_TREE:" + name + ":" + actual_tree + ":" + component["tree_sha1"])
         total += len(paths)
-    require(total == candidate["blob_count"] == len(seen), "BLOCKED_V2_BLOB_COUNT")
-    all_rows = [row for component in components.values() for row in component["files"]]
+    control_rows = authority["candidate_control_files"]
+    require(type(control_rows) is list, "BLOCKED_V2_CANDIDATE_CONTROL_FILES")
+    for row in control_rows:
+        require(
+            type(row) is dict
+            and set(row) == {"path", "mode", "oid"}
+            and type(row["path"]) is str
+            and row["mode"] in {"100644", "100755"}
+            and re.fullmatch(r"[0-9a-f]{40}", row["oid"])
+            and row["path"] in authority["control_files"]
+            and row["path"] not in seen,
+            "BLOCKED_V2_CANDIDATE_CONTROL_FILES",
+        )
+        seen.add(row["path"])
+    require(total + len(control_rows) == candidate["blob_count"] == len(seen), "BLOCKED_V2_BLOB_COUNT")
+    all_rows = [row for component in components.values() for row in component["files"]] + control_rows
     require(tree_hash(all_rows) == candidate["git_tree"], "BLOCKED_V2_CANDIDATE_TREE")
     require(authority["acceptance"] == EXPECTED_ACCEPTANCE, "BLOCKED_V2_ACCEPTANCE_RELAXED")
     require(authority["excluded_components"] == ["diagnostic-excluded"], "BLOCKED_V2_EXCLUSION_POLICY")
