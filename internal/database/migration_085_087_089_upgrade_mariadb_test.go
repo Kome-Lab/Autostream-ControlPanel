@@ -1,7 +1,9 @@
 package database
 
 import (
+    "database/sql"
     "fmt"
+    "strings"
     "testing"
 )
 
@@ -54,9 +56,11 @@ func TestMariaDBRevisionPrecisionMigrationsPreserveExistingRows(t *testing.T) {
     }
     for _, fixture := range fixtures {
         t.Run(fixture.table, func(t *testing.T) {
-            var precision int
-            if err := conn.QueryRowContext(ctx, `SELECT DATETIME_PRECISION FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=? AND COLUMN_NAME='updated_at'`, fixture.table).Scan(&precision); err != nil || precision != 6 {
-                t.Fatalf("%s updated_at precision=%d err=%v", fixture.table,precision,err)
+            var field, columnType, nullable, key string
+            var defaultValue, extra sql.NullString
+            columnQuery := fmt.Sprintf(`SHOW COLUMNS FROM %s LIKE 'updated_at'`, fixture.table)
+            if err := conn.QueryRowContext(ctx, columnQuery).Scan(&field,&columnType,&nullable,&key,&defaultValue,&extra); err != nil || !strings.Contains(strings.ToLower(columnType), "datetime(6)") {
+                t.Fatalf("%s updated_at type=%q err=%v", fixture.table,columnType,err)
             }
             var preserved string
             query := fmt.Sprintf(`SELECT DATE_FORMAT(updated_at,'%%Y-%%m-%%d %%H:%%i:%%s.%%f') FROM %s WHERE %s=?`, fixture.table, map[string]string{"stream_settings":"stream_id","profiles":"id","drive_destinations":"id","system_settings":"name"}[fixture.table])
