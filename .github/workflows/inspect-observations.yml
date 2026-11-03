@@ -1,128 +1,30 @@
-name: Verify immutable published Control Panel package
+name: Inspect failed P3 upload boundary
 on:
   push:
     branches: ['diagnostics/part11-service-health-75bbe3c']
 permissions:
   contents: read
-  attestations: read
+  actions: read
 jobs:
-  verify-published:
+  inspect:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: 8fe7abd08f11a942087ea8926efc41ac755272a7
-          persist-credentials: false
-      - name: Verify published package checksums, both architectures and provenance
+      - name: Inspect only the recorded safe initial-render diagnostics
         env:
           GH_TOKEN: ${{ github.token }}
-          VERIFY_VERSION: v2.0.4
-          VERIFY_COMMIT: 65a601fc9d4f15c93083e9be4ab9e71586fdba69
         run: |
-          set -euo pipefail
           python3 -B - <<'PY'
-          import base64,hashlib,json,os,pathlib,re,struct,subprocess,tarfile
-          repo="Kome-Lab/Autostream-ControlPanel"
-          version=os.environ["VERIFY_VERSION"];commit=os.environ["VERIFY_COMMIT"]
-          assert re.fullmatch(r"v\d+\.\d+\.\d+",version) and re.fullmatch(r"[0-9a-f]{40}",commit)
-          def api(path):
-              return json.loads(subprocess.check_output(["gh","api",path]))
-          def sha(path):
-              return hashlib.sha256(path.read_bytes()).hexdigest()
-          release=api("/repos/"+repo+"/releases/tags/"+version)
-          assert release["tag_name"]==version and release["immutable"] is True and release["draft"] is False and release["prerelease"] is False
-          ref=api("/repos/"+repo+"/git/ref/tags/"+version)
-          assert ref["object"]["type"]=="tag"
-          tag=api("/repos/"+repo+"/git/tags/"+ref["object"]["sha"])
-          assert tag["tag"]==version and tag["object"]=={"sha":commit,"type":"commit","url":"https://api.github.com/repos/"+repo+"/git/commits/"+commit}
-          assert tag["verification"]["verified"] is True and tag["verification"]["reason"]=="valid"
-          archives={arch:f"autostream-control-panel_{version}_linux_{arch}.tar.gz" for arch in ["amd64","arm64"]}
-          expected={"SHA256SUMS","release-manifest.json","release-manifest.json.sha256",*archives.values(),*(name+".sha256" for name in archives.values())}
-          assets={asset["name"]:asset for asset in release["assets"]}
-          assert len(assets)==len(release["assets"])==7 and set(assets)==expected
-          root=pathlib.Path(os.environ["RUNNER_TEMP"])/("published-"+version)
-          assert not root.exists();root.mkdir()
-          subprocess.run(["gh","release","download",version,"--repo",repo,"--dir",str(root)],check=True)
-          assert {p.name for p in root.iterdir()}==expected and not any(p.is_symlink() or not p.is_file() for p in root.iterdir())
-          for name,asset in assets.items():
-              path=root/name
-              assert path.stat().st_size==asset["size"] and asset["state"]=="uploaded"
-              assert asset["digest"]=="sha256:"+sha(path)
-          def checksums(path,expected_names):
-              rows={}
-              for line in path.read_text().splitlines():
-                  match=re.fullmatch(r"([0-9a-f]{64})  ([A-Za-z0-9_.-]+)",line)
-                  assert match and match[2] not in rows,(str(path),line)
-                  rows[match[2]]=match[1]
-              assert set(rows)==set(expected_names),(str(path),rows,expected_names)
-              for name,digest in rows.items(): assert sha(root/name)==digest
-          checksums(root/"SHA256SUMS",expected-{"SHA256SUMS"})
-          checksums(root/"release-manifest.json.sha256",{"release-manifest.json"})
-          for name in archives.values(): checksums(root/(name+".sha256"),{name})
-          manifest=json.loads((root/"release-manifest.json").read_text())
-          assert manifest["schema_version"]==1 and manifest["release_id"]==version and manifest["channel"]=="host" and manifest["minimum_agent_version"]=="v1.7.0"
-          assert len(manifest["components"])==1
-          component=manifest["components"][0]
-          assert component["service"]=="control-panel" and component["source_version"]==version and component["commit"]==commit
-          assert component["rollback_compatible"] is True and component["database_schema"]=="backward_compatible"
-          by_arch={row["arch"]:row for row in component["artifacts"]}
-          assert len(component["artifacts"])==2 and set(by_arch)==set(archives)
-          subjects=[*archives.values(),"release-manifest.json"]
-          proof=root/"verification";proof.mkdir()
-          for name in subjects:
-              path=root/name;digest=sha(path);response=api("/repos/"+repo+"/attestations/sha256:"+digest)
-              bundles=[row["bundle"] for row in response["attestations"]]
-              assert bundles
-              bundle_path=proof/(name+".bundles.jsonl")
-              bundle_path.write_text("".join(json.dumps(bundle)+"\n" for bundle in bundles))
-              command=["gh","attestation","verify",str(path),"--bundle",str(bundle_path),"--repo",repo,"--signer-workflow",repo+"/.github/workflows/release-host.yml","--source-digest",commit,"--source-ref","refs/tags/"+version,"--deny-self-hosted-runners","--format","json"]
-              result=json.loads(subprocess.check_output(command))
-              assert result
-              (proof/(name+".attestation-verification.json")).write_text(json.dumps(result,indent=2)+"\n")
-              print("VERIFIED_PROVENANCE_SUBJECT",json.dumps({"name":name,"sha256":digest,"source":commit,"tag":version}),flush=True)
-          summary=[]
-          for arch,name in archives.items():
-              path=root/name;entry=by_arch[arch]
-              assert entry["os"]=="linux" and entry["name"]==name and entry["size"]==path.stat().st_size and entry["sha256"]==sha(path)
-              artifact_root=name[:-7]
-              subprocess.run(["bash",".github/scripts/verify-release-archive.sh",str(path),artifact_root],check=True)
-              with tarfile.open(path,"r:gz") as archive:
-                  members=archive.getmembers();mapping={member.name.rstrip("/"):member for member in members}
-                  assert len(mapping)==len(members) and all(member.isfile() or member.isdir() for member in members)
-                  assert all(member.name.rstrip("/")==artifact_root or member.name.startswith(artifact_root+"/") for member in members)
-                  names={member.name for member in members if member.isfile()}
-                  relative={name[len(artifact_root)+1:] for name in names}
-                  assert "bin/control-panel" in relative and "share/autostream-control-panel/index.html" in relative
-                  assert any(name.startswith("share/autostream-control-panel/_next/static/") for name in relative)
-                  forbidden={"node_modules","server.js","autostream-updater","autostream-host-agent","autostream-local-executor","autostream-update-host"}
-                  assert all(not(set(name.split("/"))&forbidden) for name in relative)
-                  def content(name): return archive.extractfile(mapping[artifact_root+"/"+name]).read()
-                  inner=json.loads(content("artifact-manifest.json"))
-                  assert inner["schema_version"]==1 and inner["component"]=="control-panel" and inner["source_version"]==version and inner["commit"]==commit
-                  assert inner["platform"]=={"os":"linux","arch":arch} and inner["archive"]=={"name":name,"root":artifact_root}
-                  assert inner["build_date"]==manifest["published_at"]
-                  assert inner["compatibility"]=={"minimum_agent_version":"v1.7.0","minimum_panel_version":None,"rollback_compatible":True,"database_schema":"backward_compatible"}
-                  binary=content("bin/control-panel")
-                  assert binary[:6]==b"\x7fELF\x02\x01" and struct.unpack_from("<H",binary,18)[0]==({"amd64":62,"arm64":183}[arch])
-                  assert version.encode() in binary and commit.encode() in binary
-                  declared={}
-                  for line in content("checksums.txt").decode().splitlines():
-                      match=re.fullmatch(r"([0-9a-f]{64})  \./(.+)",line)
-                      assert match and match[2] not in declared
-                      declared[match[2]]=match[1]
-                  assert set(declared)==relative-{"checksums.txt"}
-                  for name,digest in declared.items(): assert hashlib.sha256(content(name)).hexdigest()==digest
-                  summary.append({"arch":arch,"archive":path.name,"members":len(members),"regular_files":len(names),"inner_checksums":len(declared),"sha256":sha(path)})
-          receipt={"version":version,"commit":commit,"release_id":release["id"],"release_url":release["html_url"],"immutable":True,"assets":7,"provenance_subjects":3,"archives":summary}
-          (proof/"published-verification.json").write_text(json.dumps(receipt,indent=2)+"\n")
-          print("VERIFIED_PUBLISHED_RELEASE",json.dumps(receipt),flush=True)
+          import io,json,subprocess,zipfile
+          metadata=json.loads(subprocess.check_output(["gh","api","/repos/Kome-Lab/Autostream-ControlPanel/actions/artifacts/13264532585"]))
+          assert metadata["workflow_run"]["id"]==41698993872 and metadata["workflow_run"]["head_sha"]=="8fe7abd08f11a942087ea8926efc41ac755272a7"
+          body=subprocess.check_output(["gh","api","/repos/Kome-Lab/Autostream-ControlPanel/actions/artifacts/13264532585/zip"])
+          with zipfile.ZipFile(io.BytesIO(body)) as archive:
+              names=[name for name in archive.namelist() if name.endswith(".json")]
+              print("EVIDENCE_JSON_PATHS",json.dumps(names),flush=True)
+              for name in names:
+                  if not name.endswith("initial-render-diagnostic.json"): continue
+                  data=archive.read(name);assert len(data)<300000
+                  value=json.loads(data)
+                  print("P3_INITIAL_DIAGNOSTIC",json.dumps({"path":name,"data":value}),flush=True)
           PY
-      - name: Upload independent publication verification
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: published-package-verification-${{ github.sha }}
-          path: ${{ runner.temp }}/published-v2.0.4/verification
-          if-no-files-found: warn
-          retention-days: 30
