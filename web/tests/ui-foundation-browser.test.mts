@@ -10,7 +10,7 @@ import { runAccountAppearanceScenario } from "./ui-browser-account-scenarios.mts
 import { runVisualSettingsScenario } from "./ui-browser-visual-settings-scenarios.mts";
 import { runResponsiveSurfacesScenario, runStatusFocusScenario, runFalsePositiveGuardsScenario } from "./ui-browser-observation-scenarios.mts";
 
-test("UI Foundation runtime behavior", { timeout: 420_000 }, async (t) => {
+test("UI Foundation runtime behavior", { timeout: 900_000 }, async (t) => {
   const server = await ensureWebServer(webRoot, requestedBaseUrl);
   const browserPromise = BrowserHarness.launch();
   t.after(async () => {

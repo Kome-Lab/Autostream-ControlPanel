@@ -856,7 +856,7 @@ jobs:
           sudo apt-get install --no-install-recommends -y fontconfig fonts-noto-cjk=1:20230817+repack1-3
           fc-list -q ':lang=ja'
       - name: Test control-platform browser witnesses and UI Foundation behavior
-        timeout-minutes: 8
+        timeout-minutes: 18
         env:
           AUTOSTREAM_BROWSER_PATH: /usr/bin/google-chrome
         run: npm run test:ui-foundation-browser

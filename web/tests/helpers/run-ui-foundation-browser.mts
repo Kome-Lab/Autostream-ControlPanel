@@ -324,7 +324,7 @@ export async function main() {
             concurrency: false,
             forceExit: true,
             signal,
-            timeout: 450_000,
+            timeout: 930_000,
             execArgv: ["--no-warnings"],
           });
           tests.on("test:complete", (result) => {

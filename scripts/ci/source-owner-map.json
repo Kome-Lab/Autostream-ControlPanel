@@ -1625,7 +1625,7 @@
       },
       {
         "path": "web/tests/ui-foundation-browser.test.mts",
-        "sha256": "d6f3f939e722d2cccaddab8c3f81e18d13a77bda6261708c86f49898246b9048",
+        "sha256": "79b328b066ea905176f3338df67c090694503322bd02bf259a88db4a6b2e60d3",
         "symbols": [],
         "physical_lines": 46
       },
