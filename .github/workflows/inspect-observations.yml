@@ -1,30 +1,169 @@
-name: Inspect failed P3 upload boundary
+name: Verify P3 owned bootstrap cancellation observation
 on:
   push:
     branches: ['diagnostics/part11-service-health-75bbe3c']
 permissions:
   contents: read
-  actions: read
 jobs:
-  inspect:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 8fe7abd08f11a942087ea8926efc41ac755272a7
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 26
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Apply only the P3 observation opt-in and read-only counters
+        run: |
+          set -euo pipefail
+          python3 -B - <<'PY'
+          import hashlib,json,pathlib,subprocess
+          path=pathlib.Path("web/tests/media-upload-browser.test.mts")
+          data=path.read_bytes()
+          def blob(data): return hashlib.sha1(b"blob "+str(len(data)).encode()+b"\0"+data).hexdigest()
+          assert subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip()=="8fe7abd08f11a942087ea8926efc41ac755272a7"
+          assert blob(data)=="ed8aa23f0a265d2d4c12bef42bf4bced5af4d09d"
+          source=data.decode("utf-8")
+          before="const routes = createBrowserRouteFixture(fixture.observeBrowserRoutes(browser), fixture.route);";after="const routes = createBrowserRouteFixture(fixture.observeBrowserRoutes(browser), fixture.route);\n    routes.observeBootstrapCancellation = true;"
+          assert source.count(before)==2
+          source=source.replace(before,after)
+          before="fetch_failure: browser.fetchFailureDiagnosticJSON ? JSON.parse(browser.fetchFailureDiagnosticJSON) : null, limits:";after="fetch_failure: browser.fetchFailureDiagnosticJSON ? JSON.parse(browser.fetchFailureDiagnosticJSON) : null, pre_settlement_cancellations: browser.preSettlementFetchCancellationCount, safe_fetch_cancellations: browser.safeFetchCancellationCount, limits:"
+          assert source.count(before)==1
+          source=source.replace(before,after)
+          path.write_bytes(source.encode("utf-8"))
+          print("P3_ONLY_BEHAVIOR_CHANGE","existing observeBootstrapCancellation=true before both owned route instances; diagnostic counters read only")
+          subprocess.run(["git","add","--",str(path)],check=True)
+          PY
+          python3 -B scripts/ci/generate_polling_source_projection.py --root "$GITHUB_WORKSPACE" --tree "$(git write-tree)" --receipt "$RUNNER_TEMP/p3-bootstrap-projection"
+          python3 -B - <<'PY'
+          import hashlib,json,pathlib
+          fixture=json.loads(pathlib.Path("web/tests/fixtures/ui-regression/polling-current-source-delta.json").read_text())
+          assert len(fixture["records"])==266
+          assert hashlib.sha256(pathlib.Path("web/tests/fixtures/ui-regression/polling-legacy-parity.json").read_bytes()).hexdigest()=="b2df0a26ef1f77a08a0ddbfe8762b7e77a583c21ba8ed03d22373e4ebce764a8"
+          PY
+          git add -- web/tests/fixtures/ui-regression/polling-current-source-delta.json web/tests/ui-regression/polling-current-source-contract.mts
+          git -c core.whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol diff --cached --check
+      - name: Install locked dependencies
+        working-directory: web
+        timeout-minutes: 5
+        run: npm ci
+      - name: Verify source integrity and current projection
+        run: |
+          set -euo pipefail
+          python3 -B scripts/ci/verify_source_integrity.py --repository Autostream-ControlPanel --tree "$(git write-tree)" --out "$RUNNER_TEMP/p3-bootstrap-integrity.json"
+          cd web
+          node --no-warnings --test --test-concurrency=1 tests/ui-regression/polling-current-source-delta.test.mts
+          npm run typecheck:ui-regression
+          node node_modules/eslint/bin/eslint.js tests/media-upload-browser.test.mts --max-warnings=0
+      - name: Prepare Japanese browser fonts
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y fontconfig fonts-noto-cjk=1:20230817+repack1-3
+          fc-list -q ':lang=ja'
+      - name: Verify the exact 4 actual media cases and 24 related cases
+        working-directory: web
+        timeout-minutes: 12
+        env:
+          AUTOSTREAM_BROWSER_PATH: /usr/bin/google-chrome
+        run: |
+          node --no-warnings --input-type=module <<'JS'
+          import { spawnSync } from "node:child_process";
+          import { captureNextGeneratedFiles, restoreNextGeneratedFiles } from "./tests/helpers/browser-harness.mts";
+          const generated=captureNextGeneratedFiles(process.cwd());
+          try {
+            const result=spawnSync("bash",["../scripts/ci/test-polling-create-upload-web.sh","browser"],{stdio:"inherit"});
+            if(result.error)throw result.error;
+            process.exitCode=result.status??1;
+          } finally { restoreNextGeneratedFiles(generated); }
+          JS
+      - name: Record actual pre-send cancellation counters and successful auth responses
+        run: |
+          python3 -B - <<'PY'
+          import json,os,pathlib
+          root=pathlib.Path(os.environ["RUNNER_TEMP"])/"polling-create-upload-web-evidence"/"media-upload"
+          rows=[]
+          for name in ["ja-light-1440","en-dark-390","late-generation"]:
+              value=json.loads((root/name/"initial-render-diagnostic.json").read_text())
+              assert value["fetch_failure"] is None
+              row={"condition":name,"pre_settlement_cancellations":value["pre_settlement_cancellations"],"safe_fetch_cancellations":value["safe_fetch_cancellations"],"setup":value["checkpoints"][-1]["setup"]}
+              rows.append(row)
+          print("P3_BOOTSTRAP_OBSERVATION_COUNTS",json.dumps(rows),flush=True)
+          PY
+      - name: Freeze validated source
+        run: |
+          python3 -B - <<'PY'
+          import hashlib,json,os,pathlib,subprocess
+          root=pathlib.Path(os.environ["RUNNER_TEMP"]);tree=subprocess.check_output(["git","write-tree"],text=True).strip()
+          paths=json.loads("[\"web/tests/media-upload-browser.test.mts\",\"web/tests/fixtures/ui-regression/polling-current-source-delta.json\",\"web/tests/ui-regression/polling-current-source-contract.mts\"]")
+          assert sorted(subprocess.check_output(["git","diff","--cached","--name-only"],text=True).splitlines())==sorted(paths)
+          subprocess.run(["git","diff","--exit-code"],check=True)
+          output=root/"p3-bootstrap-source";output.mkdir()
+          manifest={"parent":"8fe7abd08f11a942087ea8926efc41ac755272a7","base_tree":"5531a00aa9dbfd6c1ef2f95a6679eb6d994c418f","final_tree":tree,"files":{}}
+          for path in paths:
+              data=subprocess.check_output(["git","cat-file","blob",tree+":"+path]);assert pathlib.Path(path).read_bytes()==data
+              target=output/path;target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(data)
+              manifest["files"][path]={"sha256":hashlib.sha256(data).hexdigest(),"git_blob":hashlib.sha1(b"blob "+str(len(data)).encode()+b"\0"+data).hexdigest(),"bytes":len(data)}
+          (output/"manifest.json").write_text(json.dumps(manifest,indent=2)+"\n")
+          print("VALIDATED_P3_BOOTSTRAP_MANIFEST",json.dumps(manifest),flush=True)
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: p3-bootstrap-source-${{ github.sha }}
+          path: ${{ runner.temp }}/p3-bootstrap-source
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+      - name: Upload all proof and failed-attempt evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: p3-bootstrap-proof-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/polling-create-upload-web-evidence
+            ${{ runner.temp }}/p3-bootstrap-projection/generation.json
+            ${{ runner.temp }}/p3-bootstrap-integrity.json
+          if-no-files-found: warn
+          retention-days: 14
+  prepare-source-blobs:
+    needs: verify
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    permissions:
+      contents: write
+      actions: read
     steps:
-      - name: Inspect only the recorded safe initial-render diagnostics
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: p3-bootstrap-source-${{ github.sha }}
+          path: ${{ runner.temp }}/validated-source
+      - name: Verify exact tested source and create immutable objects
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           python3 -B - <<'PY'
-          import io,json,subprocess,zipfile
-          metadata=json.loads(subprocess.check_output(["gh","api","/repos/Kome-Lab/Autostream-ControlPanel/actions/artifacts/13264532585"]))
-          assert metadata["workflow_run"]["id"]==41698993872 and metadata["workflow_run"]["head_sha"]=="8fe7abd08f11a942087ea8926efc41ac755272a7"
-          body=subprocess.check_output(["gh","api","/repos/Kome-Lab/Autostream-ControlPanel/actions/artifacts/13264532585/zip"])
-          with zipfile.ZipFile(io.BytesIO(body)) as archive:
-              names=[name for name in archive.namelist() if name.endswith(".json")]
-              print("EVIDENCE_JSON_PATHS",json.dumps(names),flush=True)
-              for name in names:
-                  if not name.endswith("initial-render-diagnostic.json"): continue
-                  data=archive.read(name);assert len(data)<300000
-                  value=json.loads(data)
-                  print("P3_INITIAL_DIAGNOSTIC",json.dumps({"path":name,"data":value}),flush=True)
+          import base64,hashlib,json,os,pathlib,subprocess
+          root=pathlib.Path(os.environ["RUNNER_TEMP"])/"validated-source"
+          manifest=json.loads((root/"manifest.json").read_text());paths=json.loads("[\"web/tests/media-upload-browser.test.mts\",\"web/tests/fixtures/ui-regression/polling-current-source-delta.json\",\"web/tests/ui-regression/polling-current-source-contract.mts\"]")
+          assert manifest["parent"]=="8fe7abd08f11a942087ea8926efc41ac755272a7" and manifest["base_tree"]=="5531a00aa9dbfd6c1ef2f95a6679eb6d994c418f"
+          assert sorted(manifest["files"])==sorted(paths)
+          assert {p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()}==set(paths)|{"manifest.json"}
+          assert not any(p.is_symlink() for p in root.rglob("*"))
+          for path in paths:
+              data=(root/path).read_bytes();entry=manifest["files"][path]
+              assert len(data)==entry["bytes"] and len(data)<4*1024*1024 and data.decode().encode()==data
+              assert hashlib.sha256(data).hexdigest()==entry["sha256"]
+              blob=hashlib.sha1(b"blob "+str(len(data)).encode()+b"\0"+data).hexdigest();assert blob==entry["git_blob"]
+              body={"content":base64.b64encode(data).decode(),"encoding":"base64"}
+              result=json.loads(subprocess.check_output(["gh","api","--method","POST","/repos/Kome-Lab/Autostream-ControlPanel/git/blobs","--input","-"],input=json.dumps(body).encode()))
+              assert result["sha"]==blob
+              print("PREPARED_BLOB",json.dumps({"path":path,**entry}),flush=True)
+          print("PREPARED_TREE",manifest["final_tree"],flush=True)
+          print("PREPARED_PARENT",manifest["parent"],flush=True)
           PY
