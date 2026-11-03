@@ -1573,9 +1573,9 @@
       },
       {
         "path": "web/tests/ui-browser-query-auth-scenarios.mts",
-        "sha256": "3ae1f5ea71583a6a70bee4a50d3200209944f112b71f7183eca0e28eeacfedff",
+        "sha256": "904b210a77281ede91144f26b30c922b8429e73811677905376b06f7b4106a85",
         "symbols": [],
-        "physical_lines": 489
+        "physical_lines": 499
       },
       {
         "path": "web/tests/ui-browser-start-readiness-scenarios.mts",
@@ -1625,9 +1625,9 @@
       },
       {
         "path": "web/tests/ui-foundation-browser.test.mts",
-        "sha256": "8f8282b40d8252436394cc0a5107a92caaad6c5df0a5dc8d19b054b086d641ee",
+        "sha256": "d6f3f939e722d2cccaddab8c3f81e18d13a77bda6261708c86f49898246b9048",
         "symbols": [],
-        "physical_lines": 45
+        "physical_lines": 46
       },
       {
         "path": "web/tests/helpers/browser-executable.mts",

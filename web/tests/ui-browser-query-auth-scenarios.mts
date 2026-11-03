@@ -214,6 +214,7 @@ export async function runSessionExpiryScenario(t: TestContext, browser: BrowserH
     browser.clearRequestCounts();
     browser.clearConsoleErrors();
 
+    const loginBootstrapResponses = new Map<string, number>(["/settings/app", "/auth/oauth/providers"].map((pathname) => [pathname, browser.responses.get(pathname) || 0]));
     await browser.evaluate("window.dispatchEvent(new Event('focus')); true");
     const outcome = await browser.waitFor<SessionExpirySnapshot>(
       sessionExpirySnapshotExpression,
@@ -231,6 +232,15 @@ export async function runSessionExpiryScenario(t: TestContext, browser: BrowserH
     await waitForAnimationFrames(browser);
     assert.equal(await browser.evaluate<string>("location.pathname"), "/login/", "login page must not redirect itself");
     assert.equal(browser.requests.get("/auth/session/refresh"), 1, "repeated activity after expiry must not refresh again");
+    await browser.waitFor(
+      `Boolean(document.querySelector('form input[autocomplete="username"]') && document.querySelector('form button[type="submit"]:not([disabled])'))`,
+      Boolean,
+      "expiry login bootstrap did not become interactive",
+      15_000,
+    );
+    for (const [pathname, previousResponses] of loginBootstrapResponses) {
+      await waitForInitialGET(browser, pathname, previousResponses, 200);
+    }
     assertNoBrowserConsoleErrors(browser.consoleErrorCount);
     fixture.refreshResponse = { body: { status: "ok" } };
   });

@@ -21,6 +21,7 @@ test("UI Foundation runtime behavior", { timeout: 420_000 }, async (t) => {
   const browser = await browserPromise;
   const fixture = createBrowserRouteFixture(browser);
   fixture.observeInFlightReadCancellation = true;
+  fixture.observeBootstrapCancellation = true;
   await runQueryStatesScenario(t, browser, server, fixture);
   await runLogoutScenario(t, browser, server, fixture);
   await runSessionExpiryScenario(t, browser, server, fixture);
