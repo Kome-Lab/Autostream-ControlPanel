@@ -1,47 +1,184 @@
-name: Inspect failed browser observations
+name: Verify related confirmation settlement
 on:
   push:
     branches: ['diagnostics/part11-service-health-75bbe3c']
 permissions:
-  actions: read
   contents: read
+  actions: read
 concurrency:
-  group: inspect-service-health-75bbe3c
+  group: verify-related-settlement-75bbe3c
   cancel-in-progress: true
 jobs:
-  inspect:
+  verify:
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 15
     steps:
-      - name: Read failed observation JSON
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: Kome-Lab/Autostream-ControlPanel
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 75bbe3c47b76b3be2597f1f1baee6271dbe57ba9
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 26
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install locked dependencies
+        working-directory: web
+        timeout-minutes: 5
+        run: npm ci
+      - name: Prepare fixed Japanese fonts
+        timeout-minutes: 3
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y fontconfig fonts-noto-cjk=1:20230817+repack1-3
+          fc-list -q ':lang=ja'
+      - name: Apply exact reviewed fixture change and regenerate current layer
         shell: bash
         run: |
           set -euo pipefail
-          for artifact in 13252432585 13252577685; do
-          gh api "/repos/Kome-Lab/Autostream-ControlPanel/actions/artifacts/$artifact/zip" > "$RUNNER_TEMP/observation-$artifact.zip"
-          python3 - "$RUNNER_TEMP/observation-$artifact.zip" "$artifact" <<'PY'
-          import json, sys, zipfile
-          with zipfile.ZipFile(sys.argv[1]) as archive:
-              print("ARTIFACT_ID", sys.argv[2])
-              selected = [i for i in archive.infolist() if i.filename.endswith(("execution.json", "receipt.json"))]
-              print("EXECUTION_FILES", json.dumps([i.filename for i in selected]))
-              for info in selected:
-                  assert info.file_size <= 4 * 1024 * 1024
-                  value = json.loads(archive.read(info))
-                  print("EXECUTION", info.filename, "source", value.get("source"), "expected", value.get("expected", value.get("expected_cases")))
-                  rows = value.get("results", value.get("cases", []))
-                  failed = [x for x in rows if x.get("status") != "PASS"]
-                  print("SUMMARY", json.dumps({"rows": len(rows), "failed": len(failed)}))
-                  for row in failed[:16]:
-                      print("FAILED_OBSERVATION", json.dumps(row, ensure_ascii=False)[:12000])
-              failures = [i for i in archive.infolist() if i.filename.endswith(".json") and any(k in i.filename.lower() for k in ("failure", ".error."))]
-              print("FAILURE_FILES", json.dumps([i.filename for i in failures][:30]))
-              for info in failures[:8]:
-                  assert info.file_size <= 1024 * 1024
-                  value = json.loads(archive.read(info))
-                  print("FAILURE_DETAIL", info.filename, json.dumps(value, ensure_ascii=False)[:16000])
+          python3 -B - <<'PY'
+          import hashlib, pathlib, subprocess
+          assert subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip()=="75bbe3c47b76b3be2597f1f1baee6271dbe57ba9"
+          path=pathlib.Path("web/tests/helpers/polling-workers-app-browser-cases.mts")
+          data=path.read_bytes()
+          def blob(value): return hashlib.sha1(b"blob "+str(len(value)).encode()+b"\0"+value).hexdigest()
+          assert blob(data)=="4752f6a86750eaa3b748ccad646be72b37d9eb30"
+          source=data.decode("utf-8")
+          old_import='import { withTimeout } from "./browser-process-timing.mts";'
+          old_call='  await clickVisible(ctx.browser, "[role=alertdialog] [data-confirm-action]");'
+          assert source.count(old_import)==1 and source.count(old_call)==1
+          source=source.replace(old_import,old_import+'\nimport { settleRender } from "../ui-regression/render-state.mts";')
+          source=source.replace(old_call,'  await settleRender(ctx.browser, "open");\n'+old_call)
+          result=source.encode("utf-8")
+          assert blob(result)=="dac03975e9819c843b2980438596441a907c8432"
+          path.write_bytes(result)
+          print("REVIEWED_HELPER_BLOB",blob(result))
           PY
-          done
+          git add -- web/tests/helpers/polling-workers-app-browser-cases.mts
+          python3 -B scripts/ci/generate_polling_source_projection.py --root "$GITHUB_WORKSPACE" --tree "$(git write-tree)" --receipt "$RUNNER_TEMP/projection-receipt"
+          python3 -B - <<'PY'
+          import hashlib,pathlib
+          assert hashlib.sha256(pathlib.Path("web/tests/fixtures/ui-regression/polling-legacy-parity.json").read_bytes()).hexdigest()=="b2df0a26ef1f77a08a0ddbfe8762b7e77a583c21ba8ed03d22373e4ebce764a8"
+          PY
+          git add -- web/tests/fixtures/ui-regression/polling-current-source-delta.json web/tests/ui-regression/polling-current-source-contract.mts
+          git write-tree > "$RUNNER_TEMP/repair-final-tree.txt"
+          git diff --cached --check
+      - name: Verify authored source integrity
+        run: python3 -B scripts/ci/verify_source_integrity.py --repository Autostream-ControlPanel --tree "$(git write-tree)" --out "$RUNNER_TEMP/repair-source-integrity.json"
+      - name: Verify current projection and typecheck
+        working-directory: web
+        run: |
+          set -euo pipefail
+          node --no-warnings --test --test-concurrency=1 --test-timeout=180000 tests/ui-regression/polling-current-source-delta.test.mts
+          node ../scripts/ci/ui-regression/typecheck.mjs
+          node node_modules/eslint/bin/eslint.js tests/helpers/polling-workers-app-browser-cases.mts --max-warnings=0
+      - name: Verify all 24 related UI cases
+        working-directory: web
+        timeout-minutes: 7
+        env:
+          AUTOSTREAM_BROWSER_PATH: /usr/bin/google-chrome
+          AUTOSTREAM_RELATED_UI_EVIDENCE_DIR: ${{ runner.temp }}/related-settlement-evidence
+          NODE_OPTIONS: --max-old-space-size=1536
+          UV_THREADPOOL_SIZE: '1'
+          NEXT_TELEMETRY_DISABLED: '1'
+        run: |
+          node --no-warnings --input-type=module <<'JS'
+          import { spawnSync } from "node:child_process";
+          import { captureNextGeneratedFiles, restoreNextGeneratedFiles } from "./tests/helpers/browser-harness.mts";
+          const generated=captureNextGeneratedFiles(process.cwd());
+          try {
+            const child=spawnSync(process.execPath,["--no-warnings","tests/polling-related-screens-browser.mts"],{stdio:"inherit"});
+            if(child.error)throw child.error;
+            process.exitCode=child.status??1;
+          } finally { restoreNextGeneratedFiles(generated); }
+          JS
+      - name: Freeze validated source payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --exit-code
+          python3 -B - <<'PY'
+          import hashlib,json,os,pathlib,subprocess
+          root=pathlib.Path(os.environ["RUNNER_TEMP"])
+          tree=(root/"repair-final-tree.txt").read_text().strip()
+          assert subprocess.check_output(["git","write-tree"],text=True).strip()==tree
+          paths=["web/tests/helpers/polling-workers-app-browser-cases.mts","web/tests/fixtures/ui-regression/polling-current-source-delta.json","web/tests/ui-regression/polling-current-source-contract.mts"]
+          staged=subprocess.check_output(["git","diff","--cached","--name-only"],text=True).splitlines()
+          assert sorted(staged)==sorted(paths)
+          output=root/"related-settlement-source";output.mkdir()
+          manifest={"parent":"75bbe3c47b76b3be2597f1f1baee6271dbe57ba9","base_tree":"19b12ba1429c878b8863277e40262959eca311af","final_tree":tree,"files":{}}
+          for path in paths:
+              data=subprocess.check_output(["git","cat-file","blob",tree+":"+path])
+              assert pathlib.Path(path).read_bytes()==data
+              assert data.decode("utf-8").encode("utf-8")==data
+              blob=hashlib.sha1(b"blob "+str(len(data)).encode()+b"\0"+data).hexdigest()
+              destination=output/path;destination.parent.mkdir(parents=True,exist_ok=True);destination.write_bytes(data)
+              manifest["files"][path]={"sha256":hashlib.sha256(data).hexdigest(),"git_blob":blob,"bytes":len(data)}
+          assert manifest["files"][paths[0]]["git_blob"]=="dac03975e9819c843b2980438596441a907c8432"
+          (output/"manifest.json").write_text(json.dumps(manifest,indent=2)+"\n",encoding="utf-8")
+          print("VALIDATED_SOURCE_MANIFEST",json.dumps(manifest))
+          PY
+      - name: Upload validated source payload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: related-settlement-source-${{ github.sha }}
+          path: ${{ runner.temp }}/related-settlement-source
+          if-no-files-found: error
+          retention-days: 7
+      - name: Upload focused proof
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: related-settlement-proof-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/related-settlement-evidence
+            ${{ runner.temp }}/repair-source-integrity.json
+            ${{ runner.temp }}/projection-receipt/generation.json
+          if-no-files-found: warn
+          retention-days: 14
+  prepare-source-blobs:
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: related-settlement-source-${{ github.sha }}
+          path: ${{ runner.temp }}/validated-source
+      - name: Verify exact payload and create immutable source objects
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -B - <<'PY'
+          import base64,hashlib,json,os,pathlib,subprocess
+          root=pathlib.Path(os.environ["RUNNER_TEMP"])/"validated-source"
+          manifest=json.loads((root/"manifest.json").read_text())
+          assert manifest["parent"]=="75bbe3c47b76b3be2597f1f1baee6271dbe57ba9"
+          assert manifest["base_tree"]=="19b12ba1429c878b8863277e40262959eca311af"
+          paths=["web/tests/helpers/polling-workers-app-browser-cases.mts","web/tests/fixtures/ui-regression/polling-current-source-delta.json","web/tests/ui-regression/polling-current-source-contract.mts"]
+          assert sorted(manifest["files"])==sorted(paths)
+          actual={p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()}
+          assert actual==set(paths)|{"manifest.json"}
+          assert not any(p.is_symlink() for p in root.rglob("*"))
+          assert manifest["files"][paths[0]]["git_blob"]=="dac03975e9819c843b2980438596441a907c8432"
+          for path in paths:
+              data=(root/path).read_bytes();entry=manifest["files"][path]
+              assert len(data)==entry["bytes"] and len(data)<4*1024*1024
+              assert hashlib.sha256(data).hexdigest()==entry["sha256"]
+              assert data.decode("utf-8").encode("utf-8")==data
+              blob=hashlib.sha1(b"blob "+str(len(data)).encode()+b"\0"+data).hexdigest()
+              assert blob==entry["git_blob"]
+              body={"content":base64.b64encode(data).decode("ascii"),"encoding":"base64"}
+              response=json.loads(subprocess.check_output(["gh","api","--method","POST","/repos/Kome-Lab/Autostream-ControlPanel/git/blobs","--input","-"],input=json.dumps(body).encode()))
+              assert response["sha"]==blob
+              print("PREPARED_BLOB",json.dumps({"path":path,**entry}))
+          print("PREPARED_TREE",manifest["final_tree"])
+          print("PREPARED_PARENT",manifest["parent"])
+          PY
