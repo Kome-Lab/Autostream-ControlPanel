@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { clickVisible, clickDisabledVisible, clickWorkerRestart, VisibleTriggerCleanupFailure } from "../ui-regression/visible-trigger.mts";
 import { withTimeout } from "./browser-process-timing.mts";
+import { settleRender } from "../ui-regression/render-state.mts";
 import type { RelatedBrowserContext } from "./polling-related-browser-context.mts";
 import { waitForAnimationFrames } from "../ui-browser-navigation-helpers.mts";
 
@@ -16,6 +17,7 @@ export const relatedWorkersAppCaseNames = [
 
 export async function confirmRelatedAction(ctx: RelatedBrowserContext) {
   await ctx.browser.waitFor("document.querySelectorAll('[role=alertdialog] [data-confirm-action]').length", (count) => count === 1, "one actual confirmation action must be visible");
+  await settleRender(ctx.browser, "open");
   await clickVisible(ctx.browser, "[role=alertdialog] [data-confirm-action]");
 }
 
