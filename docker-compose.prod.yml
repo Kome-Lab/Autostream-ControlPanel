@@ -1,7 +1,0 @@
-services:
-  control-panel:
-    image: ${AUTOSTREAM_IMAGE_REGISTRY:-ghcr.io/kome-lab/autostream-docker}/control-panel:${AUTOSTREAM_DOCKER_VERSION:-latest}
-    restart: unless-stopped
-    env_file: .env
-    ports:
-      - "127.0.0.1:8080:8080"

@@ -1,6 +1,0 @@
-{
-  "extends": "../../../web/tsconfig.ui-regression.json",
-  "compilerOptions": {"types": ["node", "react", "react-dom"], "typeRoots": ["../../../web/node_modules/@types"], "incremental": false},
-  "include": ["*.mts"],
-  "exclude": []
-}

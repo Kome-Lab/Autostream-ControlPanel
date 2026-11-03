@@ -1,2 +1,0 @@
-ALTER TABLE audit_logs
-  MODIFY COLUMN result VARCHAR(32) NOT NULL;
