@@ -27,7 +27,7 @@ async function closeFixture(browser: BrowserHarness, fixture: ReturnType<typeof 
     await fixture.checkpoint(browser, "before-close", locale);
     if (directory) {
       mkdirSync(directory, { recursive: true });
-      writeFileSync(resolve(directory, "initial-render-diagnostic.json"), JSON.stringify({ ...fixture.diagnostic, fetch_failure: browser.fetchFailureDiagnosticJSON ? JSON.parse(browser.fetchFailureDiagnosticJSON) : null, limits: ["Only final-resolver unmocked GET path classes or pathname-only SHA256; query, URL, headers and body are omitted.", "Console stores exact known static formats or unknown categories only; original calls and strict error counters are unchanged.", "A fatal harness may prevent the last in-page console read; unavailable checkpoints are explicit."] }, null, 2), { flag: "wx" });
+      writeFileSync(resolve(directory, "initial-render-diagnostic.json"), JSON.stringify({ ...fixture.diagnostic, fetch_failure: browser.fetchFailureDiagnosticJSON ? JSON.parse(browser.fetchFailureDiagnosticJSON) : null, pre_settlement_cancellations: browser.preSettlementFetchCancellationCount, safe_fetch_cancellations: browser.safeFetchCancellationCount, limits: ["Only final-resolver unmocked GET path classes or pathname-only SHA256; query, URL, headers and body are omitted.", "Console stores exact known static formats or unknown categories only; original calls and strict error counters are unchanged.", "A fatal harness may prevent the last in-page console read; unavailable checkpoints are explicit."] }, null, 2), { flag: "wx" });
     }
   } catch (failure) { failures.push(failure); }
   try { await browser.close(); } catch (cleanup) { failures.push(cleanup); }
@@ -77,6 +77,7 @@ test("P3 actual image upload UI exposes bounded work and preserves ready candida
   for (const condition of conditions) await t.test(condition.id, async () => {
     const browser = await BrowserHarness.launch(), fixture = createP3MediaFixture();
     const routes = createBrowserRouteFixture(fixture.observeBrowserRoutes(browser), fixture.route);
+    routes.observeBootstrapCancellation = true;
     routes.healthResponse = { body: healthyRows };
     routes.uiPreferenceResponse = { body: { theme_id: "autostream", color_mode: condition.theme, revision: 4 } };
     const directory = evidence ? resolve(evidence, condition.id) : undefined;
@@ -156,7 +157,8 @@ test("P3 actual image upload UI exposes bounded work and preserves ready candida
 
   await t.test("late conversion after a real session-expiry unmount cannot enter a new draft", async () => {
     const browser = await BrowserHarness.launch(), fixture = createP3MediaFixture();
-    const routes = createBrowserRouteFixture(fixture.observeBrowserRoutes(browser), fixture.route); routes.healthResponse = { body: healthyRows };
+    const routes = createBrowserRouteFixture(fixture.observeBrowserRoutes(browser), fixture.route);
+    routes.observeBootstrapCancellation = true; routes.healthResponse = { body: healthyRows };
     const directory = evidence ? resolve(evidence, "late-generation") : undefined;
     const proof = createP3Proof(browser, directory, "late-generation");
     const originalAuth = routes.authResponse, conversion = fixture.gate("POST", /^\/media-assets\/asset-\d+\/variants$/);
