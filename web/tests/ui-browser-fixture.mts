@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { BrowserHarness, type RouteResolver, type StubResponse } from "./helpers/browser-harness.mts";
+import { isOptionalReadCancellationPath } from "./helpers/browser-optional-read-contract.mts";
 import { loginPathForLocation } from "../src/lib/auth/post-login-redirect.ts";
 
 
@@ -120,6 +121,7 @@ export function escapeRegExp(value: string) {
 export type BrowserRouteFixture = {
   observeBootstrapCancellation?: true;
   observeInFlightOAuthCancellation: boolean;
+  observeInFlightReadCancellation: boolean;
   authResponse: StubResponse;
   authNextResponse?: StubResponse;
   setupResponse: StubResponse;
@@ -150,9 +152,12 @@ export type BrowserRouteFixture = {
 
 export function createBrowserRouteFixture(browser: BrowserHarness, resolveAdditionalRoute?: RouteResolver): BrowserRouteFixture {
   let inFlightOAuthObservation = false;
+  let inFlightReadObservation = false;
   const fixture: BrowserRouteFixture = {
     get observeInFlightOAuthCancellation() { return inFlightOAuthObservation; },
     set observeInFlightOAuthCancellation(value: boolean) { inFlightOAuthObservation = value === true; },
+    get observeInFlightReadCancellation() { return inFlightReadObservation; },
+    set observeInFlightReadCancellation(value: boolean) { inFlightReadObservation = value === true; },
     authResponse: { body: currentUser },
     setupResponse: { body: { setup_enabled: true, setup_required: false } },
     healthResponse: { body: healthyRows },
@@ -196,7 +201,7 @@ export function createBrowserRouteFixture(browser: BrowserHarness, resolveAdditi
     controlPlatformCoverMethods: [],
     controlPlatformCoverBodies: [],
   };
-  browser.setRouteResolver(({ method, url, postData }) => {
+  const resolve: RouteResolver = ({ method, url, postData }) => {
     const additional = resolveAdditionalRoute?.({ method, url, postData });
     if (additional) return additional;
     const pathname = normalizePath(new URL(url).pathname);
@@ -213,6 +218,9 @@ export function createBrowserRouteFixture(browser: BrowserHarness, resolveAdditi
     if (pathname === "/auth/oauth-links" && method === "GET") return { body: [], requiredResponse: false };
     if (pathname === "/integrations/oauth-accounts" && method === "GET") return { body: [], requiredResponse: false, ...(fixture.observeInFlightOAuthCancellation ? { observeInFlightOAuthCancellation: true as const } : {}) };
     if (pathname === "/archive/destinations" && method === "GET") return { body: [], requiredResponse: false };
+    // Real responsive pages read these array-valued APIs. Leaving them to the
+    // dev server creates redirects instead of the declared empty fixture state.
+    if (["/archive/streams", "/archive/processing-streams", "/observability/diagnostics", "/observability/metrics", "/audit-logs"].includes(pathname) && method === "GET") return { body: [], requiredResponse: false };
     if (["/discord/configs", "/youtube/outputs", "/profiles/archive", "/profiles/overlay", "/profiles/encoder", "/profiles/caption"].includes(pathname) && method === "GET") return { body: [], requiredResponse: false };
     if (["/discord/target-presets", "/video-cover-presets"].includes(pathname) && method === "GET") return { body: { items: [] }, requiredResponse: false };
     if (pathname === "/account/preferences/ui") {
@@ -305,6 +313,12 @@ export function createBrowserRouteFixture(browser: BrowserHarness, resolveAdditi
     if (pathname === "/version" && method === "GET") return { ...fixture.versionFixture, requiredResponse: fixture.versionFixture.requiredResponse ?? false, observeBootstrapCancellation: fixture.observeBootstrapCancellation };
     if (pathname === "/auth/session/refresh" && method === "POST") return fixture.refreshResponse;
     return null;
+  };
+  browser.setRouteResolver(request => {
+    const response = resolve(request);
+    return fixture.observeInFlightReadCancellation && request.method === "GET" && response?.requiredResponse === false
+      && isOptionalReadCancellationPath(normalizePath(new URL(request.url).pathname))
+      ? { ...response, observeInFlightReadCancellation: true } : response;
   });
   return fixture;
 }

@@ -120,7 +120,7 @@ export function inversePollingCurrentRecord(record: PollingRecord, current: Buff
     assert.equal(record.hunks.length, 1, "polling introduced source has one complete addition");
     assert.deepEqual([record.hunks[0].offsetBefore, record.hunks[0].offsetAfter, record.hunks[0].before], [0, 0, ""], "polling introduced source exact addition offsets");
     assert.equal(io.entry(pollingCurrentBase, record.path), undefined, "polling introduced source must be absent at fixed base");
-    assert.deepEqual(Buffer.from(record.hunks[0].after), current, "polling introduced source complete addition");
+    assert.equal(Buffer.from(record.hunks[0].after).equals(current), true, "polling introduced source complete addition");
     return undefined;
   }
   assert.deepEqual(io.entry(pollingCurrentBase, record.path), { mode: record.before.mode, blob: record.before.blob }, "polling fixed base blob/mode");

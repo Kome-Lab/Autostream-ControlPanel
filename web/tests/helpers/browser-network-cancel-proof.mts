@@ -1,5 +1,6 @@
 import { isKnownForeignDocumentLoader, observeDeclaredAuthRetirement } from "./browser-declared-auth-retirement.mts";
 import { observeInFlightOAuthDocument } from "./browser-inflight-oauth-cancellation.mts";
+import { isOptionalReadCancellationPath } from "./browser-optional-read-contract.mts";
 
 type ObjectValue = Record<string, unknown>;
 type Owner = object & { assertHealthy(): void };
@@ -17,6 +18,7 @@ type Pause = {
   scope?: DocumentScope; contract?: Readonly<{ order: number; generation: number; path: string; optionalFixture: boolean }>;
   firstClaimDiagnostic?: NetworkBoundaryDiagnostic;
 };
+type RetainedLateDocument = { pause: Pause; network: Network; scope: DocumentScope };
 type Tri = boolean | null;
 type DiagnosticBit = 0 | 1;
 type DiagnosticTri = DiagnosticBit | null;
@@ -70,6 +72,16 @@ declare const ticketBrand: unique symbol;
 export type NetworkCancellationTicket = Readonly<{ [ticketBrand]: true }>;
 type TicketData = Readonly<{ owner: object; id: string; generation: number; path: string; validate: () => boolean }>;
 const tickets = new WeakMap<object, TicketData>();
+type LateDocumentData = Readonly<{ owner: object; id: string; generation: number; documentGeneration: number; validate: () => boolean }>;
+const lateDocumentTickets = new WeakMap<object, LateDocumentData>();
+
+export function takeLateDocumentRegistration(value: unknown, owner: object, id: string, generation: number) {
+  if (value === null || typeof value !== "object") return;
+  const data = lateDocumentTickets.get(value);
+  lateDocumentTickets.delete(value);
+  if (!data || data.owner !== owner || data.id !== id || data.generation !== generation || data.documentGeneration >= generation) return;
+  try { if (data.validate()) return data.documentGeneration; } catch { /* Invalid ownership cannot classify a request. */ }
+}
 const optionalFixturePaths = new Set(["/integrations/oauth-accounts", "/integrations/oauth-providers", "/roles", "/nodes", "/workers", "/auth/me", "/version", "/settings/app"]);
 const object = (value: unknown): ObjectValue | undefined => value !== null && typeof value === "object" && !Array.isArray(value) ? value as ObjectValue : undefined;
 const identifier = (value: unknown) => typeof value === "string" && value.length > 0 && value.length <= 256 ? value : undefined;
@@ -80,6 +92,23 @@ function requestURL(value: unknown) {
     const url = new URL(value);
     return url.protocol === "http:" || url.protocol === "https:" ? { raw: value, path: url.pathname.replace(/\/$/, "") || "/" } : undefined;
   } catch { return; }
+}
+
+function observeNetworkRecord(value: Network, method: unknown, params: ObjectValue, generation: number, order: number) {
+  if (method === "Network.requestWillBeSent") {
+    value.starts += 1;
+    if (value.starts !== 1 || value.failure || value.response || value.finished || params.redirectResponse !== undefined) { value.invalid = true; return; }
+    const request = object(params.request), url = requestURL(request?.url);
+    value.order = order; value.generation = generation;
+    value.frame = identifier(params.frameId); value.loader = identifier(params.loaderId);
+    value.url = url?.raw; value.method = typeof request?.method === "string" ? request.method : undefined;
+    value.type = typeof params.type === "string" ? params.type : undefined;
+    if (!url || !value.frame || !value.loader) value.invalid = true;
+  } else if (method === "Network.loadingFailed") {
+    if (value.failure) value.invalid = true;
+    value.failure = Object.freeze({ order, generation, canceled: params.canceled === true, aborted: params.errorText === "net::ERR_ABORTED" });
+  } else if (method === "Network.responseReceived") value.response = true;
+  else value.finished = true;
 }
 
 // Tickets contain no enumerable IDs/URLs. Taking one burns it, even on a wrong
@@ -98,6 +127,9 @@ export class BrowserNetworkCancelProof {
   private readonly networks = new Map<string, Network>();
   private readonly pauses = new Map<string, Pause>();
   private readonly attempted = new Set<string>();
+  private readonly lateDocumentBound = new Set<string>();
+  private readonly retainedLateDocuments = new Map<string, RetainedLateDocument>();
+  private lateObservationOverflowed = false;
   private scope: DocumentScope | undefined;
   private order = 0;
   private disabled = false;
@@ -156,6 +188,24 @@ export class BrowserNetworkCancelProof {
     return true;
   }
   prepareInFlightOAuthCancellation(id: string, current: { generation: number; frameId: string | undefined }, url: string) {
+    return this.prepareInFlightReadBoundary(id, current, url, "/integrations/oauth-accounts");
+  }
+  optionalReadURL(id: string) { return this.pauses.get(id)?.url; }
+  hasNetworkStartForPause(id: string) {
+    const retained = this.retainedLateDocuments.get(id), network = this.pauses.get(id)?.networkID;
+    return (retained?.network.starts ?? 0) > 0 || !!network && (this.networks.get(network)?.starts ?? 0) > 0;
+  }
+  hasNetworkCancellationForPause(id: string) {
+    const network = this.pauses.get(id)?.networkID;
+    const failure = this.retainedLateDocuments.get(id)?.network.failure ?? (network ? this.networks.get(network)?.failure : undefined);
+    return failure?.canceled === true && failure.aborted === true;
+  }
+  prepareInFlightOptionalReadCancellation(id: string, current: { generation: number; frameId: string | undefined }, url: string) {
+    const path = requestURL(url)?.path;
+    if (!path || !isOptionalReadCancellationPath(path)) return;
+    return this.prepareInFlightReadBoundary(id, current, url, path);
+  }
+  private prepareInFlightReadBoundary(id: string, current: { generation: number; frameId: string | undefined }, url: string, path: string) {
     this.owner.assertHealthy();
     const pause = this.pauses.get(id), scope = this.scope;
     const networkID = pause?.networkID, network = networkID ? this.networks.get(networkID) : undefined, contract = pause?.contract;
@@ -164,7 +214,7 @@ export class BrowserNetworkCancelProof {
       && !pause.invalid && !network.invalid && !network.used && network.starts === 1 && network.pauseIDs.size === 1 && network.pauseIDs.has(id)
       && pause.scope === scope && pause.frame === scope.frame && network.frame === scope.frame && network.loader === scope.loader && current.frameId === scope.frame
       && pause.generation === current.generation && network.generation === current.generation && scope.generation === current.generation && contract.generation === current.generation
-      && pause.contract === contract && contract.optionalFixture && contract.path === "/integrations/oauth-accounts" && pause.path === contract.path
+      && pause.contract === contract && contract.optionalFixture && contract.path === path && pause.path === contract.path
       && pause.method === "GET" && network.method === "GET" && pause.type === "XHR" && network.type === "Fetch" && pause.url === url && network.url === url
       && !network.response && !network.finished && network.order !== undefined && scope.order < network.order && scope.order < pause.order && pause.order < contract.order;
     if (!base()) return;
@@ -274,13 +324,15 @@ export class BrowserNetworkCancelProof {
         // A genuinely new owned document invalidates old tickets first. Keep
         // poison and the monotonic clock; same-document events never reclaim.
         if (prior && this.scope && prior.frame === id && prior.loader !== loader && generation > prior.generation) {
-          this.networks.clear(); this.pauses.clear(); this.attempted.clear();
+          this.networks.clear(); this.pauses.clear(); this.attempted.clear(); this.lateDocumentBound.clear();
         }
         return;
       }
       if (message.method === "Fetch.requestPaused") {
         const id = identifier(params.requestId), request = object(params.request), url = requestURL(request?.url), order = this.next();
         if (!id) { this.disable("pause-id"); return; }
+        const retainedDuplicate = this.retainedLateDocuments.get(id);
+        if (retainedDuplicate) retainedDuplicate.pause.invalid = true;
         const prior = this.pauses.get(id);
         if (prior) { prior.invalid = true; return; }
         if (this.pauses.size >= this.limit) { this.disable("pauses"); return; }
@@ -292,6 +344,11 @@ export class BrowserNetworkCancelProof {
         if (networkID) {
           const network = this.network(networkID);
           if (network) { network.pauseIDs.add(id); if (network.pauseIDs.size !== 1) network.invalid = true; }
+          for (const retained of this.retainedLateDocuments.values()) {
+            if (retained.pause.networkID !== networkID || retained.network === network) continue;
+            retained.network.pauseIDs.add(id);
+            if (retained.network.pauseIDs.size !== 1) retained.network.invalid = true;
+          }
         }
         return;
       }
@@ -300,22 +357,9 @@ export class BrowserNetworkCancelProof {
       if (!id) { this.disable("network-id"); return; }
       const value = this.network(id);
       if (!value) return;
-      if (message.method === "Network.requestWillBeSent") {
-        value.starts += 1;
-        if (value.starts !== 1 || value.failure || value.response || value.finished || params.redirectResponse !== undefined) { value.invalid = true; return; }
-        const request = object(params.request), url = requestURL(request?.url);
-        value.order = order; value.generation = generation;
-        value.frame = identifier(params.frameId); value.loader = identifier(params.loaderId);
-        value.url = url?.raw; value.method = typeof request?.method === "string" ? request.method : undefined;
-        value.type = typeof params.type === "string" ? params.type : undefined;
-        if (!url || !value.frame || !value.loader) value.invalid = true;
-      } else if (message.method === "Network.loadingFailed") {
-        if (value.failure) value.invalid = true;
-        value.failure = Object.freeze({ order, generation, canceled: params.canceled === true, aborted: params.errorText === "net::ERR_ABORTED" });
-      } else if (message.method === "Network.responseReceived") {
-        value.response = true;
-      } else {
-        value.finished = true;
+      observeNetworkRecord(value, message.method, params, generation, order);
+      for (const retained of this.retainedLateDocuments.values()) {
+        if (retained.pause.networkID === id && retained.network !== value) observeNetworkRecord(retained.network, message.method, params, generation, order);
       }
     } catch { this.disable("observe"); }
     finally { observeDeclaredAuthRetirement(this, message, generation); observeInFlightOAuthDocument(this, message, generation); }
@@ -330,7 +374,50 @@ export class BrowserNetworkCancelProof {
     } catch { this.disable("contract"); }
   }
 
-  claimBeforeSettlement(id: string, command: Command, current: { generation: number; frameId: string | undefined }): NetworkCancellationTicket | undefined {
+  // Navigation sequences advance before the replacement document commits. A
+  // delayed pause can still belong to the current old loader. Classify it only
+  // from one exact owned Network/Fetch join, never from generation labels alone.
+  retainLateDocumentRegistration(id: string, current: { generation: number; frameId: string | undefined }) {
+    const pause = this.pauses.get(id), scope = pause?.scope, network = pause?.networkID ? this.networks.get(pause.networkID) : undefined;
+    if (this.disabled || this.lateObservationOverflowed || !pause || !scope || !network || scope.generation >= current.generation
+      || scope !== this.scope || scope.frame !== current.frameId || pause.invalid || network.invalid || !pause.contract?.optionalFixture
+      || pause.method !== "GET" || !pause.path || !isOptionalReadCancellationPath(pause.path) || this.retainedLateDocuments.has(id)) return;
+    if (this.retainedLateDocuments.size >= this.limit) { this.lateObservationOverflowed = true; return; }
+    const retained = { pause, scope, network };
+    this.retainedLateDocuments.set(id, retained);
+    return {
+      claim: (latest: { generation: number; frameId: string | undefined }) => this.claimLateDocumentRegistration(id, latest),
+      dispose: () => { if (this.retainedLateDocuments.get(id) === retained) this.retainedLateDocuments.delete(id); },
+    };
+  }
+
+  claimLateDocumentRegistration(id: string, current: { generation: number; frameId: string | undefined }) {
+    this.owner.assertHealthy();
+    const retained = this.retainedLateDocuments.get(id), pause = retained?.pause ?? this.pauses.get(id), scope = retained?.scope ?? this.scope;
+    const proofScope = this.scope, networkID = pause?.networkID, network = retained?.network ?? (networkID ? this.networks.get(networkID) : undefined), contract = pause?.contract;
+    if (!pause || !scope || !network || !contract || this.disabled || this.lateObservationOverflowed || this.lateDocumentBound.has(id)
+      || !proofScope || proofScope.frame !== scope.frame
+      || scope.generation >= current.generation || scope.frame !== current.frameId || pause.scope !== scope
+      || pause.invalid || network.invalid || network.used || network.starts !== 1 || network.pauseIDs.size !== 1 || !network.pauseIDs.has(id)
+      || !contract.optionalFixture || !pause.path || !isOptionalReadCancellationPath(pause.path) || contract.path !== pause.path
+      || pause.method !== "GET" || network.method !== "GET" || pause.type !== "XHR" || network.type !== "Fetch"
+      || pause.frame !== scope.frame || network.frame !== scope.frame || network.loader !== scope.loader || pause.url !== network.url
+      || pause.generation !== current.generation || network.generation === undefined || network.generation < scope.generation || network.generation > current.generation || contract.generation !== current.generation
+      || network.response || network.finished || network.order === undefined || scope.order >= network.order || scope.order >= pause.order
+      || pause.order >= contract.order || this.attempted.has(id)) return;
+    if (this.lateDocumentBound.size >= this.limit) { this.disable("attempts"); return; }
+    this.lateDocumentBound.add(id);
+    const boundary = this.next(), ticket = Object.freeze({});
+    lateDocumentTickets.set(ticket, { owner: this.owner, id, generation: current.generation, documentGeneration: scope.generation,
+      validate: () => !this.disabled && !this.lateObservationOverflowed && this.order === boundary && this.scope === proofScope
+        && (retained ? !this.lateObservationOverflowed && this.retainedLateDocuments.get(id) === retained
+          : this.pauses.get(id) === pause && this.networks.get(networkID!) === network)
+        && !pause.invalid && !network.invalid && !network.used
+        && network.starts === 1 && network.pauseIDs.size === 1 && network.pauseIDs.has(id) && !network.response && !network.finished });
+    return ticket;
+  }
+
+  claimBeforeSettlement(id: string, command: Command, current: { generation: number; frameId: string | undefined }, optionalRead = false): NetworkCancellationTicket | undefined {
     try {
       this.owner.assertHealthy();
       if (this.attempted.has(id)) return;
@@ -343,7 +430,7 @@ export class BrowserNetworkCancelProof {
       catch { /* Metadata collection cannot change the original claim or send. */ }
       if (this.disabled || command !== "Fetch.fulfillRequest" || !pause || !network || !scope || !contract || !failure
         || pause.invalid || network.invalid || network.used || network.starts !== 1 || network.pauseIDs.size !== 1 || !network.pauseIDs.has(id)
-        || !contract.optionalFixture || !pause.path || !optionalFixturePaths.has(pause.path) || contract.path !== pause.path
+        || !contract.optionalFixture || !pause.path || !(optionalRead === true ? isOptionalReadCancellationPath(pause.path) : optionalFixturePaths.has(pause.path)) || contract.path !== pause.path
         || pause.method !== "GET" || network.method !== "GET" || pause.type !== "XHR" || network.type !== "Fetch"
         || !pause.url || pause.url !== network.url || pause.scope !== scope || pause.frame !== scope.frame || network.frame !== scope.frame
         || current.frameId !== scope.frame || network.loader !== scope.loader
@@ -351,7 +438,8 @@ export class BrowserNetworkCancelProof {
         || scope.generation !== current.generation || contract.generation !== current.generation
         || !failure.canceled || !failure.aborted || network.response || network.finished
         || network.order === undefined || !(scope.order < pause.order && scope.order < network.order && network.order < failure.order
-          && pause.order < failure.order && contract.order < failure.order && failure.order < boundary)) return;
+          && failure.order < boundary && (pause.order < failure.order && contract.order < failure.order
+            || optionalRead === true && failure.order < pause.order && pause.order < contract.order))) return;
       network.used = true;
       const ticket = Object.freeze({}) as NetworkCancellationTicket;
       const data: TicketData = Object.freeze({ owner: this.owner, id, generation: current.generation, path: pause.path,

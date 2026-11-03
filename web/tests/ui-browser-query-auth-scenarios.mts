@@ -167,7 +167,19 @@ export async function runLogoutScenario(t: TestContext, browser: BrowserHarness,
       await browser.clickRoleWithText("menuitem", "Log out");
       await browser.waitForRequestCount("/auth/logout", 1);
 
-      await browser.clickSelector('button[aria-label="Account menu"]');
+      // AccountMenu prevents selection from closing the menu. Re-clicking its
+      // trigger would close it instead of exercising the pending logout guard.
+      await browser.waitFor<boolean>(`(() => {
+        const trigger = document.querySelector('button[aria-label="Account menu"]');
+        const logout = [...document.querySelectorAll('[role="menuitem"]')]
+          .find((candidate) => candidate instanceof HTMLElement
+            && candidate.getClientRects().length > 0
+            && candidate.textContent?.trim() === "Log out");
+        return trigger?.getAttribute("aria-expanded") === "true"
+          && logout instanceof HTMLElement
+          && logout.getAttribute("aria-disabled") === "true";
+      })()`, (value) => value === true, "pending logout must remain visible and disabled in the open menu");
+      assert.equal(browser.responses.get("/auth/logout") || 0, 0, "logout response is still held during the duplicate attempt");
       await browser.clickRoleWithText("menuitem", "Log out");
       await waitForAnimationFrames(browser);
       assert.equal(browser.requests.get("/auth/logout"), 1, "duplicate logout selection must not send another mutation");

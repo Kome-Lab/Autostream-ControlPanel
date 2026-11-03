@@ -1,7 +1,7 @@
 import type { BrowserOperationBoundary, BrowserOperationOptions, BrowserOperationRecord } from "./browser-operation-boundary.mts";
 import { CommandDeadlines, commandTimeoutMs, createCommandSender, type CDPResponse, type PendingCommand } from "./browser-command-deadline.mts";
 import { NativeFocusObserver } from "./browser-ua-focus.mts";
-import { spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, resolve } from "node:path";
@@ -11,11 +11,12 @@ import { collectBrowserLaunchFacts } from "./browser-launch-profile.mts";
 import { BrowserNetworkCancelProof } from "./browser-network-cancel-proof.mts";
 import { declareLoginReturnAuthPhase, declareLoginReturnBootstrapPhase, retireDeclaredBootstrap } from "./browser-declared-auth-retirement.mts";
 import { optionalBootstrapCancellationEvent, waitForOptionalBootstrapCancellation } from "./browser-optional-app-cancellation.mts";
+import { isOptionalReadCancellationPath, optionalReadNetworkStartEvent, waitForOptionalReadNetworkStart } from "./browser-optional-read-contract.mts";
 import { settleBrowserFetchRequest } from "./browser-fetch-settlement.mts";
 import { bindInFlightOAuthCommand, discardInFlightOAuthCommand, markInFlightOAuthSend, observeInFlightOAuthWire, sealInFlightOAuthRejection } from "./browser-inflight-oauth-cancellation.mts";
 import { resolveBrowserPath } from "./browser-executable.mts";
 import { waitForMapCount } from "./browser-response-count.mts";
-import { asError, delay, withTimeout } from "./browser-process-timing.mts";
+import { asError, delay, terminateChildProcess, withTimeout } from "./browser-process-timing.mts";
 
 
 export type StubResponse = {
@@ -28,6 +29,7 @@ export type StubResponse = {
   requiredResponse?: boolean;
   observeBootstrapCancellation?: true;
   observeInFlightOAuthCancellation?: boolean;
+  observeInFlightReadCancellation?: boolean;
 };
 
 export type StubRequest = {
@@ -618,6 +620,10 @@ export class BrowserHarness {
     }
     if (!message.method || (message.sessionId && message.sessionId !== this.sessionId)) return;
     this.networkCancellation?.observe(message, this.requestLifecycle.generation);
+    if (message.sessionId === this.sessionId && message.method === "Network.requestWillBeSent") {
+      const start = optionalReadNetworkStartEvent(message.params?.requestId);
+      if (start) this.eventWaiters.resolve(start, message.params || {});
+    }
     const cancellationEvent = optionalBootstrapCancellationEvent(message.params?.requestId);
     if (message.sessionId === this.sessionId && message.method === "Network.loadingFailed" && message.params?.canceled === true && message.params?.errorText === "net::ERR_ABORTED" && cancellationEvent) this.eventWaiters.resolve(cancellationEvent, message.params);
     if (!this.operationBoundary && message.method === "Page.javascriptDialogOpening") {
@@ -680,7 +686,21 @@ export class BrowserHarness {
       this.responses.set(pathname, (this.responses.get(pathname) || 0) + 1);
       return;
     }
-    if (response.observeBootstrapCancellation) { this.assertNoFatalError(); await waitForOptionalBootstrapCancellation(this.eventWaiters, request, response, params.networkId); }
+    const observingRead = response.observeInFlightReadCancellation === true && response.requiredResponse === false && request.method === "GET" && isOptionalReadCancellationPath(pathname);
+    const lateDocument = observingRead && this.topLevelNavigationPending
+      ? this.networkCancellation?.retainLateDocumentRegistration(requestId, { generation: this.requestLifecycle.generation, frameId: this.mainFrameId }) : undefined;
+    try {
+    if (observingRead) {
+      this.assertNoFatalError();
+      await waitForOptionalReadNetworkStart(this.eventWaiters, this.networkCancellation, requestId, params.networkId);
+      const latest = { generation: this.requestLifecycle.generation, frameId: this.mainFrameId };
+      const oldDocument = lateDocument?.claim(latest)
+        ?? (this.topLevelNavigationPending ? this.networkCancellation?.claimLateDocumentRegistration(requestId, latest) : undefined);
+      if (oldDocument) this.requestLifecycle.bindLateDocumentRegistration(requestId, oldDocument);
+    }
+    if (response.observeBootstrapCancellation && !(response.observeInFlightReadCancellation === true && this.networkCancellation?.hasNetworkCancellationForPause(requestId))) {
+      this.assertNoFatalError(); await waitForOptionalBootstrapCancellation(this.eventWaiters, request, response, params.networkId);
+    }
     if (response.delayMs) await delay(response.delayMs);
     if (response.waitUntil) await response.waitUntil;
     const body = response.body === undefined ? "" : JSON.stringify(response.body);
@@ -690,12 +710,13 @@ export class BrowserHarness {
       responseCode: responseStatus,
       responseHeaders: [{ name: "content-type", value: response.contentType ?? "application/json; charset=utf-8" }],
       body: response.bodyBase64 ?? Buffer.from(body).toString("base64"),
-    }, response.observeInFlightOAuthCancellation === true);
+    }, response.observeInFlightOAuthCancellation === true, response.observeInFlightReadCancellation === true);
     if (!settled) return;
     this.responses.set(pathname, (this.responses.get(pathname) || 0) + 1);
     const statuses = this.responseStatuses.get(pathname) || [];
     statuses.push(responseStatus);
     this.responseStatuses.set(pathname, statuses);
+    } finally { lateDocument?.dispose(); }
   }
 
   private settleFetchRequest(
@@ -703,6 +724,7 @@ export class BrowserHarness {
     command: FetchSettlementCommand,
     params: Record<string, unknown>,
     optedIn = false,
+    optionalReadOptIn = false,
   ) {
     return settleBrowserFetchRequest({
       observation: {
@@ -722,7 +744,7 @@ export class BrowserHarness {
           }
         }
       },
-    }, requestId, command, params, optedIn);
+    }, requestId, command, params, optedIn, optionalReadOptIn);
   }
 
   private recordFatalError(error: unknown) {
@@ -767,28 +789,6 @@ async function removeOwnedBrowserDirectory(path: string) {
       await delay(150 * (attempt + 1));
     }
   }
-}
-
-async function terminateChildProcess(child: ChildProcessWithoutNullStreams) {
-  if (child.exitCode !== null || child.signalCode !== null) return;
-  if (process.platform === "win32" && child.pid) {
-    spawnSync("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], {
-      stdio: "ignore",
-      windowsHide: true,
-    });
-    await Promise.race([waitForChildExit(child), delay(3_000)]);
-    if (child.exitCode !== null || child.signalCode !== null) return;
-  }
-  child.kill("SIGTERM");
-  await Promise.race([waitForChildExit(child), delay(3_000)]);
-  if (child.exitCode !== null || child.signalCode !== null) return;
-  child.kill("SIGKILL");
-  await Promise.race([waitForChildExit(child), delay(2_000)]);
-}
-
-function waitForChildExit(process: ChildProcessWithoutNullStreams) {
-  if (process.exitCode !== null || process.signalCode !== null) return Promise.resolve();
-  return new Promise<void>((resolveExit) => process.once("exit", () => resolveExit()));
 }
 
 export { resolveBrowserPath };

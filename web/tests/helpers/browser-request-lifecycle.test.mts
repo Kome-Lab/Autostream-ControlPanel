@@ -5,6 +5,9 @@ import { registerRunnerPreservationCases } from "./browser-runner-preservation-c
 import { registerFetchSettlementCases } from "./browser-fetch-settlement-cases.mts";
 import { registerNativeInputCases } from "./browser-native-input-cases.mts";
 import { registerFatalLifecycleCases } from "./browser-fatal-lifecycle-cases.mts";
+import { registerFetchOrderingCases } from "./browser-fetch-ordering-cases.mts";
+import { registerOptionalReadCancellationCases } from "./browser-optional-read-cancellation-cases.mts";
+import { registerLateDocumentCases } from "./browser-late-document-cases.mts";
 
 registerNextReadinessCases();
 registerAccountSettlementCases();
@@ -13,3 +16,6 @@ registerRunnerPreservationCases();
 registerFetchSettlementCases();
 registerNativeInputCases();
 registerFatalLifecycleCases();
+registerFetchOrderingCases();
+registerOptionalReadCancellationCases();
+registerLateDocumentCases();

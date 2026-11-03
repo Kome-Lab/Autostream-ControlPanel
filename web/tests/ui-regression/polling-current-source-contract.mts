@@ -3,13 +3,16 @@
 export const pollingCurrentBase = "65a601fc9d4f15c93083e9be4ab9e71586fdba69";
 export const pollingCurrentTree = "2624414bc4e1cb4bd304faccf82e5d22e3201dd2";
 export const pollingCurrentFixturePath = "web/tests/fixtures/ui-regression/polling-current-source-delta.json";
-export const pollingCurrentFixtureSHA256 = "a65d6f1c9782658c0070ebe4f3345a5d52ebc143ff45ab9d2265250b1ac35d1e";
+export const pollingCurrentFixtureSHA256 = "51b341c54ba5b0c90d705cb8101f1926a0e5448012f59e664d18fe5b2ea93d3c";
 export const pollingLegacyFixturePath = "web/tests/fixtures/ui-regression/polling-legacy-parity.json";
 export const pollingLegacyFixtureSHA256 = "b2df0a26ef1f77a08a0ddbfe8762b7e77a583c21ba8ed03d22373e4ebce764a8";
 export const pollingCurrentPaths = Object.freeze([
   ".github/workflows/ci.yml",
+  ".github/workflows/ci017-auth-expiry-diagnostic.yml",
   "go.mod",
   "go.sum",
+  "internal/database/migration_085_087_089_upgrade_mariadb_test.go",
+  "internal/database/migration_086_resumable_mariadb_test.go",
   "internal/database/migrations/086_upload_operation_and_candidate_names.sql",
   "internal/database/migrations/087_stream_settings_revision_precision.sql",
   "internal/database/migrations/088_profile_and_drive_revision_precision.sql",
@@ -164,6 +167,7 @@ export const pollingCurrentPaths = Object.freeze([
   "web/src/lib/stream-create.ts",
   "web/src/types/domain.ts",
   "web/tests/api-request-signal.test.mts",
+  "web/tests/ci017-auth-expiry-diagnostic.test.mts",
   "web/tests/control-platform-features.test.mts",
   "web/tests/generic-resource-authority-races.test.mts",
   "web/tests/generic-resource-polling.test.mts",
@@ -174,17 +178,23 @@ export const pollingCurrentPaths = Object.freeze([
   "web/tests/helpers/browser-declared-auth-retirement.mts",
   "web/tests/helpers/browser-declared-version-retirement-cases.mts",
   "web/tests/helpers/browser-executable.mts",
+  "web/tests/helpers/browser-fetch-ordering-cases.mts",
   "web/tests/helpers/browser-fetch-settlement.mts",
   "web/tests/helpers/browser-harness.mts",
   "web/tests/helpers/browser-inflight-oauth-cancellation-cases.mts",
   "web/tests/helpers/browser-inflight-oauth-cancellation.mts",
+  "web/tests/helpers/browser-late-document-cases.mts",
   "web/tests/helpers/browser-native-media-settlement.mts",
   "web/tests/helpers/browser-network-cancel-proof.mts",
   "web/tests/helpers/browser-network-cancel-proof.test.mts",
   "web/tests/helpers/browser-network-scope-retirement-cases.mts",
   "web/tests/helpers/browser-next-readiness-fixture.mts",
   "web/tests/helpers/browser-optional-app-cancellation.mts",
+  "web/tests/helpers/browser-optional-read-cancellation-cases.mts",
+  "web/tests/helpers/browser-optional-read-contract.mts",
+  "web/tests/helpers/browser-process-timing.mts",
   "web/tests/helpers/browser-request-lifecycle.mts",
+  "web/tests/helpers/browser-request-lifecycle.test.mts",
   "web/tests/helpers/browser-response-count.mts",
   "web/tests/helpers/browser-ua-diagnostic.mts",
   "web/tests/helpers/browser-ua-focus.mts",
@@ -224,6 +234,7 @@ export const pollingCurrentPaths = Object.freeze([
   "web/tests/stream-create-sql-browser.mts",
   "web/tests/stream-create-validation.test.mts",
   "web/tests/streams-visual-integration.test.mts",
+  "web/tests/system-updates-presentation-cases.mts",
   "web/tests/ui-browser-fixture.mts",
   "web/tests/ui-browser-navigation-scenarios.mts",
   "web/tests/ui-browser-observation-scenarios.mts",
@@ -232,6 +243,7 @@ export const pollingCurrentPaths = Object.freeze([
   "web/tests/ui-browser-visual-settings-scenarios.mts",
   "web/tests/ui-browser-worker-configuration-scenarios.mts",
   "web/tests/ui-browser-worker-restart-scenarios.mts",
+  "web/tests/ui-foundation-browser.test.mts",
   "web/tests/ui-refresh-layout-browser.test.mts",
   "web/tests/ui-regression/draft-exit.test.mts",
   "web/tests/ui-regression/draft-flow.test.mts",

@@ -120,6 +120,7 @@ export function createNextReadinessFixture(options: NextReadinessOptions = {}) {
     "browser-network-cancel-proof.mts", "browser-executable.mts", "browser-response-count.mts",
     "browser-optional-app-cancellation.mts", "browser-declared-auth-retirement.mts",
     "browser-inflight-oauth-cancellation.mts", "browser-fetch-settlement.mts",
+    "browser-optional-read-contract.mts",
   ].map((name) => ["./" + name, ts.transpileModule(readFileSync(resolve(dirname(browserHarnessPath), name), "utf8"), {
     fileName: name.replace(/\.mts$/, ".ts"),
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },

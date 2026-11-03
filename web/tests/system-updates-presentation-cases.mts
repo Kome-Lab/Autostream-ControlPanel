@@ -248,20 +248,36 @@ test("system update UI manages updater policy in the panel and never instructs m
   assert.match(bootstrapSource, /useLayoutEffect\(\(\) => \{\s*mountedRef\.current = true;/);
   assert.match(bootstrapSource, /if \(!operationStillCurrent\(\)\) return/);
   assert.match(bootstrapSource, /if \(!canEdit \|\| !selectedHostsStillReady\)/);
+  const bootstrapPreflightSource = readFileSync(
+    new URL("../src/features/application/updater-bootstrap-submission-preflight.ts", import.meta.url), "utf8",
+  );
+  assert.match(bootstrapSource, /import \{ refreshBootstrapSubmissionSelection \} from "\.\/updater-bootstrap-submission-preflight"/);
+  // Submission uses a bounded, isolated proof rather than refetching into the
+  // observer cache. Require every fresh read and its shared cancellation signal.
   assert.match(
-    bootstrapSource,
-    /await Promise\.all\(\[\s*apiGet<unknown>\("\/system-updates"\),\s*bootstrapJobs\.refetch\(\),\s*\]\)/,
+    bootstrapPreflightSource,
+    /await withBoundedActionRevalidation\(\(signal\) => Promise\.all\(\[\s*apiGet<unknown>\("\/system-updates", signal\),\s*apiGet<unknown>\(`\/system-updates\/updaters\/\$\{encodeURIComponent\(updaterID\)\}\/bootstrap-jobs`, signal\),\s*readUpdaterSettingsAuthority\(updaterID, signal\),\s*apiGet<CurrentUser>\("\/auth\/me", signal\),\s*\]\)\)/,
   );
   assert.match(
-    bootstrapSource,
-    /queryClient\.setQueryData\(\["system-updates"\], refreshedSystemUpdates\)/,
+    bootstrapPreflightSource,
+    /if \(!operationStillCurrent\(\)\) return;\s*if \(!hasPermission\(refreshedUser, "system_updates\.execute"\)\) throw new Error\("permission_denied"\);/,
   );
+  assert.match(
+    bootstrapPreflightSource,
+    /if\s*\(\s*!refreshedUpdater\s*\|\| refreshedSettings\.revision !== expectedRevision\s*\|\| \(refreshedSettings\.projection_revision \?\? refreshedSettings\.revision\) !== expectedAppliedRevision\s*\)\s*\{\s*throw new Error\("updater_host_bootstrap_status_unavailable"\);/,
+  );
+  assert.match(bootstrapPreflightSource, /confirmedContext !== updaterHostBootstrapConfirmationContext\(/);
+  assert.match(bootstrapPreflightSource, /throw new Error\("bootstrap_host_keys_unconfirmed"\)/);
+  assert.match(bootstrapPreflightSource, /if \(!refreshedSelectionReady\) throw new Error\("updater_host_bootstrap_not_ready"\)/);
+  assert.doesNotMatch(bootstrapPreflightSource, /(?:queryClient\.(?:setQueryData|setQueriesData)|bootstrapJobs\.refetch)\s*\(/);
   assert.match(
     bootstrapSource,
     /recipient_key_fingerprint:\s*refreshedUpdater\.bootstrap_encryption_key_fingerprint/,
   );
+  const bootstrapPreflightIndex = bootstrapSource.indexOf("await refreshBootstrapSubmissionSelection(");
+  const plaintextSnapshotIndex = bootstrapSource.indexOf("const normalizedUser");
   assert.ok(
-    bootstrapSource.indexOf("await refreshBootstrapSubmissionSelection(") < bootstrapSource.indexOf("const normalizedUser"),
+    bootstrapPreflightIndex >= 0 && plaintextSnapshotIndex > bootstrapPreflightIndex,
     "plaintext snapshots must not be created before asynchronous preflight checks finish",
   );
   assert.match(bootstrapSource, /秘密鍵とパスフレーズは今回のセットアップだけに使用し、保存・再表示しません/);

@@ -9,6 +9,7 @@ export type InFlightOAuthContext = {
 };
 type Preparation = NonNullable<ReturnType<BrowserNetworkCancelProof["prepareInFlightOAuthCancellation"]>>;
 type Entry = {
+  family: "oauth" | "optional-read";
   context: InFlightOAuthContext; id: string; scope: Scope; origin: string; proof: Preparation;
   lifecycleLive: (attempt: FetchSettlementAttempt) => boolean; attempt?: FetchSettlementAttempt;
   command?: number; pending?: object; sent: boolean; sealed: boolean; eligible: boolean;
@@ -69,6 +70,14 @@ function discard(entry: Entry) {
 // This handle is a separate family from old Network tickets and declared reads.
 // Even a failed opted-in preparation burns its Fetch ID; missing facts cannot be repaired later.
 export function prepareInFlightOAuthCancellation(context: InFlightOAuthContext, id: string, command: FetchSettlementCommand, params: Record<string, unknown>, optedIn: boolean) {
+  return prepareInFlightCancellation(context, id, command, params, optedIn, "oauth");
+}
+
+export function prepareInFlightOptionalReadCancellation(context: InFlightOAuthContext, id: string, command: FetchSettlementCommand, params: Record<string, unknown>, optedIn: boolean) {
+  return prepareInFlightCancellation(context, id, command, params, optedIn, "optional-read");
+}
+
+function prepareInFlightCancellation(context: InFlightOAuthContext, id: string, command: FetchSettlementCommand, params: Record<string, unknown>, optedIn: boolean, family: Entry["family"]) {
   if (optedIn !== true) return;
   context.assertHealthy();
   const value = state(context.owner);
@@ -81,12 +90,17 @@ export function prepareInFlightOAuthCancellation(context: InFlightOAuthContext, 
   if (current.closed || !scope) return;
   const origin = origins.get(scope);
   if (!origin) return;
-  const url = new URL(origin + path);
-  if (!["http:", "https:"].includes(url.protocol) || !["127.0.0.1", "localhost", "[::1]"].includes(url.hostname)) return;
-  const lifecycleLive = context.lifecycle.prepareInFlightOAuthCancellation(id);
-  const proof = context.proof.prepareInFlightOAuthCancellation(id, current, url.href);
+  const read = family === "optional-read" ? context.lifecycle.prepareInFlightOptionalReadCancellation(id) : undefined;
+  const readURL = family === "optional-read" ? context.proof.optionalReadURL(id) : origin + path;
+  if (!readURL || family === "optional-read" && !read) return;
+  const url = new URL(readURL);
+  if (!["http:", "https:"].includes(url.protocol) || !["127.0.0.1", "localhost", "[::1]"].includes(url.hostname)
+    || url.origin !== origin || url.username || url.password || url.hash || family === "optional-read" && url.pathname !== read?.path) return;
+  const lifecycleLive = read?.live ?? context.lifecycle.prepareInFlightOAuthCancellation(id);
+  const proof = family === "optional-read" ? context.proof.prepareInFlightOptionalReadCancellation(id, current, url.href)
+    : context.proof.prepareInFlightOAuthCancellation(id, current, url.href);
   if (!lifecycleLive || !proof) return;
-  const entry: Entry = { context, id, scope, origin, proof, lifecycleLive, sent: false, sealed: false, eligible: false, invalid: false, disposed: false, wireResponses: 0 };
+  const entry: Entry = { family, context, id, scope, origin, proof, lifecycleLive, sent: false, sealed: false, eligible: false, invalid: false, disposed: false, wireResponses: 0 };
   const handle = Object.freeze({});
   handles.set(handle, entry);
   return handle;
@@ -159,7 +173,7 @@ export function discardInFlightOAuthCommand(owner: object, id: number, pending: 
 }
 
 // Taking burns before any owner/attempt checks. Copies and other receipt families have no entry.
-export function takeInFlightOAuthCancellation(error: unknown, owner: object, attempt: FetchSettlementAttempt, validEntry: boolean) {
+export function takeInFlightOAuthCancellation(error: unknown, owner: object, attempt: FetchSettlementAttempt, validEntry: boolean, family: Entry["family"] = "oauth") {
   const byError = error !== null && typeof error === "object" ? rejected.get(error) : undefined;
   const byAttempt = attempts.get(attempt);
   if (byError && byAttempt && byError !== byAttempt) { discard(byError); discard(byAttempt); return false; }
@@ -168,7 +182,7 @@ export function takeInFlightOAuthCancellation(error: unknown, owner: object, att
   if (entry.error) rejected.delete(entry.error);
   if (entry.attempt) attempts.delete(entry.attempt);
   try {
-    if (!validEntry || entry.context.lifecycle !== owner || entry.attempt !== attempt || entry.error !== error
+    if (!validEntry || entry.family !== family || entry.context.lifecycle !== owner || entry.attempt !== attempt || entry.error !== error
       || !entry.sealed || !entry.eligible || !entry.sent || !live(entry)) return false;
     return entry.proof.consume();
   } finally { discard(entry); }

@@ -13,7 +13,7 @@ const entered = (value: { entered: { promise: Promise<void> } }, label: string) 
 const candidates = (browser: BrowserHarness) => browser.evaluate(`([...document.querySelectorAll('[data-cover-candidate]')].map(el=>({variant:el.getAttribute('data-cover-candidate'),name:el.querySelector('[data-cover-candidate-name] p')?.textContent,src:el.querySelector('img')?.getAttribute('src'),start:el.querySelector('[data-cover-candidate-actions] button')?.textContent})))`);
 
 async function checkUnknown(context: Context, kind: ImageKind, name: string, count: number, unobserved: boolean) {
-  const { browser, fixture, proof, locale } = context;
+  const { fixture, proof, locale } = context;
   const uploads = fixture.count("POST", originalPath), deletes = fixture.count("DELETE", /^\/media-assets\/[^/]+$/);
   const read = fixture.gate("GET", snapshotPath, unobserved ? "unobserved" : "normal");
   try {

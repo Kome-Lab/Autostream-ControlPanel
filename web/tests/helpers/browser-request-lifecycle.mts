@@ -1,6 +1,7 @@
-import { takeNetworkCancellationTicket } from "./browser-network-cancel-proof.mts";
+import { takeNetworkCancellationTicket, takeLateDocumentRegistration } from "./browser-network-cancel-proof.mts";
 import { takeDeclaredAuthRetirement, takeDeclaredVersionRetirement } from "./browser-declared-auth-retirement.mts";
 import { takeInFlightOAuthCancellation } from "./browser-inflight-oauth-cancellation.mts";
+import { isOptionalReadCancellationPath } from "./browser-optional-read-contract.mts";
 
 export const invalidInterceptionIdMessage = "Invalid InterceptionId.";
 
@@ -93,11 +94,13 @@ export class FetchRequestLifecycle {
   private readonly terminalRequests: TerminalFetchRequest[] = [];
   private readonly idleWaiters = new Set<IdleWaiter>();
   private navigationGeneration = 0;
+  private latestNavigation: { generation: number; reason: NavigationCancellationReason } | undefined;
   private cancellationCount = 0;
   private preSettlementCount = 0;
   private declaredAuthRetiredCount = 0;
   private declaredVersionRetiredCount = 0;
   private observedInFlightOAuthCount = 0;
+  private observedInFlightOptionalReadCount = 0;
   private readonly actualAttempts = new WeakMap<FetchSettlementAttempt, ActiveFetchRequest>();
   private fatalError: Error | undefined;
   private diagnosticOrder = 0;
@@ -164,6 +167,7 @@ export class FetchRequestLifecycle {
     this.diagnosticOrder = diagnosticCounter(this.diagnosticOrder + 1);
     this.navigationBeginOrder = this.diagnosticOrder;
     this.navigationGeneration += 1;
+    this.latestNavigation = { generation: this.navigationGeneration, reason };
     for (const request of this.activeRequests.values()) {
       request.cancellationContext = { generation: this.navigationGeneration, reason };
     }
@@ -193,6 +197,19 @@ export class FetchRequestLifecycle {
       throw new Error(`Cannot change required response after settlement began: ${requestId}`);
     }
     request.requiredResponse = requiredResponse;
+  }
+
+  bindLateDocumentRegistration(requestId: string, ticket: unknown) {
+    const documentGeneration = takeLateDocumentRegistration(ticket, this, requestId, this.navigationGeneration);
+    this.assertHealthy();
+    const request = this.activeRequests.get(requestId), navigation = this.latestNavigation;
+    if (documentGeneration === undefined || !request || request.requiredResponse || request.method !== "GET"
+      || request.generation !== this.navigationGeneration || request.cancellationContext || request.terminalState !== "active" || request.settlementAttemptCount !== 0
+      || !navigation || navigation.generation !== this.navigationGeneration || !["navigate", "reload", "top-level-navigation"].includes(navigation.reason)) {
+      throw new Error("Invalid old-document registration witness");
+    }
+    request.generation = documentGeneration;
+    request.cancellationContext = { generation: navigation.generation, reason: navigation.reason };
   }
 
   beginSettlement(requestId: string, command: FetchSettlementCommand): FetchSettlementAttempt {
@@ -292,6 +309,41 @@ export class FetchRequestLifecycle {
     this.flushIdleWaiters();
     return true;
   }
+
+  prepareInFlightOptionalReadCancellation(requestId: string) {
+    this.assertHealthy();
+    const request = this.activeRequests.get(requestId);
+    if (!request || request.requiredResponse || request.method !== "GET" || !isOptionalReadCancellationPath(request.pathname)
+      || request.generation !== this.navigationGeneration || request.terminalState !== "active" || request.settlementAttemptCount !== 0) return;
+    const path = request.pathname;
+    return { path, live: (attempt: FetchSettlementAttempt) => {
+      this.assertHealthy();
+      return this.activeRequests.get(requestId) === request && this.actualAttempts.get(attempt) === request
+        && !request.requiredResponse && request.method === "GET" && request.pathname === path
+        && request.generation === this.navigationGeneration && request.terminalState === "settling"
+        && request.settlementAttemptCount === 1 && request.settlementCommand === "Fetch.fulfillRequest"
+        && attempt.requestId === requestId && attempt.command === "Fetch.fulfillRequest" && attempt.attempt === 1;
+    } };
+  }
+
+  completeObservedInFlightOptionalReadCancellation(attempt: FetchSettlementAttempt, error: unknown) {
+    const request = this.activeRequests.get(attempt.requestId);
+    const valid = !!request && this.actualAttempts.get(attempt) === request && !request.requiredResponse
+      && request.method === "GET" && isOptionalReadCancellationPath(request.pathname) && request.generation === this.navigationGeneration
+      && request.terminalState === "settling" && request.settlementAttemptCount === 1 && request.settlementCommand === "Fetch.fulfillRequest"
+      && attempt.attempt === 1 && attempt.command === "Fetch.fulfillRequest";
+    const proved = takeInFlightOAuthCancellation(error, this, attempt, valid, "optional-read");
+    this.assertHealthy();
+    if (!valid || !proved || !request) return false;
+    this.recordTerminal(request, "cancelled");
+    this.activeRequests.delete(request.requestId);
+    this.cancellationCount += 1;
+    this.observedInFlightOptionalReadCount += 1;
+    this.flushIdleWaiters();
+    return true;
+  }
+
+  get observedInFlightOptionalReadCancellationCount() { return this.observedInFlightOptionalReadCount; }
 
   handleSettlementError(attempt: FetchSettlementAttempt, error: unknown) {
     const request = this.requireMatchingAttempt(attempt);
