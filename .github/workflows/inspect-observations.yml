@@ -1,59 +1,128 @@
-name: Prepare validated Web source objects
+name: Verify immutable published Control Panel package
 on:
   push:
     branches: ['diagnostics/part11-service-health-75bbe3c']
 permissions:
-  contents: write
-  actions: read
+  contents: read
+  attestations: read
 jobs:
-  prepare-source-blobs:
+  verify-published:
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          github-token: ${{ github.token }}
-          run-id: 41697722363
-          artifact-ids: '13262242547'
-          merge-multiple: true
-          path: ${{ runner.temp }}/validated-source
-      - name: Verify frozen artifact and recover the exact tested workflow blob
+          ref: 8fe7abd08f11a942087ea8926efc41ac755272a7
+          persist-credentials: false
+      - name: Verify published package checksums, both architectures and provenance
         env:
           GH_TOKEN: ${{ github.token }}
+          VERIFY_VERSION: v2.0.4
+          VERIFY_COMMIT: 65a601fc9d4f15c93083e9be4ab9e71586fdba69
         run: |
           set -euo pipefail
           python3 -B - <<'PY'
-          import base64,hashlib,json,os,pathlib,subprocess
-          expected=json.loads("{\"parent\":\"d4305f28fcb2ce68ee1eeecd11e1aa3e865379d0\",\"base_tree\":\"9b687b166e54d4d1277cade183bc74fa90e4c1bc\",\"final_tree\":\"5531a00aa9dbfd6c1ef2f95a6679eb6d994c418f\",\"deletions\":[\"web/src/lib/foundation/actions/bounded-revalidation.ts\"],\"files\":{\".github/workflows/ci.yml\":{\"sha256\":\"ab1f5717ae0c1b9981035996edb5b0280a1457b02f3f5344603a0762edff525b\",\"git_blob\":\"77ee6ccdfc56d76882f10087143e6c953df75176\",\"bytes\":50000},\"scripts/ci/build-web-preserving-sources.mjs\":{\"sha256\":\"b6a9de24c4b6d284e257a0700f62c72ab6b626a1859e8cdf5fb9b31ff156c11d\",\"git_blob\":\"b11fe25da5ef31164f8ed3299af2527fc916f5cd\",\"bytes\":440},\"scripts/ci/source-owner-map.json\":{\"sha256\":\"4516fc7ac01a6dda5b9b782ec82b5193c62a621de8fa08533299cb9f011a63c0\",\"git_blob\":\"547a631307d6e9f45146d0e1a07b8e42a947d73e\",\"bytes\":254778},\"web/src/features/application/application-authority-readers.ts\":{\"sha256\":\"3151d7e0cac0eab970b07bb7e893995f983448f38ba5f09caea8ff6d8aacf132\",\"git_blob\":\"264e32608f97d007e49a42043847a4fb19750a4e\",\"bytes\":7217},\"web/src/features/application/updater-action-policy.ts\":{\"sha256\":\"74364ffb5e4fe1a286a59eea2063817d5ce1b094c714fb8c1aad385b3bda226d\",\"git_blob\":\"0adea5c08d4d8f6502a368b4c86893b4ef5c8582\",\"bytes\":11010},\"web/src/features/application/updater-bootstrap-authority-refresh.ts\":{\"sha256\":\"75cf90a555dcfa1b5c14df24600202bc5efc380aa8ec20d21b04ad79db00030b\",\"git_blob\":\"105c15e9f4fec180889c5b0160bec8a1b591e0b5\",\"bytes\":5246},\"web/src/features/application/updater-bootstrap-submission-preflight.ts\":{\"sha256\":\"9101b567406dc90cbace604fabf62e38a60835e1ef669e153a5c428391496c6d\",\"git_blob\":\"7f985b89013559cdc6bf378007902999459192ce\",\"bytes\":4335},\"web/src/features/application/updater-settings-form.tsx\":{\"sha256\":\"f23c72929ed79a5d23c433d63ab343ca70d06c81b1ead6fd2e0d746c7cd8a547\",\"git_blob\":\"d60c6addfe3ea50f49fa80d0cc0c8c376dd718ce\",\"bytes\":19727},\"web/src/features/application/updater-settings-panel.tsx\":{\"sha256\":\"b5134f0ed11afa89ab2f60edf4d86185bc20f1192f5e37690ecaaf8f4c87c550\",\"git_blob\":\"d175885a9466806623f9db2f8e21e6b267d08686\",\"bytes\":22075},\"web/src/features/nodes/node-metadata-edit.ts\":{\"sha256\":\"1b6920cef8eb4b74232e69d16138a2d47ad993056e160b6d0fa5072a6acb468d\",\"git_blob\":\"9563dfca7968f1b757b61b108aa1af5c83005315\",\"bytes\":2563},\"web/src/features/resources/resource-action-controller.ts\":{\"sha256\":\"fc981a2fc076a743d24c9044bda7818d75b97285f10f5ba754287603c4e86768\",\"git_blob\":\"26a1d817a50f26763f6a4d20dba6923698c44040\",\"bytes\":14311},\"web/src/features/settings/app-settings-action-policy.ts\":{\"sha256\":\"d3c84b1f91dcdba2c1a8d03de63a4e93e8c641a5afc15e0f0ddf6cdf21371cf7\",\"git_blob\":\"a094a6afff1fee91cd9e7921520583b71f531cdc\",\"bytes\":13886},\"web/src/features/streams/stream-action-controller.ts\":{\"sha256\":\"ad76aa414be73f72ad0db38e8b4042ac7afaffbc58347f6a60afb0441d96fd4f\",\"git_blob\":\"b7e8d1edec45310659d677617d8bb2731649078c\",\"bytes\":16312},\"web/src/features/streams/stream-action-runtime.ts\":{\"sha256\":\"68f52e59cfa3ec048ead23ccffd4197e5d0d30a7438e1b80a7da56b37cb8ac6d\",\"git_blob\":\"122f892cb46e3fd521e77b0984f6af5058d851f4\",\"bytes\":14351},\"web/src/features/streams/stream-control-platform-panel.tsx\":{\"sha256\":\"8641b104ca9120c185d7729c7fa143c7c201983509248a40d3ae223dd9c2622a\",\"git_blob\":\"e37c9acf945f55e1fb95c890b5d1bb619fe544f0\",\"bytes\":27100},\"web/src/features/streams/stream-visual-action-controller.ts\":{\"sha256\":\"280b538e3366749f7096e6b7857ee0614049a907523017f6c94b574936fd4408\",\"git_blob\":\"a377ca7a6df78a728d4becbf24e2ac9e941c36ff\",\"bytes\":9640},\"web/src/features/workers/workers-action-controller.ts\":{\"sha256\":\"8a5c8681167c611f5f6f4c2449656d59e952c8ebe56b743ea56d477c923de6c9\",\"git_blob\":\"e75215e44067c6b0ae746b00bd31931aef444504\",\"bytes\":13444},\"web/src/features/workers/workers-configuration-controller.ts\":{\"sha256\":\"2cfc6eb56b496b82640093be8b316edcd15115e0f44229d12cbac1a2372f5293\",\"git_blob\":\"e8a3bbc3a0bc38ddb980d4ca5ef084aafe1ac2b9\",\"bytes\":10581},\"web/src/lib/actions/bounded-revalidation.ts\":{\"sha256\":\"58ac8b74f0df09bd027b9fc828b4c37305f533bcfaa8b5e8c685f4f91bf15ec1\",\"git_blob\":\"dee332c32aa9cc00f6db39c6d24caf5794d0d31c\",\"bytes\":1116},\"web/tests/fixtures/ui-regression/current-copy-bindings.json\":{\"sha256\":\"1721379712be2e2b1153a45a140630812a3b8a07b9bc6cbcd4c5763d0ee296f1\",\"git_blob\":\"6a5da7513ab85636d61e94a51b94b5645df87aad\",\"bytes\":122786},\"web/tests/fixtures/ui-regression/polling-current-source-delta.json\":{\"sha256\":\"65307c4c30b6a2763c22c4f2426ecd04bd6719e96e55a891a2ab736b9536d1ae\",\"git_blob\":\"e53fb7805756a5d9d65f1ad7b9ed33600f95005d\",\"bytes\":2504226},\"web/tests/helpers/ui-foundation-contract-imports.mts\":{\"sha256\":\"1ca13e9327dc3c24972105dfe643036d2b801c9423c9529c7cd3066b074d71b0\",\"git_blob\":\"729f36f5dc7af51228e1800406b2380561e345c1\",\"bytes\":16487},\"web/tests/helpers/ui-foundation-permission-imports.mts\":{\"sha256\":\"46c9e13c190d5be52c980b2ffe4856e00639eb40bfaa2eda713c0d382730ff44\",\"git_blob\":\"e78eeb9be0eaec1379b7532a7eeabe080304dfbe\",\"bytes\":9395},\"web/tests/polling-live-cover-authority.test.mts\":{\"sha256\":\"6f5e47355156e9244f9602b2ed6ecf34115b383992033124082a348aecfd58a4\",\"git_blob\":\"b28a43f3bb4dc38f795db3a7399e293abbf43b60\",\"bytes\":23100},\"web/tests/polling-related-screens-browser.mts\":{\"sha256\":\"9df6b2d3f9bf54da195b3d4c98be0de17f7a2e69d07051dfc9af45ce5de5d4af\",\"git_blob\":\"8974654f300e50e61c30f785e45f9459a0a0db1d\",\"bytes\":9162},\"web/tests/stream-operations-convergence.test.mts\":{\"sha256\":\"5986fec511e38c6863515f92c5765b1cdbea24da02df959360cb5c0971381e12\",\"git_blob\":\"b175548ed70b270fca4db6f85a81fe36f967a634\",\"bytes\":3860},\"web/tests/streams-foundation-migration.test.mts\":{\"sha256\":\"d1c4f7b3d91b4e065172eddfa507d6b269d58d70de7ff6426a1d8bc816b4abd1\",\"git_blob\":\"6c1c763085c1fe3e7e2626f6944fd4d7306aae42\",\"bytes\":12798},\"web/tests/ui-foundation-final-gate.test.mts\":{\"sha256\":\"d446cfd8bf52257f9b8af9574a9cf727a5520ae40ac25dcfc72e8f7e522271d7\",\"git_blob\":\"855ef0bb2b4b982206098bab44565b305842e56f\",\"bytes\":11164},\"web/tests/ui-foundation-permissions.test.mts\":{\"sha256\":\"9343c6dbe71798714b33fdaf9d461f64e1ec33b2a8ddc9f25bb831331a180820\",\"git_blob\":\"d821aa22fcc24962ee304389bfa356f6e88975fa\",\"bytes\":32053},\"web/tests/ui-regression/browser-contracts.test.mts\":{\"sha256\":\"99e731e151230f535aed76cac51990cea86d955c6c51fd116d32b799bc0ef624\",\"git_blob\":\"a24994d1291333c761e7914dd20e0058b605dd9e\",\"bytes\":60445},\"web/tests/ui-regression/draft-exit.test.mts\":{\"sha256\":\"f8f8fc877173857f27a88fe99afb69289377c197f22bf23b66a5ff96da994395\",\"git_blob\":\"4928f86d0ed957857f842feecfc62e644a226f56\",\"bytes\":11738},\"web/tests/ui-regression/polling-current-source-contract.mts\":{\"sha256\":\"a49d109cd7d09dca5de3cdda29b549d05a08bdb8be5ffa7a19a917dd554e8ca4\",\"git_blob\":\"a2279a1f913fb6b456f708aaafadbe606721d9f4\",\"bytes\":15316},\"web/tests/ui-regression/state-input-regressions.test.mts\":{\"sha256\":\"eebcecdb9e83db1542cf1bcfb79e831eaa553b40c606de95ad3181b724b9933d\",\"git_blob\":\"63d46905274c1628121719c51fdd04b6ae40c83d\",\"bytes\":87329},\"web/tests/ui-regression/stream-detail.test.mts\":{\"sha256\":\"fc574229f986de112c798beb2a98f697dc59c75decf23a3f4d7b3b68e8fd7e50\",\"git_blob\":\"ce837d6f62da9b481217f6ef3a5dbcb2c5fda5e2\",\"bytes\":20241},\"web/tests/workers-action-lifecycle-cases.mts\":{\"sha256\":\"7a08ac7305eb5d0b77a0771d9116089c0871724e5a790a2bf190bc24664d3d10\",\"git_blob\":\"37998415df4b31de232d673f9795dc71d3613b6d\",\"bytes\":10545},\"web/tests/workers-restart-authority-cases.mts\":{\"sha256\":\"3f7b29870f106eee400785ba330b49c9699deb1692dc873db0c7af82c2579c31\",\"git_blob\":\"cbb1cd6ca94868fa16d695db1552797d716bf839\",\"bytes\":9281},\"web/tests/youtube-output-static-relay.test.mts\":{\"sha256\":\"0117455156f6506e8948451aa196077b234055001e2b01c78e8e6d712687cc24\",\"git_blob\":\"d4ce2eaa926a82408f5064492524741d167e9116\",\"bytes\":5163}}}")
-          root=pathlib.Path(os.environ["RUNNER_TEMP"])/"validated-source"
-          metadata=json.loads(subprocess.check_output(["gh","api","/repos/Kome-Lab/Autostream-ControlPanel/actions/artifacts/13262242547"]))
-          assert metadata["workflow_run"]["id"]==41697722363
-          assert metadata["workflow_run"]["head_sha"]=="08f623674ce06daed81b46e43354d2bdf9951053"
-          assert metadata["name"]=="operations-source-08f623674ce06daed81b46e43354d2bdf9951053"
-          manifest=json.loads((root/"manifest.json").read_text())
-          assert manifest==expected
-          paths=set(expected["files"]);ci=".github/workflows/ci.yml"
-          actual={p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()}
-          assert actual==(paths|{"manifest.json"})-{ci},sorted(actual^paths)
-          assert not any(p.is_symlink() for p in root.rglob("*"))
-          response=json.loads(subprocess.check_output(["gh","api","/repos/Kome-Lab/Autostream-ControlPanel/git/blobs/77ee6ccdfc56d76882f10087143e6c953df75176"]))
-          assert response["sha"]==expected["files"][ci]["git_blob"] and response["encoding"]=="base64"
-          data=base64.b64decode(response["content"])
-          target=root/ci;target.parent.mkdir(parents=True);target.write_bytes(data)
-          actual={p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()}
-          assert actual==paths|{"manifest.json"}
-          for path in sorted(paths):
-              data=(root/path).read_bytes();entry=expected["files"][path]
-              assert len(data)==entry["bytes"] and len(data)<4*1024*1024 and b"\0" not in data
-              assert hashlib.sha256(data).hexdigest()==entry["sha256"]
-              assert data.decode("utf-8").encode("utf-8")==data
-              blob=hashlib.sha1(b"blob "+str(len(data)).encode()+b"\0"+data).hexdigest()
-              assert blob==entry["git_blob"]
-              body={"content":base64.b64encode(data).decode("ascii"),"encoding":"base64"}
-              created=json.loads(subprocess.check_output(["gh","api","--method","POST","/repos/Kome-Lab/Autostream-ControlPanel/git/blobs","--input","-"],input=json.dumps(body).encode()))
-              assert created["sha"]==blob
-              print("PREPARED_BLOB",json.dumps({"path":path,**entry}),flush=True)
-          print("PREPARED_TREE",expected["final_tree"],flush=True)
-          print("PREPARED_PARENT",expected["parent"],flush=True)
-          print("PREPARED_DELETIONS",json.dumps(expected["deletions"]),flush=True)
+          import base64,hashlib,json,os,pathlib,re,struct,subprocess,tarfile
+          repo="Kome-Lab/Autostream-ControlPanel"
+          version=os.environ["VERIFY_VERSION"];commit=os.environ["VERIFY_COMMIT"]
+          assert re.fullmatch(r"v\d+\.\d+\.\d+",version) and re.fullmatch(r"[0-9a-f]{40}",commit)
+          def api(path):
+              return json.loads(subprocess.check_output(["gh","api",path]))
+          def sha(path):
+              return hashlib.sha256(path.read_bytes()).hexdigest()
+          release=api("/repos/"+repo+"/releases/tags/"+version)
+          assert release["tag_name"]==version and release["immutable"] is True and release["draft"] is False and release["prerelease"] is False
+          ref=api("/repos/"+repo+"/git/ref/tags/"+version)
+          assert ref["object"]["type"]=="tag"
+          tag=api("/repos/"+repo+"/git/tags/"+ref["object"]["sha"])
+          assert tag["tag"]==version and tag["object"]=={"sha":commit,"type":"commit","url":"https://api.github.com/repos/"+repo+"/git/commits/"+commit}
+          assert tag["verification"]["verified"] is True and tag["verification"]["reason"]=="valid"
+          archives={arch:f"autostream-control-panel_{version}_linux_{arch}.tar.gz" for arch in ["amd64","arm64"]}
+          expected={"SHA256SUMS","release-manifest.json","release-manifest.json.sha256",*archives.values(),*(name+".sha256" for name in archives.values())}
+          assets={asset["name"]:asset for asset in release["assets"]}
+          assert len(assets)==len(release["assets"])==7 and set(assets)==expected
+          root=pathlib.Path(os.environ["RUNNER_TEMP"])/("published-"+version)
+          assert not root.exists();root.mkdir()
+          subprocess.run(["gh","release","download",version,"--repo",repo,"--dir",str(root)],check=True)
+          assert {p.name for p in root.iterdir()}==expected and not any(p.is_symlink() or not p.is_file() for p in root.iterdir())
+          for name,asset in assets.items():
+              path=root/name
+              assert path.stat().st_size==asset["size"] and asset["state"]=="uploaded"
+              assert asset["digest"]=="sha256:"+sha(path)
+          def checksums(path,expected_names):
+              rows={}
+              for line in path.read_text().splitlines():
+                  match=re.fullmatch(r"([0-9a-f]{64})  ([A-Za-z0-9_.-]+)",line)
+                  assert match and match[2] not in rows,(str(path),line)
+                  rows[match[2]]=match[1]
+              assert set(rows)==set(expected_names),(str(path),rows,expected_names)
+              for name,digest in rows.items(): assert sha(root/name)==digest
+          checksums(root/"SHA256SUMS",expected-{"SHA256SUMS"})
+          checksums(root/"release-manifest.json.sha256",{"release-manifest.json"})
+          for name in archives.values(): checksums(root/(name+".sha256"),{name})
+          manifest=json.loads((root/"release-manifest.json").read_text())
+          assert manifest["schema_version"]==1 and manifest["release_id"]==version and manifest["channel"]=="host" and manifest["minimum_agent_version"]=="v1.7.0"
+          assert len(manifest["components"])==1
+          component=manifest["components"][0]
+          assert component["service"]=="control-panel" and component["source_version"]==version and component["commit"]==commit
+          assert component["rollback_compatible"] is True and component["database_schema"]=="backward_compatible"
+          by_arch={row["arch"]:row for row in component["artifacts"]}
+          assert len(component["artifacts"])==2 and set(by_arch)==set(archives)
+          subjects=[*archives.values(),"release-manifest.json"]
+          proof=root/"verification";proof.mkdir()
+          for name in subjects:
+              path=root/name;digest=sha(path);response=api("/repos/"+repo+"/attestations/sha256:"+digest)
+              bundles=[row["bundle"] for row in response["attestations"]]
+              assert bundles
+              bundle_path=proof/(name+".bundles.jsonl")
+              bundle_path.write_text("".join(json.dumps(bundle)+"\n" for bundle in bundles))
+              command=["gh","attestation","verify",str(path),"--bundle",str(bundle_path),"--repo",repo,"--signer-workflow",repo+"/.github/workflows/release-host.yml","--source-digest",commit,"--source-ref","refs/tags/"+version,"--deny-self-hosted-runners","--format","json"]
+              result=json.loads(subprocess.check_output(command))
+              assert result
+              (proof/(name+".attestation-verification.json")).write_text(json.dumps(result,indent=2)+"\n")
+              print("VERIFIED_PROVENANCE_SUBJECT",json.dumps({"name":name,"sha256":digest,"source":commit,"tag":version}),flush=True)
+          summary=[]
+          for arch,name in archives.items():
+              path=root/name;entry=by_arch[arch]
+              assert entry["os"]=="linux" and entry["name"]==name and entry["size"]==path.stat().st_size and entry["sha256"]==sha(path)
+              artifact_root=name[:-7]
+              subprocess.run(["bash",".github/scripts/verify-release-archive.sh",str(path),artifact_root],check=True)
+              with tarfile.open(path,"r:gz") as archive:
+                  members=archive.getmembers();mapping={member.name.rstrip("/"):member for member in members}
+                  assert len(mapping)==len(members) and all(member.isfile() or member.isdir() for member in members)
+                  assert all(member.name.rstrip("/")==artifact_root or member.name.startswith(artifact_root+"/") for member in members)
+                  names={member.name for member in members if member.isfile()}
+                  relative={name[len(artifact_root)+1:] for name in names}
+                  assert "bin/control-panel" in relative and "share/autostream-control-panel/index.html" in relative
+                  assert any(name.startswith("share/autostream-control-panel/_next/static/") for name in relative)
+                  forbidden={"node_modules","server.js","autostream-updater","autostream-host-agent","autostream-local-executor","autostream-update-host"}
+                  assert all(not(set(name.split("/"))&forbidden) for name in relative)
+                  def content(name): return archive.extractfile(mapping[artifact_root+"/"+name]).read()
+                  inner=json.loads(content("artifact-manifest.json"))
+                  assert inner["schema_version"]==1 and inner["component"]=="control-panel" and inner["source_version"]==version and inner["commit"]==commit
+                  assert inner["platform"]=={"os":"linux","arch":arch} and inner["archive"]=={"name":name,"root":artifact_root}
+                  assert inner["build_date"]==manifest["published_at"]
+                  assert inner["compatibility"]=={"minimum_agent_version":"v1.7.0","minimum_panel_version":None,"rollback_compatible":True,"database_schema":"backward_compatible"}
+                  binary=content("bin/control-panel")
+                  assert binary[:6]==b"\x7fELF\x02\x01" and struct.unpack_from("<H",binary,18)[0]==({"amd64":62,"arm64":183}[arch])
+                  assert version.encode() in binary and commit.encode() in binary
+                  declared={}
+                  for line in content("checksums.txt").decode().splitlines():
+                      match=re.fullmatch(r"([0-9a-f]{64})  \./(.+)",line)
+                      assert match and match[2] not in declared
+                      declared[match[2]]=match[1]
+                  assert set(declared)==relative-{"checksums.txt"}
+                  for name,digest in declared.items(): assert hashlib.sha256(content(name)).hexdigest()==digest
+                  summary.append({"arch":arch,"archive":path.name,"members":len(members),"regular_files":len(names),"inner_checksums":len(declared),"sha256":sha(path)})
+          receipt={"version":version,"commit":commit,"release_id":release["id"],"release_url":release["html_url"],"immutable":True,"assets":7,"provenance_subjects":3,"archives":summary}
+          (proof/"published-verification.json").write_text(json.dumps(receipt,indent=2)+"\n")
+          print("VERIFIED_PUBLISHED_RELEASE",json.dumps(receipt),flush=True)
           PY
+      - name: Upload independent publication verification
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: published-package-verification-${{ github.sha }}
+          path: ${{ runner.temp }}/published-v2.0.4/verification
+          if-no-files-found: warn
+          retention-days: 30
