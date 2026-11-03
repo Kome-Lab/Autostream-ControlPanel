@@ -6,7 +6,7 @@ import type { CurrentUser, Stream } from "@/types/domain";
 import type { StreamActionStateSnapshot, StreamChangedField } from "@/features/streams/stream-action-controller";
 import type { StreamActionIntent, StreamActionRequest } from "@/features/streams/stream-action-descriptors";
 import { streamActionResponseStream, isConfirmedStreamStopOutcome } from "@/features/streams/stream-action-response";
-import { withBoundedActionRevalidation } from "@/lib/foundation/actions/bounded-revalidation";
+import { withBoundedActionRevalidation } from "@/lib/actions/bounded-revalidation";
 
 const mutationVersions = new WeakMap<QueryClient, { all: number; targets: Map<string, number> }>();
 function versions(queryClient: QueryClient) {

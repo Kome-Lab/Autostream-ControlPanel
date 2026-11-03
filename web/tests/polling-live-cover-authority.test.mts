@@ -23,7 +23,7 @@ register(`data:text/javascript,${encodeURIComponent(resolverSource)}`, {
   parentURL: import.meta.url, data: { webRootURL: new URL("../", import.meta.url).href },
 });
 const { buildVideoCoverAction, createVideoCoverActionController } = await import("../src/features/streams/control-platform.ts");
-const { withBoundedActionRevalidation } = await import("../src/lib/foundation/actions/bounded-revalidation.ts");
+const { withBoundedActionRevalidation } = await import("../src/lib/actions/bounded-revalidation.ts");
 const source = () => readFileSync(new URL("../src/features/streams/stream-control-platform-panel.tsx", import.meta.url), "utf8");
 
 function fixture() {

@@ -29,7 +29,7 @@ import {
 import { apiGet, apiPut } from "@/lib/api/client";
 import { adaptAPIError } from "@/lib/foundation/api-errors/adapter";
 import type { CurrentUser, Stream, WorkerNode } from "@/types/domain";
-import { withBoundedActionRevalidation } from "@/lib/foundation/actions/bounded-revalidation";
+import { withBoundedActionRevalidation } from "@/lib/actions/bounded-revalidation";
 
 class CoverActionUnavailable extends Error {}
 type CoverAuthorityTarget = Pick<Stream, "id" | "status" | "assigned_encoder_id">;

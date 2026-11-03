@@ -45,7 +45,7 @@ const sourcePaths = [
   "src/features/nodes/node-metadata-edit.ts", "src/features/nodes/use-node-registration-mutations.ts",
   "src/features/resources/resource-security-editor.tsx", "src/features/resources/generic-resource-panel.tsx",
   "src/features/resources/resource-action-controller.ts", "src/features/queries.ts", "src/lib/api/client.ts",
-  "src/lib/foundation/actions/bounded-revalidation.ts",
+  "src/lib/actions/bounded-revalidation.ts",
 ];
 const authority = () => ({
   head: execFileSync("git", ["rev-parse", "HEAD"], { cwd: webRoot, encoding: "utf8", windowsHide: true }).trim(),

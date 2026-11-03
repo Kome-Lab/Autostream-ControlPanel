@@ -3,7 +3,7 @@
 export const pollingCurrentBase = "65a601fc9d4f15c93083e9be4ab9e71586fdba69";
 export const pollingCurrentTree = "2624414bc4e1cb4bd304faccf82e5d22e3201dd2";
 export const pollingCurrentFixturePath = "web/tests/fixtures/ui-regression/polling-current-source-delta.json";
-export const pollingCurrentFixtureSHA256 = "49ef29a15380d3f140f7c65c08b15a710bd21df06544d3f5f03b87a9265b92e4";
+export const pollingCurrentFixtureSHA256 = "65307c4c30b6a2763c22c4f2426ecd04bd6719e96e55a891a2ab736b9536d1ae";
 export const pollingLegacyFixturePath = "web/tests/fixtures/ui-regression/polling-legacy-parity.json";
 export const pollingLegacyFixtureSHA256 = "b2df0a26ef1f77a08a0ddbfe8762b7e77a583c21ba8ed03d22373e4ebce764a8";
 export const pollingCurrentPaths = Object.freeze([
@@ -97,6 +97,7 @@ export const pollingCurrentPaths = Object.freeze([
   "internal/streamvisual/cover_candidates.go",
   "internal/streamvisual/memory.go",
   "internal/streamvisual/repository.go",
+  "scripts/ci/build-web-preserving-sources.mjs",
   "scripts/ci/polling-create-upload-inventory.json",
   "scripts/ci/source-owner-map.json",
   "scripts/ci/test-polling-create-upload-mariadb.sh",
@@ -157,8 +158,8 @@ export const pollingCurrentPaths = Object.freeze([
   "web/src/features/workers/workers-action-runtime.ts",
   "web/src/features/workers/workers-configuration-controller.ts",
   "web/src/features/workers/workers-view.tsx",
+  "web/src/lib/actions/bounded-revalidation.ts",
   "web/src/lib/api/client.ts",
-  "web/src/lib/foundation/actions/bounded-revalidation.ts",
   "web/src/lib/i18n.ts",
   "web/src/lib/i18n/ui-v2/copy/media-upload.ts",
   "web/src/lib/i18n/ui-v2/copy/settings.ts",
@@ -169,6 +170,7 @@ export const pollingCurrentPaths = Object.freeze([
   "web/tests/api-request-signal.test.mts",
   "web/tests/ci017-auth-expiry-diagnostic.test.mts",
   "web/tests/control-platform-features.test.mts",
+  "web/tests/fixtures/ui-regression/current-copy-bindings.json",
   "web/tests/generic-resource-authority-races.test.mts",
   "web/tests/generic-resource-polling.test.mts",
   "web/tests/generic-resource-security-cas.test.mts",
@@ -215,6 +217,8 @@ export const pollingCurrentPaths = Object.freeze([
   "web/tests/helpers/sql-ui-proxy.mts",
   "web/tests/helpers/stream-create-ui-payload.mts",
   "web/tests/helpers/streams-start-readiness-handler-guard.mts",
+  "web/tests/helpers/ui-foundation-contract-imports.mts",
+  "web/tests/helpers/ui-foundation-permission-imports.mts",
   "web/tests/helpers/ui-foundation-status-authority.mts",
   "web/tests/media-upload-browser.test.mts",
   "web/tests/media-upload-owner.test.mts",
@@ -234,6 +238,8 @@ export const pollingCurrentPaths = Object.freeze([
   "web/tests/stream-create-covers-browser.test.mts",
   "web/tests/stream-create-sql-browser.mts",
   "web/tests/stream-create-validation.test.mts",
+  "web/tests/stream-operations-convergence.test.mts",
+  "web/tests/streams-foundation-migration.test.mts",
   "web/tests/streams-visual-integration.test.mts",
   "web/tests/system-updates-presentation-cases.mts",
   "web/tests/ui-browser-fixture.mts",
@@ -245,7 +251,10 @@ export const pollingCurrentPaths = Object.freeze([
   "web/tests/ui-browser-worker-configuration-scenarios.mts",
   "web/tests/ui-browser-worker-restart-scenarios.mts",
   "web/tests/ui-foundation-browser.test.mts",
+  "web/tests/ui-foundation-final-gate.test.mts",
+  "web/tests/ui-foundation-permissions.test.mts",
   "web/tests/ui-refresh-layout-browser.test.mts",
+  "web/tests/ui-regression/browser-contracts.test.mts",
   "web/tests/ui-regression/draft-exit.test.mts",
   "web/tests/ui-regression/draft-flow.test.mts",
   "web/tests/ui-regression/keyboard-navigation.test.mts",
@@ -254,10 +263,14 @@ export const pollingCurrentPaths = Object.freeze([
   "web/tests/ui-regression/route-fixture.mts",
   "web/tests/ui-regression/run-browser.mts",
   "web/tests/ui-regression/source-normalization.mts",
+  "web/tests/ui-regression/state-input-regressions.test.mts",
+  "web/tests/ui-regression/stream-detail.test.mts",
   "web/tests/ui-regression/ua-identity.test.mts",
   "web/tests/ui-release-layout-browser.test.mts",
   "web/tests/workers-action-lifecycle-cases.mts",
   "web/tests/workers-pilot-fixture.mts",
+  "web/tests/workers-restart-authority-cases.mts",
+  "web/tests/youtube-output-static-relay.test.mts",
   "web/tsconfig.json",
   "web/tsconfig.ui-regression.json",
 ] as const);

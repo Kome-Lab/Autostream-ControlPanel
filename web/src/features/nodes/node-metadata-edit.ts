@@ -1,7 +1,7 @@
 import type { QueryClient } from "@tanstack/react-query";
 import { APIError, apiGet } from "../../lib/api/client";
 import { hasPermission } from "../../lib/auth/permissions";
-import { withBoundedActionRevalidation } from "../../lib/foundation/actions/bounded-revalidation";
+import { withBoundedActionRevalidation } from "../../lib/actions/bounded-revalidation";
 import type { CurrentUser, WorkerNode } from "../../types/domain";
 
 export function hasNodeMetadataRevision(node: WorkerNode) {

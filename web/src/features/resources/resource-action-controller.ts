@@ -11,7 +11,7 @@ import type { ActionEvaluation } from "@/lib/foundation/actions/contracts";
 import { adaptAPIError } from "@/lib/foundation/api-errors/adapter";
 import type { AdaptedAPIError } from "@/lib/foundation/api-errors/contracts";
 import { evaluateActionPermission, type PermissionSnapshot } from "@/lib/foundation/permissions/evaluator";
-import { withBoundedActionRevalidation } from "@/lib/foundation/actions/bounded-revalidation";
+import { withBoundedActionRevalidation } from "@/lib/actions/bounded-revalidation";
 
 export type ResourceActionStateSnapshot = Readonly<{
   kind: "ready" | "missing" | "unknown";

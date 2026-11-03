@@ -92,6 +92,7 @@ test("Configuration handler re-evaluates latest auth and sends no GET when denie
   assert.equal(removed.calls(), 0);
 
   const refreshing = configurationHarness();
+  refreshing.queryClient.removeQueries({ queryKey: ["auth", "me"], exact: true });
   const authRefresh = deferred();
   const refreshPromise = refreshing.queryClient.fetchQuery({ queryKey: ["auth", "me"], queryFn: () => authRefresh.promise });
   await waitFor(() => refreshing.controller.evaluate().availability.kind === "unknown");

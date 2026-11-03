@@ -1,7 +1,7 @@
 import type { QueryClient } from "@tanstack/react-query";
 
 import { apiGet } from "@/lib/api/client";
-import { withBoundedActionRevalidation } from "@/lib/foundation/actions/bounded-revalidation";
+import { withBoundedActionRevalidation } from "@/lib/actions/bounded-revalidation";
 import type { ActionEvaluation } from "@/lib/foundation/actions/contracts";
 import { adaptAPIError } from "@/lib/foundation/api-errors/adapter";
 import type { AdaptedAPIError } from "@/lib/foundation/api-errors/contracts";

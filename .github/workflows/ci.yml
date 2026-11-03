@@ -840,6 +840,14 @@ jobs:
           ref: ${{ steps.status-authority.outputs.contracts_sha }}
           path: status-authority-contracts
           persist-credentials: false
+      - name: Place pinned status authority outside the product source tree
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          authority_root="$RUNNER_TEMP/status-authority-contracts"
+          test ! -e "$authority_root"
+          mv -- status-authority-contracts "$authority_root"
+          printf 'AUTOSTREAM_STATUS_CONTRACTS_ROOT=%s\n' "$authority_root" >> "$GITHUB_ENV"
       - name: Strict check current UI and directly imported test closure
         run: npm run typecheck:ui-regression
       - name: Verify unchanged status vocabularies against current raw source locators
@@ -896,7 +904,8 @@ jobs:
       - run: npm run test:stream-regressions
       - run: npm run test:ui188-stream-operations
       - run: npm run lint
-      - run: npm run build
+      - name: Build web with npm run build
+        run: node --no-warnings ../scripts/ci/build-web-preserving-sources.mjs
       - name: Test current UI components
         run: npm run test:ui-regression:components
       - name: Test current route and action parity

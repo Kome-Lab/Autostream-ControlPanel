@@ -75,13 +75,13 @@ test("UI-STREAM-DETAIL-003: real controller retains denied/stale/unknown/pending
   assert.equal(duplicate.kind, "blocked"); assert.equal(calls, 1);
   assert.equal(controller.evaluate(intent).availability.kind, "pending"); release(); await first;
 });
-test("UI-STREAM-DETAIL-004: actual parent callback owns result, refresh, and detail feedback", () => {
+test("UI-STREAM-DETAIL-004: actual parent callback owns result, refresh, and detail feedback", async () => {
   const source = readFileSync(new URL("../../src/features/streams/streams-view.tsx", import.meta.url), "utf8");
   const notices: unknown[] = []; let refreshes = 0;
   const callback = actualCallback(source, "handleStreamActionResult", { ja: false, readinessResult, cacheStreamActionResponse,
     setActionNotice: (value: unknown) => notices.push(value), setCreatedStreams() {}, streamActionLabel: () => "Action",
     queryClient: { invalidateQueries() { refreshes++; } }, streamActionBlockedMessage: () => "Blocked", t: (key: string) => key });
-  callback({ kind: "succeeded", value: { stream_id: stream.id, ready: true, missing_service_types: [], issues: [] } }, { id: "STR-08", stream });
+  await callback({ kind: "succeeded", value: { stream_id: stream.id, ready: true, missing_service_types: [], issues: [] } }, { id: "STR-08", stream });
   assert.equal(refreshes, 1); assert.equal((notices[0] as { streamID: string }).streamID, stream.id);
   assert.match(source, /<StreamDetailsDialog[^\n]*actionController=\{actionController\}[^\n]*onActionResult=\{handleStreamActionResult\}/);
   const detail = readFileSync(new URL("../../src/features/streams/stream-details-dialog.tsx", import.meta.url), "utf8");

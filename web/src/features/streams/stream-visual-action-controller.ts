@@ -2,7 +2,7 @@ import { buildVisualUpdate, type StreamVisualSettings } from "@/features/streams
 import { adaptAPIError } from "@/lib/foundation/api-errors/adapter";
 import type { AdaptedAPIError } from "@/lib/foundation/api-errors/contracts";
 import { APIError } from "@/lib/api/client";
-import { withBoundedActionRevalidation } from "@/lib/foundation/actions/bounded-revalidation";
+import { withBoundedActionRevalidation } from "@/lib/actions/bounded-revalidation";
 
 export type VisualActionPermissionSnapshot = Readonly<{
   kind: "ready" | "refreshing" | "unavailable";

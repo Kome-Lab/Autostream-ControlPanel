@@ -1,7 +1,7 @@
 import type { ActionDescriptor, ActionRisk } from "@/lib/foundation/actions/contracts";
 import { adaptAPIError } from "@/lib/foundation/api-errors/adapter";
 import type { AdaptedAPIError } from "@/lib/foundation/api-errors/contracts";
-import { withBoundedActionRevalidation } from "@/lib/foundation/actions/bounded-revalidation";
+import { withBoundedActionRevalidation } from "@/lib/actions/bounded-revalidation";
 
 export type UpdaterActionID = "UPD-01" | "UPD-02" | "UPD-03" | "UPD-04" | "UPD-05" | "UPD-06" | "UPD-07" | "UPD-08" | "UPD-09" | "UPD-10";
 

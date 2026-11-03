@@ -2,7 +2,7 @@ import { useCurrentUser, useNodes, useServiceHealth, useSystemUpdates } from "@/
 import { updaterAuthorityFingerprint, type UpdaterActionAuthority } from "@/features/application/updater-action-policy";
 import { hasPermission } from "@/lib/auth/permissions";
 import { APIError, apiGet } from "@/lib/api/client";
-import { withBoundedActionRevalidation } from "@/lib/foundation/actions/bounded-revalidation";
+import { withBoundedActionRevalidation } from "@/lib/actions/bounded-revalidation";
 import { normalizeSystemUpdatesResponse } from "@/lib/system-updates";
 import { emptyUpdaterSettings, normalizeUpdaterSettingsResponse } from "@/lib/updater-settings-model";
 import type { SystemUpdateRequestState } from "@/lib/system-update-target-policy";

@@ -57,7 +57,9 @@ test('UI-WORKER-AUTH-015: actual QueryClient and submitRestart revalidate auth f
  type Factory=typeof createWorkerRestartController;type Controller=ReturnType<Factory>;type Open=Extract<ReturnType<Controller['open']>,{kind:'allowed'}>;type Result=Awaited<ReturnType<Controller['submit']>>;
  type Dialog={opened:Open;state:{kind:string}}|null;type Mode='success'|'fetching'|'error-cached'|'error-empty'|'denied'|'removed'|'pending'|'initial-pending'|'malformed'|'missing-permissions'|'wildcard';type Phase='before'|'during';
  const controllerSource=readFileSync(new URL('../../src/features/workers/workers-action-controller.ts',import.meta.url),'utf8').replaceAll('\r\n','\n'),viewSource=readFileSync(new URL('../../src/features/workers/workers-view.tsx',import.meta.url),'utf8');
- const factorySource=readFileSync(new URL('../workers-pilot-fixture.mts',import.meta.url),'utf8');const wireFactory:(id:string)=>Record<string,unknown>=actualFunction(factorySource.replace('export function worker(','function worker('),'worker',{});
+ const factorySource=readFileSync(new URL('../workers-pilot-fixture.mts',import.meta.url),'utf8');const canonicalFactory:(id:string)=>Record<string,unknown>=actualFunction(factorySource.replace('export function worker(','function worker('),'worker',{});
+  const wireFactory=(id:string):Record<string,unknown>=>{const wire={...canonicalFactory(id)};delete wire.id;assert.equal(wire.service_id,id);return wire;};
+  const {withBoundedActionRevalidation}=await import('../../src/lib/actions/bounded-revalidation.ts');
  const wire=wireFactory('auth-worker-015'),other=wireFactory('other-worker-015');assert.equal(Object.hasOwn(wire,'id'),false);
  const rows:unknown=Reflect.apply(mergeOperationalNodes,undefined,[[wire],[],[{...wire}]]);assert.ok(Array.isArray(rows));const row:unknown=rows[0];assert.ok(normalizer.copyCanonicalWorkerWireValue(row));assert.ok(row&&typeof row==='object');assert.equal(Object.hasOwn(row,'id'),false);
  const auth={permissions:['workers.read','service_health.read','workers.restart']},authKey=['auth','me'];
@@ -83,9 +85,9 @@ test('UI-WORKER-AUTH-015: actual QueryClient and submitRestart revalidate auth f
   return async()=>{};
  }
  async function exercise(mode:Mode,phase:Phase,factory:Factory=createWorkerRestartController,recover=false){
-  const client=clientForCase(),getsHeld:Array<ReturnType<typeof Promise.withResolvers<unknown>>>=[],events:string[]=[];let gets=0,posts=0,starts=0,invalidations=0,notice='';
+  const client=clientForCase(),getsHeld:Array<ReturnType<typeof Promise.withResolvers<unknown>>>=[],events:string[]=[];let gets=0,posts=0,starts=0,invalidations=0,notice='';let readEntered=Promise.withResolvers<void>();
   const unsubscribe=client.getQueryCache().subscribe(event=>{if(event.type==='updated'&&event.action.type==='invalidate'){assert.deepEqual(event.query.queryKey,['workers']);invalidations++;events.push('invalidate');}});
-  const controller=factory({queryClient:client,fetchWorkers:async()=>{gets++;events.push('worker-get-held');const held=Promise.withResolvers<unknown>();getsHeld.push(held);return held.promise;},postRestart:async path=>{assert.equal(path,'/workers/auth-worker-015/restart');posts++;events.push('post');}});
+  const controller=factory({queryClient:client,fetchWorkers:async()=>{gets++;events.push('worker-get-held');const held=Promise.withResolvers<unknown>();getsHeld.push(held);readEntered.resolve();return held.promise;},postRestart:async path=>{assert.equal(path,'/workers/auth-worker-015/restart');posts++;events.push('post');}});
   const opened=open(controller);assert.equal(opened.kind,'allowed');if(opened.kind!=='allowed')assert.fail('original successful authority must open');let dialog:Dialog={opened,state:{kind:'ready'}},submission:Promise<Result>|undefined;
   const observedController={...controller,submit:(selected:Open,onMutationStart?:()=>void)=>{submission=controller.submit(selected,()=>{starts++;events.push('mutation-start');onMutationStart?.();});return submission;}};
   const setRestartDialog=(update:Dialog|((current:Dialog)=>Dialog))=>{dialog=typeof update==='function'?update(dialog):update;events.push('dialog-'+(dialog?.state.kind||'closed'));};
@@ -94,6 +96,7 @@ test('UI-WORKER-AUTH-015: actual QueryClient and submitRestart revalidate auth f
   try{
    if(phase==='before')finishAuth=await changeAuth(client,mode);
    callback(opened);assert.ok(submission);const firstSubmission=submission;
+    await Promise.race([readEntered.promise,firstSubmission]);
    if(phase==='during'){
     assert.deepEqual([gets,posts,starts,invalidations],[1,0,0,0]);assert.equal(isPending(controller),true);assert.equal(open(controller).kind,'blocked');assert.equal(open(controller,other).kind,'allowed','another Worker has an independent duplicate key');
     assert.equal((await controller.submit(opened)).state.kind,'revalidation-unavailable');assert.equal(gets,1);assert.equal(isPending(controller),true);
@@ -106,7 +109,7 @@ test('UI-WORKER-AUTH-015: actual QueryClient and submitRestart revalidate auth f
    if(recover&&result.state.kind==='revalidation-unavailable'){
     await client.fetchQuery({queryKey:authKey,queryFn:async()=>auth,staleTime:0});assert.equal(client.getQueryState(authKey)?.status,'success');assert.equal(posts,0);assert.equal(gets,observed.gets);
     const next=open(controller);assert.equal(next.kind,'allowed');if(next.kind!=='allowed')assert.fail('recovery permits a new explicit operation');dialog={opened:next,state:{kind:'ready'}};
-    callback(next);assert.ok(submission);assert.equal(gets,observed.gets+1);assert.equal(posts,0);getsHeld.at(-1)!.resolve([wire,other]);const recovered=await submission;await Promise.resolve();
+    readEntered=Promise.withResolvers<void>();callback(next);assert.ok(submission);await Promise.race([readEntered.promise,submission]);assert.equal(gets,observed.gets+1);assert.equal(posts,0);getsHeld.at(-1)!.resolve([wire,other]);const recovered=await submission;await Promise.resolve();
     assert.equal(recovered.outcome?.kind,'succeeded');assert.deepEqual([posts,starts,invalidations],[1,1,1]);assert.equal(notice,'workerRestartSucceeded');assert.equal(isPending(controller),false);observed.recovery=true;
    }
    return observed;
@@ -119,15 +122,15 @@ test('UI-WORKER-AUTH-015: actual QueryClient and submitRestart revalidate auth f
  const decisive=await exercise('error-cached','during',createWorkerRestartController,true);
  t.diagnostic(JSON.stringify({finding:'B10-R10-001',phase:decisive.phase,authStatus:decisive.authStatus,authFetchStatus:decisive.authFetchStatus,dataRetained:decisive.retained,gets:decisive.gets,posts:decisive.posts,starts:decisive.starts,invalidations:decisive.invalidations,result:decisive.result}));
  assert.equal(decisive.retained,true);assertBlocked(decisive,1);assert.equal(decisive.recovery,true);
- for(const phase of ['before','during'] as const)for(const mode of ['fetching','error-cached','error-empty','denied','removed','pending','initial-pending','malformed','missing-permissions'] as const){
+ for(const phase of ['before','during'] as const)for(const mode of ['error-cached','error-empty','denied','removed','pending','initial-pending','malformed','missing-permissions'] as const){
   const observed=await exercise(mode,phase,createWorkerRestartController,mode==='error-cached');assertBlocked(observed,phase==='before'?0:1);if(mode==='error-cached')assert.equal(observed.recovery,true);
  }
- for(const phase of ['before','during'] as const){const success=await exercise('success',phase);assert.deepEqual([success.gets,success.posts,success.starts,success.invalidations],[1,1,1,1]);assert.equal(success.outcome,'succeeded');assert.equal(success.notice,'workerRestartSucceeded');assert.equal(success.dialog,'closed');assert.ok(success.events.indexOf('mutation-start')<success.events.indexOf('post'));}
+ for(const phase of ['before','during'] as const)for(const mode of ['success','fetching'] as const){const success=await exercise(mode,phase);assert.deepEqual([success.gets,success.posts,success.starts,success.invalidations],[1,1,1,1]);assert.equal(success.outcome,'succeeded');assert.equal(success.notice,'workerRestartSucceeded');assert.equal(success.dialog,'closed');assert.ok(success.events.indexOf('mutation-start')<success.events.indexOf('post'));if(mode==='fetching'){assert.equal(success.authFetchStatus,'fetching');assert.equal(success.retained,true);}}
  const copyStringArray=actualFunction(controllerSource,'copyStringArray',{}),snapshot:(client:QueryClient)=>{kind:string;permissions?:readonly string[]}=actualFunction(controllerSource,'permissionSnapshot',{authQueryKey:authKey,copyStringArray});
  for(const mode of ['success','wildcard','denied','fetching','error-cached','error-empty','removed','pending','initial-pending','malformed','missing-permissions'] as const){
   const client=clientForCase();let gets=0,posts=0;const controller=createWorkerRestartController({queryClient:client,fetchWorkers:async()=>{gets++;return [wire];},postRestart:async()=>{posts++;}}),finish=await changeAuth(client,mode);
-  try{const current=snapshot(client);assert.equal(current.kind,['success','wildcard','denied'].includes(mode)?'ready':mode==='fetching'?'refreshing':'unavailable');
-   const evaluation=evaluate(controller),opened=open(controller);if(mode==='success'||mode==='wildcard'){assert.equal(evaluation.availability.kind,'allowed');assert.equal(opened.kind,'allowed');}
+  try{const current=snapshot(client);assert.equal(current.kind,['success','wildcard','denied','fetching'].includes(mode)?'ready':'unavailable');
+   const evaluation=evaluate(controller),opened=open(controller);if(mode==='success'||mode==='wildcard'||mode==='fetching'){assert.equal(evaluation.availability.kind,'allowed');assert.equal(opened.kind,'allowed');}
    else{assert.equal(evaluation.availability.kind,mode==='denied'?'denied':'unknown');assert.equal(opened.kind,'blocked');}assert.deepEqual([gets,posts],[0,0]);
    if(mode==='denied')assert.deepEqual(current.permissions,[]);
    if(mode==='success'){for(const value of [undefined,null,{},['workers.restart','workers.restart'],['workers.restart',17]]){client.setQueryData(authKey,{permissions:value});assert.equal(snapshot(client).kind,'unavailable');assert.equal(open(controller).kind,'blocked');}}
@@ -136,7 +139,7 @@ test('UI-WORKER-AUTH-015: actual QueryClient and submitRestart revalidate auth f
  // Compile only original function bodies and original dependencies. Mutation
  // controls execute the same submitRestart caller and held-GET sequence above.
  function fromSource(source:string):Factory{
-  const bindings:Record<string,unknown>={...normalizer,...descriptors,...confirmation,...permissions,...errors,apiGet:()=>assert.fail('test must inject GET'),apiPost:()=>assert.fail('test must inject POST')};
+  const bindings:Record<string,unknown>={...normalizer,...descriptors,...confirmation,...permissions,...errors,withBoundedActionRevalidation,apiGet:()=>assert.fail('test must inject GET'),apiPost:()=>assert.fail('test must inject POST')};
   for(const name of ['authQueryKey','workersQueryKey','readyState','staleBlockedState','revalidationUnavailableState','invalidWorkerTarget'])bindings[name]=actualCallback(source,name,bindings);
   for(const name of ['copyStringArray','permissionSnapshot','findWorker','cachedWorker','workerRemoteState','freshWorkerRemoteState','fingerprintEvidence','blockedOpen','refreshWorkersAfterConflict','isAmbiguousMutationError'])bindings[name]=actualFunction(source,name,bindings);
   return actualFunction(source.replace('export function createWorkerRestartController(','function createWorkerRestartController('),'createWorkerRestartController',bindings);
@@ -145,7 +148,7 @@ test('UI-WORKER-AUTH-015: actual QueryClient and submitRestart revalidate auth f
  const guard='  if (state?.status !== "success") return Object.freeze({ kind: "unavailable" });\n';assert.ok(controllerSource.includes(guard),'mutation reaches actual success prerequisite');
  const removed=controllerSource.replace(guard,''),cacheFirst=controllerSource.replace(guard,'  if (state?.status !== "success" && !(state?.status === "error" && queryClient.getQueryData(authQueryKey))) return Object.freeze({ kind: "unavailable" });\n');
  const ast=ts.createSourceFile('controller.ts',controllerSource,ts.ScriptTarget.Latest,true,ts.ScriptKind.TS);let afterGet='';
- const visit=(node:ts.Node)=>{if(ts.isVariableStatement(node)&&node.declarationList.declarations.some(d=>ts.isIdentifier(d.name)&&d.name.text==='currentEvaluation'))afterGet=node.getText(ast);ts.forEachChild(node,visit);};visit(ast);assert.ok(afterGet.includes('permissionSnapshot(queryClient)'));
+ const visit=(node:ts.Node)=>{if(ts.isVariableStatement(node)&&node.declarationList.declarations.some(d=>ts.isIdentifier(d.name)&&d.name.text==='currentEvaluation'))afterGet=node.getText(ast);ts.forEachChild(node,visit);};visit(ast);assert.ok(afterGet.includes('snapshot: freshPermissions'));
  const noRecheck=controllerSource.replace(afterGet,'const currentEvaluation = authEvaluation;');
  for(const [name,source,phases] of [['removed-status',removed,['before','during']],['cached-error-ready',cacheFirst,['before','during']],['missing-after-get-check',noRecheck,['during']]] as const){
   assert.notEqual(source,controllerSource);for(const phase of phases){const unsafe=await exercise('error-cached',phase,fromSource(source));assert.equal(unsafe.posts,1,name+' reaches the real injected POST, not an unrelated failure');assert.throws(()=>assertBlocked(unsafe,phase==='before'?0:1),assert.AssertionError);}
@@ -154,7 +157,8 @@ test('UI-WORKER-AUTH-015: actual QueryClient and submitRestart revalidate auth f
 test('UI-WORKER-WIRE-014: service-id-only factory values survive actual merge and restart authority without nodes or synthetic id',async()=>{
  const {mergeOperationalNodes}=await import('../../src/features/workers/workers-view.tsx'),{copyCanonicalWorkerWireValue}=await import('../../src/features/workers/workers-wire-normalizer.ts'),{createWorkerRestartController}=await import('../../src/features/workers/workers-action-controller.ts');
  const factorySource=readFileSync(new URL('../workers-pilot-fixture.mts',import.meta.url),'utf8');
- const factory:(id:string,name?:string,type?:string)=>Record<string,unknown>=actualFunction(factorySource.replace('export function worker(', 'function worker('),'worker',{});
+ const canonicalFactory:(id:string,name?:string,type?:string)=>Record<string,unknown>=actualFunction(factorySource.replace('export function worker(', 'function worker('),'worker',{});
+  const factory=(id:string,name?:string,type?:string):Record<string,unknown>=>{const wire={...canonicalFactory(id,name,type)};delete wire.id;assert.equal(wire.service_id,id);return wire;};
  const wire=factory('worker-014','Wire Worker');assert.equal(Object.hasOwn(wire,'id'),false);assert.ok(copyCanonicalWorkerWireValue(wire));
  const merge=(...sources:unknown[][]):unknown[]=>{const value:unknown=Reflect.apply(mergeOperationalNodes,undefined,sources);assert.ok(Array.isArray(value));return value;};
  for(const parts of [[[wire]],[[wire],[],[{...wire}]],[[{...wire,id:'worker-014'}],[wire]],[[wire],[{...wire,id:'worker-014'}]],[[{...wire,id:'worker-014'}],[{...wire,id:'worker-014'}]],[[wire],[{...wire,id:'worker-014'}],[wire]]]){
@@ -169,7 +173,7 @@ test('UI-WORKER-WIRE-014: service-id-only factory values survive actual merge an
   for(const input of [wire,row]){const evaluation=Reflect.apply(controller.evaluate,controller,[input]) as ReturnType<typeof controller.evaluate>;assert.equal(evaluation.availability.kind,'allowed');assert.equal(open(input).kind,'allowed');}
   assert.deepEqual([gets,posts],[0,0]);const opened=open(row);assert.equal(opened.kind,'allowed');if(opened.kind!=='allowed')assert.fail('actual normal wire must open');
   const submission=controller.submit(opened);assert.equal(open(row).kind,'blocked');await controller.submit(opened);assert.deepEqual([gets,posts],[1,0]);held.resolve([wire]);assert.equal((await submission).outcome?.kind,'succeeded');assert.equal(posts,1);
-  client.setQueryData(['auth','me'],{permissions:[]});assert.equal(open(row).kind,'blocked');client.setQueryData(['auth','me'],{permissions:['workers.restart']});client.getQueryCache().find({queryKey:['workers'],exact:true})!.setState({fetchStatus:'fetching'});assert.equal(open(row).kind,'blocked');client.clear();
+  client.setQueryData(['auth','me'],{permissions:[]});assert.equal(open(row).kind,'blocked');client.setQueryData(['auth','me'],{permissions:['workers.restart']});const workerQuery=client.getQueryCache().find({queryKey:['workers'],exact:true})!;workerQuery.setState({fetchStatus:'fetching'});assert.equal(open(row).kind,'allowed');workerQuery.setState({status:'error',fetchStatus:'idle',error:Error('WORKER_REFRESH_FAILURE')});assert.equal(open(row).kind,'blocked');client.clear();
  }
  const invalidClient=new QueryClient();invalidClient.setQueryData(['auth','me'],{permissions:['workers.restart']});invalidClient.setQueryData(['workers'],[wire]);let invalidGets=0,invalidPosts=0;
  const invalidController=createWorkerRestartController({queryClient:invalidClient,fetchWorkers:async()=>{invalidGets++;return [wire];},postRestart:async()=>{invalidPosts++;}});
@@ -184,7 +188,7 @@ test('UI-WORKER-WIRE-014: service-id-only factory values survive actual merge an
  const metadata=merge([{...wire,reported_version:'1',reported_commit:'before'}],[{...wire,reported_version:'2',reported_build_date:'after'}])[0];assert.ok(metadata&&typeof metadata==='object'&&'reported_version' in metadata&&'reported_commit' in metadata&&'reported_build_date' in metadata);assert.deepEqual([metadata.reported_version,metadata.reported_commit,metadata.reported_build_date],['2','before','after']);
 });
 test('UI-WORKER-REFRESH-014: actual view and QueryClient keep permitted rows through auth refetch, preserve remote state and reject dangerous actions',async()=>{
- const {WorkersView,mergeOperationalNodes}=await import('../../src/features/workers/workers-view.tsx'),{createWorkerRestartController}=await import('../../src/features/workers/workers-action-controller.ts'),{hasPermission}=await import('../../src/lib/auth/permissions.ts');
+ const {WorkersView,mergeOperationalNodes}=await import('../../src/features/workers/workers-view.tsx'),{createWorkerRestartController}=await import('../../src/features/workers/workers-action-controller.ts'),{hasPermission}=await import('../../src/lib/auth/permissions.ts'),{copyCanonicalWorkerWireValue}=await import('../../src/features/workers/workers-wire-normalizer.ts');
  const reads=['workers.read','api_tokens.create','service_health.read'],keys=[['workers'],['nodes'],['service-health']],names=['Retained Worker','Retained Node','Retained Health'];
  const wires=names.map((service_name,index)=>({service_id:'retained-'+index,service_name,service_type:'worker',status:'online',health_status:'healthy',metrics:{active_jobs:3},...(index===1?{id:'retained-'+index}:{})}));
  const visible=(html:string)=>html.replace(/<[^>]*>/g,' '),stateHTML=(html:string)=>html.match(/<div[^>]*data-remote-consumer="workers"[\s\S]*?<\/div>/)?.[0]||'';
@@ -196,14 +200,14 @@ test('UI-WORKER-REFRESH-014: actual view and QueryClient keep permitted rows thr
   const idle=render();assertRows(idle,mask);const original=client.getQueryData(['auth','me']);const held=Promise.withResolvers<typeof auth>();let authGets=0;
   const refreshing=client.fetchQuery({queryKey:['auth','me'],queryFn:()=>{authGets++;return held.promise;},staleTime:0});void refreshing.catch(()=>undefined);assert.equal(client.getQueryState(['auth','me'])?.fetchStatus,'fetching');assert.equal(client.getQueryState(['auth','me'])?.status,'success');assert.equal(client.getQueryData(['auth','me']),original);
   const during=render();assertRows(during,mask);if(mask){assert.match(during,locale==='ja'?/閲覧権限を再確認中/:/Rechecking Worker read permissions/);assert.doesNotMatch(during,/Worker情報は最新|worker data is current/);}else assert.match(during,/Permission denied|権限がありません/);
-  let gets=0,posts=0;const controller=createWorkerRestartController({queryClient:client,fetchWorkers:async()=>{gets++;return [wires[0]];},postRestart:async()=>{posts++;}});
+  let gets=0,posts=0;let freshPermissions:readonly string[]=auth.permissions;const controller=createWorkerRestartController({queryClient:client,revalidate:async()=>{gets++;return {permissions:{kind:'ready',permissions:freshPermissions},workers:[wires[0]]};},postRestart:async()=>{posts++;}});
   const evaluate=()=>Reflect.apply(controller.evaluate,controller,[wires[0]]) as ReturnType<typeof controller.evaluate>,open=()=>Reflect.apply(controller.open,controller,[wires[0]]) as ReturnType<typeof controller.open>;
-  assert.notEqual(evaluate().availability.kind,'allowed');assert.equal(open().kind,'blocked');assert.deepEqual([gets,posts],[0,0]);
+  assert.equal(evaluate().availability.kind,'allowed');assert.equal(open().kind,'allowed');assert.deepEqual([gets,posts],[0,0]);
   held.resolve(auth);await refreshing;assert.equal(authGets,1);assert.equal(client.getQueryState(['auth','me'])?.fetchStatus,'idle');const after=render();assertRows(after,mask);assert.doesNotMatch(after,/Rechecking Worker read permissions|閲覧権限を再確認中/);
   const opened=open();assert.equal(opened.kind,'allowed');if(opened.kind!=='allowed')assert.fail('idle controller authority must open');
-  const recheck=Promise.withResolvers<typeof auth>(),again=client.fetchQuery({queryKey:['auth','me'],queryFn:()=>recheck.promise,staleTime:0});void again.catch(()=>undefined);assert.equal((await controller.submit(opened)).state.kind,'revalidation-unavailable');assert.deepEqual([gets,posts],[0,0]);
+  const recheck=Promise.withResolvers<typeof auth>(),again=client.fetchQuery({queryKey:['auth','me'],queryFn:()=>recheck.promise,staleTime:0});void again.catch(()=>undefined);freshPermissions=[];assert.equal(client.getQueryState(['auth','me'])?.fetchStatus,'fetching');assert.equal(open().kind,'allowed');assert.equal((await controller.submit(opened)).state.kind,'revalidation-unavailable');assert.deepEqual([gets,posts],[1,0]);assert.equal(client.getQueryState(['auth','me'])?.fetchStatus,'fetching');
   const reduced=mask&(mask-1);recheck.resolve({permissions:reads.filter((_,i)=>reduced&(1<<i))});await again;assertRows(render(),reduced);assert.equal(open().kind,'blocked');
-  client.setQueryData(['auth','me'],{permissions:[]});assertRows(render(),0);assert.equal(open().kind,'blocked');assert.deepEqual(client.getQueryData(['workers']),[wires[0]],'retained source exists but cannot grant read access');
+  client.setQueryData(['auth','me'],{permissions:[]});assertRows(render(),0);assert.equal(open().kind,'blocked');assert.deepEqual(client.getQueryData(['workers']),[{...copyCanonicalWorkerWireValue(wires[0]),metrics:{...wires[0].metrics}}],'retained source exists but cannot grant read access');
   } finally {client.unmount();client.clear();}assert.equal(client.getQueryCache().getAll().length,0);
  }
  for(const locale of ['ja','en'] as const)for(const state of ['partial','stale','background-refresh']){
@@ -245,7 +249,7 @@ test('UI-WORKER-REFRESH-014: actual view and QueryClient keep permitted rows thr
  const clearsRows=projection.replace('useMemo(() => mergeOperationalNodes(','useMemo(() => currentUser.isFetching ? [] : mergeOperationalNodes(');assert.notEqual(clearsRows,projection);assert.throws(()=>assertRows(project(clearsRows),3),assert.AssertionError);
  const controllerSource=readFileSync(new URL('../../src/features/workers/workers-action-controller.ts',import.meta.url),'utf8'),copyStringArray=actualFunction(controllerSource,'copyStringArray',{});
  const permission=(text:string)=>{const callback:(queryClient:QueryClient)=>{kind:string}=actualFunction(text,'permissionSnapshot',{copyStringArray,authQueryKey:['auth','me']});return callback(client);};
- assert.equal(permission(controllerSource).kind,'refreshing');const weakGate=controllerSource.replace('if (state?.fetchStatus === "fetching")','if (false)');assert.notEqual(weakGate,controllerSource);assert.throws(()=>assert.equal(permission(weakGate).kind,'refreshing'),assert.AssertionError);
+ assert.equal(permission(controllerSource).kind,'ready');const prerequisite='if (state?.status !== "success") return Object.freeze({ kind: "unavailable" });';assert.ok(controllerSource.includes(prerequisite));const overStrictGate=controllerSource.replace(prerequisite,'if (state?.fetchStatus === "fetching") return Object.freeze({ kind: "refreshing" });\n  '+prerequisite);assert.notEqual(overStrictGate,controllerSource);assert.throws(()=>assert.equal(permission(overStrictGate).kind,'ready'),assert.AssertionError);
  held.resolve(auth);await pending;client.setQueryData(['auth','me'],{permissions:[]});assertRows(project(),0);
  const bypass=projection.replace(/const rows = [^;]+;/,'const rows = mergeOperationalNodes(workers.data || [], registeredNodes.data || [], serviceHealth.data || []);');assert.notEqual(bypass,projection);assert.throws(()=>assertRows(project(bypass),0),assert.AssertionError);
  client.setQueryData(['auth','me'],auth);client.getQueryCache().find({queryKey:['auth','me'],exact:true})!.setState({status:'error',error:Error('PRIVATE_AUTH')});assertRows(project(),3);assert.equal(permission(controllerSource).kind,'unavailable');
@@ -263,7 +267,7 @@ test('UI-WORKER-MERGE-013: actual merge, canonical normalizer and restart contro
    assert.equal(controller.evaluate(result).availability.kind,'allowed');const open=controller.open(result);assert.equal(open.kind,'allowed');assert.equal(posts,0);assert.equal(fetches,0);
    if(open.kind==='allowed'){const submission=controller.submit(open);assert.equal(controller.isPending(result),true);assert.equal(controller.open(result).kind,'blocked');await controller.submit(open);assert.equal(fetches,1);release();assert.equal((await submission).outcome?.kind,'succeeded');assert.equal(posts,1);}
    client.setQueryData(['auth','me'],{permissions:[]});assert.equal(controller.open(result).kind,'blocked');client.setQueryData(['auth','me'],{permissions:['workers.restart']});
-   client.getQueryCache().find({queryKey:['workers'],exact:true})!.setState({fetchStatus:'fetching'});assert.equal(controller.open(result).kind,'blocked');client.clear();
+   const workerQuery=client.getQueryCache().find({queryKey:['workers'],exact:true})!;workerQuery.setState({fetchStatus:'fetching'});assert.equal(controller.open(result).kind,'allowed');workerQuery.setState({status:'error',fetchStatus:'idle',error:Error('WORKER_REFRESH_FAILURE')});assert.equal(controller.open(result).kind,'blocked');client.clear();
  }
  for(const key of ['reported_version','health_status'])for(const value of [undefined,null,17,{},['bad']])for(const position of [0,1]){
    const invalid={...worker,[key]:value} as unknown as WorkerNode,parts:WorkerNode[][]=[[worker],[worker]];parts[position]=[invalid];
@@ -678,16 +682,16 @@ test('UI-WORKER-READ-ACTION-017: read-loss hides the actual view while WKR-01 in
  const row=factory('worker-read-action-017','Read Authority Worker');
  for(const locale of ['ja','en'] as const){
   const client=new QueryClient({defaultOptions:{queries:{retry:false,staleTime:Infinity,gcTime:Infinity,retryOnMount:false}}});client.setQueryData(['workers'],[row]);client.setQueryData(['auth','me'],{permissions:['workers.read','workers.restart']});
-  const render=()=>renderUI(createElement(QueryClientProvider,{client},createElement(WorkersView)),locale,'/admin/workers/');let gets=0,posts=0;const held=Promise.withResolvers<unknown>();
-  const controller=createWorkerRestartController({queryClient:client,fetchWorkers:async()=>{gets++;return held.promise;},postRestart:async()=>{posts++;}});
+  const render=()=>renderUI(createElement(QueryClientProvider,{client},createElement(WorkersView)),locale,'/admin/workers/');let gets=0,posts=0;const held=Promise.withResolvers<unknown>(),readEntered=Promise.withResolvers<void>();
+  const controller=createWorkerRestartController({queryClient:client,fetchWorkers:async()=>{gets++;readEntered.resolve();return held.promise;},postRestart:async()=>{posts++;}});
   try{assert.match(render(),/Read Authority Worker/);client.setQueryData(['auth','me'],{permissions:['workers.restart']});
     const denied=render();assert.doesNotMatch(denied,/Read Authority Worker|aria-label="(?:Restart worker|Workerを再起動)"/);assert.match(denied,/Permission denied|権限がありません/);assert.deepEqual([gets,posts],[0,0]);assert.deepEqual(client.getQueryData(['workers']),[row]);
     const opened=controller.open(row);assert.equal(opened.kind,'allowed');if(opened.kind!=='allowed')assert.fail('WKR-01 does not require read or Configuration permissions');
-    const pending=controller.submit(opened);assert.deepEqual([gets,posts],[1,0]);assert.equal(controller.isPending(row),true);assert.equal((await controller.submit(opened)).state.kind,'revalidation-unavailable');
+    const pending=controller.submit(opened);assert.equal(controller.isPending(row),true);assert.equal((await controller.submit(opened)).state.kind,'revalidation-unavailable');await Promise.race([readEntered.promise,pending]);assert.deepEqual([gets,posts],[1,0]);
     held.resolve([row]);assert.equal((await pending).outcome?.kind,'succeeded');assert.deepEqual([gets,posts],[1,1]);assert.equal(controller.isPending(row),false);
     client.setQueryData(['auth','me'],{permissions:['workers.read']});assert.match(render(),/Read Authority Worker/);assert.equal(controller.open(row).kind,'blocked');
     client.setQueryData(['auth','me'],{permissions:['workers.read','workers.restart']});assert.equal(controller.open(row).kind,'allowed');
-    client.getQueryCache().find({queryKey:['auth','me'],exact:true})!.setState({fetchStatus:'fetching'});assert.match(render(),/Read Authority Worker/);assert.equal(controller.open(row).kind,'blocked');assert.deepEqual([gets,posts],[1,1]);
+    const authQuery=client.getQueryCache().find({queryKey:['auth','me'],exact:true})!;authQuery.setState({fetchStatus:'fetching'});assert.match(render(),/Read Authority Worker/);assert.equal(controller.open(row).kind,'allowed');authQuery.setState({status:'error',fetchStatus:'idle',error:Error('AUTH_REFRESH_FAILURE')});assert.equal(controller.open(row).kind,'blocked');assert.deepEqual([gets,posts],[1,1]);
   }finally{held.resolve([row]);client.clear();}
  }
 });

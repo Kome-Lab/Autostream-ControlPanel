@@ -4,7 +4,7 @@ import { apiGet } from "@/lib/api/client";
 import { activeUpdaterHostBootstrapStatus, isUpdaterHostBootstrapBulkCandidate, normalizeUpdaterHostBootstrapJobsResponse, updaterHostBootstrapConfirmationContext, updaterHostBootstrapEligibility } from "@/lib/updater-bootstrap";
 import { normalizeSystemUpdatesResponse } from "@/lib/system-updates";
 import { hasPermission } from "@/lib/auth/permissions";
-import { withBoundedActionRevalidation } from "@/lib/foundation/actions/bounded-revalidation";
+import { withBoundedActionRevalidation } from "@/lib/actions/bounded-revalidation";
 import type { CurrentUser, SystemUpdateAgentStatus, UpdaterSettingsHost } from "@/types/domain";
 import { readUpdaterSettingsAuthority } from "./application-authority-readers";
 import { latestBootstrapResults } from "./updater-bootstrap-job-state";

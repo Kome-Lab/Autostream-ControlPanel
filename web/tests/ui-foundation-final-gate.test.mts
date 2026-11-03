@@ -84,7 +84,12 @@ test("the final coverage oracle rejects removal of one canonical action", () => 
   const sources = readAuthoritySources();
   const appPath = authoritySources[0];
   const mutated = new Map(sources);
-  mutated.set(appPath, (mutated.get(appPath) || "").replaceAll('"APP-02"', '"APP-X2"'));
+  const before = sources.get(appPath)!;
+  assert.match(before, /\bAPP-02\b/u);
+  const after = before.replaceAll(/\bAPP-02\b/gu, "APP-X2");
+  assert.notEqual(after, before);
+  assert.doesNotMatch(after, /\bAPP-02\b/u);
+  mutated.set(appPath, after);
   assert.throws(() => assertFinalActionCoverage(inventory, mutated), /implementation authority IDs/);
 });
 

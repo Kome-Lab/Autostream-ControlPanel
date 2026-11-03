@@ -586,7 +586,7 @@ test("new production modules have pure imports, no endpoint ownership, and exact
   assert.deepEqual(assertPermissionFoundationBoundaries(webRoot), {
     componentRuntimeImports: 1,
     evaluatorRuntimeImports: 0,
-    productionConsumerCount: 19,
+    productionConsumerCount: 20,
   });
 });
 

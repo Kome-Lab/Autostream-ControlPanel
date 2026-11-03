@@ -36,7 +36,7 @@ test("UI-DRAFT-002: pending and failed or ambiguous saves retain dirty until con
   controller.request(leave);
   assert.equal(state.prompts, 0);
 });
-test("UI-DRAFT-008: actual Settings result callback clears only a confirmed APP-01 save", () => {
+test("UI-DRAFT-008: actual Settings result callback clears only a confirmed APP-01 save", async () => {
   const { state, controller } = setup(); state.dirty = true;
   const bindings = { setDispatching() {}, draft: controller, setMessage() {}, setPending() {},
     uiText: (key: string) => key, queryClient: { invalidateQueries() {} }, t: (key: string) => key, appSettingsActionResultMessage: () => "Safe failure" };
@@ -44,13 +44,16 @@ test("UI-DRAFT-008: actual Settings result callback clears only a confirmed APP-
   const callback = actualCallback(current, "handleActionResult", bindings);
   for (const result of [{ kind: "blocked", reason: "permission-denied" }, { kind: "failed", error: { kind: "conflict" } },
     { kind: "failed", error: { kind: "forbidden" } }, { kind: "outcome_unknown" }]) {
-    callback(result, { id: "APP-01" }); assert.equal(controller.dirty(), true);
+    await callback(result, { id: "APP-01" }); assert.equal(controller.dirty(), true);
   }
-  callback({ kind: "succeeded" }, { id: "APP-02" }); assert.equal(controller.dirty(), true);
-  callback({ kind: "succeeded" }, { id: "APP-01" }); assert.equal(controller.dirty(), false);
-  const mutant = current.replace("draft.saved();", "void 0;");
+  await callback({ kind: "succeeded" }, { id: "APP-02" }); assert.equal(controller.dirty(), true);
+  await callback({ kind: "succeeded" }, { id: "APP-01" }); assert.equal(controller.dirty(), false);
+  const statement = "        draft.saved();";
+  assert.equal(current.split(statement).length, 2, "one actual Settings save acknowledgement");
+  const mutant = current.replace(statement, "        void 0;");
+  assert.notEqual(mutant, current);
   state.dirty = true;
-  actualCallback(mutant, "handleActionResult", bindings)({ kind: "succeeded" }, { id: "APP-01" });
+  await actualCallback(mutant, "handleActionResult", bindings)({ kind: "succeeded" }, { id: "APP-01" });
   assert.throws(() => assert.equal(controller.dirty(), false), /true !== false/);
 });
 test("UI-DRAFT-003: forced logout and permission loss bypass dirty and pending without reading draft", () => {
@@ -116,7 +119,7 @@ test("UI-DRAFT-006: actual form close callers stay connected; removing each guar
     assert.notEqual(mutant, current); assert.throws(() => assertCaller(mutant, expression), /actual form exit/);
   }
 });
-test("UI-DRAFT-007: explicit non-secret comparison fields exclude credentials and raw form collection", () => {
+test("UI-DRAFT-007: explicit non-secret comparison fields exclude credentials and raw form collection", async () => {
   for (const path of ["components/forms/draft-exit.tsx", "features/streams/stream-slot-form.tsx", "features/settings/settings-view.tsx",
     "features/resources/resource-stream-forms.tsx", "features/resources/resource-caption-form.tsx", "features/resources/resource-access-forms.tsx", "features/resources/resource-oauth-forms.tsx", "features/resources/resource-notification-form.tsx"]) {
     const current = source(path);
@@ -125,7 +128,23 @@ test("UI-DRAFT-007: explicit non-secret comparison fields exclude credentials an
   }
   assert.doesNotMatch(source("components/forms/draft-exit.tsx"), /localStorage|sessionStorage|console\.|\.value\b/);
   assert.match(source("features/streams/stream-slot-form.tsx"), /result\.kind === "succeeded" && isStreamValue\(result\.value\)/);
-  assert.match(source("features/settings/settings-view.tsx"), /intent\.id === "APP-01"\) \{\s*draft\.saved\(\)/);
+  const settings = source("features/settings/settings-view.tsx");
+  let saved = 0;
+  const bindings = {
+    draft: { saved() { saved++; } }, queryClient: { invalidateQueries() {} },
+    setMessage() {}, setPending() {}, setDispatching() {}, uiText: (value: string) => value,
+    appSettingsActionResultMessage: () => "safe", t: (value: string) => value,
+  };
+  const handleResult = actualCallback(settings, "handleActionResult", bindings);
+  for (const kind of ["blocked", "failed", "outcome_unknown"]) await handleResult({ kind }, { id: "APP-01" });
+  await handleResult({ kind: "succeeded", value: {} }, { id: "APP-02" });
+  assert.equal(saved, 0, "failure and test email do not mark application settings saved");
+  await handleResult({ kind: "succeeded", value: {} }, { id: "APP-01" });
+  assert.equal(saved, 1, "accepted settings save marks the existing draft saved");
+  const mutant = settings.replace("        draft.saved();", "        void 0;");
+  assert.notEqual(mutant, settings, "draft-save mutation must change the actual callback");
+  await actualCallback(mutant, "handleActionResult", bindings)({ kind: "succeeded", value: {} }, { id: "APP-01" });
+  assert.equal(saved, 1, "the mutated callback cannot produce the required save acknowledgement");
 });
 
 test("UI-DRAFT-009: real Security result and resource-tab callbacks keep one draft and do not clear failures",()=>{

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import ts from "typescript";
+import { runInNewContext } from "node:vm";
 
 const source = readFileSync(new URL("../src/features/resources/resource-stream-forms.tsx", import.meta.url), "utf8");
 const sourceFile = ts.createSourceFile("resource-stream-forms.tsx", source, ts.ScriptTarget.Latest, true);
@@ -16,7 +17,19 @@ test("fixed Relay Live API output asks for only nonsecret binding fields", () =>
   assert.ok(componentEnd > componentStart, "YouTube output form must have a bounded source section");
   assert.match(formSource, /value: "live_api_relay_static", label: uiText\("YouTube Live API（固定Relay・既存互換）"\)/);
   assert.match(formSource, /const staticRelayMode = mode === "live_api_relay_static";/);
-  assert.match(formSource, /const requiresOAuth = mode === "live_api" \|\| mode === "live_api_dry_run" \|\| staticRelayMode;/);
+  const declarations: ts.VariableDeclaration[] = [];
+  const visit = (node: ts.Node) => {
+    if (ts.isVariableDeclaration(node) && node.name.getText(sourceFile) === "requiresOAuth") declarations.push(node);
+    ts.forEachChild(node, visit);
+  };
+  visit(components[0]);
+  assert.equal(declarations.length, 1, "OAuth requirement has one form owner");
+  const initializer = declarations[0].initializer;
+  assert.ok(initializer, "OAuth requirement is initialized");
+  for (const mode of ["live_api", "live_api_dry_run", "live_api_relay_static", "stream_key", "unknown"]) {
+    const required = runInNewContext(initializer.getText(sourceFile), { mode, staticRelayMode: mode === "live_api_relay_static" });
+    assert.equal(required, ["live_api", "live_api_dry_run", "live_api_relay_static"].includes(mode), mode);
+  }
   assert.match(formSource, /<TextField label=\{uiText\("固定RelayバインディングID"\)\}[\s\S]*?required \/>/);
   assert.match(formSource, /<TextField label=\{uiText\("再利用するYouTube Live Stream ID"\)\}[\s\S]*?required \/>/);
   assert.match(formSource, /watch_url: staticRelayMode \? "" : watchURL/);

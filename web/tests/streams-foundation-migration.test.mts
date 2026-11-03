@@ -19,6 +19,9 @@ const resolverSource = [
   "    if (!/\\.[cm]?[jt]sx?$/.test(target.pathname)) target.pathname += '.ts';",
   "    return nextResolve(target.href, context);",
   "  }",
+  "  if (specifier.startsWith('.') && context.parentURL?.startsWith(webRootURL + 'src/') && !/\\.[cm]?[jt]sx?$/.test(specifier)) {",
+  "    return nextResolve(new URL(specifier + '.ts', context.parentURL).href, context);",
+  "  }",
   "  return nextResolve(specifier, context);",
   "}",
 ].join("\n");

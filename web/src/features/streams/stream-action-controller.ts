@@ -13,7 +13,7 @@ import { defaultAPIErrorRegistry, defineAPIErrorRegistry } from "@/lib/foundatio
 import { evaluateActionPermission, type PermissionSnapshot } from "@/lib/foundation/permissions/evaluator";
 import { isStreamValue, isConfirmedStreamStopOutcome } from "@/features/streams/stream-action-response";
 import { definitiveStreamCreateRejection, streamCreateErrorRegistry } from "@/features/streams/stream-create-errors";
-import { withBoundedActionRevalidation } from "@/lib/foundation/actions/bounded-revalidation";
+import { withBoundedActionRevalidation } from "@/lib/actions/bounded-revalidation";
 import { APIError } from "@/lib/api/client";
 
 export type StreamActionStateSnapshot = Readonly<{

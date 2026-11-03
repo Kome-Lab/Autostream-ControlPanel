@@ -113,6 +113,7 @@ export function assertPermissionFoundationBoundaries(webRoot: string) {
       "src/features/streams/stream-action-controller.ts",
       "src/features/streams/stream-action-runtime.ts",
       "src/features/workers/workers-action-controller.ts",
+      "src/features/workers/workers-action-runtime.ts",
       "src/features/workers/workers-configuration-controller.ts",
       "src/features/workers/workers-view.tsx",
       "src/lib/foundation/actions/confirmation-revalidation.ts",

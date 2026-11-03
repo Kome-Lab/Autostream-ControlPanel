@@ -5253,7 +5253,7 @@
       },
       {
         "path": "web/src/features/application/updater-bootstrap-authority-refresh.ts",
-        "sha256": "c40be8f6d29468f29598de974054e54bef9cd551db1304637b24d3c34c8fc04d",
+        "sha256": "75cf90a555dcfa1b5c14df24600202bc5efc380aa8ec20d21b04ad79db00030b",
         "symbols": [
           "refreshFoundationAuthority"
         ],
@@ -5310,7 +5310,7 @@
       },
       {
         "path": "web/src/features/application/updater-bootstrap-submission-preflight.ts",
-        "sha256": "f8c3acd430586a01cebba57248e2bd3e342a37d32135011552a26fc441982d67",
+        "sha256": "9101b567406dc90cbace604fabf62e38a60835e1ef669e153a5c428391496c6d",
         "symbols": [],
         "physical_lines": 73
       },
@@ -5827,9 +5827,9 @@
       },
       {
         "path": "web/tests/workers-action-lifecycle-cases.mts",
-        "sha256": "1b6ae2e3ec2360572afaf5cfb8e84ec3c28208a46c7d058eb350d8d2de257953",
+        "sha256": "7a08ac7305eb5d0b77a0771d9116089c0871724e5a790a2bf190bc24664d3d10",
         "symbols": [],
-        "physical_lines": 207
+        "physical_lines": 208
       },
       {
         "path": "web/tests/workers-foundation-pilot.test.mts",
@@ -5859,13 +5859,13 @@
       },
       {
         "path": "web/tests/workers-restart-authority-cases.mts",
-        "sha256": "780c1bae87d50915502043f7ee26bdd98b57e2c933dd22949e0f206b4b3fdce2",
+        "sha256": "3f7b29870f106eee400785ba330b49c9699deb1692dc873db0c7af82c2579c31",
         "symbols": [
           "WorkerRecord",
           "get",
           "ownKeys"
         ],
-        "physical_lines": 174
+        "physical_lines": 175
       },
       {
         "path": "web/tests/workers-source-oracle-cases.mts",
@@ -5985,7 +5985,7 @@
       },
       {
         "path": "web/src/features/application/updater-settings-form.tsx",
-        "sha256": "21c63b6d2e3df997d196171c7484c02edc27e58defb1b403347e0dee4d43e4e5",
+        "sha256": "f23c72929ed79a5d23c433d63ab343ca70d06c81b1ead6fd2e0d746c7cd8a547",
         "symbols": [
           "OwnershipStateItem",
           "UpdaterSettingsForm",
@@ -6047,7 +6047,7 @@
       },
       {
         "path": "web/src/features/application/application-authority-readers.ts",
-        "sha256": "a08bca09f99b73966ab4f93418b5f8cd9bf24c766de9230eefbed24599b76b31",
+        "sha256": "3151d7e0cac0eab970b07bb7e893995f983448f38ba5f09caea8ff6d8aacf132",
         "symbols": [
           "readApplicationAuthority",
           "readUpdaterSettingsAuthority",
@@ -6169,7 +6169,7 @@
       },
       {
         "path": "web/src/features/application/updater-settings-form.tsx",
-        "sha256": "21c63b6d2e3df997d196171c7484c02edc27e58defb1b403347e0dee4d43e4e5",
+        "sha256": "f23c72929ed79a5d23c433d63ab343ca70d06c81b1ead6fd2e0d746c7cd8a547",
         "symbols": [
           "OwnershipStateItem",
           "UpdaterSettingsForm",
@@ -6185,7 +6185,7 @@
       },
       {
         "path": "web/src/features/application/updater-settings-panel.tsx",
-        "sha256": "5f4738e91776e225417fa96b7c6fbf2b3b6ad330e34130046715c2d44dad5b69",
+        "sha256": "b5134f0ed11afa89ab2f60edf4d86185bc20f1192f5e37690ecaaf8f4c87c550",
         "symbols": [
           "UpdaterSettingsPanel",
           "currentFoundationAuthority",

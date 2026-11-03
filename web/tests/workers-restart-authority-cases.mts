@@ -122,6 +122,7 @@ test("open and submit use current permissions plus a fresh target fingerprint", 
   assert.deepEqual(permissionRemoved.calls(), { gets: 0, posts: 0, invalidations: 0 });
 
   const permissionRefreshing = restartHarness();
+  permissionRefreshing.queryClient.removeQueries({ queryKey: ["auth", "me"], exact: true });
   const authRefresh = deferred();
   const refreshPromise = permissionRefreshing.queryClient.fetchQuery({
     queryKey: ["auth", "me"],

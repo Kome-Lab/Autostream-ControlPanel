@@ -1,6 +1,6 @@
 import type { ActionDescriptor, ActionEvaluation, ActionRisk } from "@/lib/foundation/actions/contracts";
 import { adaptAPIError } from "@/lib/foundation/api-errors/adapter";
-import { withBoundedActionRevalidation } from "@/lib/foundation/actions/bounded-revalidation";
+import { withBoundedActionRevalidation } from "@/lib/actions/bounded-revalidation";
 import type { AdaptedAPIError } from "@/lib/foundation/api-errors/contracts";
 import { evaluateActionPermission, type PermissionSnapshot } from "@/lib/foundation/permissions/evaluator";
 

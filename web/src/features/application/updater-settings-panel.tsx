@@ -15,7 +15,7 @@ import { UpdaterActionConfirmation } from "@/features/application/updater-action
 import { createUpdaterActionController, updaterAuthorityFingerprint, type UpdaterActionAuthority, type UpdaterActionIntent } from "@/features/application/updater-action-policy";
 import { useCurrentUser, useUpdaterSettings } from "@/features/queries";
 import { apiGet } from "@/lib/api/client";
-import { withBoundedActionRevalidation } from "@/lib/foundation/actions/bounded-revalidation";
+import { withBoundedActionRevalidation } from "@/lib/actions/bounded-revalidation";
 import { readUpdaterSettingsAuthority } from "./application-authority-readers";
 import { hasPermission } from "@/lib/auth/permissions";
 import { pullUpdaterOwnershipActivationEligibility, pullUpdaterOwnershipActivationRequest, pullUpdaterOwnershipDeactivationEligibility, pullUpdaterOwnershipDeactivationRequest, pullOwnershipMutationFenceAdvanced } from "@/lib/updater-ownership";

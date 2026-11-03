@@ -6,6 +6,7 @@ register(`data:text/javascript,${encodeURIComponent([
   "let root; export function initialize(data) { root = data.root; }",
   "export async function resolve(specifier, context, next) {",
   "if (specifier.startsWith('@/')) { const target = new URL('src/' + specifier.slice(2) + '.ts', root); return next(target.href, context); }",
+  "if (specifier.startsWith('.') && context.parentURL?.startsWith(root + 'src/') && !/\\.[cm]?[jt]sx?$/.test(specifier)) return next(new URL(specifier + '.ts', context.parentURL).href, context);",
   "return next(specifier, context); }",
 ].join("\n"))}`, { parentURL: import.meta.url, data: { root: new URL("../", import.meta.url).href } });
 
