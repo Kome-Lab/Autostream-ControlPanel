@@ -3,7 +3,7 @@
 export const pollingCurrentBase = "65a601fc9d4f15c93083e9be4ab9e71586fdba69";
 export const pollingCurrentTree = "2624414bc4e1cb4bd304faccf82e5d22e3201dd2";
 export const pollingCurrentFixturePath = "web/tests/fixtures/ui-regression/polling-current-source-delta.json";
-export const pollingCurrentFixtureSHA256 = "556fe3271ae17a3aa8c803596712aa7fb34b316846b0896b56d1124cf4ae9d9a";
+export const pollingCurrentFixtureSHA256 = "9f0bce26a3b06c4703e15333df14f750caaa6c4f24046818a0092f62ce548c47";
 export const pollingLegacyFixturePath = "web/tests/fixtures/ui-regression/polling-legacy-parity.json";
 export const pollingLegacyFixtureSHA256 = "b2df0a26ef1f77a08a0ddbfe8762b7e77a583c21ba8ed03d22373e4ebce764a8";
 export const pollingCurrentPaths = Object.freeze([
@@ -53,6 +53,8 @@ export const pollingCurrentPaths = Object.freeze([
   "internal/mediaassets/upload_operation.go",
   "internal/mediaassets/upload_operation_origin_test.go",
   "internal/mediaassets/upload_operation_sql.go",
+  "internal/servicecall/client_start_payload.go",
+  "internal/servicecall/start_preparation_youtube_runtime_test.go",
   "internal/store/app_settings.go",
   "internal/store/app_settings_mutation_mariadb.go",
   "internal/store/app_settings_mutation_memory.go",

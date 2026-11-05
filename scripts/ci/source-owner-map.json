@@ -3187,16 +3187,17 @@
       },
       {
         "path": "internal/servicecall/client_start_payload.go",
-        "sha256": "4e46c1a892a0f9d105e609add2ce31092cedb8fa5692a7d3034bd0cb3da8e713",
+        "sha256": "107810a143bdf60603217b0bb4bab346c8c8297d383f78c1a3c03a4e2b7a6678",
         "symbols": [
           "Client.issueIngestToken",
           "Client.issueIngestTokenForAudience",
           "Client.startPayload",
           "archiveArtifactEndpoint",
+          "encoderYouTubeRuntimePayload",
           "stopPayload",
           "workerEventPayload"
         ],
-        "physical_lines": 147
+        "physical_lines": 174
       },
       {
         "path": "internal/servicecall/client_transport_settings.go",
