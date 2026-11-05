@@ -25,7 +25,7 @@ func (c Client) startPayload(stream store.Stream, service store.RegisteredServic
 			payload["stream_key_secret_name"] = req.EncoderStreamKeySecretName
 		}
 		if len(req.YouTubeRuntime) > 0 {
-			payload["youtube_runtime"] = req.YouTubeRuntime
+			payload["youtube_runtime"] = encoderYouTubeRuntimePayload(req.YouTubeRuntime)
 		}
 		if req.VideoCoverStart != nil && reportedCapabilityTrue(service.ReportedCapabilities, CapabilityLiveVideoCoverV1) {
 			payload["video_cover_start"] = req.VideoCoverStart
@@ -85,6 +85,33 @@ func (c Client) startPayload(stream store.Stream, service store.RegisteredServic
 	default:
 		return "", nil, false
 	}
+}
+
+// encoderYouTubeRuntimePayload keeps CP lifecycle metadata out of the Encoder wire request.
+func encoderYouTubeRuntimePayload(runtime map[string]any) map[string]any {
+	payload := make(map[string]any, len(runtime))
+	for _, field := range []string{
+		"mode",
+		"output_id",
+		"oauth_account_id",
+		"broadcast_id",
+		"live_stream_id",
+		"relay_binding_id",
+		"reusable_live_stream_id",
+		"rtmp_url",
+		"stream_key_secret_name",
+		"watch_url",
+		"dry_run",
+		"complete_on_stop",
+		"complete_retry_count",
+		"complete_next_retry_at",
+		"complete_last_error",
+	} {
+		if value, ok := runtime[field]; ok {
+			payload[field] = value
+		}
+	}
+	return payload
 }
 
 func (c Client) issueIngestToken(streamID string, service store.RegisteredService, purpose string, now time.Time) string {
