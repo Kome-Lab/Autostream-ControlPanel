@@ -2,6 +2,7 @@
 
 import { useI18n } from "@/components/admin/i18n-provider";
 import { StreamActionControl } from "./stream-action-control";
+import { streamNodeIssueMessageKey, type StreamNodeIssueMessageKey } from "./stream-action-feedback";
 import type { StreamActionController, StreamActionExecutionResult } from "./stream-action-controller";
 import type { StreamActionIntent } from "./stream-action-descriptors";
 import type { Stream } from "@/types/domain";
@@ -10,18 +11,24 @@ export type StreamOperationNotice = Readonly<{
   tone: "success" | "error";
   message: string;
   streamID?: string;
-  readiness?: Readonly<{ ready: boolean | null; missing: number; issues: number; version: string }>;
+  readiness?: Readonly<{ ready: boolean | null; missing: number; issues: number; version: string; issueMessageKeys?: readonly StreamNodeIssueMessageKey[] }>;
 }>;
 
 // Select only bounded, non-secret response fields; never display provider issue messages.
-export function readinessResult(value: unknown, stream: Stream) {
+export function readinessResult(value: unknown, stream: Stream): NonNullable<StreamOperationNotice["readiness"]> {
   const unknown = { ready: null, missing: 0, issues: 0, version: stream.updated_at || stream.created_at || "" };
   if (!value || typeof value !== "object") return unknown;
   const row = value as Record<string, unknown>;
   if (row.stream_id !== stream.id || typeof row.ready !== "boolean" || !Array.isArray(row.missing_service_types) || !Array.isArray(row.issues)) return unknown;
   const missing = row.missing_service_types.length;
   const issues = row.issues.length;
-  return { ...unknown, ready: row.ready && (missing > 0 || issues > 0) ? null : row.ready, missing, issues };
+  const issueMessageKeys = new Set<StreamNodeIssueMessageKey>();
+  for (const issue of row.issues.slice(0, 32)) {
+    const key = streamNodeIssueMessageKey(issue && typeof issue === "object" ? (issue as Record<string, unknown>).code : undefined);
+    if (key) issueMessageKeys.add(key);
+  }
+  return { ...unknown, ready: row.ready && (missing > 0 || issues > 0) ? null : row.ready, missing, issues,
+    ...(issueMessageKeys.size ? { issueMessageKeys: [...issueMessageKeys] } : {}) };
 }
 
 export function StreamDetailOperations({ stream, controller, onResult, notice }: {
@@ -48,6 +55,9 @@ export function StreamDetailOperations({ stream, controller, onResult, notice }:
         : readiness?.ready === false ? (ja ? `開始できません。未割当 ${readiness.missing}件、確認事項 ${readiness.issues}件。` : `Not ready: ${readiness.missing} missing assignments, ${readiness.issues} issues.`)
         : (ja ? "開始準備は未確認または不明です。" : "Readiness has not been checked or is unknown.")}
     </p>
+    {!stale && readiness?.ready === false && readiness.issueMessageKeys?.length ? <ul className="list-inside list-disc text-sm text-muted-foreground">
+      {readiness.issueMessageKeys.map(key => <li key={key}>{t(key)}</li>)}
+    </ul> : null}
     <div className="flex flex-wrap gap-3">
       {controls.map(({ id, label }) => {
         const intent = { id, stream };

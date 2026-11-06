@@ -57,6 +57,64 @@ test("UI-STREAM-DETAIL-002: response projection never echoes issue messages and 
   assert.equal(readinessResult({ ...value, stream_id: "other" }, stream).ready, null);
   assert.doesNotMatch(JSON.stringify(readinessResult(value, stream)), /HOSTILE_SECRET/);
 });
+
+test("UI-STREAM-NODE-ISSUES: readiness shows only known localized Node explanations and hides stale advice", () => {
+  const controller = createStreamActionController({ getPermissions: () => ({ kind: "ready", permissions: ["*"] }),
+    getState: () => ({ kind: "ready", freshness: "fresh", fingerprint: "same" }), mutate: async () => { throw Error("render must never mutate"); } });
+  const value = { stream_id: stream.id, ready: false, missing_service_types: [], issues: [
+    { code: "service_node_busy", message: "HOSTILE_SECRET", service_id: "HOSTILE_NODE" },
+    { code: "discord_waiting_monitor_capability_unavailable", message: "HOSTILE_SECRET" },
+    { code: "service_node_busy", message: "HOSTILE_SECRET" },
+    { code: "unknown_provider_issue", message: "HOSTILE_SECRET" },
+  ] };
+  const readiness = readinessResult(value, stream);
+  assert.deepEqual(readiness.issueMessageKeys, ["streamNodeExecutionBusy", "streamDiscordMonitorUpdateRequired"]);
+  assert.equal(readiness.issues, 4);
+  assert.doesNotMatch(JSON.stringify(readiness), /HOSTILE_SECRET|HOSTILE_NODE|unknown_provider_issue/);
+  for (const locale of ["ja", "en"] as const) {
+    const render = (version: string) => renderToStaticMarkup(createElement(I18nProvider, { initialLocale: locale }, createElement(StreamDetailOperations, {
+      stream, controller, onResult() {}, notice: { tone: "success", message: "safe", streamID: stream.id, readiness: { ...readiness, version } },
+    })));
+    const html = render(stream.updated_at);
+    assert.match(html, locale === "ja" ? /保存済みのNode選択と稼働中の配信は変更していません/ : /saved node selection and the running stream are unchanged/);
+    assert.match(html, locale === "ja" ? /Discord BOTへの更新が必要/ : /Update the Bot and check readiness again/);
+    assert.doesNotMatch(html, /HOSTILE_SECRET|HOSTILE_NODE|unknown_provider_issue|service_node_busy/);
+    assert.doesNotMatch(render("older"), /保存済みのNode選択と稼働中の配信は変更していません|saved node selection and the running stream are unchanged|Discord BOTへの更新が必要|Update the Bot and check readiness again/);
+  }
+});
+
+test("UI-STREAM-NODE-ERRORS: actual start errors use safe localized messages and do not retry", async () => {
+  const { APIError } = await import("../../src/lib/api/client.ts");
+  const { translate } = await import("../../src/lib/i18n.ts");
+  for (const id of ["STR-04", "STR-08"] as const) for (const [code, status, key] of [
+    ["node_execution_busy", 409, "streamNodeExecutionBusy"],
+    ["service_node_busy", 409, "streamNodeExecutionBusy"],
+    ["discord_waiting_monitor_capability_unavailable", 409, "streamDiscordMonitorUpdateRequired"],
+    ["service_not_selected_for_stream", 403, "streamNodeNotSelected"],
+  ] as const) {
+    let mutations = 0;
+    const controller = createStreamActionController({ getPermissions: () => ({ kind: "ready", permissions: ["*"] }),
+      getState: () => ({ kind: "ready", freshness: "fresh", fingerprint: "same" }),
+      mutate: async () => { mutations++; throw new APIError("HOSTILE_SECRET", status, code); } });
+    const opened = await controller.open({ id, stream });
+    assert.equal(opened.kind, "allowed");
+    if (opened.kind !== "allowed") throw Error("unreached");
+    const result = await controller.submit(opened, { confirmed: true, ...(opened.typedToken === undefined ? {} : { typedValue: opened.typedToken }) });
+    assert.equal(result.kind, "failed");
+    if (result.kind !== "failed") throw Error("unreached");
+    assert.equal(result.error.messageKey, key);
+    assert.equal(mutations, 1);
+    for (const locale of ["ja", "en"] as const) {
+      const message = translate(locale, result.error.messageKey);
+      assert.doesNotMatch(message, /HOSTILE_SECRET|node_execution_busy|service_node_busy|discord_waiting_monitor_capability_unavailable|service_not_selected_for_stream/);
+      assert.notEqual(message, translate(locale, "apiErrorConflict"));
+      if (key === "streamNodeExecutionBusy") assert.match(message, locale === "ja" ? /稼働中の配信は変更していません/ : /running stream are unchanged/);
+      if (key === "streamDiscordMonitorUpdateRequired") assert.match(message, locale === "ja" ? /BOTを更新/ : /Update the Bot/);
+      if (key === "streamNodeNotSelected") assert.match(message, locale === "ja" ? /担当Nodeとして選択されていません/ : /not selected for this stream/);
+    }
+  }
+});
+
 test("UI-STREAM-DETAIL-003: real controller retains denied/stale/unknown/pending and duplicate rules for detail intents", async () => {
   let permissions = ["streams.start", "streams.stop"];
   let freshness: "fresh" | "stale" = "fresh";

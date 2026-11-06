@@ -1,4 +1,5 @@
 import { japaneseCopy, type UICopy } from "@/lib/i18n/ui-v2/copy";
+import { defaultAPIErrorRegistry, defineAPIErrorRegistry } from "@/lib/foundation/api-errors/registry";
 import type { StreamActionExecutionResult } from "@/features/streams/stream-action-controller";
 import type { StreamActionIntent } from "@/features/streams/stream-action-descriptors";
 export { isStreamValue } from "@/features/streams/stream-action-response";
@@ -28,3 +29,30 @@ export function streamActionBlockedMessage(reason: Extract<StreamActionExecution
   if (reason === "reconciliation-required") return uiText("前回の結果を確認できないため再送を抑止しています。最新状態または監査ログを確認してください。");
   return uiText("最新の権限または配信状態を確認できないため、操作を送信しませんでした。");
 }
+
+export type StreamNodeIssueMessageKey = "streamNodeExecutionBusy" | "streamDiscordMonitorUpdateRequired" | "streamNodeNotSelected";
+
+// Readiness exposes only these fixed explanations, never provider messages or IDs.
+export function streamNodeIssueMessageKey(code: unknown): StreamNodeIssueMessageKey | undefined {
+  switch (code) {
+    case "node_execution_busy":
+    case "service_node_busy":
+      return "streamNodeExecutionBusy";
+    case "discord_waiting_monitor_capability_unavailable":
+      return "streamDiscordMonitorUpdateRequired";
+    case "service_not_selected_for_stream":
+      return "streamNodeNotSelected";
+    default:
+      return undefined;
+  }
+}
+
+export const streamNodeErrorRegistry = defineAPIErrorRegistry({
+  codes: {
+    ...defaultAPIErrorRegistry.codes,
+    node_execution_busy: { kind: "conflict", messageKey: "streamNodeExecutionBusy", statuses: [409] },
+    service_node_busy: { kind: "conflict", messageKey: "streamNodeExecutionBusy", statuses: [409] },
+    discord_waiting_monitor_capability_unavailable: { kind: "protected_state", messageKey: "streamDiscordMonitorUpdateRequired", statuses: [409] },
+    service_not_selected_for_stream: { kind: "forbidden", messageKey: "streamNodeNotSelected", statuses: [403] },
+  },
+});

@@ -171,7 +171,8 @@ func openNodeSelectionMigrationConnection(t *testing.T) (*sql.Conn, context.Cont
 		`CREATE TEMPORARY TABLE streams (
 id CHAR(36) PRIMARY KEY,status VARCHAR(80) NOT NULL,archive_run_id VARCHAR(128) NULL,
 archive_started_at DATETIME(6) NULL,archive_reported_at DATETIME(6) NULL,
-deleted_at DATETIME(6) NULL,updated_at DATETIME(6) NOT NULL) ENGINE=InnoDB`,
+deleted_at DATETIME(6) NULL,created_at DATETIME(6) NOT NULL DEFAULT '2026-11-06 00:00:00.123456',
+updated_at DATETIME(6) NOT NULL) ENGINE=InnoDB`,
 		`CREATE TEMPORARY TABLE stream_settings (
 stream_id CHAR(36) PRIMARY KEY,discord_config_id CHAR(36) NULL,updated_at DATETIME(6) NOT NULL) ENGINE=InnoDB`,
 		`CREATE TEMPORARY TABLE profiles (

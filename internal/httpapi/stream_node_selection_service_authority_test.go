@@ -66,10 +66,10 @@ func newNodeSelectionServiceAuthorityFixture(t *testing.T) nodeSelectionServiceA
 	}
 	fixture := nodeSelectionServiceAuthorityFixture{
 		handler: handler, streams: streams, auth: auth, dispatcher: dispatcher,
-		streamID: stream.ID,
+		streamID:  stream.ID,
 		encoderID: primaryServiceID(primaryStreamAssignments(assignments), "encoder_recorder"),
-		workerID: primaryServiceID(primaryStreamAssignments(assignments), "worker"),
-		oldBotID: oldBotID, newBotID: newBotID, oldToken: oldToken, newToken: newToken,
+		workerID:  primaryServiceID(primaryStreamAssignments(assignments), "worker"),
+		oldBotID:  oldBotID, newBotID: newBotID, oldToken: oldToken, newToken: newToken,
 		newConfig: newConfig, encoderProfileID: encoderProfile.ID,
 	}
 	fixture.selectBot(t, oldBotID, oldConfig.ID)
@@ -83,7 +83,7 @@ func (f nodeSelectionServiceAuthorityFixture) selectBot(t *testing.T, botID, pro
 	t.Helper()
 	if _, err := f.streams.UpdateStreamSettings(t.Context(), f.streamID, store.StreamSettings{
 		DiscordConfigID: profileID, AutoStartTrigger: autoStartTriggerDiscordVoiceJoin,
-		EncoderProfileID: f.encoderProfileID,
+		EncoderProfileID:         f.encoderProfileID,
 		ExpectedDiscordServiceID: &botID,
 		NodeSelections: &store.StreamNodeSelectionUpdate{
 			EncoderServiceID: &f.encoderID, WorkerServiceID: &f.workerID, DiscordServiceID: &botID,

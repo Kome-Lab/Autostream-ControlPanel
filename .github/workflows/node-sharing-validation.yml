@@ -41,6 +41,7 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.mod
       - name: Check changed Go formatting
+        id: goformat
         shell: bash
         run: |
           set -euo pipefail
@@ -58,7 +59,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          go test -race -p 1 ./internal/store \
+          go test -race -timeout 5m -p 1 ./internal/store \
             -run '^Test((Memory|MariaDB)(SharedNodeSelections|SelectedStartClaims|ArchiveRunSource|ExplicitNodeSelection)|DiscordWaitingCredential)' \
             -count=1 -json | tee "${RUNNER_TEMP}/node-sharing-store.json"
       - name: Run real MariaDB selection migration regressions
@@ -66,18 +67,57 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          go test -p 1 ./internal/database -run '^TestMariaDBNodeSelection' -count=1 -json | tee "${RUNNER_TEMP}/node-sharing-migrations.json"
+          go test -timeout 5m -p 1 ./internal/database -run '^TestMariaDBNodeSelection' -count=1 -json | tee "${RUNNER_TEMP}/node-sharing-migrations.json"
       - name: Run HTTP save and refresh regression
         if: success() || failure()
         shell: bash
         run: |
           set -euo pipefail
-          go test -race -p 1 ./internal/httpapi \
-            -run '^Test(SharedNodeSelection|DiscordWaitingMonitor|NodeSelectionServiceAuthority|CreateStreamSavesSharedDiscord|CreateStreamPreservesActive|CreateStreamParallel|UpdateStreamSettingsRejectsInvalidSelection|UpdateStreamSettingsExplicitEmpty|UI188CreateMandatoryRolesPermissionAndAtomicNodeSelections)' \
+          go test -race -timeout 5m -p 1 ./internal/httpapi \
+            -run '^Test(SharedNodeSelection|DiscordWaitingMonitor|NodeSelectionServiceAuthority|ServiceStart|CreateStreamSavesSharedDiscord|CreateStreamPreservesActive|CreateStreamParallel|UpdateStreamSettingsRejectsInvalidSelection|UpdateStreamSettingsExplicitEmpty|UI188CreateMandatoryRolesPermissionAndAtomicNodeSelections)' \
             -count=1 -json | tee "${RUNNER_TEMP}/node-sharing-http.json"
       - name: Build Linux Control Panel
         if: success() || failure()
         run: CGO_ENABLED=0 go build -p 1 ./cmd/control-panel
+      - name: Verify current source owners and physical source limits
+        if: success() || failure()
+        run: python3 scripts/ci/verify_source_integrity.py --repository Autostream-ControlPanel --tree "${GITHUB_SHA}" --out "${RUNNER_TEMP}/node-sharing-source-integrity.json"
+      - name: Generate reviewed current source projection candidates
+        if: always() && steps.goformat.outcome == 'success'
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import base64
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+          root = Path.cwd()
+          paths = [
+              "web/tests/fixtures/ui-regression/polling-current-source-delta.json",
+              "web/tests/ui-regression/polling-current-source-contract.mts",
+          ]
+          legacy = root / "web/tests/fixtures/ui-regression/polling-legacy-parity.json"
+          legacy_before = legacy.read_bytes()
+          result = subprocess.run([
+              sys.executable, "scripts/ci/generate_polling_source_projection.py",
+              "--root", str(root), "--tree", os.environ["GITHUB_SHA"],
+              "--accept-path-changes", "--receipt", str(Path(os.environ["RUNNER_TEMP"]) / "node-sharing-projection"),
+          ], check=True, text=True, capture_output=True)
+          assert legacy.read_bytes() == legacy_before, "Frozen legacy inventory changed"
+          report = {"source_sha": os.environ["GITHUB_SHA"], "legacy_unchanged": True, "generation": json.loads(result.stdout), "files": []}
+          for path in paths:
+              data = (root / path).read_bytes()
+              encoded = base64.b64encode(data).decode("ascii")
+              chunks = [encoded[index:index + 12000] for index in range(0, len(encoded), 12000)]
+              report["files"].append({"path": path, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest(), "chunks": len(chunks)})
+              for index, chunk in enumerate(chunks):
+                  print("NODE_SHARING_PROJECTION_CHUNK " + json.dumps({"path": path, "index": index, "data": chunk}), flush=True)
+          print("NODE_SHARING_PROJECTION_MANIFEST " + json.dumps(report), flush=True)
+          (Path(os.environ["RUNNER_TEMP"]) / "node-sharing-projection-summary.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+          PY
       - name: Preserve regression observations
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -85,3 +125,22 @@ jobs:
           name: node-sharing-regressions-${{ github.sha }}
           path: ${{ runner.temp }}/node-sharing-*.json
           if-no-files-found: error
+
+  shared-node-ui:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 26
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck:ui-regression
+      - run: npm run test:stream-create
+      - name: Verify actual shared selection and readiness views in both locales
+        run: node --no-warnings --test tests/ui-regression/current-copy.test.mts tests/ui-regression/stream-detail.test.mts

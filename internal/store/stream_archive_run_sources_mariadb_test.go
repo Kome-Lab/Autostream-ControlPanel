@@ -142,7 +142,7 @@ func TestMariaDBArchiveRunSourceAcceptsLateExactReportAfterNodeReuse(t *testing.
 	wrongTime := artifact
 	wrongTime.ArchiveStartedAt = &badTime
 	badRun := artifact
-	badRun.ArchiveRunID = "forged-"+suffix
+	badRun.ArchiveRunID = "forged-" + suffix
 	badRun.RelativePath = fmt.Sprintf("final/%s/%s/final.mp4", owner.ID, badRun.ArchiveRunID)
 	for _, tc := range []struct {
 		name     string

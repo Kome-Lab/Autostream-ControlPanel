@@ -271,7 +271,7 @@ func (s *Server) startStreamWithMaterialization(w http.ResponseWriter, r *http.R
 	claimedStart, err := claimStore.ClaimStreamStart(r.Context(), store.StreamStartClaimRequest{
 		StreamID: stream.ID, ExpectedStatus: stream.Status, ExpectedStreamUpdatedAt: stream.UpdatedAt,
 		ExpectedPrimaryAssignments: primaryAssignments, ExpectedNodeSelections: selectedNodes,
-		MaterializeServiceID:       claimMaterializeServiceID, MaterializeActorUserID: claimMaterializeActorUserID,
+		MaterializeServiceID: claimMaterializeServiceID, MaterializeActorUserID: claimMaterializeActorUserID,
 		// The prepared start also needs the existing unique run fence when no
 		// archive profile is selected. Profile selection still controls archive
 		// obligations; this flag allocates identity only in ClaimStreamStart.

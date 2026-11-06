@@ -57,8 +57,8 @@ func TestSharedNodeSelectionPreservesRunningFrame(t *testing.T) {
 	}
 	dispatcher := &previewFakeDispatcher{result: servicecall.PreviewAssetResult{
 		StatusCode: http.StatusOK,
-		Success: true,
-		Body: []byte("#EXTM3U\n#EXT-X-VERSION:3\n#EXTINF:2.0,\nsegment-000001.ts\n"),
+		Success:    true,
+		Body:       []byte("#EXTM3U\n#EXT-X-VERSION:3\n#EXTINF:2.0,\nsegment-000001.ts\n"),
 	}}
 	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth),
 		WithServiceRegistryStore(auth), WithProfileStore(profiles),
@@ -197,7 +197,7 @@ func TestSharedNodeSelectionExplicitClearDoesNotRestartPreviousAssignments(t *te
 	}
 	readiness := request("/streams/"+stream.ID+"/start-readiness", "{}")
 	var ready struct {
-		Ready bool `json:"ready"`
+		Ready   bool     `json:"ready"`
 		Missing []string `json:"missing_service_types"`
 	}
 	if err := json.Unmarshal(readiness.Body.Bytes(), &ready); err != nil || readiness.Code != http.StatusOK ||

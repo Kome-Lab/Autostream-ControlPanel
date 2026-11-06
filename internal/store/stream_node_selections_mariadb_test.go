@@ -77,10 +77,10 @@ func TestMariaDBSharedNodeSelectionsPreserveRunningOwner(t *testing.T) {
 		t.Helper()
 		serviceIDs := []any{encoderID, workerID, botID}
 		return map[string][][]string{
-			"stream":     sharedNodeSelectionSQLRows(t, ctx, db, `SELECT * FROM streams WHERE id=?`, owner.ID),
-			"settings":   sharedNodeSelectionSQLRows(t, ctx, db, `SELECT * FROM stream_settings WHERE stream_id=?`, owner.ID),
-			"choices":    sharedNodeSelectionSQLRows(t, ctx, db, `SELECT * FROM stream_node_selections WHERE stream_id=? ORDER BY service_type`, owner.ID),
-			"services":   sharedNodeSelectionSQLRows(t, ctx, db, `SELECT * FROM services WHERE service_id IN (?,?,?) ORDER BY service_id`, serviceIDs...),
+			"stream":      sharedNodeSelectionSQLRows(t, ctx, db, `SELECT * FROM streams WHERE id=?`, owner.ID),
+			"settings":    sharedNodeSelectionSQLRows(t, ctx, db, `SELECT * FROM stream_settings WHERE stream_id=?`, owner.ID),
+			"choices":     sharedNodeSelectionSQLRows(t, ctx, db, `SELECT * FROM stream_node_selections WHERE stream_id=? ORDER BY service_type`, owner.ID),
+			"services":    sharedNodeSelectionSQLRows(t, ctx, db, `SELECT * FROM services WHERE service_id IN (?,?,?) ORDER BY service_id`, serviceIDs...),
 			"assignments": sharedNodeSelectionSQLRows(t, ctx, db, `SELECT * FROM stream_service_assignments WHERE service_id IN (?,?,?) ORDER BY id`, serviceIDs...),
 			"tokens": sharedNodeSelectionSQLRows(t, ctx, db, `SELECT tokens.* FROM service_tokens tokens
 JOIN services s ON s.token_id=tokens.id WHERE s.service_id IN (?,?,?) ORDER BY tokens.id`, serviceIDs...),

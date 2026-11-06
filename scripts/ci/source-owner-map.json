@@ -1916,8 +1916,9 @@
       },
       {
         "path": "internal/httpapi/server_stream_discord_assignment_test.go",
-        "sha256": "c1cac5e20f59a3127adbd80f71a2266263150f1b4b03d99291975b1575557b44",
+        "sha256": "10d7b103a5c48e86f4f677f274c4bfa36fe1ac9ecd866d30308e87ec51aaa629",
         "symbols": [
+          "TestCreateStreamSavesSharedDiscordBotWithoutChangingActiveOwnership",
           "TestServiceStartStreamAllowsConfiguredDiscordBotWithoutPriorAssignment",
           "TestServiceStartStreamRequiresAutoStartTrigger",
           "TestServiceStartStreamRequiresPrimaryDiscordBotToken",
@@ -1930,7 +1931,7 @@
           "TestStartStreamUsesSavedDiscordConfigSetting",
           "TestStopStreamReportsWaitingStreamRearmFailure"
         ],
-        "physical_lines": 482
+        "physical_lines": 556
       },
       {
         "path": "internal/httpapi/server_stream_lifecycle_failures_test.go",
@@ -2003,6 +2004,21 @@
           "TestStopStreamNormalizesOnlyExactAlreadyStoppedDownstreamReceipts"
         ],
         "physical_lines": 312
+      },
+      {
+        "path": "internal/httpapi/stream_node_selection_service_authority_test.go",
+        "sha256": "0a802c193ff31afd91778627f21ef22a07a2dc55440531db7dfa313cca4061d1",
+        "symbols": [
+          "TestServiceStartRechecksTrustedCallerAfterSelectionChanges",
+          "TestServiceStartRejectsOldPrimaryAfterDiscordSelectionChanges",
+          "newNodeSelectionServiceAuthorityFixture",
+          "nodeSelectionServiceAuthorityFixture",
+          "nodeSelectionServiceAuthorityFixture.assertRejectedWithoutMutation",
+          "nodeSelectionServiceAuthorityFixture.selectBot",
+          "nodeSelectionServiceAuthorityFixture.snapshot",
+          "nodeSelectionServiceAuthoritySnapshot"
+        ],
+        "physical_lines": 188
       }
     ]
   },
@@ -3330,7 +3346,7 @@
       },
       {
         "path": "internal/store/stream_artifact_reporting_mariadb.go",
-        "sha256": "92b6db5f6bbef3ab62b66d93a2ca94a239034d9615cdbe9fa7055df96c75c036",
+        "sha256": "78b86f2839a718925ce026c21cfa142e15c902233da68ad316925ba0b1c2a6c6",
         "symbols": [
           "MariaDBStreamStore.WriteStreamArtifactReport",
           "ValidateStreamArtifactReport",
@@ -3340,7 +3356,7 @@
           "streamArtifactReportMatchesArchiveAuthority",
           "streamArtifactScanner"
         ],
-        "physical_lines": 211
+        "physical_lines": 244
       },
       {
         "path": "internal/store/stream_artifact_values.go",
@@ -3379,7 +3395,7 @@
       },
       {
         "path": "internal/store/stream_mutations_mariadb.go",
-        "sha256": "d9eb7c8d725f4748e75c88c971175858a03e271766e856cdc7b8ca31ef56b675",
+        "sha256": "2e631b9edc04b85631ac6bc9513b57860464bc0fa5e72fc2689bad70d26f83d3",
         "symbols": [
           "MariaDBStreamStore.DeleteStream",
           "MariaDBStreamStore.GetStream",
@@ -3390,11 +3406,11 @@
           "MariaDBStreamStore.UpdateStreamStatus",
           "UpsertStreamSettingsTx"
         ],
-        "physical_lines": 314
+        "physical_lines": 318
       },
       {
         "path": "internal/store/stream_queries_mariadb.go",
-        "sha256": "e150c7afc136eddd09c9cd7c7307f5b1ac9e4539ae96e3166e5fff852ef948ff",
+        "sha256": "e7c0043116dcea2c1520efcd0ccf5cf2b90f0d3289cb3c68d312b087ed64e4a7",
         "symbols": [
           "MariaDBStreamStore.CreateStream",
           "MariaDBStreamStore.HasActiveStream",
@@ -3430,7 +3446,7 @@
       },
       {
         "path": "internal/store/streams.go",
-        "sha256": "57090b44b16108fe40e7abf28e198025a5c4286283fef625fe1803e61752874d",
+        "sha256": "e250f0533e1a790a29cde049ddcafad2fe42f597d77c71ebe78d34a6befaeb21",
         "symbols": [
           "ActiveStreamStore",
           "ArchiveProcessingStreamStore",
@@ -3455,7 +3471,62 @@
           "StreamYouTubeRuntime",
           "StreamYouTubeRuntimeStore"
         ],
-        "physical_lines": 225
+        "physical_lines": 232
+      },
+      {
+        "path": "internal/store/stream_node_selections.go",
+        "sha256": "d380b840c2f7e0ff392795fdf66cc8618c2295060ff3d607ee3ee6b4ab651685",
+        "symbols": [
+          "StreamNodeSelectionBinding",
+          "StreamNodeSelectionStore",
+          "StreamNodeSelectionUpdate",
+          "StreamNodeSelections",
+          "StreamNodeSelections.bindings",
+          "applyStreamNodeSelections",
+          "mergeStreamNodeSelections",
+          "streamNodeSelections",
+          "streamNodeSelectionsChanged",
+          "validateExpectedDiscordNodeSelection"
+        ],
+        "physical_lines": 101
+      },
+      {
+        "path": "internal/store/stream_node_selections_mariadb.go",
+        "sha256": "6e1e517b54176ae26be7b7e1018a615586b841571a067781a89b624f1b7b4af6",
+        "symbols": [
+          "MariaDBStreamStore.GetStreamNodeSelections",
+          "MariaDBStreamStore.ListStreamNodeSelectionsForService",
+          "saveStreamNodeSelectionUpdateTx",
+          "saveStreamNodeSelectionsTx",
+          "scanStreamNodeSelections",
+          "streamNodeSelectionSelectFields",
+          "streamNodeSelectionsTx",
+          "validateStreamNodeSelectionsTx"
+        ],
+        "physical_lines": 123
+      },
+      {
+        "path": "internal/store/stream_archive_run_sources.go",
+        "sha256": "66290f141e3f6a1f881b5346bc85f4e85091330434fdf757dfb5af52e5cd1357",
+        "symbols": [
+          "memoryRecordStreamArchiveRunSourceLocked",
+          "streamArchiveRunSourceForReportLocked",
+          "streamArchiveRunSourceKey",
+          "streamArchiveRunSourceKeyFor",
+          "streamArtifactReportHasConflictingIdentity",
+          "streamArtifactReportTokenAllowed"
+        ],
+        "physical_lines": 91
+      },
+      {
+        "path": "internal/store/stream_archive_run_sources_mariadb.go",
+        "sha256": "d841bf51df9ef642429ab3698d3ac1ed0eb2850275f1aea16b6efbb5ec921802",
+        "symbols": [
+          "recordStreamArchiveRunSourceTx",
+          "streamArchiveRunSourceForReportTx",
+          "validateStreamArtifactReportIdentityTx"
+        ],
+        "physical_lines": 91
       }
     ]
   },
@@ -4722,7 +4793,7 @@
     "destinations": [
       {
         "path": "internal/httpapi/server_stream_assignment_lookup.go",
-        "sha256": "bfd23d86d1472f924f0c611e7b8f297ecc7c96035df9c5faddaf0ef4f450456c",
+        "sha256": "ae9e1544ea3a1181c020b1325bf396825085c2c63a9a4a8ef6fe3e939fd61db2",
         "symbols": [
           "*Server.configuredDiscordAssignmentCandidate",
           "*Server.configuredDiscordServiceForStream",
@@ -4736,16 +4807,16 @@
           "isManuallyStoppableStreamStatus",
           "serviceCurrentUser"
         ],
-        "physical_lines": 164
+        "physical_lines": 171
       },
       {
         "path": "internal/httpapi/server_stream_service_actions.go",
-        "sha256": "3403e910d89d3f962df04d48020cc8f5257802d0203f09942ce80a44b90d6e9a",
+        "sha256": "6fe4f56c3b94b0ba52dcba5f23f3169a83954e7aa71934f57fddeb4f8a9ba000",
         "symbols": [
           "*Server.serviceStartStream",
           "*Server.serviceStopStream"
         ],
-        "physical_lines": 155
+        "physical_lines": 159
       },
       {
         "path": "internal/httpapi/server_stream_start.go",
@@ -4775,12 +4846,12 @@
       },
       {
         "path": "internal/httpapi/server_stream_start_orchestration.go",
-        "sha256": "b194022fdfa43c3129243b932d912f5b1b1bf3507c1b5f848361f1531b636ea1",
+        "sha256": "af63977c2a4fcd8cf146316737f59764c95cc7cc80e2df3a4ee8b49cc613cd39",
         "symbols": [
           "*Server.startStream",
           "*Server.startStreamWithMaterialization"
         ],
-        "physical_lines": 475
+        "physical_lines": 506
       },
       {
         "path": "internal/httpapi/server_stream_start_youtube.go",
@@ -4792,6 +4863,26 @@
           "archiveRunIDForStart"
         ],
         "physical_lines": 162
+      },
+      {
+        "path": "internal/httpapi/server_stream_node_selection_start.go",
+        "sha256": "78c082400e6d82f2ac3ab9bca483cb7b18595c9b8f7e5d89b8328b49651008b0",
+        "symbols": [
+          "*Server.selectedNodeReadinessIssues",
+          "*Server.selectedStartCandidates",
+          "selectedNodeCompatibilityIssues",
+          "streamStartCallerServiceKey"
+        ],
+        "physical_lines": 87
+      },
+      {
+        "path": "internal/httpapi/server_stream_discord_selection.go",
+        "sha256": "070d68a9db7da763c565c643d6eb8b413486eb3debe8e4a99ae7312af05b10a3",
+        "symbols": [
+          "*Server.prepareStreamDiscordAssignment",
+          "*Server.selectedDiscordServiceID"
+        ],
+        "physical_lines": 71
       }
     ]
   },
@@ -4929,7 +5020,7 @@
     "destinations": [
       {
         "path": "internal/store/memory.go",
-        "sha256": "4611535dd0c3ef9941b8ed4f81ef9f7bfa0c6d7d1093c53674a6b1ff8d3e1ea1",
+        "sha256": "5b1ca3ff36193e5aed4dfd38aa57e93cf8013796aa73448e0ef6108ac5b5fadb",
         "symbols": [
           "*MemoryStreamStore.AssignmentGuardMemoryStore",
           "*MemoryStreamStore.CreateStream",
@@ -4943,7 +5034,7 @@
           "MemoryStreamStore",
           "NewMemoryStreamStore"
         ],
-        "physical_lines": 277
+        "physical_lines": 279
       },
       {
         "path": "internal/store/memory_stream_artifact_catalog.go",
@@ -4983,20 +5074,22 @@
       },
       {
         "path": "internal/store/memory_stream_settings.go",
-        "sha256": "e67232a227dbd60436f483c9bdc308ec7138a81ea266cd0b29846c92569290a7",
+        "sha256": "cd6d899c4ecf1940c1eb498d8c9922a24637365465bdee0102f49ab08c099f82",
         "symbols": [
           "*MemoryStreamStore.GetStreamMediaRuntime",
           "*MemoryStreamStore.SetStreamVideoOverlayBurnIn",
           "*MemoryStreamStore.UpdateStreamEncoderRuntimeSettings",
+          "*MemoryStreamStore.UpdateStreamEncoderRuntimeSettingsRevision",
           "*MemoryStreamStore.UpdateStreamSettings",
           "MemoryStreamStore.UpdateStreamEncoderRuntimeSettingsRevision",
+          "applyMemoryStreamSettings",
           "cloneTimePtr"
         ],
-        "physical_lines": 125
+        "physical_lines": 131
       },
       {
         "path": "internal/store/memory_stream_start_claim.go",
-        "sha256": "85a89465639996ecfe548799c3db7426134b1c8676752de814dbd0b0d187dc3e",
+        "sha256": "0235ecf4d99e56666ea38edb167e7d8a9e6cbee616e7d4d0d7e1a4d6e99e7245",
         "symbols": [
           "*MemoryStreamStore.ClaimStreamStart",
           "*MemoryStreamStore.PrepareStreamArchiveRun",
@@ -5009,7 +5102,7 @@
           "startAssignmentClaimsEqual",
           "streamStartClaimStatus"
         ],
-        "physical_lines": 332
+        "physical_lines": 341
       },
       {
         "path": "internal/store/memory_stream_youtube_runtime.go",
@@ -5023,6 +5116,54 @@
           "*MemoryStreamStore.SaveStreamYouTubeRuntime"
         ],
         "physical_lines": 117
+      },
+      {
+        "path": "internal/store/memory_stream_selected_start_claim.go",
+        "sha256": "1dc1a505e451510838b4403b95a13b013ed73a43d5a25785ff2f4179076201b2",
+        "symbols": [
+          "*MemoryStreamStore.claimSelectedStreamStart"
+        ],
+        "physical_lines": 151
+      },
+      {
+        "path": "internal/store/stream_selected_start_claim.go",
+        "sha256": "01bfade9a66540de3d965b6abc7dcdbaec6edd9af418982c4779932c475491f1",
+        "symbols": [
+          "ErrNodeExecutionBusy",
+          "validateSelectedStartClaim"
+        ],
+        "physical_lines": 31
+      },
+      {
+        "path": "internal/store/stream_node_selections_memory.go",
+        "sha256": "95c9bdc9703583b476f7f9b1e3d68d11a6f3403e4701bf9a5d21ddfb07d61638",
+        "symbols": [
+          "*MemoryStreamStore.GetStreamNodeSelections",
+          "*MemoryStreamStore.ListStreamNodeSelectionsForService",
+          "*MemoryStreamStore.validateStreamNodeSelectionsLocked"
+        ],
+        "physical_lines": 87
+      },
+      {
+        "path": "internal/store/stream_archive_run_sources_memory.go",
+        "sha256": "df839739442c13e30401675eddb0529c2dbb4bcb597faed795afc5b7d7387c26",
+        "symbols": [
+          "*MemoryStreamStore.WriteStreamArtifactReport"
+        ],
+        "physical_lines": 134
+      },
+      {
+        "path": "internal/store/stream_archive_run_sources.go",
+        "sha256": "66290f141e3f6a1f881b5346bc85f4e85091330434fdf757dfb5af52e5cd1357",
+        "symbols": [
+          "memoryRecordStreamArchiveRunSourceLocked",
+          "streamArchiveRunSourceForReportLocked",
+          "streamArchiveRunSourceKey",
+          "streamArchiveRunSourceKeyFor",
+          "streamArtifactReportHasConflictingIdentity",
+          "streamArtifactReportTokenAllowed"
+        ],
+        "physical_lines": 91
       }
     ]
   },
@@ -5160,12 +5301,29 @@
       },
       {
         "path": "internal/store/stream_start_claim_mariadb.go",
-        "sha256": "f155ad76baef3d96605a5fa7f9e424ff31ce3e46b7390b21286cf9a2449817bf",
+        "sha256": "0152ab434cdcae28e1f8fdc6d19951550e13da96423e6c2b8ce215a3fced1ed8",
         "symbols": [
           "MariaDBStreamStore.ClaimStreamStart",
           "MariaDBStreamStore.TransitionClaimedStreamStart"
         ],
-        "physical_lines": 328
+        "physical_lines": 334
+      },
+      {
+        "path": "internal/store/stream_selected_start_claim_mariadb.go",
+        "sha256": "99eecb1dfcc4ded8c51e875078373c1fcb11a91ccdeee3b9d02bdce116b51435",
+        "symbols": [
+          "MariaDBStreamStore.claimSelectedStreamStart"
+        ],
+        "physical_lines": 219
+      },
+      {
+        "path": "internal/store/stream_selected_start_claim.go",
+        "sha256": "01bfade9a66540de3d965b6abc7dcdbaec6edd9af418982c4779932c475491f1",
+        "symbols": [
+          "ErrNodeExecutionBusy",
+          "validateSelectedStartClaim"
+        ],
+        "physical_lines": 31
       }
     ]
   },

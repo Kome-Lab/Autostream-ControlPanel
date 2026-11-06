@@ -16,7 +16,7 @@ type streamStartCallerServiceKey struct{}
 func (s *Server) selectedStartCandidates(ctx context.Context, stream store.Stream, assignments []store.RegisteredService) ([]store.RegisteredService, *store.StreamNodeSelections, error) {
 	selected := store.StreamNodeSelections{
 		EncoderServiceID: strings.TrimSpace(stream.SelectedEncoderID),
-		WorkerServiceID: strings.TrimSpace(stream.SelectedWorkerID),
+		WorkerServiceID:  strings.TrimSpace(stream.SelectedWorkerID),
 		DiscordServiceID: strings.TrimSpace(stream.SelectedDiscordID),
 	}
 	if !stream.NodeSelectionsConfigured && selected.EncoderServiceID == "" && selected.WorkerServiceID == "" && selected.DiscordServiceID == "" {
@@ -77,7 +77,7 @@ func selectedNodeCompatibilityIssues(candidates []store.RegisteredService) []ser
 			if !supported {
 				return []servicecall.ReadinessIssue{{
 					ServiceID: service.ServiceID, ServiceType: service.ServiceType,
-					Code: "discord_waiting_monitor_capability_unavailable",
+					Code:    "discord_waiting_monitor_capability_unavailable",
 					Message: "Update the Discord Bot to a version that supports shared Node selections.",
 				}}
 			}

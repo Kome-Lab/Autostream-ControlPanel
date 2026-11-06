@@ -34,16 +34,16 @@ type Stream struct {
 	YouTubeOutputID           string     `json:"youtube_output_id,omitempty"`
 	EncoderInputURL           string     `json:"encoder_input_url,omitempty"`
 	// NodeSelectionsConfigured distinguishes an explicit clear from legacy ownership.
-	NodeSelectionsConfigured bool `json:"-"`
-	SelectedEncoderID         string     `json:"selected_encoder_id"`
-	SelectedWorkerID          string     `json:"selected_worker_id"`
-	SelectedDiscordID         string     `json:"selected_discord_id"`
-	AssignedWorkerID          string     `json:"assigned_worker_id,omitempty"`
-	AssignedEncoderID         string     `json:"assigned_encoder_id,omitempty"`
-	CreatedAt                 time.Time  `json:"created_at"`
-	UpdatedAt                 time.Time  `json:"updated_at"`
-	SettingsRevision          string     `json:"settings_revision"`
-	DeletedAt                 *time.Time `json:"deleted_at,omitempty"`
+	NodeSelectionsConfigured bool       `json:"-"`
+	SelectedEncoderID        string     `json:"selected_encoder_id"`
+	SelectedWorkerID         string     `json:"selected_worker_id"`
+	SelectedDiscordID        string     `json:"selected_discord_id"`
+	AssignedWorkerID         string     `json:"assigned_worker_id,omitempty"`
+	AssignedEncoderID        string     `json:"assigned_encoder_id,omitempty"`
+	CreatedAt                time.Time  `json:"created_at"`
+	UpdatedAt                time.Time  `json:"updated_at"`
+	SettingsRevision         string     `json:"settings_revision"`
+	DeletedAt                *time.Time `json:"deleted_at,omitempty"`
 }
 
 type StreamSettings struct {

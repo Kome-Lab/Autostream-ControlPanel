@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-func TestMemorySelectedStartClaims(t *testing.T) { runSelectedStartClaimCases(t, false) }
+func TestMemorySelectedStartClaims(t *testing.T)  { runSelectedStartClaimCases(t, false) }
 func TestMariaDBSelectedStartClaims(t *testing.T) { runSelectedStartClaimCases(t, true) }
 
 func runSelectedStartClaimCases(t *testing.T, maria bool) {
@@ -249,7 +249,10 @@ func cleanupSelectedClaimServices(t *testing.T, streams clockClaimStore, service
 	if !ok {
 		return
 	}
-	for _, item := range []struct { query string; ids []string }{
+	for _, item := range []struct {
+		query string
+		ids   []string
+	}{
 		{"DELETE FROM services WHERE service_id=?", serviceIDs},
 		{"DELETE FROM service_tokens WHERE id=?", tokenIDs},
 	} {

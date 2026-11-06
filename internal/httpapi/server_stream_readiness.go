@@ -89,14 +89,14 @@ func (s *Server) startReadiness(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"stream_id":              stream.ID,
-		"ready":                  len(missing) == 0 && len(issues) == 0,
-		"missing_service_types":  missing,
-		"issues":                 issues,
-		"assigned_service_count": len(assignments),
-		"primary_service_count":  len(primaryStreamAssignments(assignments)),
+		"stream_id":               stream.ID,
+		"ready":                   len(missing) == 0 && len(issues) == 0,
+		"missing_service_types":   missing,
+		"issues":                  issues,
+		"assigned_service_count":  len(assignments),
+		"primary_service_count":   len(primaryStreamAssignments(assignments)),
 		"candidate_service_count": len(primaryAssignments),
-		"selected_services": candidates,
-		"assignments":            assignments,
+		"selected_services":       candidates,
+		"assignments":             assignments,
 	})
 }

@@ -97,7 +97,7 @@ func (s MariaDBStreamStore) claimSelectedStreamStart(ctx context.Context, reques
 	wanted := make(map[string]RegisteredService, 3)
 	for serviceType, observed := range expected {
 		service, exists := lockedServices[observed.ServiceID]
-		if !exists || service.ServiceType != serviceType || service.CurrentStreamID != observed.CurrentStreamID {
+		if !exists || service.ServiceType != serviceType {
 			return ClaimedStreamStart{}, ErrServiceAssignmentConflict
 		}
 		owner, _, consistencyErr := consistentMariaDBServiceAssignment(ctx, tx, service)
@@ -115,6 +115,9 @@ func (s MariaDBStreamStore) claimSelectedStreamStart(ctx context.Context, reques
 			if previous.protected() {
 				return ClaimedStreamStart{}, ErrNodeExecutionBusy
 			}
+		}
+		if service.CurrentStreamID != observed.CurrentStreamID {
+			return ClaimedStreamStart{}, ErrServiceAssignmentConflict
 		}
 		wanted[service.ServiceID] = service
 	}

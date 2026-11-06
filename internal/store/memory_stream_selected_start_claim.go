@@ -38,7 +38,7 @@ func (s *MemoryStreamStore) claimSelectedStreamStart(ctx context.Context, reques
 	wanted := make(map[string]RegisteredService, 3)
 	for serviceType, observed := range expected {
 		service, exists := services.services[observed.ServiceID]
-		if !exists || service.ServiceType != serviceType || service.CurrentStreamID != observed.CurrentStreamID {
+		if !exists || service.ServiceType != serviceType {
 			return ClaimedStreamStart{}, ErrServiceAssignmentConflict
 		}
 		owner, _, consistencyErr := services.consistentServiceAssignmentLocked(service)
@@ -53,6 +53,9 @@ func (s *MemoryStreamStore) claimSelectedStreamStart(ctx context.Context, reques
 			if memoryStreamAssignmentProtectionLocked(s, previous).protected() {
 				return ClaimedStreamStart{}, ErrNodeExecutionBusy
 			}
+		}
+		if service.CurrentStreamID != observed.CurrentStreamID {
+			return ClaimedStreamStart{}, ErrServiceAssignmentConflict
 		}
 		wanted[service.ServiceID] = service
 	}
