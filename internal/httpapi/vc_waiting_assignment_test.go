@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/example/autostream-control-panel/internal/servicecall"
 	"github.com/example/autostream-control-panel/internal/store"
@@ -25,21 +27,21 @@ func (s *vcProfileRaceStreamStore) UpdateStreamSettings(ctx context.Context, id 
 	return s.MemoryStreamStore.UpdateStreamSettings(ctx, id, settings)
 }
 
-// Exercise the operator create route and authenticated runtime projection. A
-// saved target alone cannot open a managed Gateway: its selected Bot must own
-// the waiting stream before any Discord event can arrive.
+// Exercise saved selections, authenticated monitoring authority, and the
+// separate execution claim obtained only when the selected Bot starts a frame.
 func TestVCWaitingCreateReservesSelectedBotBeforeStart(t *testing.T) {
 	auth, streams := store.NewMemoryAuthStore(), store.NewMemoryStreamStore()
 	profiles, secrets := store.NewMemoryProfileStore(), store.NewMemorySecretStore()
 	if err := auth.AddUser(store.User{Username: "operator"}, "correct horse battery", []string{"streams.create", "streams.update", "services.assign", "workers.assign"}); err != nil {
 		t.Fatal(err)
 	}
-	token, err := auth.CreateServiceToken(t.Context(), "discord_bot", []string{"service.register", "service.config.read", "service.secret.resolve", "streams.start"})
+	scopes := []string{"service.register", "service.heartbeat", "service.config.read", "service.secret.resolve", "streams.start"}
+	token, err := auth.CreateServiceToken(t.Context(), "discord_bot", scopes)
 	if err != nil {
 		t.Fatal(err)
 	}
 	registerServiceWithTokenForTest(t, auth, token, store.ServiceRegistration{ServiceID: "selected-bot", ServiceType: "discord_bot", ServiceName: "selected", PublicURL: "https://selected.example.com", Version: "test"})
-	unselectedToken, err := auth.CreateServiceToken(t.Context(), "discord_bot", []string{"service.register", "streams.start"})
+	unselectedToken, err := auth.CreateServiceToken(t.Context(), "discord_bot", scopes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,6 +57,45 @@ func TestVCWaitingCreateReservesSelectedBotBeforeStart(t *testing.T) {
 	dispatcher := &readinessBlockDispatcher{}
 	handler := NewServer(streams, WithAuthStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithSecretStore(secrets), WithServiceDispatcher(dispatcher))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
+	for serviceID, serviceToken := range map[string]store.ServiceToken{"selected-bot": token, "unselected-bot": unselectedToken} {
+		r := httptest.NewRequest(http.MethodPost, "/services/heartbeat", strings.NewReader(`{"service_id":"`+serviceID+`","status":"online","capabilities":{"discord_waiting_monitor_v1":true}}`))
+		r.Header.Set("Authorization", "Bearer "+serviceToken.RawToken)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		if w.Code != http.StatusAccepted {
+			t.Fatalf("Bot capability heartbeat status=%d body=%s", w.Code, w.Body.String())
+		}
+	}
+	readRuntime := func(serviceID, rawToken string) serviceRuntimeConfigResponse {
+		t.Helper()
+		r := httptest.NewRequest(http.MethodGet, "/services/runtime-config?service_id="+serviceID, nil)
+		r.Header.Set("Authorization", "Bearer "+rawToken)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		if w.Code != http.StatusOK {
+			t.Fatalf("runtime status=%d body=%s", w.Code, w.Body.String())
+		}
+		if strings.Contains(w.Body.String(), "synthetic-waiting-credential") {
+			t.Fatal("runtime projection exposed credential value")
+		}
+		var config serviceRuntimeConfigResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &config); err != nil {
+			t.Fatal(err)
+		}
+		return config
+	}
+	waitingBinding := func(config serviceRuntimeConfigResponse, streamID string) serviceRuntimeDiscordWaitingBinding {
+		t.Helper()
+		if config.DiscordWaitingMonitor != nil {
+			for _, binding := range config.DiscordWaitingMonitor.Bindings {
+				if binding.StreamID == streamID {
+					return binding
+				}
+			}
+		}
+		t.Fatal("saved frame is missing its waiting monitor binding")
+		return serviceRuntimeDiscordWaitingBinding{}
+	}
 	payload := ui188CreatePayload(t, handler, `{"name":"waiting VC","discord_config_id":"`+profile.ID+`","auto_start_trigger":"discord_voice_join","visual_settings":{"discord_target":{"mode":"manual","guild_id":"1001","voice_channel_id":"1002","text_channel_id":"1003"}}}`)
 	created := serveUserJSON(t, handler, http.MethodPost, "/streams", payload, cookie, csrf)
 	if created.Code != http.StatusCreated {
@@ -64,56 +105,89 @@ func TestVCWaitingCreateReservesSelectedBotBeforeStart(t *testing.T) {
 	if err := json.Unmarshal(created.Body.Bytes(), &stream); err != nil {
 		t.Fatal(err)
 	}
-	request := httptest.NewRequest(http.MethodGet, "/services/runtime-config?service_id=selected-bot", nil)
-	request.Header.Set("Authorization", "Bearer "+token.RawToken)
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK {
-		t.Fatalf("runtime status=%d", response.Code)
+	if stream.SelectedEncoderID == "" || stream.SelectedWorkerID == "" || stream.SelectedDiscordID != "selected-bot" || stream.AssignedEncoderID != "" || stream.AssignedWorkerID != "" {
+		t.Fatal("waiting save did not persist selections separately from execution")
 	}
-	var runtime serviceRuntimeConfigResponse
-	if err := json.Unmarshal(response.Body.Bytes(), &runtime); err != nil {
+	runtime := readRuntime("selected-bot", token.RawToken)
+	if len(runtime.Assignments) != 0 || runtime.Service.CurrentStreamID != "" || runtime.CurrentDiscordBindings == nil || len(runtime.CurrentDiscordBindings.Bindings) != 0 {
+		t.Fatal("saved waiting selections synthesized execution or current credential authority")
+	}
+	if runtime.DiscordWaitingMonitor == nil || runtime.DiscordWaitingMonitor.Version != 1 || runtime.DiscordWaitingMonitor.ExecutionActive || runtime.DiscordWaitingMonitor.AvailabilityCode != "" || len(runtime.DiscordWaitingMonitor.Bindings) != 1 {
+		t.Fatal("saved waiting stream has no available monitoring authority")
+	}
+	binding := waitingBinding(runtime, stream.ID)
+	selectionEpoch, err := time.Parse(time.RFC3339Nano, stream.SettingsRevision)
+	if err != nil || !binding.Ready || binding.ProfileID != profile.ID || binding.ProfileOwnerServiceID != "selected-bot" || !binding.SelectionEpoch.Equal(selectionEpoch) || binding.GuildID != "1001" || binding.VoiceChannelID != "1002" || binding.TargetRevision == 0 {
+		t.Fatal("waiting monitor does not bind the saved selection, credential profile and VC target")
+	}
+	for _, serviceID := range []string{stream.SelectedEncoderID, stream.SelectedWorkerID, "selected-bot", "unselected-bot"} {
+		service, err := auth.GetService(t.Context(), serviceID)
+		if err != nil || service.CurrentStreamID != "" {
+			t.Fatal("saving a waiting frame acquired a runtime owner")
+		}
+	}
+	beforeSharedBot, err := auth.GetService(t.Context(), "selected-bot")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if len(runtime.Assignments) != 1 || runtime.Assignments[0].StreamID != stream.ID || runtime.Assignments[0].AssignmentRole != "primary" || runtime.Assignments[0].AssignedAt.IsZero() {
-		t.Fatal("saved waiting stream has no explicit primary Bot authority before start")
-	}
-	if runtime.CurrentDiscordBindings == nil || len(runtime.CurrentDiscordBindings.Bindings) != 1 || !runtime.CurrentDiscordBindings.Bindings[0].Ready || runtime.CurrentDiscordBindings.Bindings[0].ProfileID != profile.ID || !runtime.CurrentDiscordBindings.Bindings[0].AssignmentEpoch.Equal(runtime.Assignments[0].AssignedAt) {
-		t.Fatal("selected primary is missing its current credential binding")
-	}
-	if len(runtime.StreamDiscordConfigs) != 1 || runtime.StreamDiscordConfigs[0].GuildID != "1001" || runtime.StreamDiscordConfigs[0].VoiceChannelID != "1002" {
-		t.Fatal("saved destination was confused with Bot authentication")
-	}
-	unselected, err := auth.GetService(t.Context(), "unselected-bot")
-	if err != nil || unselected.CurrentStreamID != "" {
-		t.Fatal("unselected Bot was assigned")
-	}
-	// Reusing the selected Bot must reject the whole creation, leaving the
-	// established owner and all other new reservations untouched.
+	// Share all three selected Nodes and use a distinct VC so both monitor
+	// bindings remain unambiguous. This save must not manufacture an owner.
 	var retryBody map[string]any
-	_ = json.Unmarshal([]byte(payload), &retryBody)
-	delete(retryBody, "encoder_service_id")
-	delete(retryBody, "worker_service_id")
-	retryPayload, _ := json.Marshal(retryBody)
-	conflict := serveUserJSON(t, handler, http.MethodPost, "/streams", ui188CreatePayload(t, handler, string(retryPayload)), cookie, csrf)
-	if conflict.Code != http.StatusConflict {
-		t.Fatalf("occupied Bot create status=%d body=%s", conflict.Code, conflict.Body.String())
+	if err := json.Unmarshal([]byte(payload), &retryBody); err != nil {
+		t.Fatal(err)
 	}
-	rows, _ := streams.ListStreams(t.Context())
-	if len(rows) != 1 {
-		t.Fatal("occupied Bot rejection persisted a partial stream")
+	retryBody["name"] = "second waiting VC"
+	retryBody["visual_settings"].(map[string]any)["discord_target"].(map[string]any)["voice_channel_id"] = "1004"
+	retryPayload, err := json.Marshal(retryBody)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if strings.Contains(response.Body.String(), "synthetic-waiting-credential") {
-		t.Fatal("runtime projection exposed credential value")
+	sharedResponse := serveUserJSON(t, handler, http.MethodPost, "/streams", string(retryPayload), cookie, csrf)
+	if sharedResponse.Code != http.StatusCreated {
+		t.Fatalf("shared waiting save status=%d body=%s", sharedResponse.Code, sharedResponse.Body.String())
 	}
-	// Saving the same selection must keep its ownership epoch stable.
+	var shared store.Stream
+	if err := json.Unmarshal(sharedResponse.Body.Bytes(), &shared); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := streams.ListStreams(t.Context())
+	if err != nil || len(rows) != 2 || shared.SelectedEncoderID != stream.SelectedEncoderID || shared.SelectedWorkerID != stream.SelectedWorkerID || shared.SelectedDiscordID != stream.SelectedDiscordID || shared.AssignedEncoderID != "" || shared.AssignedWorkerID != "" {
+		t.Fatal("shared waiting selections did not persist as an independent frame")
+	}
+	sharedAssignments, err := auth.ListStreamAssignments(t.Context(), shared.ID)
+	if err != nil || len(sharedAssignments) != 0 {
+		t.Fatal("shared waiting save acquired execution assignments")
+	}
+	afterSharedBot, err := auth.GetService(t.Context(), "selected-bot")
+	if err != nil || !reflect.DeepEqual(beforeSharedBot, afterSharedBot) {
+		t.Fatal("saving a second waiting frame changed the Bot runtime state")
+	}
+	sharedRuntime := readRuntime("selected-bot", token.RawToken)
+	if len(sharedRuntime.Assignments) != 0 || sharedRuntime.DiscordWaitingMonitor == nil || len(sharedRuntime.DiscordWaitingMonitor.Bindings) != 2 {
+		t.Fatal("shared waiting save displaced monitoring or manufactured execution authority")
+	}
+	if original := waitingBinding(sharedRuntime, stream.ID); !original.Ready || !original.SelectionEpoch.Equal(binding.SelectionEpoch) || original.ProfileID != binding.ProfileID || original.VoiceChannelID != binding.VoiceChannelID {
+		t.Fatal("saving the second frame changed the first frame's monitor binding")
+	}
+	if second := waitingBinding(sharedRuntime, shared.ID); !second.Ready || second.VoiceChannelID != "1004" {
+		t.Fatal("second waiting frame has no independent VC monitor binding")
+	}
 	noOp := serveUserJSON(t, handler, http.MethodPut, "/streams/"+stream.ID+"/settings", `{"name":"renamed","discord_config_id":"`+profile.ID+`","auto_start_trigger":"discord_voice_join"}`, cookie, csrf)
 	if noOp.Code != http.StatusOK {
 		t.Fatalf("same-selection save status=%d body=%s", noOp.Code, noOp.Body.String())
 	}
-	after, _ := auth.ListServiceAssignmentsForService(t.Context(), "selected-bot")
-	if len(after) != 1 || !after[0].AssignedAt.Equal(runtime.Assignments[0].AssignedAt) {
-		t.Fatal("same-selection save advanced the Bot assignment epoch")
+	updated, err := streams.GetStream(t.Context(), stream.ID)
+	if err != nil || updated.SelectedDiscordID != "selected-bot" || updated.SelectedEncoderID != stream.SelectedEncoderID || updated.SelectedWorkerID != stream.SelectedWorkerID {
+		t.Fatal("same-selection save changed the selected Nodes")
+	}
+	selectionEpoch, err = time.Parse(time.RFC3339Nano, updated.SettingsRevision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updatedRuntime := readRuntime("selected-bot", token.RawToken)
+	updatedBinding := waitingBinding(updatedRuntime, stream.ID)
+	if len(updatedRuntime.Assignments) != 0 || !updatedBinding.Ready || !updatedBinding.SelectionEpoch.Equal(selectionEpoch) {
+		t.Fatal("same-selection save changed execution ownership or lost its current monitor authority")
 	}
 	nextProfile, err := profiles.CreateProfile(t.Context(), store.ProfileDiscordConfig, "replacement auth", map[string]any{"service_id": "unselected-bot", "bot_token_secret_name": secret.Name, "bot_token_fingerprint": secret.Fingerprint})
 	if err != nil {
@@ -126,7 +200,7 @@ func TestVCWaitingCreateReservesSelectedBotBeforeStart(t *testing.T) {
 	editBody := `{"discord_config_id":"` + nextProfile.ID + `","auto_start_trigger":"discord_voice_join"}`
 	denied := serveUserJSON(t, handler, http.MethodPut, "/streams/"+stream.ID+"/settings", editBody, limitedCookie, limitedCSRF)
 	if denied.Code != http.StatusForbidden {
-		t.Fatalf("Bot assignment permission status=%d", denied.Code)
+		t.Fatalf("Bot selection permission status=%d", denied.Code)
 	}
 	other, err := streams.CreateStream(t.Context(), "legitimate other waiting stream")
 	if err != nil {
@@ -135,13 +209,17 @@ func TestVCWaitingCreateReservesSelectedBotBeforeStart(t *testing.T) {
 	if _, err := auth.AssignServiceToStream(t.Context(), "unselected-bot", other.ID, "fixture"); err != nil {
 		t.Fatal(err)
 	}
-	occupied := serveUserJSON(t, handler, http.MethodPut, "/streams/"+stream.ID+"/settings", editBody, cookie, csrf)
-	if occupied.Code != http.StatusConflict {
-		t.Fatalf("occupied replacement Bot status=%d", occupied.Code)
+	beforeOtherBot, err := auth.GetService(t.Context(), "unselected-bot")
+	if err != nil {
+		t.Fatal(err)
 	}
-	stillOther, _ := auth.GetService(t.Context(), "unselected-bot")
-	if stillOther.CurrentStreamID != other.ID {
-		t.Fatal("selection stole another legitimate waiting Bot")
+	occupied := serveUserJSON(t, handler, http.MethodPut, "/streams/"+stream.ID+"/settings", editBody, cookie, csrf)
+	if occupied.Code != http.StatusOK {
+		t.Fatalf("saving an occupied replacement selection status=%d body=%s", occupied.Code, occupied.Body.String())
+	}
+	stillOther, err := auth.GetService(t.Context(), "unselected-bot")
+	if err != nil || !reflect.DeepEqual(beforeOtherBot, stillOther) {
+		t.Fatal("saving a replacement selection changed another Bot runtime owner")
 	}
 	expectedOther := other.ID
 	if _, err := auth.UnassignServiceFromStreamGuarded(t.Context(), store.ServiceUnassignmentMutation{ServiceID: "unselected-bot", ActorUserID: "fixture", ExpectedCurrentStreamID: &expectedOther}); err != nil {
@@ -151,14 +229,16 @@ func TestVCWaitingCreateReservesSelectedBotBeforeStart(t *testing.T) {
 	if replaced.Code != http.StatusOK {
 		t.Fatalf("replacement save status=%d body=%s", replaced.Code, replaced.Body.String())
 	}
-	oldBot, _ := auth.GetService(t.Context(), "selected-bot")
-	newBot, _ := auth.GetService(t.Context(), "unselected-bot")
-	if oldBot.CurrentStreamID != "" || newBot.CurrentStreamID != stream.ID || newBot.AssignmentRole != "primary" {
-		t.Fatal("selection change did not release old Bot and assign the new Bot")
+	oldBot, err := auth.GetService(t.Context(), "selected-bot")
+	if err != nil {
+		t.Fatal(err)
 	}
-	// This boundary uses actual CP authentication, readiness, lifecycle and
-	// ownership-claim stores. External service dispatch is the controlled peer;
-	// the Bot's separate SDK fixture exercises its caller and /jobs/start.
+	newBot, err := auth.GetService(t.Context(), "unselected-bot")
+	if err != nil || oldBot.CurrentStreamID != "" || newBot.CurrentStreamID != "" {
+		t.Fatal("saving a replacement selection changed Bot execution ownership")
+	}
+	// CP authenticates the selected service, checks readiness, then atomically
+	// claims execution. The external dispatcher remains the controlled peer.
 	serviceStart := func(rawToken string) *httptest.ResponseRecorder {
 		r := httptest.NewRequest(http.MethodPost, "/services/streams/"+stream.ID+"/start", nil)
 		if rawToken != "" {
@@ -178,18 +258,36 @@ func TestVCWaitingCreateReservesSelectedBotBeforeStart(t *testing.T) {
 	if blocked := serviceStart(unselectedToken.RawToken); blocked.Code != http.StatusConflict || !strings.Contains(blocked.Body.String(), "stream_start_not_ready") {
 		t.Fatalf("readiness auto-start status=%d body=%s", blocked.Code, blocked.Body.String())
 	}
-	beforeStart, _ := streams.GetStream(t.Context(), stream.ID)
-	if beforeStart.Status != "created" || dispatcher.startCalls != 0 {
-		t.Fatal("readiness rejection claimed or dispatched the waiting stream")
+	beforeStart, err := streams.GetStream(t.Context(), stream.ID)
+	if err != nil || beforeStart.Status != "created" || beforeStart.SelectedDiscordID != "unselected-bot" || dispatcher.startCalls != 0 {
+		t.Fatal("readiness rejection changed or dispatched the waiting stream")
+	}
+	beforeStartAssignments, err := auth.ListStreamAssignments(t.Context(), stream.ID)
+	if err != nil || len(beforeStartAssignments) != 0 {
+		t.Fatal("readiness rejection claimed execution ownership")
 	}
 	dispatcher.issues = nil
 	started := serviceStart(unselectedToken.RawToken)
 	if started.Code != http.StatusOK {
-		t.Fatalf("primary auto-start status=%d body=%s", started.Code, started.Body.String())
+		t.Fatalf("selected auto-start status=%d body=%s", started.Code, started.Body.String())
 	}
-	startedStream, _ := streams.GetStream(t.Context(), stream.ID)
-	if startedStream.Status != "live" || dispatcher.startCalls != 1 || dispatcher.startRequest.DiscordGuildID != "1001" || dispatcher.startRequest.DiscordVoiceChannelID != "1002" {
+	startedStream, err := streams.GetStream(t.Context(), stream.ID)
+	if err != nil || startedStream.Status != "live" || dispatcher.startCalls != 1 || dispatcher.startRequest.DiscordGuildID != "1001" || dispatcher.startRequest.DiscordVoiceChannelID != "1002" {
 		t.Fatal("authorized CP start did not claim and dispatch the saved target")
+	}
+	startedAssignments, err := auth.ListStreamAssignments(t.Context(), stream.ID)
+	if err != nil || len(startedAssignments) != 3 || assignedServiceID(startedAssignments, "encoder_recorder") != stream.SelectedEncoderID || assignedServiceID(startedAssignments, "worker") != stream.SelectedWorkerID || assignedServiceID(startedAssignments, "discord_bot") != "unselected-bot" {
+		t.Fatal("actual start did not atomically claim all three selected Nodes")
+	}
+	for _, serviceID := range []string{stream.SelectedEncoderID, stream.SelectedWorkerID, "unselected-bot"} {
+		service, err := auth.GetService(t.Context(), serviceID)
+		if err != nil || service.CurrentStreamID != stream.ID || service.AssignmentRole != "primary" {
+			t.Fatal("actual start has no selected Node runtime ownership")
+		}
+	}
+	startedRuntime := readRuntime("unselected-bot", unselectedToken.RawToken)
+	if len(startedRuntime.Assignments) != 1 || startedRuntime.Assignments[0].StreamID != stream.ID || startedRuntime.Assignments[0].AssignmentRole != "primary" || startedRuntime.CurrentDiscordBindings == nil || len(startedRuntime.CurrentDiscordBindings.Bindings) != 1 || !startedRuntime.CurrentDiscordBindings.Bindings[0].Ready || startedRuntime.CurrentDiscordBindings.Bindings[0].ProfileID != nextProfile.ID || !startedRuntime.CurrentDiscordBindings.Bindings[0].AssignmentEpoch.Equal(startedRuntime.Assignments[0].AssignedAt) {
+		t.Fatal("actual start did not promote the selected Bot to current credential authority")
 	}
 	duplicate := serviceStart(unselectedToken.RawToken)
 	if duplicate.Code != http.StatusOK || !strings.Contains(duplicate.Body.String(), "already_active") || dispatcher.startCalls != 1 {
@@ -221,6 +319,14 @@ func TestVCWaitingSelectionOwnerRaceRollsBackBotAndSettings(t *testing.T) {
 	if _, err := auth.AssignServiceToStream(t.Context(), "previous-bot", stream.ID, "fixture"); err != nil {
 		t.Fatal(err)
 	}
+	previousBotID := "previous-bot"
+	beforeSettings, err := streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{
+		DiscordConfigID: previous.ID,
+		NodeSelections: &store.StreamNodeSelectionUpdate{DiscordServiceID: &previousBotID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	streams.beforeSettings = func() {
 		if _, err := profiles.UpdateProfile(t.Context(), store.ProfileDiscordConfig, next.ID, next.Name, map[string]any{"service_id": "changed-owner-bot"}); err != nil {
 			t.Fatal(err)
@@ -235,7 +341,7 @@ func TestVCWaitingSelectionOwnerRaceRollsBackBotAndSettings(t *testing.T) {
 	beforeBot, _ := auth.GetService(t.Context(), "previous-bot")
 	afterBot, _ := auth.GetService(t.Context(), "next-bot")
 	changedBot, _ := auth.GetService(t.Context(), "changed-owner-bot")
-	if current.Name != "original settings" || current.DiscordConfigID != previous.ID || beforeBot.CurrentStreamID != stream.ID || afterBot.CurrentStreamID != "" || changedBot.CurrentStreamID != "" {
+	if current.Name != "original settings" || current.DiscordConfigID != previous.ID || current.SelectedDiscordID != previousBotID || current.SettingsRevision != beforeSettings.SettingsRevision || beforeBot.CurrentStreamID != stream.ID || afterBot.CurrentStreamID != "" || changedBot.CurrentStreamID != "" {
 		t.Fatal("owner-race left new settings or a mismatched primary Bot")
 	}
 }

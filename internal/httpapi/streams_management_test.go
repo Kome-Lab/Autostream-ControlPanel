@@ -132,8 +132,55 @@ func TestStreamManagementCreateAtomicallyReservesRequiredPrimaryNodes(t *testing
 		t.Fatalf("create stream status = %d body = %s", res.Code, res.Body.String())
 	}
 	items, err := streams.ListStreams(t.Context())
-	if err != nil || len(items) != 1 || items[0].AssignedEncoderID == "" || items[0].AssignedWorkerID == "" {
-		t.Fatalf("rejected create persisted stream: streams=%#v err=%v", items, err)
+	if err != nil || len(items) != 1 || items[0].SelectedEncoderID != "encoder_recorder-01" || items[0].SelectedWorkerID != "worker-01" || items[0].AssignedEncoderID != "" || items[0].AssignedWorkerID != "" {
+		t.Fatalf("create did not persist saved Node selections: streams=%#v err=%v", items, err)
+	}
+	first := items[0]
+	assignments, err := auth.ListStreamAssignments(t.Context(), first.ID)
+	if err != nil || len(assignments) != 0 {
+		t.Fatal("saving the first frame acquired runtime assignments")
+	}
+	for _, serviceID := range []string{first.SelectedEncoderID, first.SelectedWorkerID} {
+		service, err := auth.GetService(t.Context(), serviceID)
+		if err != nil || service.CurrentStreamID != "" {
+			t.Fatal("saving the first frame changed a Node's runtime owner")
+		}
+		if _, err := auth.AssignServiceToStream(t.Context(), serviceID, first.ID, "runtime-fixture"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := streams.UpdateStreamStatus(t.Context(), first.ID, "live"); err != nil {
+		t.Fatal(err)
+	}
+	sharedReq := httptest.NewRequest(http.MethodPost, "/streams", strings.NewReader(`{"visual_settings":{},"name":"shared saved nodes","encoder_service_id":"encoder_recorder-01","worker_service_id":"worker-01"}`))
+	sharedReq.AddCookie(cookie)
+	sharedReq.Header.Set("X-CSRF-Token", csrf)
+	sharedRes := httptest.NewRecorder()
+	handler.ServeHTTP(sharedRes, sharedReq)
+	if sharedRes.Code != http.StatusCreated {
+		t.Fatalf("shared Node create status=%d body=%s", sharedRes.Code, sharedRes.Body.String())
+	}
+	var shared store.Stream
+	if err := json.Unmarshal(sharedRes.Body.Bytes(), &shared); err != nil {
+		t.Fatal(err)
+	}
+	sharedAssignments, err := auth.ListStreamAssignments(t.Context(), shared.ID)
+	if err != nil || len(sharedAssignments) != 0 || shared.ID == first.ID || shared.SelectedEncoderID != first.SelectedEncoderID || shared.SelectedWorkerID != first.SelectedWorkerID || shared.AssignedEncoderID != "" || shared.AssignedWorkerID != "" {
+		t.Fatal("second frame did not save the shared Nodes without claiming them")
+	}
+	for _, serviceID := range []string{first.SelectedEncoderID, first.SelectedWorkerID} {
+		service, err := auth.GetService(t.Context(), serviceID)
+		if err != nil || service.CurrentStreamID != first.ID {
+			t.Fatal("saving the second frame changed the active frame's runtime owner")
+		}
+	}
+	assignments, err = auth.ListStreamAssignments(t.Context(), first.ID)
+	if err != nil || len(assignments) != 2 || assignedServiceID(assignments, "encoder_recorder") != first.SelectedEncoderID || assignedServiceID(assignments, "worker") != first.SelectedWorkerID {
+		t.Fatal("saving the second frame changed the active frame's assignments")
+	}
+	items, err = streams.ListStreams(t.Context())
+	if err != nil || len(items) != 2 {
+		t.Fatal("shared Node creation did not persist exactly two frames")
 	}
 }
 

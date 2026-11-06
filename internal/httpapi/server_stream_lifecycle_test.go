@@ -22,11 +22,22 @@ func TestStreamLifecycleEndpoints(t *testing.T) {
 	}
 	streams := store.NewMemoryStreamStore()
 	profiles := store.NewMemoryProfileStore()
-	registerServiceInstance(t, auth, "discord_bot-01", "discord_bot")
+	botToken, err := auth.CreateServiceToken(t.Context(), "discord_bot", []string{"service.register", "service.heartbeat"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerServiceWithTokenForTest(t, auth, botToken, store.ServiceRegistration{ServiceID: "discord_bot-01", ServiceType: "discord_bot", ServiceName: "lifecycle Bot", PublicURL: "https://discord_bot-01.example.com", Version: "test"})
 	config := createDiscordConfigForTest(t, profiles, "lifecycle discord", "discord_bot-01", "guild-life", "voice-life", "")
 	dispatcher := &fakeServiceDispatcher{}
 	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithProfileStore(profiles), WithServiceDispatcher(dispatcher))
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
+	heartbeatReq := httptest.NewRequest(http.MethodPost, "/services/heartbeat", strings.NewReader(`{"service_id":"discord_bot-01","status":"online","capabilities":{"discord_waiting_monitor_v1":true}}`))
+	heartbeatReq.Header.Set("Authorization", "Bearer "+botToken.RawToken)
+	heartbeatRes := httptest.NewRecorder()
+	handler.ServeHTTP(heartbeatRes, heartbeatReq)
+	if heartbeatRes.Code != http.StatusAccepted {
+		t.Fatalf("Bot capability heartbeat status=%d body=%s", heartbeatRes.Code, heartbeatRes.Body.String())
+	}
 
 	createBody := bytes.NewBufferString(ui188CreatePayload(t, handler, `{"name":"morning stream","discord_config_id":"`+config.ID+`","visual_settings":{"expected_revision":0,"discord_target":{"mode":"manual","guild_id":"1001","text_channel_id":"1002","voice_channel_id":"1003"}}}`))
 	createReq := httptest.NewRequest(http.MethodPost, "/streams", createBody)
@@ -44,13 +55,21 @@ func TestStreamLifecycleEndpoints(t *testing.T) {
 	if created.Status != "created" || created.ID == "" {
 		t.Fatalf("bad created stream: %#v", created)
 	}
-	bot, err := auth.GetService(t.Context(), "discord_bot-01")
-	if err != nil || bot.CurrentStreamID != created.ID || bot.AssignmentRole != "primary" {
-		t.Fatal("create did not reserve the selected Bot as the primary owner")
+	if created.SelectedEncoderID == "" || created.SelectedWorkerID == "" || created.SelectedDiscordID != "discord_bot-01" || created.AssignedEncoderID != "" || created.AssignedWorkerID != "" {
+		t.Fatal("create did not save the selected Nodes independently of runtime ownership")
 	}
-	for _, serviceType := range requiredStartServiceTypes {
-		if serviceType != "discord_bot" {
-			registerAssignedServices(t, auth, created.ID, serviceType)
+	bot, err := auth.GetService(t.Context(), "discord_bot-01")
+	if err != nil || bot.CurrentStreamID != "" || bot.ReportedCapabilities["discord_waiting_monitor_v1"] != true {
+		t.Fatal("create claimed the Bot or its real capability heartbeat was lost")
+	}
+	assignments, err := auth.ListStreamAssignments(t.Context(), created.ID)
+	if err != nil || len(assignments) != 0 {
+		t.Fatal("create acquired execution assignments before starting")
+	}
+	for _, serviceID := range []string{created.SelectedEncoderID, created.SelectedWorkerID} {
+		service, err := auth.GetService(t.Context(), serviceID)
+		if err != nil || service.CurrentStreamID != "" {
+			t.Fatal("create claimed a selected Node before starting")
 		}
 	}
 
@@ -74,6 +93,16 @@ func TestStreamLifecycleEndpoints(t *testing.T) {
 	}
 	if dispatcher.startCalls != 1 {
 		t.Fatalf("expected start dispatch, got %s", formatSafeHTTPSensitiveDiagnostic(dispatcher))
+	}
+	assignments, err = auth.ListStreamAssignments(t.Context(), created.ID)
+	if err != nil || len(assignments) != 3 || assignedServiceID(assignments, "encoder_recorder") != created.SelectedEncoderID || assignedServiceID(assignments, "worker") != created.SelectedWorkerID || assignedServiceID(assignments, "discord_bot") != created.SelectedDiscordID {
+		t.Fatal("actual start did not atomically claim all three selected Nodes")
+	}
+	for _, serviceID := range []string{created.SelectedEncoderID, created.SelectedWorkerID, created.SelectedDiscordID} {
+		service, err := auth.GetService(t.Context(), serviceID)
+		if err != nil || service.CurrentStreamID != created.ID || service.AssignmentRole != "primary" {
+			t.Fatal("actual start did not establish selected Node execution ownership")
+		}
 	}
 
 	failReq := httptest.NewRequest(http.MethodPost, "/streams/"+created.ID+"/mark-failed", nil)
