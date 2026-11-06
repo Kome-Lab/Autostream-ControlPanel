@@ -12,8 +12,8 @@
       },
       "after": {
         "mode": "100644",
-        "blob": "77ee6ccdfc56d76882f10087143e6c953df75176",
-        "sha256": "ab1f5717ae0c1b9981035996edb5b0280a1457b02f3f5344603a0762edff525b"
+        "blob": "c268487adb9531f3e423078c4180a243b3926e61",
+        "sha256": "39fd6b1ea1c15345a521d92e32d8d7cb15f215286dba5e4ecc1423fd8dc7c28c"
       },
       "hunks": [
         {
@@ -81,6 +81,12 @@
           "offsetAfter": 45803,
           "before": "      - run: npm run test:stream-regressions\n      - run: npm run test:ui188-stream-operations\n      - run: npm run lint\n      - run: npm run build\n      - name: Test current UI components\n        run: npm run test:ui-regression:components\n      - name: Test current route and action parity\n",
           "after": "      - run: npm run test:stream-regressions\n      - run: npm run test:ui188-stream-operations\n      - run: npm run lint\n      - name: Build web with npm run build\n        run: node --no-warnings ../scripts/ci/build-web-preserving-sources.mjs\n      - name: Test current UI components\n        run: npm run test:ui-regression:components\n      - name: Test current route and action parity\n"
+        },
+        {
+          "offsetBefore": 41498,
+          "offsetAfter": 48287,
+          "before": "        if: always()\n        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n          name: release-ui-evidence-${{ github.sha }}\n          path: ${{ runner.temp }}/release-ui-evidence\n          if-no-files-found: warn\n          retention-days: 7\n",
+          "after": "        if: always()\n        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n          name: release-ui-evidence-${{ github.sha }}-${{ github.run_attempt }}\n          path: ${{ runner.temp }}/release-ui-evidence\n          if-no-files-found: warn\n          retention-days: 7\n"
         }
       ]
     },
