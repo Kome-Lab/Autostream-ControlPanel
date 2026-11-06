@@ -15,6 +15,7 @@ import { isStreamValue, isConfirmedStreamStopOutcome } from "@/features/streams/
 import { definitiveStreamCreateRejection, streamCreateErrorRegistry } from "@/features/streams/stream-create-errors";
 import { withBoundedActionRevalidation } from "@/lib/actions/bounded-revalidation";
 import { APIError } from "@/lib/api/client";
+import { streamNodeErrorRegistry } from "@/features/streams/stream-action-feedback";
 
 export type StreamActionStateSnapshot = Readonly<{
   kind: "ready" | "missing" | "unknown";
@@ -182,7 +183,7 @@ export function createStreamActionController(dependencies: StreamActionControlle
         return Object.freeze({ kind: "succeeded", value });
       } catch (error) {
         if (!current(scope, operation)) return blocked("cancelled");
-        const adapted = adaptAPIError(error, opened.intent.id === "STR-01" ? { registry: streamCreateErrorRegistry } : opened.intent.id === "STR-10" ? { registry: deleteErrorRegistry } : undefined);
+        const adapted = adaptAPIError(error, opened.intent.id === "STR-01" ? { registry: streamCreateErrorRegistry } : opened.intent.id === "STR-10" ? { registry: deleteErrorRegistry } : opened.intent.id === "STR-04" || opened.intent.id === "STR-08" ? { registry: streamNodeErrorRegistry } : undefined);
         const definiteRejection = definitiveStreamRejection(opened.intent, error);
         if (!definiteRejection) unresolved.add(scope);
         if (["network", "timeout", "unavailable", "protocol", "unknown"].includes(adapted.kind)) {
