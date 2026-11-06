@@ -58,6 +58,9 @@ func (s *MemoryStreamStore) UpdateStreamSettings(ctx context.Context, id string,
 			return Stream{}, ErrYouTubeRelayBindingClaimActive
 		}
 	}
+	if err := s.validateStreamNodeSelectionsLocked(stream, settings); err != nil {
+		return Stream{}, err
+	}
 	stream = applyMemoryStreamSettings(stream, settings)
 	s.streams[id] = stream
 	return stream, nil
@@ -84,6 +87,7 @@ func applyMemoryStreamSettings(stream Stream, settings StreamSettings) Stream {
 	stream.ArchiveFolderIDConfigured = stream.ArchiveDriveDestinationID != ""
 	stream.YouTubeOutputID = strings.TrimSpace(settings.YouTubeOutputID)
 	stream.EncoderInputURL = strings.TrimSpace(settings.EncoderInputURL)
+	applyStreamNodeSelections(&stream, mergeStreamNodeSelections(streamNodeSelections(stream), settings.NodeSelections))
 	previous, _ := time.Parse(time.RFC3339Nano, stream.SettingsRevision)
 	stream.UpdatedAt = nextStreamSettingsTime(previous, time.Now())
 	stream.SettingsRevision = StreamSettingsRevisionFromTime(stream.UpdatedAt)
