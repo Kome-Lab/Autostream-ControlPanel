@@ -138,3 +138,81 @@ func TestSharedNodeSelectionPreservesRunningFrame(t *testing.T) {
 		t.Fatalf("saving B dispatched lifecycle requests: start=%d stop=%d retry=%d", dispatcher.startCalls, dispatcher.stopCalls, dispatcher.retryCalls)
 	}
 }
+
+func TestSharedNodeSelectionExplicitClearDoesNotRestartPreviousAssignments(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "clear-operator"}, "synthetic-clear-passphrase", []string{
+		"streams.read", "streams.update", "streams.start", "services.assign", "workers.assign",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	streams := store.NewMemoryStreamStore()
+	stream, err := streams.CreateStream(t.Context(), "old inactive assignment")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range []struct{ id, kind string }{
+		{"clear-encoder", "encoder_recorder"}, {"clear-worker", "worker"}, {"clear-bot", "discord_bot"},
+	} {
+		registerStreamIsolationService(t, auth, item.id, item.kind, []string{"service.register", "service.heartbeat"})
+		if _, err := auth.AssignServiceToStream(t.Context(), item.id, stream.ID, "bootstrap"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := streams.UpdateStreamStatus(t.Context(), stream.ID, "failed"); err != nil {
+		t.Fatal(err)
+	}
+	dispatcher := &previewFakeDispatcher{}
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth),
+		WithServiceRegistryStore(auth), WithProfileStore(store.NewMemoryProfileStore()),
+		WithServiceDispatcher(dispatcher))
+	cookie, csrf := loginForTest(t, handler, "clear-operator", "synthetic-clear-passphrase")
+	beforeAssignments, _ := auth.ListStreamAssignments(t.Context(), stream.ID)
+	request := func(path, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		method := http.MethodPost
+		if strings.HasSuffix(path, "/settings") {
+			method = http.MethodPut
+		}
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req.AddCookie(cookie)
+		req.Header.Set("X-CSRF-Token", csrf)
+		res := httptest.NewRecorder()
+		handler.ServeHTTP(res, req)
+		return res
+	}
+	cleared := request("/streams/"+stream.ID+"/settings",
+		`{"encoder_service_id":"","worker_service_id":"","discord_config_id":""}`)
+	if cleared.Code != http.StatusOK {
+		t.Fatalf("clear preferences status=%d body=%s", cleared.Code, cleared.Body.String())
+	}
+	var saved map[string]any
+	if err := json.Unmarshal(cleared.Body.Bytes(), &saved); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"selected_encoder_id", "selected_worker_id", "selected_discord_id"} {
+		if value, present := saved[key]; !present || value != "" {
+			t.Fatalf("explicit clear was lost: field=%s value=%v present=%v", key, value, present)
+		}
+	}
+	readiness := request("/streams/"+stream.ID+"/start-readiness", "{}")
+	var ready struct {
+		Ready bool `json:"ready"`
+		Missing []string `json:"missing_service_types"`
+	}
+	if err := json.Unmarshal(readiness.Body.Bytes(), &ready); err != nil || readiness.Code != http.StatusOK ||
+		ready.Ready || len(ready.Missing) != 3 {
+		t.Fatalf("cleared frame reused old execution owners: status=%d body=%s err=%v", readiness.Code, readiness.Body.String(), err)
+	}
+	started := request("/streams/"+stream.ID+"/start", "{}")
+	if started.Code != http.StatusConflict || !strings.Contains(started.Body.String(), "missing_stream_assignments") {
+		t.Fatalf("cleared choices started old Nodes: status=%d body=%s", started.Code, started.Body.String())
+	}
+	afterAssignments, _ := auth.ListStreamAssignments(t.Context(), stream.ID)
+	if !reflect.DeepEqual(beforeAssignments, afterAssignments) || len(afterAssignments) != 3 {
+		t.Fatal("clearing a preference changed execution assignment rows")
+	}
+	if dispatcher.startCalls != 0 || dispatcher.stopCalls != 0 {
+		t.Fatal("cleared choices dispatched a lifecycle operation")
+	}
+}

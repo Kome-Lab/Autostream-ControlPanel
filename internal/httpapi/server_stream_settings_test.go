@@ -229,7 +229,7 @@ func TestStreamSettingsCanBeSavedAndReturned(t *testing.T) {
 	if err := json.NewDecoder(createRes.Body).Decode(&created); err != nil {
 		t.Fatal(err)
 	}
-	if created.DiscordConfigID != discordOne.ID || created.AutoStartTrigger != "discord_voice_join" || created.YouTubeOutputID != youtubeOutput.ID {
+	if created.DiscordConfigID != discordOne.ID || created.SelectedDiscordID != "settings-bot-one" || created.SelectedEncoderID == "" || created.SelectedWorkerID == "" || created.AssignedEncoderID != "" || created.AssignedWorkerID != "" || created.AutoStartTrigger != "discord_voice_join" || created.YouTubeOutputID != youtubeOutput.ID {
 		t.Fatalf("create did not persist stream settings: %#v", created)
 	}
 	visualReq := httptest.NewRequest(http.MethodPut, "/streams/"+created.ID+"/visual-settings", bytes.NewBufferString(`{"expected_revision":1,"discord_target":{"mode":"manual","guild_id":"2001","voice_channel_id":"2002","text_channel_id":"2003"}}`))
@@ -252,7 +252,7 @@ func TestStreamSettingsCanBeSavedAndReturned(t *testing.T) {
 	if err := json.NewDecoder(updateRes.Body).Decode(&updated); err != nil {
 		t.Fatal(err)
 	}
-	if updated.DiscordConfigID != discordTwo.ID || updated.AutoStartTrigger != "discord_voice_join" || updated.ArchiveProfileID != archiveProfile.ID || updated.EncoderInputURL == "" || updated.YouTubeOutputID != "" {
+	if updated.DiscordConfigID != discordTwo.ID || updated.SelectedDiscordID != "settings-bot-two" || updated.SelectedEncoderID != created.SelectedEncoderID || updated.SelectedWorkerID != created.SelectedWorkerID || updated.AssignedEncoderID != "" || updated.AssignedWorkerID != "" || updated.AutoStartTrigger != "discord_voice_join" || updated.ArchiveProfileID != archiveProfile.ID || updated.EncoderInputURL == "" || updated.YouTubeOutputID != "" {
 		t.Fatalf("unexpected updated stream settings: %#v", updated)
 	}
 	getReq := httptest.NewRequest(http.MethodGet, "/streams/"+created.ID, nil)
@@ -266,8 +266,18 @@ func TestStreamSettingsCanBeSavedAndReturned(t *testing.T) {
 	if err := json.Unmarshal(getRes.Body.Bytes(), &returned); err != nil {
 		t.Fatal(err)
 	}
-	if returned.ID != created.ID || returned.Name != "configured stream 2001" || returned.DiscordConfigID != discordTwo.ID || returned.AutoStartTrigger != "discord_voice_join" || returned.ArchiveProfileID != archiveProfile.ID {
+	if returned.ID != created.ID || returned.Name != "configured stream 2001" || returned.DiscordConfigID != discordTwo.ID || returned.SelectedDiscordID != "settings-bot-two" || returned.SelectedEncoderID != created.SelectedEncoderID || returned.SelectedWorkerID != created.SelectedWorkerID || returned.AssignedEncoderID != "" || returned.AssignedWorkerID != "" || returned.AutoStartTrigger != "discord_voice_join" || returned.ArchiveProfileID != archiveProfile.ID {
 		t.Fatalf("get stream did not return the saved settings: %#v", returned)
+	}
+	assignments, err := auth.ListStreamAssignments(t.Context(), created.ID)
+	if err != nil || len(assignments) != 0 {
+		t.Fatal("saving settings materialized runtime assignments")
+	}
+	for _, serviceID := range []string{created.SelectedEncoderID, created.SelectedWorkerID, "settings-bot-one", "settings-bot-two"} {
+		service, err := auth.GetService(t.Context(), serviceID)
+		if err != nil || service.CurrentStreamID != "" {
+			t.Fatal("saving settings changed a selected Node's runtime owner")
+		}
 	}
 	var streamFields map[string]json.RawMessage
 	if err := json.Unmarshal(getRes.Body.Bytes(), &streamFields); err != nil {
@@ -510,34 +520,39 @@ func TestUpdateStreamSettingsPreservesOmittedLegacyArchiveFields(t *testing.T) {
 	}
 }
 
-func TestUpdateStreamSettingsRollsBackExplicitAssignmentClearWhenLaterAssignmentFails(t *testing.T) {
+func TestUpdateStreamSettingsRejectsInvalidSelectionWithoutSavingOtherChanges(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
 	if err := auth.AddUser(store.User{Username: "operator"}, "correct horse battery", []string{"streams.update", "services.assign", "workers.assign"}); err != nil {
 		t.Fatal(err)
 	}
 	streams := store.NewMemoryStreamStore()
-	stream, err := streams.CreateStream(t.Context(), "before assignment rollback")
+	stream, err := streams.CreateStream(t.Context(), "before selection rollback")
 	if err != nil {
 		t.Fatal(err)
 	}
 	registerServiceInstance(t, auth, "encoder-old", "encoder_recorder")
-	registerServiceInstance(t, auth, "worker-fail", "worker")
+	// A registered service of the wrong type must fail validation after an
+	// explicit clear has been decoded, without partially saving that clear.
+	registerServiceInstance(t, auth, "worker-wrong-type", "encoder_recorder")
 	if _, err := auth.AssignServiceToStreamWithRole(t.Context(), "encoder-old", stream.ID, "bootstrap", "primary"); err != nil {
 		t.Fatal(err)
 	}
-	handler := NewServer(
-		streams,
-		WithAuthStore(auth),
-		WithAuditStore(auth),
-		WithServiceRegistryStore(failOnStreamAssignmentRegistry{ServiceRegistryStore: auth, failServiceID: "worker-fail"}),
-	)
+	registry := &streamIsolationServiceRegistry{ServiceRegistryStore: auth}
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(registry))
+	encoderID := "encoder-old"
+	stream, err = streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{
+		NodeSelections: &store.StreamNodeSelectionUpdate{EncoderServiceID: &encoderID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
-	req := httptest.NewRequest(http.MethodPut, "/streams/"+stream.ID+"/settings", bytes.NewBufferString(`{"name":"must not persist","encoder_service_id":"","worker_service_id":"worker-fail"}`))
+	req := httptest.NewRequest(http.MethodPut, "/streams/"+stream.ID+"/settings", bytes.NewBufferString(`{"name":"must not persist","encoder_service_id":"","worker_service_id":"worker-wrong-type","expected_settings_revision":"`+stream.SettingsRevision+`"}`))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
 	handler.ServeHTTP(res, req)
-	if res.Code != http.StatusInternalServerError || !strings.Contains(res.Body.String(), "assign_service_failed") {
+	if res.Code != http.StatusBadRequest || !strings.Contains(res.Body.String(), "worker_service_type_invalid") {
 		t.Fatalf("update status = %d body = %s", res.Code, res.Body.String())
 	}
 
@@ -545,19 +560,19 @@ func TestUpdateStreamSettingsRollsBackExplicitAssignmentClearWhenLaterAssignment
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.Name != "before assignment rollback" {
-		t.Fatalf("settings persisted despite failed assignment: %#v", updated)
+	if updated.Name != "before selection rollback" || updated.SelectedEncoderID != encoderID || updated.SelectedWorkerID != "" || updated.SettingsRevision != stream.SettingsRevision {
+		t.Fatalf("settings or Node clear persisted despite invalid selection: %#v", updated)
 	}
 	assignments, err := auth.ListStreamAssignments(t.Context(), stream.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(assignments) != 1 || assignments[0].ServiceID != "encoder-old" || assignments[0].AssignmentRole != "primary" {
-		t.Fatalf("stream assignments did not converge after failure: %s", formatSafeHTTPSensitiveDiagnostic(assignments))
+		t.Fatalf("runtime assignment changed during rejected settings save: %s", formatSafeHTTPSensitiveDiagnostic(assignments))
 	}
 	for serviceID, expectedStreamID := range map[string]string{
-		"encoder-old": stream.ID,
-		"worker-fail": "",
+		"encoder-old":       stream.ID,
+		"worker-wrong-type": "",
 	} {
 		service, err := auth.GetService(t.Context(), serviceID)
 		if err != nil {
@@ -567,15 +582,16 @@ func TestUpdateStreamSettingsRollsBackExplicitAssignmentClearWhenLaterAssignment
 			t.Fatalf("%s current stream = %q, want %q", serviceID, service.CurrentStreamID, expectedStreamID)
 		}
 	}
+	assertNoStreamIsolationAssignmentWrites(t, registry)
 }
 
-func TestUpdateStreamSettingsExplicitEmptyServiceIDClearsOnlyRequestedAssignment(t *testing.T) {
+func TestUpdateStreamSettingsExplicitEmptyServiceIDClearsOnlyRequestedSelection(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
 	if err := auth.AddUser(store.User{Username: "operator"}, "correct horse battery", []string{"streams.update", "services.assign", "workers.assign"}); err != nil {
 		t.Fatal(err)
 	}
 	streams := store.NewMemoryStreamStore()
-	stream, err := streams.CreateStream(t.Context(), "before explicit assignment clear")
+	stream, err := streams.CreateStream(t.Context(), "before explicit selection clear")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -587,9 +603,17 @@ func TestUpdateStreamSettingsExplicitEmptyServiceIDClearsOnlyRequestedAssignment
 	if _, err := auth.AssignServiceToStreamWithRole(t.Context(), "worker-preserve", stream.ID, "bootstrap", "primary"); err != nil {
 		t.Fatal(err)
 	}
-	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth))
+	registry := &streamIsolationServiceRegistry{ServiceRegistryStore: auth}
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(registry))
+	encoderID, workerID := "encoder-clear", "worker-preserve"
+	stream, err = streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{
+		NodeSelections: &store.StreamNodeSelectionUpdate{EncoderServiceID: &encoderID, WorkerServiceID: &workerID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
-	req := httptest.NewRequest(http.MethodPut, "/streams/"+stream.ID+"/settings", bytes.NewBufferString(`{"name":"after explicit assignment clear","encoder_service_id":""}`))
+	req := httptest.NewRequest(http.MethodPut, "/streams/"+stream.ID+"/settings", bytes.NewBufferString(`{"name":"after explicit selection clear","encoder_service_id":""}`))
 	req.AddCookie(cookie)
 	req.Header.Set("X-CSRF-Token", csrf)
 	res := httptest.NewRecorder()
@@ -601,28 +625,33 @@ func TestUpdateStreamSettingsExplicitEmptyServiceIDClearsOnlyRequestedAssignment
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.Name != "after explicit assignment clear" {
-		t.Fatalf("updated name = %q", updated.Name)
+	if updated.Name != "after explicit selection clear" || updated.SelectedEncoderID != "" || updated.SelectedWorkerID != workerID {
+		t.Fatalf("explicit clear changed unexpected saved selections: %#v", updated)
+	}
+	var response map[string]json.RawMessage
+	if err := json.Unmarshal(res.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if string(response["selected_encoder_id"]) != `""` {
+		t.Fatal("cleared selection must remain present as an empty string in the response")
 	}
 	assignments, err := auth.ListStreamAssignments(t.Context(), stream.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(assignments) != 1 || assignments[0].ServiceID != "worker-preserve" || assignments[0].AssignmentRole != "primary" {
-		t.Fatalf("explicit encoder clear changed unexpected assignments: %s", formatSafeHTTPSensitiveDiagnostic(assignments))
+	if len(assignments) != 2 || assignedServiceID(assignments, "encoder_recorder") != encoderID || assignedServiceID(assignments, "worker") != workerID {
+		t.Fatalf("clearing a saved selection changed runtime ownership: %s", formatSafeHTTPSensitiveDiagnostic(assignments))
 	}
-	for serviceID, expectedStreamID := range map[string]string{
-		"encoder-clear":   "",
-		"worker-preserve": stream.ID,
-	} {
+	for _, serviceID := range []string{encoderID, workerID} {
 		service, err := auth.GetService(t.Context(), serviceID)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if service.CurrentStreamID != expectedStreamID {
-			t.Fatalf("%s current stream = %q, want %q", serviceID, service.CurrentStreamID, expectedStreamID)
+		if service.CurrentStreamID != stream.ID {
+			t.Fatalf("%s current stream = %q, want %q", serviceID, service.CurrentStreamID, stream.ID)
 		}
 	}
+	assertNoStreamIsolationAssignmentWrites(t, registry)
 }
 
 func TestCreateStreamRejectsLegacyRetentionBeforeAnyPersistence(t *testing.T) {

@@ -47,8 +47,11 @@ func (s *MemoryStreamStore) claimSelectedStreamStart(ctx context.Context, reques
 		}
 		if owner != "" && owner != stream.ID {
 			previous, exists := s.streams[owner]
-			if !exists || previous.DeletedAt != nil || memoryStreamAssignmentProtectionLocked(s, previous).protected() {
+			if !exists || previous.DeletedAt != nil {
 				return ClaimedStreamStart{}, ErrServiceAssignmentConflict
+			}
+			if memoryStreamAssignmentProtectionLocked(s, previous).protected() {
+				return ClaimedStreamStart{}, ErrNodeExecutionBusy
 			}
 		}
 		wanted[service.ServiceID] = service

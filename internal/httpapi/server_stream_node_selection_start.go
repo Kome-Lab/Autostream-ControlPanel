@@ -8,6 +8,9 @@ import (
 	"github.com/example/autostream-control-panel/internal/store"
 )
 
+// Only the service-authenticated start route supplies this identity.
+type streamStartCallerServiceKey struct{}
+
 // Configured selections are preflight candidates, never runtime assignments.
 // ClaimStreamStart revalidates them and obtains all three owners atomically.
 func (s *Server) selectedStartCandidates(ctx context.Context, stream store.Stream, assignments []store.RegisteredService) ([]store.RegisteredService, *store.StreamNodeSelections, error) {
@@ -65,4 +68,20 @@ func (s *Server) selectedNodeReadinessIssues(ctx context.Context, streamID strin
 		}
 	}
 	return issues, nil
+}
+
+func selectedNodeCompatibilityIssues(candidates []store.RegisteredService) []servicecall.ReadinessIssue {
+	for _, service := range candidates {
+		if service.ServiceType == "discord_bot" {
+			supported, _ := service.ReportedCapabilities["discord_waiting_monitor_v1"].(bool)
+			if !supported {
+				return []servicecall.ReadinessIssue{{
+					ServiceID: service.ServiceID, ServiceType: service.ServiceType,
+					Code: "discord_waiting_monitor_capability_unavailable",
+					Message: "Update the Discord Bot to a version that supports shared Node selections.",
+				}}
+			}
+		}
+	}
+	return nil
 }

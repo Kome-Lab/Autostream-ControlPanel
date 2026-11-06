@@ -109,8 +109,11 @@ func (s MariaDBStreamStore) claimSelectedStreamStart(ctx context.Context, reques
 				return ClaimedStreamStart{}, ErrServiceAssignmentConflict
 			}
 			previous, stateErr := mariaDBStreamAssignmentProtectionAfterLocks(ctx, tx, owner)
-			if stateErr != nil || previous.DeletedAt != nil || previous.protected() {
+			if stateErr != nil || previous.DeletedAt != nil {
 				return ClaimedStreamStart{}, ErrServiceAssignmentConflict
+			}
+			if previous.protected() {
+				return ClaimedStreamStart{}, ErrNodeExecutionBusy
 			}
 		}
 		wanted[service.ServiceID] = service

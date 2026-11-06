@@ -45,6 +45,7 @@ func (s *Server) startReadiness(w http.ResponseWriter, r *http.Request) {
 	missing := missingServiceTypes(primaryAssignments, requiredStartServiceTypes)
 	issues := []servicecall.ReadinessIssue{}
 	if selectedNodes != nil {
+		issues = append(issues, selectedNodeCompatibilityIssues(primaryAssignments)...)
 		availabilityIssues, availabilityErr := s.selectedNodeReadinessIssues(r.Context(), stream.ID, primaryAssignments)
 		if availabilityErr != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "node_availability_check_failed"})

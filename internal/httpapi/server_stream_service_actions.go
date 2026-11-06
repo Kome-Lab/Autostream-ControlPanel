@@ -33,6 +33,9 @@ func (s *Server) serviceStartStream(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "list_stream_assignments_failed"})
 		return
 	}
+	if assigned && stream.NodeSelectionsConfigured && strings.TrimSpace(stream.SelectedDiscordID) != service.ServiceID {
+		assigned = false
+	}
 	assignBeforeStart := false
 	if !assigned {
 		configuredService, configured, err := s.discordServiceTokenConfiguredForStream(r.Context(), token, stream)
@@ -72,6 +75,7 @@ func (s *Server) serviceStartStream(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Body = http.NoBody
 	r = r.WithContext(context.WithValue(r.Context(), currentUserKey{}, serviceCurrentUser(service)))
+	r = r.WithContext(context.WithValue(r.Context(), streamStartCallerServiceKey{}, service.ServiceID))
 	s.startStreamWithMaterialization(w, r, materialization)
 }
 

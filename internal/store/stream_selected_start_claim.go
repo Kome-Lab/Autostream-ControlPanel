@@ -1,8 +1,13 @@
 package store
 
 import (
+	"fmt"
 	"strings"
 )
+
+// Capacity conflicts remain assignment conflicts for existing callers, with
+// a distinct code so VC presence can retry after the current run releases it.
+var ErrNodeExecutionBusy = fmt.Errorf("node execution busy: %w", ErrServiceAssignmentConflict)
 
 func validateSelectedStartClaim(request StreamStartClaimRequest, stream Stream) (map[string]RegisteredService, error) {
 	if request.ExpectedNodeSelections == nil || streamNodeSelections(stream) != *request.ExpectedNodeSelections {

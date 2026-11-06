@@ -39,6 +39,13 @@ func (s *Server) startStreamWithMaterialization(w http.ResponseWriter, r *http.R
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "get_stream_failed"})
 		return
 	}
+	// Recheck the caller after acquiring this frame's lifecycle lock. A saved
+	// Bot change can leave an inactive execution row for the previous Bot.
+	if caller, ok := r.Context().Value(streamStartCallerServiceKey{}).(string); ok &&
+		stream.NodeSelectionsConfigured && strings.TrimSpace(stream.SelectedDiscordID) != caller {
+		writeJSON(w, http.StatusForbidden, map[string]string{"code": "service_not_selected_for_stream"})
+		return
+	}
 	if !isManuallyStartableStreamStatus(stream.Status) {
 		current := currentFromContext(r.Context())
 		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.start", ResourceType: "stream", ResourceID: stream.ID, Result: "failure", Metadata: map[string]any{"reason": "stream_status_not_startable", "current_status": stream.Status}})
@@ -155,11 +162,15 @@ func (s *Server) startStreamWithMaterialization(w http.ResponseWriter, r *http.R
 		return
 	}
 	if selectedNodes != nil {
+		if issues := selectedNodeCompatibilityIssues(primaryAssignments); len(issues) > 0 {
+			writeJSON(w, http.StatusConflict, map[string]any{"code": "discord_waiting_monitor_capability_unavailable", "issues": issues})
+			return
+		}
 		if issues, availabilityErr := s.selectedNodeReadinessIssues(r.Context(), stream.ID, primaryAssignments); availabilityErr != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "node_availability_check_failed"})
 			return
 		} else if len(issues) > 0 {
-			writeJSON(w, http.StatusConflict, map[string]any{"code": "stream_start_not_ready", "issues": issues})
+			writeJSON(w, http.StatusConflict, map[string]any{"code": "node_execution_busy", "issues": issues})
 			return
 		}
 	}
@@ -270,7 +281,10 @@ func (s *Server) startStreamWithMaterialization(w http.ResponseWriter, r *http.R
 		current := currentFromContext(r.Context())
 		code := "stream_start_claim_failed"
 		status := http.StatusInternalServerError
-		if errors.Is(err, store.ErrServiceAssignmentConflict) || errors.Is(err, store.ErrNotFound) {
+		if errors.Is(err, store.ErrNodeExecutionBusy) {
+			code = "node_execution_busy"
+			status = http.StatusConflict
+		} else if errors.Is(err, store.ErrServiceAssignmentConflict) || errors.Is(err, store.ErrNotFound) {
 			code = "service_assignment_conflict"
 			status = http.StatusConflict
 		} else if errors.Is(err, store.ErrServiceAssignmentGuardUnavailable) {

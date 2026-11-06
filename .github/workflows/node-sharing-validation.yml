@@ -46,9 +46,10 @@ jobs:
           set -euo pipefail
           mapfile -t files < <(git diff --name-only f7a086b993cfc242a31a21c0a975eff0e3939de8 -- '*.go')
           if (( ${#files[@]} > 0 )); then
-            diff="$(gofmt -d "${files[@]}")"
-            if [[ -n "$diff" ]]; then
-              printf '%s\n' "$diff"
+            fmt_status=0
+            diff="$(gofmt -d "${files[@]}")" || fmt_status=$?
+            printf '%s\n' "$diff"
+            if [[ -n "$diff" || "$fmt_status" -ne 0 ]]; then
               exit 1
             fi
           fi
@@ -58,15 +59,21 @@ jobs:
         run: |
           set -euo pipefail
           go test -race -p 1 ./internal/store \
-            -run '^Test(Memory|MariaDB)(SharedNodeSelections|SelectedStartClaims|ArchiveRunSource|DiscordWaiting)' \
+            -run '^Test((Memory|MariaDB)(SharedNodeSelections|SelectedStartClaims|ArchiveRunSource|ExplicitNodeSelection)|DiscordWaitingCredential)' \
             -count=1 -json | tee "${RUNNER_TEMP}/node-sharing-store.json"
+      - name: Run real MariaDB selection migration regressions
+        if: success() || failure()
+        shell: bash
+        run: |
+          set -euo pipefail
+          go test -p 1 ./internal/database -run '^TestMariaDBNodeSelection' -count=1 -json | tee "${RUNNER_TEMP}/node-sharing-migrations.json"
       - name: Run HTTP save and refresh regression
         if: success() || failure()
         shell: bash
         run: |
           set -euo pipefail
           go test -race -p 1 ./internal/httpapi \
-            -run '^Test(SharedNodeSelection|DiscordWaitingMonitor)' \
+            -run '^Test(SharedNodeSelection|DiscordWaitingMonitor|NodeSelectionServiceAuthority|CreateStreamSavesSharedDiscord|CreateStreamPreservesActive|CreateStreamParallel|UpdateStreamSettingsRejectsInvalidSelection|UpdateStreamSettingsExplicitEmpty|UI188CreateMandatoryRolesPermissionAndAtomicNodeSelections)' \
             -count=1 -json | tee "${RUNNER_TEMP}/node-sharing-http.json"
       - name: Build Linux Control Panel
         if: success() || failure()
