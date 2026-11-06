@@ -126,6 +126,8 @@ jobs:
     needs: [shared-node-regressions, shared-node-ui]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
     permissions:
       contents: write
     steps:
