@@ -119,6 +119,45 @@
       ]
     },
     {
+      "path": ".github/workflows/ui-regression.yml",
+      "before": {
+        "mode": "100644",
+        "blob": "cf57956126427703debf904d70f0428d1b71ac69",
+        "sha256": "ed6382c1772ec5f3358c5528ca6f1b1bc40f31ba6255766ffca6ce4084f13b5e"
+      },
+      "after": {
+        "mode": "100644",
+        "blob": "cf5af7fc3cb8bb09606e319e3cfeb2ac63ca7f86",
+        "sha256": "2bf0561e3b20cfb4e46fdc649563440cc76c8bf7d0504b3c391f7b7fcd5e97d0"
+      },
+      "hunks": [
+        {
+          "offsetBefore": 121,
+          "offsetAfter": 121,
+          "before": "    timeout-minutes: 20\r\n    outputs:\r\n      matrix: ${{ steps.matrix.outputs.matrix }}\r\n    steps:\r\n      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\r\n        with:\r\n",
+          "after": "    timeout-minutes: 20\r\n    outputs:\r\n      matrix: ${{ steps.matrix.outputs.matrix }}\r\n      artifact_id: ${{ steps.export-artifact.outputs.artifact-id }}\r\n    steps:\r\n      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\r\n        with:\r\n"
+        },
+        {
+          "offsetBefore": 767,
+          "offsetAfter": 836,
+          "before": "      - id: matrix\r\n        run: node scripts/ci/ui-regression/matrix.mjs\r\n      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\r\n        with:\r\n          name: ui-regression-export-${{ github.sha }}-${{ github.run_attempt }}\r\n          path: web/out/\r\n",
+          "after": "      - id: matrix\r\n        run: node scripts/ci/ui-regression/matrix.mjs\r\n      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\r\n        id: export-artifact\r\n        with:\r\n          name: ui-regression-export-${{ github.sha }}-${{ github.run_attempt }}\r\n          path: web/out/\r\n"
+        },
+        {
+          "offsetBefore": 1241,
+          "offsetAfter": 1339,
+          "before": "      max-parallel: 4\r\n      matrix: ${{ fromJSON(needs.export.outputs.matrix) }}\r\n    steps:\r\n      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\r\n        with:\r\n          persist-credentials: false\r\n",
+          "after": "      max-parallel: 4\r\n      matrix: ${{ fromJSON(needs.export.outputs.matrix) }}\r\n    steps:\r\n      - name: Require the producing export artifact ID\r\n        env:\r\n          UI_EXPORT_ARTIFACT_ID: ${{ needs.export.outputs.artifact_id }}\r\n        run: '[[ \"$UI_EXPORT_ARTIFACT_ID\" =~ ^[1-9][0-9]*$ ]]'\r\n      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\r\n        with:\r\n          persist-credentials: false\r\n"
+        },
+        {
+          "offsetBefore": 1955,
+          "offsetAfter": 2261,
+          "before": "          fc-list -q ':lang=ja'\r\n      - uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0\r\n        with:\r\n          name: ui-regression-export-${{ github.sha }}-${{ github.run_attempt }}\r\n          path: web/out/\r\n      - name: Observe current production UI and enforce exact shard inventory\r\n        working-directory: web\r\n",
+          "after": "          fc-list -q ':lang=ja'\r\n      - uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0\r\n        with:\r\n          artifact-ids: ${{ needs.export.outputs.artifact_id }}\r\n          path: web/out/\r\n      - name: Observe current production UI and enforce exact shard inventory\r\n        working-directory: web\r\n"
+        }
+      ]
+    },
+    {
       "path": ".github/workflows/ui188-integration.yml",
       "before": {
         "mode": "100644",

@@ -3,13 +3,14 @@
 export const pollingCurrentBase = "65a601fc9d4f15c93083e9be4ab9e71586fdba69";
 export const pollingCurrentTree = "2624414bc4e1cb4bd304faccf82e5d22e3201dd2";
 export const pollingCurrentFixturePath = "web/tests/fixtures/ui-regression/polling-current-source-delta.json";
-export const pollingCurrentFixtureSHA256 = "b0a7da11227cdbfd80ee54dc586b2541d56c9223975f7714ed8588100ec9686d";
+export const pollingCurrentFixtureSHA256 = "64ff51db5b293555c75315b0f0de3f0e57dcb0629fd3ca67baf7e22cd3c39f4a";
 export const pollingLegacyFixturePath = "web/tests/fixtures/ui-regression/polling-legacy-parity.json";
 export const pollingLegacyFixtureSHA256 = "b2df0a26ef1f77a08a0ddbfe8762b7e77a583c21ba8ed03d22373e4ebce764a8";
 export const pollingCurrentPaths = Object.freeze([
   ".github/workflows/ci.yml",
   ".github/workflows/ci017-auth-expiry-diagnostic.yml",
   ".github/workflows/node-sharing-validation.yml",
+  ".github/workflows/ui-regression.yml",
   ".github/workflows/ui188-integration.yml",
   "go.mod",
   "go.sum",
