@@ -34,16 +34,33 @@ func TestCreateStreamAtomicallyReservesRequiredPrimaryNodes(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(items) != 1 {
-		t.Fatalf("rejected legacy create persisted streams: %#v", items)
+		t.Fatalf("create did not persist exactly one stream: %#v", items)
+	}
+	var created store.Stream
+	if err := json.Unmarshal(res.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	if created.ID != items[0].ID || created.SelectedEncoderID != "encoder-01" || created.SelectedWorkerID != "worker-01" || items[0].SelectedEncoderID != created.SelectedEncoderID || items[0].SelectedWorkerID != created.SelectedWorkerID || created.AssignedEncoderID != "" || created.AssignedWorkerID != "" || items[0].AssignedEncoderID != "" || items[0].AssignedWorkerID != "" {
+		t.Fatal("create did not persist separate saved Node selections")
+	}
+	assignments, err := auth.ListStreamAssignments(t.Context(), created.ID)
+	if err != nil || len(assignments) != 0 {
+		t.Fatal("saving Node selections acquired execution assignments")
+	}
+	for _, serviceID := range []string{"encoder-01", "worker-01"} {
+		service, err := auth.GetService(t.Context(), serviceID)
+		if err != nil || service.CurrentStreamID != "" {
+			t.Fatal("saving Node selections changed the runtime owner")
+		}
 	}
 	events := auth.AuditEvents()
 	assignAudits := 0
 	for _, event := range events {
-		if event.Action == "services.assign" && event.ResourceID != "" && event.Metadata["source"] == "stream_create" {
+		if event.Action == "services.assign" {
 			assignAudits++
 		}
 	}
-	if assignAudits != 2 {
+	if assignAudits != 0 {
 		t.Fatalf("create must not write assignment audit events, got %d events=%#v", assignAudits, events)
 	}
 }

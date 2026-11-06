@@ -281,17 +281,8 @@ func (f *streamJSONFramingFixture) snapshot(t *testing.T) streamJSONFramingState
 
 func (f *streamJSONFramingFixture) assertNoRuntimeChanges(t *testing.T, before, after streamJSONFramingState) {
 	t.Helper()
-	existingServices := func(rows []store.RegisteredService) []store.RegisteredService {
-		var out []store.RegisteredService
-		for _, row := range rows {
-			if row.ServiceID != "framing-encoder" && row.ServiceID != "framing-worker" {
-				out = append(out, row)
-			}
-		}
-		return out
-	}
-	if !reflect.DeepEqual(existingServices(before.services), existingServices(after.services)) || !reflect.DeepEqual(before.assignments[f.existingID], after.assignments[f.existingID]) {
-		t.Error("existing Node assignment state changed")
+	if !reflect.DeepEqual(before.services, after.services) || !reflect.DeepEqual(before.assignments[f.existingID], after.assignments[f.existingID]) {
+		t.Error("selected or existing Node runtime state changed")
 	}
 	assertNoStreamIsolationAssignmentWrites(t, f.registry)
 	if !reflect.DeepEqual(f.dispatcher, &fakeServiceDispatcher{}) {
@@ -363,8 +354,12 @@ func (f *streamJSONFramingFixture) assertCreatedOnce(t *testing.T, before stream
 			t.Error("valid create changed the existing stream")
 		}
 	}
-	if created.AssignedEncoderID != "framing-encoder" || created.AssignedWorkerID != "framing-worker" || len(after.assignments[created.ID]) != 2 {
-		t.Error("valid create assigned a Node")
+	if created.SelectedEncoderID != "framing-encoder" || created.SelectedWorkerID != "framing-worker" || created.AssignedEncoderID != "" || created.AssignedWorkerID != "" || len(after.assignments[created.ID]) != 0 {
+		t.Error("valid create did not save Node selections independently of runtime assignments")
+	}
+	persisted, err := f.streams.GetStream(t.Context(), created.ID)
+	if err != nil || persisted.SelectedEncoderID != created.SelectedEncoderID || persisted.SelectedWorkerID != created.SelectedWorkerID || persisted.AssignedEncoderID != "" || persisted.AssignedWorkerID != "" {
+		t.Error("created response Node selections do not match the stored frame")
 	}
 	f.assertNoRuntimeChanges(t, before, after)
 	if draft {

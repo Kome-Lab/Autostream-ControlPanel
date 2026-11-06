@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"os"
 	"reflect"
 	"sync"
 	"testing"
@@ -14,7 +15,10 @@ func TestMemorySelectedStartClaims(t *testing.T)  { runSelectedStartClaimCases(t
 func TestMariaDBSelectedStartClaims(t *testing.T) { runSelectedStartClaimCases(t, true) }
 
 func runSelectedStartClaimCases(t *testing.T, maria bool) {
-	for _, name := range []string{"busy_owner", "partial_availability", "concurrent_claims", "changed_selection"} {
+	if maria && os.Getenv("AUTOSTREAM_MARIADB_TEST_DSN") == "" {
+		t.Skip("AUTOSTREAM_MARIADB_TEST_DSN is not configured")
+	}
+	for _, name := range []string{"busy_owner", "partial_availability", "concurrent_claims", "changed_selection", "human_actor"} {
 		t.Run(name, func(t *testing.T) {
 			streams, services, _ := newClockClaimStores(t, maria)
 			ctx := t.Context()
@@ -83,7 +87,22 @@ func runSelectedStartClaimCases(t *testing.T, maria bool) {
 				selection := selected
 				return StreamStartClaimRequest{StreamID: stream.ID, ExpectedStatus: stream.Status,
 					ExpectedStreamUpdatedAt: stream.UpdatedAt, ExpectedPrimaryAssignments: candidates,
-					ExpectedNodeSelections: &selection}
+					ExpectedNodeSelections: &selection, MaterializeActorUserID: "service:" + selected.DiscordServiceID}
+			}
+			if name == "human_actor" {
+				req := request(a)
+				userID := newUUID()
+				req.MaterializeActorUserID = userID
+				if _, err := streams.ClaimStreamStart(ctx, req); err != nil {
+					t.Fatal("human start actor rejected", err)
+				}
+				if db, ok := streams.(MariaDBStreamStore); ok {
+					var count int
+					if err := db.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM stream_service_assignments WHERE stream_id=? AND assigned_by_user_id=?", a.ID, userID).Scan(&count); err != nil || count != 3 {
+						t.Fatal("human actor was not retained on all execution assignments", count, err)
+					}
+				}
+				return
 			}
 			if name == "concurrent_claims" {
 				requests := []StreamStartClaimRequest{request(a), request(b)}
@@ -174,6 +193,12 @@ func runSelectedStartClaimCases(t *testing.T, maria bool) {
 			first, err := streams.ClaimStreamStart(ctx, request(a))
 			if err != nil {
 				t.Fatal(err)
+			}
+			if db, ok := streams.(MariaDBStreamStore); ok {
+				var nonUserActors int
+				if err := db.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM stream_service_assignments WHERE stream_id=? AND assigned_by_user_id IS NOT NULL", a.ID).Scan(&nonUserActors); err != nil || nonUserActors != 0 {
+					t.Fatal("service identity was written as a user reference", nonUserActors, err)
+				}
 			}
 			if _, changed, err := streams.TransitionClaimedStreamStart(ctx, first.OwnershipClaim, "live"); err != nil || !changed {
 				t.Fatal("first start did not finalize", err)

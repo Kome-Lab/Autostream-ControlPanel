@@ -1946,15 +1946,16 @@
       },
       {
         "path": "internal/httpapi/server_stream_lifecycle_test.go",
-        "sha256": "7bcf3bf9b0e04af2f078348e4defaef8671eb76140c1e90de9979d797041478a",
+        "sha256": "d9b2b58b4f1cdc4b12c58816f0e87cea7a14d8848115af23dc5319705ab4524b",
         "symbols": [
           "TestApplyEncoderVideoProfileRejectsUnsupportedWorkerSceneGeometry",
           "TestStartStreamCompensatesPartialDispatchFailure",
           "TestStreamLifecycleEndpoints",
           "TestStreamStartPersistsNegotiatedWorkerVideoOverlayBurnIn",
-          "TestStreamStartStopDispatchesAssignedServices"
+          "TestStreamStartStopDispatchesAssignedServices",
+          "testPreparedStartPersistsBurnIn"
         ],
-        "physical_lines": 380
+        "physical_lines": 409
       },
       {
         "path": "internal/httpapi/server_stream_media_proxy_test.go",
@@ -2792,15 +2793,16 @@
       },
       {
         "path": "internal/httpapi/server_node_registration_test.go",
-        "sha256": "1101aefd56de07dd1d75bdfe0722bbb2eab7d4b1ff9aec04428f88ff5b52c89d",
+        "sha256": "b4d48e7cc6c0727bd8020312774d2dbd22f8e296844b21fd274c9fb29961469b",
         "symbols": [
           "TestCreateServiceTokenCanPrecreateService",
+          "TestCreateStreamAtomicallyReservesRequiredPrimaryNodes",
           "TestCreateStreamRejectsPrimaryNodeAssignmentWithoutPermission",
           "TestCreateStreamRejectsPrimaryNodeFieldBeforeResolvingType",
           "TestCreateStreamRejectsRequestedPrimaryNodes",
           "TestServiceTokenRegisterHeartbeatAndRevoke"
         ],
-        "physical_lines": 315
+        "physical_lines": 332
       },
       {
         "path": "internal/httpapi/server_node_registration_validation_test.go",
@@ -5127,12 +5129,13 @@
       },
       {
         "path": "internal/store/stream_selected_start_claim.go",
-        "sha256": "01bfade9a66540de3d965b6abc7dcdbaec6edd9af418982c4779932c475491f1",
+        "sha256": "e9b6e83d49aa2d87dc07bfb1f8496dec3344a53f66b24f68b01cf03222df9bf7",
         "symbols": [
           "ErrNodeExecutionBusy",
+          "startClaimUserID",
           "validateSelectedStartClaim"
         ],
-        "physical_lines": 31
+        "physical_lines": 41
       },
       {
         "path": "internal/store/stream_node_selections_memory.go",
@@ -5310,7 +5313,7 @@
       },
       {
         "path": "internal/store/stream_selected_start_claim_mariadb.go",
-        "sha256": "99eecb1dfcc4ded8c51e875078373c1fcb11a91ccdeee3b9d02bdce116b51435",
+        "sha256": "c232f2968b8bccfa6bdf40144a29a521b7a3bcebca08456296cb941bd8cd8ab3",
         "symbols": [
           "MariaDBStreamStore.claimSelectedStreamStart"
         ],
@@ -5318,12 +5321,13 @@
       },
       {
         "path": "internal/store/stream_selected_start_claim.go",
-        "sha256": "01bfade9a66540de3d965b6abc7dcdbaec6edd9af418982c4779932c475491f1",
+        "sha256": "e9b6e83d49aa2d87dc07bfb1f8496dec3344a53f66b24f68b01cf03222df9bf7",
         "symbols": [
           "ErrNodeExecutionBusy",
+          "startClaimUserID",
           "validateSelectedStartClaim"
         ],
-        "physical_lines": 31
+        "physical_lines": 41
       }
     ]
   },

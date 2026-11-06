@@ -180,7 +180,7 @@ WHERE service_id = ?`, now, row.ServiceID); err != nil {
 			row = mariaDBAssignmentRow{ID: newUUID(), StreamID: stream.ID, ServiceID: serviceID, ServiceType: service.ServiceType, AssignmentRole: "primary", AssignedAt: now}
 			if _, err := tx.ExecContext(ctx, `INSERT INTO stream_service_assignments
 (id, stream_id, service_id, service_type, assignment_role, assigned_by_user_id, assigned_at)
-VALUES (?, ?, ?, ?, 'primary', NULLIF(?, ''), ?)`, row.ID, stream.ID, serviceID, service.ServiceType, request.MaterializeActorUserID, now); err != nil {
+VALUES (?, ?, ?, ?, 'primary', NULLIF(?, ''), ?)`, row.ID, stream.ID, serviceID, service.ServiceType, startClaimUserID(request.MaterializeActorUserID), now); err != nil {
 				return ClaimedStreamStart{}, err
 			}
 			if _, err := tx.ExecContext(ctx, `UPDATE services SET current_stream_id = ?, status = 'assigned', updated_at = ? WHERE service_id = ?`, stream.ID, now, serviceID); err != nil {

@@ -29,3 +29,13 @@ func validateSelectedStartClaim(request StreamStartClaimRequest, stream Stream) 
 	}
 	return expected, nil
 }
+
+// Service identities are audited on the request, not stored in the CHAR(36)
+// user-reference column. A registered Node ID can be longer than a user UUID.
+func startClaimUserID(actorID string) string {
+	actorID = strings.TrimSpace(actorID)
+	if strings.HasPrefix(actorID, "service:") {
+		return ""
+	}
+	return actorID
+}
