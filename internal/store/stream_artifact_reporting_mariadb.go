@@ -74,8 +74,8 @@ func (s MariaDBStreamStore) WriteStreamArtifactReport(ctx context.Context, token
 	if !serviceStreamEventAllowed(service.ServiceType, event.EventType) {
 		return ErrInvalidServiceStreamEvent
 	}
-	owner, _, err := consistentMariaDBServiceAssignment(ctx, tx, service)
-	if err != nil || owner != event.StreamID {
+	owner, role, err := consistentMariaDBServiceAssignment(ctx, tx, service)
+	if err != nil {
 		return ErrForbidden
 	}
 	state, err := mariaDBStreamAssignmentProtectionAfterLocks(ctx, tx, event.StreamID)
@@ -83,12 +83,45 @@ func (s MariaDBStreamStore) WriteStreamArtifactReport(ctx context.Context, token
 		return err
 	}
 	authority := state.Stream
-	var activeTokenID string
-	if err := tx.QueryRowContext(ctx, `SELECT id FROM service_tokens WHERE id = ? AND revoked_at IS NULL FOR UPDATE`, token.ID).Scan(&activeTokenID); err != nil {
+	var activeToken ServiceToken
+	var scopes string
+	if err := tx.QueryRowContext(ctx, `SELECT id, service_type, scopes FROM service_tokens WHERE id = ? AND revoked_at IS NULL FOR UPDATE`, token.ID).Scan(&activeToken.ID, &activeToken.ServiceType, &scopes); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrForbidden
 		}
 		return err
+	}
+	if err := json.Unmarshal([]byte(scopes), &activeToken.Scopes); err != nil {
+		return ErrForbidden
+	}
+	if service.ServiceType != "encoder_recorder" || !streamArtifactReportTokenAllowed(activeToken) {
+		return ErrForbidden
+	}
+	source, recorded, err := streamArchiveRunSourceForReportTx(ctx, tx, event.StreamID, normalized)
+	if err != nil {
+		return err
+	}
+	if recorded {
+		if source != event.ServiceID {
+			return ErrForbidden
+		}
+	} else {
+		if owner != event.StreamID {
+			return ErrForbidden
+		}
+		if strings.TrimSpace(authority.ArchiveRunID) != "" {
+			if role != "primary" || !streamArtifactReportMatchesArchiveAuthority(authority, normalized) {
+				return ErrForbidden
+			}
+			if err := recordStreamArchiveRunSourceTx(ctx, tx, authority, event.ServiceID); err != nil {
+				return err
+			}
+		}
+	}
+	if recorded || strings.TrimSpace(authority.ArchiveRunID) != "" {
+		if err := validateStreamArtifactReportIdentityTx(ctx, tx, event.StreamID, event.ServiceID, normalized); err != nil {
+			return err
+		}
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO service_stream_events (id, service_id, stream_id, event_type, payload, created_at) VALUES (?, ?, ?, ?, ?, ?)`, newUUID(), event.ServiceID, event.StreamID, event.EventType, string(body), time.Now().UTC()); err != nil {
 		return err
