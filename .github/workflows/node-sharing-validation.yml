@@ -67,7 +67,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          go test -timeout 5m -p 1 ./internal/database -run '^TestMariaDBNodeSelection' -count=1 -json | tee "${RUNNER_TEMP}/node-sharing-migrations.json"
+          go test -timeout 5m -p 1 ./internal/database -run '^TestMariaDB(NodeSelection|ControlPlatformFeatureMigrationAndPersistence)' -count=1 -json | tee "${RUNNER_TEMP}/node-sharing-migrations.json"
       - name: Run HTTP save and refresh regression
         if: success() || failure()
         shell: bash
@@ -146,6 +146,8 @@ jobs:
         working-directory: web
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: 26
@@ -154,5 +156,10 @@ jobs:
       - run: npm ci
       - run: npm run typecheck:ui-regression
       - run: npm run test:stream-create
-      - name: Verify actual shared selection and readiness views in both locales
-        run: node --no-warnings --test tests/ui-regression/current-copy.test.mts tests/ui-regression/stream-detail.test.mts
+      - run: npm run lint
+      - name: Build actual web sources without source mutation
+        run: node --no-warnings ../scripts/ci/build-web-preserving-sources.mjs
+      - name: Verify current shared selection and all component views
+        run: npm run test:ui-regression:components
+      - name: Verify current source projection and immutable legacy parity
+        run: npm run test:ui-regression:parity
