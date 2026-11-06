@@ -2,9 +2,11 @@ package httpapi
 
 import (
 	"bytes"
+	"encoding/json"
 	"github.com/example/autostream-control-panel/internal/store"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -479,4 +481,76 @@ func TestStartStreamRejectsDiscordConfigForDifferentPrimaryBot(t *testing.T) {
 	if dispatcher.startCalls != 0 {
 		t.Fatalf("dispatcher must not be called for mismatched discord config")
 	}
+}
+
+func TestCreateStreamSavesSharedDiscordBotWithoutChangingActiveOwnership(t *testing.T) {
+	auth := store.NewMemoryAuthStore()
+	if err := auth.AddUser(store.User{Username: "operator"}, "correct horse battery", []string{"streams.create", "services.assign", "workers.assign"}); err != nil {
+		t.Fatal(err)
+	}
+	streams := store.NewMemoryStreamStore()
+	active, err := streams.CreateStream(t.Context(), "active Discord owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerAssignedServices(t, auth, active.ID, "encoder_recorder", "worker", "discord_bot")
+	if _, err := streams.UpdateStreamStatus(t.Context(), active.ID, "live"); err != nil {
+		t.Fatal(err)
+	}
+	assignments, err := auth.ListStreamAssignments(t.Context(), active.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoderID := assignedServiceID(assignments, "encoder_recorder")
+	workerID := assignedServiceID(assignments, "worker")
+	botID := assignedServiceID(assignments, "discord_bot")
+	profiles := store.NewMemoryProfileStore()
+	config, err := profiles.CreateProfile(t.Context(), store.ProfileDiscordConfig, "shared Discord authentication", map[string]any{"service_id": botID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry := &streamIsolationServiceRegistry{ServiceRegistryStore: auth}
+	dispatcher := &fakeServiceDispatcher{}
+	handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(registry), WithProfileStore(profiles), WithServiceDispatcher(dispatcher))
+	cookie, csrf := loginForTest(t, handler, "operator", "correct horse battery")
+	beforeActive, err := streams.GetStream(t.Context(), active.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeBot, err := auth.GetService(t.Context(), botID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := ui188CreatePayload(t, handler, `{"name":"second Discord frame","encoder_service_id":"`+encoderID+`","worker_service_id":"`+workerID+`","discord_config_id":"`+config.ID+`","auto_start_trigger":"discord_voice_join","visual_settings":{"expected_revision":0,"discord_target":{"mode":"manual","guild_id":"1001","text_channel_id":"1002","voice_channel_id":"1003"}}}`)
+	res := serveUserJSON(t, handler, http.MethodPost, "/streams", payload, cookie, csrf)
+	if res.Code != http.StatusCreated {
+		t.Fatalf("shared Discord configuration save status=%d body=%s", res.Code, res.Body.String())
+	}
+	var created store.Stream
+	if err := json.Unmarshal(res.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	if created.DiscordConfigID != config.ID || created.SelectedDiscordID != botID || created.SelectedEncoderID != encoderID || created.SelectedWorkerID != workerID || created.AssignedEncoderID != "" || created.AssignedWorkerID != "" {
+		t.Fatalf("shared Discord configuration did not persist separate selections: %#v", created)
+	}
+	createdAssignments, err := auth.ListStreamAssignments(t.Context(), created.ID)
+	if err != nil || len(createdAssignments) != 0 {
+		t.Fatal("saving shared Discord settings materialized runtime assignments")
+	}
+	afterActive, err := streams.GetStream(t.Context(), active.ID)
+	if err != nil || !reflect.DeepEqual(beforeActive, afterActive) {
+		t.Fatal("saving a second Discord frame changed the active stream")
+	}
+	afterBot, err := auth.GetService(t.Context(), botID)
+	if err != nil || !reflect.DeepEqual(beforeBot, afterBot) {
+		t.Fatal("saving a second Discord frame changed the active Bot")
+	}
+	activeAssignments, err := auth.ListStreamAssignments(t.Context(), active.ID)
+	if err != nil || len(activeAssignments) != 3 || assignedServiceID(activeAssignments, "discord_bot") != botID || assignedServiceID(activeAssignments, "encoder_recorder") != encoderID || assignedServiceID(activeAssignments, "worker") != workerID {
+		t.Fatal("saving a second Discord frame changed active runtime assignments")
+	}
+	if dispatcher.startCalls != 0 || dispatcher.stopCalls != 0 || dispatcher.retryCalls != 0 {
+		t.Fatal("saving shared Discord settings dispatched a lifecycle operation")
+	}
+	assertNoStreamIsolationAssignmentWrites(t, registry)
 }

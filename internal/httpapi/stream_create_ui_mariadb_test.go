@@ -22,7 +22,7 @@ import (
 
 // The payload is produced by the same two production builders used by
 // StreamSlotForm. Real authenticated handlers and SQL repositories own every
-// create/claim/assignment below; no mocked HTTP success is accepted as proof.
+// create/media claim/Node selection below; no mocked HTTP success is accepted as proof.
 func TestMariaDBP2UIStreamCreatePayloadPersistsAtomically(t *testing.T) {
 	st := preparationClaimStores(t, true)
 	password := outputSecretRandom(t)
@@ -65,13 +65,14 @@ func TestMariaDBP2UIStreamCreatePayloadPersistsAtomically(t *testing.T) {
 			for field, kind := range map[string]string{"encoderServiceID": "encoder_recorder", "workerServiceID": "worker"} {
 				values[field] = p2RegisterSQLService(t, st.services, kind)
 			}
+			selectedDiscordID := ""
 			if scenario.auto {
-				botID := p2RegisterSQLService(t, st.services, "discord_bot")
+				selectedDiscordID = p2RegisterSQLService(t, st.services, "discord_bot")
 				secret, err := st.secrets.UpdateSecret(t.Context(), "discord_bot_token_"+outputSecretRandom(t)[:12], outputSecretRandom(t))
 				if err != nil {
 					t.Fatal(err)
 				}
-				profile, err := st.profiles.CreateProfile(t.Context(), store.ProfileDiscordConfig, "P2 selected authentication "+scenario.name, map[string]any{"service_id": botID, "bot_token_secret_name": secret.Name, "bot_token_fingerprint": secret.Fingerprint})
+				profile, err := st.profiles.CreateProfile(t.Context(), store.ProfileDiscordConfig, "P2 selected authentication "+scenario.name, map[string]any{"service_id": selectedDiscordID, "bot_token_secret_name": secret.Name, "bot_token_fingerprint": secret.Fingerprint})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -169,18 +170,22 @@ func TestMariaDBP2UIStreamCreatePayloadPersistsAtomically(t *testing.T) {
 			if scenario.background && saved.BackgroundMode != "image" {
 				t.Fatal("background selection was lost")
 			}
+			encoderID, workerID := values["encoderServiceID"].(string), values["workerServiceID"].(string)
+			if created.SelectedEncoderID != encoderID || created.SelectedWorkerID != workerID || created.SelectedDiscordID != selectedDiscordID || persisted.SelectedEncoderID != encoderID || persisted.SelectedWorkerID != workerID || persisted.SelectedDiscordID != selectedDiscordID {
+				t.Fatal("saved Node selections did not match the UI payload and SQL readback")
+			}
 			assignments, err := st.services.ListStreamAssignments(t.Context(), created.ID)
-			want := 2
-			if scenario.auto {
-				want = 3
+			if err != nil || len(assignments) != 0 || created.AssignedEncoderID != "" || created.AssignedWorkerID != "" {
+				t.Fatal("saving Node selections claimed runtime assignments")
 			}
-			if err != nil || len(assignments) != want {
-				t.Fatal("atomic primary reservation missing")
+			selectedIDs := []string{encoderID, workerID}
+			if selectedDiscordID != "" {
+				selectedIDs = append(selectedIDs, selectedDiscordID)
 			}
-			for _, assignment := range assignments {
-				service, err := st.services.GetService(t.Context(), assignment.ServiceID)
-				if err != nil || assignment.AssignmentRole != "primary" || assignment.UpdatedAt.IsZero() || service.CurrentStreamID != created.ID {
-					t.Fatal("primary epoch/current owner mismatch")
+			for _, serviceID := range selectedIDs {
+				service, err := st.services.GetService(t.Context(), serviceID)
+				if err != nil || service.CurrentStreamID != "" {
+					t.Fatal("saving a Node selection changed its current runtime owner")
 				}
 			}
 			for _, asset := range assets {
@@ -195,10 +200,55 @@ func TestMariaDBP2UIStreamCreatePayloadPersistsAtomically(t *testing.T) {
 					t.Fatal("session claim did not commit with the stream")
 				}
 			}
-			duplicate := serveUserJSON(t, handler, http.MethodPost, "/streams", string(payload), cookie, csrf)
+			if session.ID != "" {
+				// Already claimed uploads remain exclusive even though Node selections
+				// can be shared. Rejection must not leave a second partial frame.
+				duplicate := serveUserJSON(t, handler, http.MethodPost, "/streams", string(payload), cookie, csrf)
+				final, err := st.streams.ListStreams(t.Context())
+				if duplicate.Code != http.StatusConflict || !strings.Contains(duplicate.Body.String(), "asset_claim_failed") || err != nil || len(final) != len(after) {
+					t.Fatal("reusing claimed uploads changed stream count or rejection classification")
+				}
+			}
+			sharedValues := map[string]any{}
+			for key, value := range values {
+				sharedValues[key] = value
+			}
+			sharedValues["name"] = "Shared Nodes " + scenario.name
+			sharedDraft := map[string]any{"discordTargetMode": scenario.target}
+			for _, field := range []string{"discordGuildID", "discordTextChannelID", "discordVoiceChannelID", "discordTargetPresetID", "discordTargetPresetRevision"} {
+				if value, ok := draft[field]; ok {
+					sharedDraft[field] = value
+				}
+			}
+			sharedPayload := p2GenerateUIPayload(t, sharedValues, sharedDraft)
+			sharedResponse := serveUserJSON(t, handler, http.MethodPost, "/streams", string(sharedPayload), cookie, csrf)
 			final, err := st.streams.ListStreams(t.Context())
-			if duplicate.Code != http.StatusConflict || err != nil || len(final) != len(after) {
-				t.Fatal("occupied duplicate created partial state")
+			if sharedResponse.Code != http.StatusCreated || err != nil || len(final) != len(after)+1 {
+				t.Fatalf("shared Node selections did not create one complete frame: %d %s", sharedResponse.Code, sharedResponse.Body.String())
+			}
+			var shared store.Stream
+			if err := json.Unmarshal(sharedResponse.Body.Bytes(), &shared); err != nil {
+				t.Fatal(err)
+			}
+			sharedPersisted, err := st.streams.GetStream(t.Context(), shared.ID)
+			if err != nil || sharedPersisted.SelectedEncoderID != encoderID || sharedPersisted.SelectedWorkerID != workerID || sharedPersisted.SelectedDiscordID != selectedDiscordID {
+				t.Fatal("shared Node selections did not persist in SQL")
+			}
+			sharedAssignments, err := st.services.ListStreamAssignments(t.Context(), shared.ID)
+			if err != nil || len(sharedAssignments) != 0 || shared.AssignedEncoderID != "" || shared.AssignedWorkerID != "" {
+				t.Fatal("shared Node selections claimed runtime assignments")
+			}
+			for _, serviceID := range selectedIDs {
+				service, err := st.services.GetService(t.Context(), serviceID)
+				if err != nil || service.CurrentStreamID != "" {
+					t.Fatal("saving the second frame changed a selected Node's runtime owner")
+				}
+			}
+			for _, asset := range assets {
+				savedAsset, err := media.GetAsset(t.Context(), user.ID, asset.ID)
+				if err != nil || savedAsset.OwnerType != "stream" || savedAsset.OwnerID != created.ID {
+					t.Fatal("sharing Nodes changed the original frame's media ownership")
+				}
 			}
 		})
 	}

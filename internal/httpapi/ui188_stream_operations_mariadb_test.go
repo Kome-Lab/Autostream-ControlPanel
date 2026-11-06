@@ -78,19 +78,37 @@ func TestUI188MariaDBAtomicCreateCoverSnapshotsPreviewAndStopReceipt(t *testing.
 	var stream store.Stream
 	_ = json.Unmarshal(created.Body.Bytes(), &stream)
 	assignments, err := st.services.ListStreamAssignments(t.Context(), stream.ID)
-	if err != nil || len(assignments) != 2 || stream.AssignedEncoderID == "" || stream.AssignedWorkerID == "" {
-		t.Fatal("SQL atomic primary reservation missing")
+	if err != nil || len(assignments) != 0 || stream.SelectedEncoderID == "" || stream.SelectedWorkerID == "" || stream.AssignedEncoderID != "" || stream.AssignedWorkerID != "" {
+		t.Fatal("SQL atomic Node selections were not saved independently of execution")
+	}
+	selectedIDs := []string{stream.SelectedEncoderID, stream.SelectedWorkerID}
+	for _, serviceID := range selectedIDs {
+		service, err := st.services.GetService(t.Context(), serviceID)
+		if err != nil || service.CurrentStreamID != "" {
+			t.Fatal("SQL create claimed a runtime owner while saving selections")
+		}
 	}
 	saved, err := visual.Get(t.Context(), stream.ID)
 	if err != nil || len(saved.CoverCandidates) != 2 {
 		t.Fatalf("candidate SQL persistence: %v", err)
 	}
-	// Reusing a busy pair and a rejected visual mutation cannot persist partial rows.
-	before, _ := st.streams.ListStreams(t.Context())
-	occupied := request(http.MethodPost, "/streams", body)
-	after, _ := st.streams.ListStreams(t.Context())
-	if occupied.Code != 409 || len(before) != len(after) {
-		t.Fatal("occupied create left partial stream")
+	// A second frame can save the same Nodes and reusable preset snapshots.
+	before, err := st.streams.ListStreams(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sharedResponse := request(http.MethodPost, "/streams", body)
+	after, err := st.streams.ListStreams(t.Context())
+	if sharedResponse.Code != http.StatusCreated || err != nil || len(after) != len(before)+1 {
+		t.Fatalf("shared Node create did not persist one complete frame: %d", sharedResponse.Code)
+	}
+	var shared store.Stream
+	if err := json.Unmarshal(sharedResponse.Body.Bytes(), &shared); err != nil {
+		t.Fatal(err)
+	}
+	sharedAssignments, err := st.services.ListStreamAssignments(t.Context(), shared.ID)
+	if err != nil || shared.SelectedEncoderID != stream.SelectedEncoderID || shared.SelectedWorkerID != stream.SelectedWorkerID || shared.AssignedEncoderID != "" || shared.AssignedWorkerID != "" || len(sharedAssignments) != 0 {
+		t.Fatal("shared Node selections changed runtime assignments")
 	}
 	if _, err = covers.DeletePreset(t.Context(), presets[0].ID, user.ID, 1); err != nil {
 		t.Fatal(err)
@@ -205,11 +223,19 @@ func TestUI188MariaDBAtomicCreateCoverSnapshotsPreviewAndStopReceipt(t *testing.
 	if res.Code != 200 && res.Code != 204 {
 		t.Fatalf("confirmed stopped stream could not be deleted: %d %s", res.Code, res.Body.String())
 	}
-	for _, assignment := range assignments {
-		service, err := st.services.GetService(t.Context(), assignment.ServiceID)
+	for _, serviceID := range selectedIDs {
+		service, err := st.services.GetService(t.Context(), serviceID)
 		if err != nil || service.CurrentStreamID != "" {
 			t.Fatal("deleted stream retained primary owner")
 		}
+	}
+	sharedSaved, err := st.streams.GetStream(t.Context(), shared.ID)
+	if err != nil || sharedSaved.SelectedEncoderID != shared.SelectedEncoderID || sharedSaved.SelectedWorkerID != shared.SelectedWorkerID {
+		t.Fatal("deleting one frame changed the other frame's saved selections")
+	}
+	sharedVisual, err := visual.Get(t.Context(), shared.ID)
+	if err != nil || len(sharedVisual.CoverCandidates) != 2 {
+		t.Fatal("deleting one frame changed the other frame's preset snapshots")
 	}
 	if _, err = covers.GetPreset(t.Context(), presets[1].ID, false); err != nil {
 		t.Fatal("deleting stream deleted another preset")

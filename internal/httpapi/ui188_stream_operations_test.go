@@ -48,7 +48,7 @@ func ui188CreatePayload(t *testing.T, handler http.Handler, payload string) stri
 	return string(raw)
 }
 
-func TestUI188CreateMandatoryRolesPermissionAndAtomicReservation(t *testing.T) {
+func TestUI188CreateMandatoryRolesPermissionAndAtomicNodeSelections(t *testing.T) {
 	auth := store.NewMemoryAuthStore()
 	streams := store.NewMemoryStreamStore()
 	for user, permissions := range map[string][]string{"operator": {"streams.create", "services.assign", "workers.assign"}, "denied": {"streams.create"}} {
@@ -108,17 +108,49 @@ func TestUI188CreateMandatoryRolesPermissionAndAtomicReservation(t *testing.T) {
 		t.Fatalf("create %d %s", res.Code, res.Body.String())
 	}
 	var stream store.Stream
-	_ = json.Unmarshal(res.Body.Bytes(), &stream)
-	assignments, _ := auth.ListStreamAssignments(t.Context(), stream.ID)
-	if stream.AssignedEncoderID != "ui188-encoder" || stream.AssignedWorkerID != "ui188-worker" || len(assignments) != 2 {
-		t.Fatal("atomic two-role reservation missing")
+	if err := json.Unmarshal(res.Body.Bytes(), &stream); err != nil {
+		t.Fatal(err)
 	}
-	if res = post(base, cookie, csrf); res.Code != http.StatusConflict {
-		t.Fatalf("occupied service status %d", res.Code)
+	assignments, err := auth.ListStreamAssignments(t.Context(), stream.ID)
+	if err != nil || stream.SelectedEncoderID != "ui188-encoder" || stream.SelectedWorkerID != "ui188-worker" || stream.AssignedEncoderID != "" || stream.AssignedWorkerID != "" || len(assignments) != 0 {
+		t.Fatal("atomic two-role selections were not saved without claiming execution")
 	}
-	rows, _ := streams.ListStreams(t.Context())
-	if len(rows) != 1 {
-		t.Fatal("occupied retry persisted partial stream")
+	for _, id := range []string{"ui188-encoder", "ui188-worker"} {
+		service, err := auth.GetService(t.Context(), id)
+		if err != nil || service.CurrentStreamID != "" {
+			t.Fatal("saving selections claimed a runtime owner")
+		}
+		if _, err := auth.AssignServiceToStream(t.Context(), id, stream.ID, "runtime-fixture"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := streams.UpdateStreamStatus(t.Context(), stream.ID, "live"); err != nil {
+		t.Fatal(err)
+	}
+	if res = post(base, cookie, csrf); res.Code != http.StatusCreated {
+		t.Fatalf("shared Node selection create status %d: %s", res.Code, res.Body.String())
+	}
+	var shared store.Stream
+	if err := json.Unmarshal(res.Body.Bytes(), &shared); err != nil {
+		t.Fatal(err)
+	}
+	sharedAssignments, err := auth.ListStreamAssignments(t.Context(), shared.ID)
+	if err != nil || shared.ID == stream.ID || shared.SelectedEncoderID != stream.SelectedEncoderID || shared.SelectedWorkerID != stream.SelectedWorkerID || shared.AssignedEncoderID != "" || shared.AssignedWorkerID != "" || len(sharedAssignments) != 0 {
+		t.Fatal("second frame did not save shared selections independently of runtime ownership")
+	}
+	for _, id := range []string{"ui188-encoder", "ui188-worker"} {
+		service, err := auth.GetService(t.Context(), id)
+		if err != nil || service.CurrentStreamID != stream.ID {
+			t.Fatal("saving another frame changed the active runtime owner")
+		}
+	}
+	assignments, err = auth.ListStreamAssignments(t.Context(), stream.ID)
+	if err != nil || len(assignments) != 2 || assignedServiceID(assignments, "encoder_recorder") != "ui188-encoder" || assignedServiceID(assignments, "worker") != "ui188-worker" {
+		t.Fatal("saving another frame changed the active assignments")
+	}
+	rows, err := streams.ListStreams(t.Context())
+	if err != nil || len(rows) != 2 {
+		t.Fatal("shared selections did not persist exactly two complete frames")
 	}
 }
 
