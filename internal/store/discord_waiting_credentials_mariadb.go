@@ -122,9 +122,17 @@ func (stores CurrentDiscordCredentialStores) discordWaitingMariaDB(ctx context.C
 	}
 	var eligible []StreamNodeSelectionBinding
 	var profileIDs []string
+	resolvedStreams := make(map[string]Stream, len(selections))
 	for _, selection := range selections {
-		stream, exists := lockedStreams[selection.StreamID]
-		if !exists || !discordWaitingStreamEligible(stream, serviceID) {
+		if _, exists := lockedStreams[selection.StreamID]; !exists {
+			return DiscordWaitingCredentialSnapshot{}, "", RuntimeSecretLease{}, ErrServiceAssignmentConflict
+		}
+		stream, err := scanStreamRow(tx.QueryRowContext(ctx, streamListQuery("s.id = ?"), selection.StreamID))
+		if err != nil {
+			return DiscordWaitingCredentialSnapshot{}, "", RuntimeSecretLease{}, err
+		}
+		resolvedStreams[selection.StreamID] = stream
+		if !discordWaitingStreamEligible(stream, serviceID) {
 			continue
 		}
 		eligible = append(eligible, selection)
@@ -177,7 +185,7 @@ func (stores CurrentDiscordCredentialStores) discordWaitingMariaDB(ctx context.C
 	snapshot := DiscordWaitingCredentialSnapshot{Service: service, Bindings: []DiscordWaitingCredentialBinding{}}
 	seenProfiles := map[string]bool{}
 	for _, selection := range eligible {
-		stream := lockedStreams[selection.StreamID]
+		stream := resolvedStreams[selection.StreamID]
 		profile := profilesByID[stream.DiscordConfigID]
 		material := materials[currentDiscordConfigString(profile.Config, "bot_token_secret_name")]
 		binding := discordWaitingBinding(stream, serviceID, selection.UpdatedAt, profile, material.status)
