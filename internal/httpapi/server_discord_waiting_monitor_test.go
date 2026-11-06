@@ -114,7 +114,7 @@ func TestDiscordWaitingMonitorPreservesActiveCredentialAndRejectsAmbiguousVC(t *
 		}
 	}
 	current := &serviceRuntimeCurrentDiscordBindings{Version: 1, Bindings: []store.CurrentDiscordCredentialBinding{{SecretName: "current", Fingerprint: "fingerprint", Ready: true}}}
-	monitor := &serviceRuntimeDiscordWaitingMonitor{Version: 1, Bindings: []serviceRuntimeDiscordWaitingBinding{
+	monitor := &serviceRuntimeDiscordWaitingMonitor{Version: 1, ExecutionActive: true, Bindings: []serviceRuntimeDiscordWaitingBinding{
 		credential("same-credential", "current", "100000000000000002"),
 		credential("different-credential", "other", "100000000000000003"),
 	}}
@@ -137,5 +137,21 @@ func TestDiscordWaitingMonitorPreservesActiveCredentialAndRejectsAmbiguousVC(t *
 	classifyDiscordWaitingMonitor(monitor, nil)
 	if monitor.AvailabilityCode != "discord_waiting_credentials_ambiguous" || monitor.Bindings[0].Ready || monitor.Bindings[1].Ready {
 		t.Fatal("idle monitor silently selected incompatible credentials")
+	}
+}
+
+func TestDiscordWaitingMonitorInactiveRetainedOwnerDoesNotPinCredential(t *testing.T) {
+	current := &serviceRuntimeCurrentDiscordBindings{Version: 1, Bindings: []store.CurrentDiscordCredentialBinding{{
+		StreamID: "retained-A", SecretName: "old", Fingerprint: "old-fingerprint", Ready: true,
+	}}}
+	monitor := &serviceRuntimeDiscordWaitingMonitor{Version: 1, ExecutionActive: false, Bindings: []serviceRuntimeDiscordWaitingBinding{{
+		DiscordWaitingCredentialBinding: store.DiscordWaitingCredentialBinding{
+			StreamID: "eligible-B", SecretName: "new", Fingerprint: "new-fingerprint", Ready: true,
+		},
+		GuildID: "100000000000000001", VoiceChannelID: "100000000000000003",
+	}}}
+	classifyDiscordWaitingMonitor(monitor, current)
+	if !monitor.Bindings[0].Ready || monitor.AvailabilityCode != "" {
+		t.Fatal("inactive retained execution assignment pinned the old Gateway credential")
 	}
 }

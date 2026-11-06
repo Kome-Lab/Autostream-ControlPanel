@@ -74,12 +74,19 @@ func discordWaitingCredentialMatrix(t *testing.T, db *sql.DB) {
 			t.Fatal(err)
 		}
 		waiting, err := f.stores.WaitingDiscordSnapshot(t.Context(), f.serviceID, f.token.ID)
-		if err != nil || len(waiting.Bindings) != 1 || waiting.Bindings[0].StreamID != f.other.ID {
+		if err != nil || !waiting.ExecutionActive || len(waiting.Bindings) != 1 || waiting.Bindings[0].StreamID != f.other.ID {
 			t.Fatal("active A polluted the waiting projection", err)
 		}
 		after, err := f.stores.Snapshot(t.Context(), f.serviceID, f.token.ID)
 		if err != nil || len(after.Bindings) != 1 || after.Bindings[0] != before.Bindings[0] {
 			t.Fatal("waiting projection changed active credential authority", err)
+		}
+		if _, err := f.stores.Streams.UpdateStreamStatus(t.Context(), f.current.ID, "completed"); err != nil {
+			t.Fatal(err)
+		}
+		idle, err := f.stores.WaitingDiscordSnapshot(t.Context(), f.serviceID, f.token.ID)
+		if err != nil || idle.ExecutionActive {
+			t.Fatal("inactive retained owner remained execution-active", err)
 		}
 	})
 	for _, mutation := range []string{"selection epoch", "selection removed", "profile changed", "secret rotated", "terminal stream"} {

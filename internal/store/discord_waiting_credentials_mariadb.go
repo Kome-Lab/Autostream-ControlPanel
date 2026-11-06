@@ -183,6 +183,14 @@ func (stores CurrentDiscordCredentialStores) discordWaitingMariaDB(ctx context.C
 		return DiscordWaitingCredentialSnapshot{}, "", RuntimeSecretLease{}, ErrForbidden
 	}
 	snapshot := DiscordWaitingCredentialSnapshot{Service: service, Bindings: []DiscordWaitingCredentialBinding{}}
+	if ownerID := service.CurrentStreamID; ownerID != "" {
+		owner, known := lockedStreams[ownerID]
+		var stopPending bool
+		if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM stream_normal_stop_pending WHERE stream_id=?)", ownerID).Scan(&stopPending); err != nil {
+			return DiscordWaitingCredentialSnapshot{}, "", RuntimeSecretLease{}, err
+		}
+		snapshot.ExecutionActive = discordWaitingExecutionActive(owner.Status, known && owner.DeletedAt == nil, stopPending)
+	}
 	seenProfiles := map[string]bool{}
 	for _, selection := range eligible {
 		stream := resolvedStreams[selection.StreamID]

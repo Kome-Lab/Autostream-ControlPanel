@@ -30,9 +30,10 @@ type DiscordWaitingCredentialBinding struct {
 }
 
 type DiscordWaitingCredentialSnapshot struct {
-	Service  RegisteredService
-	Bindings []DiscordWaitingCredentialBinding
-	Profiles []Profile
+	Service         RegisteredService
+	ExecutionActive bool
+	Bindings        []DiscordWaitingCredentialBinding
+	Profiles        []Profile
 }
 
 var ErrDiscordWaitingBindingUnavailable = errors.New("waiting Discord credential binding unavailable")
@@ -65,6 +66,18 @@ func (stores CurrentDiscordCredentialStores) discordWaitingOperation(ctx context
 		return stores.discordWaitingMariaDB(ctx, *auth, serviceID, tokenID, expected, ttl)
 	default:
 		return DiscordWaitingCredentialSnapshot{}, "", RuntimeSecretLease{}, ErrDiscordWaitingBindingUnavailable
+	}
+}
+
+func discordWaitingExecutionActive(status string, known, stopPending bool) bool {
+	if !known || stopPending {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "created", "draft", "scheduled", "ready", "completed", "failed":
+		return false
+	default:
+		return true
 	}
 }
 
@@ -169,6 +182,10 @@ func (stores CurrentDiscordCredentialStores) discordWaitingMemory(ctx context.Co
 		return DiscordWaitingCredentialSnapshot{}, "", RuntimeSecretLease{}, ErrForbidden
 	}
 	snapshot := DiscordWaitingCredentialSnapshot{Service: service, Bindings: []DiscordWaitingCredentialBinding{}}
+	if ownerID := strings.TrimSpace(service.CurrentStreamID); ownerID != "" {
+		owner, known := streams.streams[ownerID]
+		snapshot.ExecutionActive = discordWaitingExecutionActive(owner.Status, known && owner.DeletedAt == nil, streams.normalStopPending[ownerID])
+	}
 	var streamIDs []string
 	for id, stream := range streams.streams {
 		if discordWaitingStreamEligible(stream, serviceID) {

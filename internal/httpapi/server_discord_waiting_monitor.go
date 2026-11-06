@@ -15,6 +15,7 @@ const discordWaitingMonitorCapability = "discord_waiting_monitor_v1"
 
 type serviceRuntimeDiscordWaitingMonitor struct {
 	Version            int                                   `json:"version"`
+	ExecutionActive    bool                                  `json:"execution_active"`
 	RequiredCapability string                                `json:"required_capability"`
 	AvailabilityCode   string                                `json:"availability_code,omitempty"`
 	Bindings           []serviceRuntimeDiscordWaitingBinding `json:"bindings"`
@@ -37,6 +38,10 @@ func (s *Server) runtimeDiscordWaitingMonitor(ctx context.Context, service store
 		Version: 1, RequiredCapability: discordWaitingMonitorCapability,
 		Bindings: []serviceRuntimeDiscordWaitingBinding{},
 	}
+	if current != nil && current.AvailabilityCode != "" {
+		monitor.AvailabilityCode = current.AvailabilityCode
+		return monitor, nil
+	}
 	snapshot, err := s.currentDiscordCredentialStores().WaitingDiscordSnapshot(ctx, service.ServiceID, service.TokenID)
 	if errors.Is(err, store.ErrDiscordWaitingBindingUnavailable) {
 		monitor.AvailabilityCode = "discord_waiting_monitor_unavailable"
@@ -45,6 +50,7 @@ func (s *Server) runtimeDiscordWaitingMonitor(ctx context.Context, service store
 	if err != nil {
 		return nil, err
 	}
+	monitor.ExecutionActive = snapshot.ExecutionActive
 	profiles := map[string]store.Profile{}
 	for _, profile := range snapshot.Profiles {
 		profiles[profile.ID] = profile
@@ -81,7 +87,7 @@ func (s *Server) runtimeDiscordWaitingMonitor(ctx context.Context, service store
 
 func classifyDiscordWaitingMonitor(monitor *serviceRuntimeDiscordWaitingMonitor, current *serviceRuntimeCurrentDiscordBindings) {
 	activeCredential := ""
-	if current != nil {
+	if current != nil && monitor.ExecutionActive {
 		for _, binding := range current.Bindings {
 			if binding.Ready {
 				activeCredential = binding.SecretName + "\x00" + binding.Fingerprint
