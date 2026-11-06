@@ -221,6 +221,75 @@ JOIN services s ON s.token_id=tokens.id WHERE s.service_id IN (?,?,?) ORDER BY t
 	assertOwner()
 }
 
+func TestMariaDBExplicitNodeSelectionClearCannotClaimLegacyAssignments(t *testing.T) {
+	db, ctx := openSharedNodeSelectionMariaDBTest(t)
+	streams := store.NewMariaDBStreamStore(db)
+	auth := store.NewMariaDBAuthStore(db)
+	profiles := store.NewMariaDBProfileStore(db)
+	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
+	encoderID, workerID, botID := "cleared-encoder-"+suffix, "cleared-worker-"+suffix, "cleared-bot-"+suffix
+	for _, service := range []struct{ id, kind string }{
+		{encoderID, "encoder_recorder"}, {workerID, "worker"}, {botID, "discord_bot"},
+	} {
+		registerMariaDBAssignmentService(t, ctx, auth, service.id, service.kind)
+	}
+	profile, err := profiles.CreateProfile(ctx, store.ProfileDiscordConfig, "cleared choices "+suffix, map[string]any{"service_id": botID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	choices := store.StreamCreateAssignments{
+		EncoderServiceID: encoderID, WorkerServiceID: workerID,
+		DiscordServiceID: botID, DiscordConfigID: profile.ID,
+	}
+	stream := createSharedNodeSelectionMariaDBStream(t, ctx, db, choices, profile.ID, "old failed runtime "+suffix)
+	for _, serviceID := range []string{encoderID, workerID, botID} {
+		if _, err := auth.AssignServiceToStreamGuarded(ctx, store.ServiceAssignmentMutation{
+			ServiceID: serviceID, StreamID: stream.ID, AssignmentRole: "primary",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := streams.UpdateStreamStatus(ctx, stream.ID, "failed"); err != nil {
+		t.Fatal(err)
+	}
+	empty := ""
+	stream, err = streams.UpdateStreamSettings(ctx, stream.ID, store.StreamSettings{
+		ExpectedSettingsRevision: &stream.SettingsRevision, ExpectedDiscordServiceID: &empty,
+		NodeSelections: &store.StreamNodeSelectionUpdate{
+			EncoderServiceID: &empty, WorkerServiceID: &empty, DiscordServiceID: &empty,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err = streams.GetStream(ctx, stream.ID)
+	if err != nil || !stream.NodeSelectionsConfigured {
+		t.Fatalf("all-clear lost its configured authority after reload: %v", err)
+	}
+	legacyAssignments, err := auth.ListStreamAssignments(ctx, stream.ID)
+	if err != nil || len(legacyAssignments) != 3 {
+		t.Fatalf("clearing preferences changed retained execution assignments: count=%d err=%v", len(legacyAssignments), err)
+	}
+	serviceIDs := []any{encoderID, workerID, botID}
+	beforeStream := sharedNodeSelectionSQLRows(t, ctx, db, `SELECT * FROM streams WHERE id=?`, stream.ID)
+	beforeServices := sharedNodeSelectionSQLRows(t, ctx, db, `SELECT * FROM services WHERE service_id IN (?,?,?) ORDER BY service_id`, serviceIDs...)
+	beforeAssignments := sharedNodeSelectionSQLRows(t, ctx, db, `SELECT * FROM stream_service_assignments WHERE stream_id=? ORDER BY id`, stream.ID)
+	emptyChoices := store.StreamNodeSelections{}
+	_, err = streams.ClaimStreamStart(ctx, store.StreamStartClaimRequest{
+		StreamID: stream.ID, ExpectedStatus: stream.Status, ExpectedStreamUpdatedAt: stream.UpdatedAt,
+		ExpectedPrimaryAssignments: legacyAssignments, ExpectedNodeSelections: &emptyChoices,
+		ArchiveEnabled: true, ArchiveStartedAt: time.Now().UTC().Truncate(time.Microsecond),
+	})
+	if !errors.Is(err, store.ErrServiceAssignmentConflict) && !errors.Is(err, store.ErrInvalidServiceAssignment) {
+		t.Fatalf("all-clear fell back to old runtime assignments: %v", err)
+	}
+	if !reflect.DeepEqual(sharedNodeSelectionSQLRows(t, ctx, db, `SELECT * FROM streams WHERE id=?`, stream.ID), beforeStream) ||
+		!reflect.DeepEqual(sharedNodeSelectionSQLRows(t, ctx, db, `SELECT * FROM services WHERE service_id IN (?,?,?) ORDER BY service_id`, serviceIDs...), beforeServices) ||
+		!reflect.DeepEqual(sharedNodeSelectionSQLRows(t, ctx, db, `SELECT * FROM stream_service_assignments WHERE stream_id=? ORDER BY id`, stream.ID), beforeAssignments) {
+		t.Fatal("rejected all-clear start changed lifecycle, archive, or runtime authority")
+	}
+}
+
 func openSharedNodeSelectionMariaDBTest(t *testing.T) (*sql.DB, context.Context) {
 	t.Helper()
 	dsn := os.Getenv("AUTOSTREAM_MARIADB_TEST_DSN")
