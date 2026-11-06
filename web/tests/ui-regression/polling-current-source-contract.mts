@@ -3,13 +3,14 @@
 export const pollingCurrentBase = "65a601fc9d4f15c93083e9be4ab9e71586fdba69";
 export const pollingCurrentTree = "2624414bc4e1cb4bd304faccf82e5d22e3201dd2";
 export const pollingCurrentFixturePath = "web/tests/fixtures/ui-regression/polling-current-source-delta.json";
-export const pollingCurrentFixtureSHA256 = "c1cb2ecc69dbab8fd748516238cb6ff07c50bc0a164030ef67d998f65241eeda";
+export const pollingCurrentFixtureSHA256 = "b0a7da11227cdbfd80ee54dc586b2541d56c9223975f7714ed8588100ec9686d";
 export const pollingLegacyFixturePath = "web/tests/fixtures/ui-regression/polling-legacy-parity.json";
 export const pollingLegacyFixtureSHA256 = "b2df0a26ef1f77a08a0ddbfe8762b7e77a583c21ba8ed03d22373e4ebce764a8";
 export const pollingCurrentPaths = Object.freeze([
   ".github/workflows/ci.yml",
   ".github/workflows/ci017-auth-expiry-diagnostic.yml",
   ".github/workflows/node-sharing-validation.yml",
+  ".github/workflows/ui188-integration.yml",
   "go.mod",
   "go.sum",
   "internal/database/control_platform_features_migration_test.go",
@@ -157,6 +158,7 @@ export const pollingCurrentPaths = Object.freeze([
   "scripts/ci/test-polling-create-upload-mariadb.sh",
   "scripts/ci/test-polling-create-upload-web.sh",
   "scripts/ci/ui-regression/matrix.mjs",
+  "scripts/ci/ui188_historical_fixture.py",
   "scripts/ci/verify-polling-create-upload-evidence.py",
   "web/package.json",
   "web/src/features/application/application-action-renderers.tsx",
