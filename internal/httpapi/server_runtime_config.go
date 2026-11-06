@@ -109,6 +109,7 @@ type serviceRuntimeConfigResponse struct {
 	StreamArchiveConfigs   []serviceRuntimeArchiveStreamConfig   `json:"stream_archive_configs,omitempty"`
 	StreamYouTubeConfigs   []serviceRuntimeYouTubeStreamConfig   `json:"stream_youtube_configs,omitempty"`
 	CurrentDiscordBindings *serviceRuntimeCurrentDiscordBindings `json:"current_discord_bindings,omitempty"`
+	DiscordWaitingMonitor  *serviceRuntimeDiscordWaitingMonitor  `json:"discord_waiting_monitor,omitempty"`
 }
 
 type serviceRuntimeConfigService struct {
@@ -183,6 +184,8 @@ type serviceRuntimeSecretResolveRequest struct {
 	SecretName                   string          `json:"secret_name"`
 	CurrentDiscordBindingVersion int             `json:"current_discord_binding_version,omitempty"`
 	CurrentDiscordBinding        json.RawMessage `json:"current_discord_binding,omitempty"`
+	DiscordWaitingBindingVersion int             `json:"discord_waiting_binding_version,omitempty"`
+	DiscordWaitingBinding        json.RawMessage `json:"discord_waiting_binding,omitempty"`
 }
 
 type serviceRuntimeSecretResolveResponse struct {
@@ -310,7 +313,11 @@ func (s *Server) runtimeConfigForServiceWithCurrent(ctx context.Context, service
 	if err != nil {
 		return serviceRuntimeConfigResponse{}, "list_runtime_youtube_configs_failed", err
 	}
-	return serviceRuntimeConfigResponse{Service: serviceRuntimeConfigServiceFromStore(service), Assignments: assignments, Profiles: profiles, StreamDiscordConfigs: discordConfigs, StreamArchiveConfigs: archiveConfigs, StreamYouTubeConfigs: youtubeConfigs, CurrentDiscordBindings: current}, "", nil
+	monitor, err := s.runtimeDiscordWaitingMonitor(ctx, service, current)
+	if err != nil {
+		return serviceRuntimeConfigResponse{}, "discord_waiting_monitor_unavailable", err
+	}
+	return serviceRuntimeConfigResponse{Service: serviceRuntimeConfigServiceFromStore(service), Assignments: assignments, Profiles: profiles, StreamDiscordConfigs: discordConfigs, StreamArchiveConfigs: archiveConfigs, StreamYouTubeConfigs: youtubeConfigs, CurrentDiscordBindings: current, DiscordWaitingMonitor: monitor}, "", nil
 }
 
 func (s *Server) serviceRuntimeSecretResolve(w http.ResponseWriter, r *http.Request) {
@@ -350,6 +357,10 @@ func (s *Server) serviceRuntimeSecretResolve(w http.ResponseWriter, r *http.Requ
 	if service.TokenID != token.ID || service.ServiceType != token.ServiceType {
 		s.writeServiceAudit(r, token, "services.runtime_secret.resolve", "service", serviceID, "failure", map[string]any{"reason": "service_not_assigned_to_token", "secret_name": secretName})
 		writeJSON(w, http.StatusForbidden, map[string]string{"code": "service_not_assigned_to_token"})
+		return
+	}
+	if len(body.DiscordWaitingBinding) != 0 || body.DiscordWaitingBindingVersion != 0 {
+		s.resolveDiscordWaitingBindingSecret(w, r, token, body)
 		return
 	}
 	if len(body.CurrentDiscordBinding) != 0 || body.CurrentDiscordBindingVersion != 0 {
@@ -500,6 +511,9 @@ func (s *Server) runtimeDiscordStreamConfigs(ctx context.Context, service store.
 		// coexist briefly with its rearmed waiting successor and otherwise creates
 		// an ambiguous primary candidate for the same VC.
 		if !isRuntimeDiscordConfigStreamStatus(stream.Status) {
+			continue
+		}
+		if selected := strings.TrimSpace(stream.SelectedDiscordID); selected != "" && selected != service.ServiceID {
 			continue
 		}
 		if strings.TrimSpace(stream.DiscordConfigID) == "" {
