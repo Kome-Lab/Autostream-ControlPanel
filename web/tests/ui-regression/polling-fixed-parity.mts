@@ -65,7 +65,9 @@ export async function runExactParityFile(webRoot: string, file: string, names: r
   const expectedFile = resolve(webRoot, file);
   let summary: ParitySummary | undefined;
   const completed: CompletedParityTest[] = [];
-  const tests = run({ cwd: webRoot, files: [expectedFile], concurrency: false, forceExit: true, timeout: 180_000, execArgv: ["--no-warnings"] });
+  // Let child report pipes drain before exit (nodejs/node#64833).
+  // Timeout and exact result/name checks below still enforce bounded completeness.
+  const tests = run({ cwd: webRoot, files: [expectedFile], concurrency: false, timeout: 180_000, execArgv: ["--no-warnings"] });
   tests.on("test:complete", result => {
     const fileWrapper = result.nesting === 0 && typeof result.file === "string" && resolve(result.file) === expectedFile
       && (result.name.replaceAll("\\", "/") === file.replaceAll("\\", "/") || isAbsolute(result.name) && resolve(result.name) === expectedFile);
