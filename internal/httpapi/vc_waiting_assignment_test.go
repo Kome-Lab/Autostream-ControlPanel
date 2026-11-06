@@ -322,7 +322,7 @@ func TestVCWaitingSelectionOwnerRaceRollsBackBotAndSettings(t *testing.T) {
 	previousBotID := "previous-bot"
 	beforeSettings, err := streams.UpdateStreamSettings(t.Context(), stream.ID, store.StreamSettings{
 		DiscordConfigID: previous.ID,
-		NodeSelections: &store.StreamNodeSelectionUpdate{DiscordServiceID: &previousBotID},
+		NodeSelections:  &store.StreamNodeSelectionUpdate{DiscordServiceID: &previousBotID},
 	})
 	if err != nil {
 		t.Fatal(err)
