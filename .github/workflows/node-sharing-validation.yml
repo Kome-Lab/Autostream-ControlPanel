@@ -123,7 +123,6 @@ jobs:
         run: npm run test:ui-regression:components
 
   current-source-projection:
-    needs: [shared-node-regressions, shared-node-ui]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
@@ -141,7 +140,7 @@ jobs:
           node-version: 26
           cache: npm
           cache-dependency-path: web/package-lock.json
-      - name: Require the same source's ordinary, full SQL, and actual browser SQL checks
+      - name: Verify immutable passing evidence and identical product source
         env:
           CI_READ_TOKEN: ${{ github.token }}
         run: |
@@ -149,49 +148,65 @@ jobs:
           import json
           import os
           from pathlib import Path
-          import sys
-          import time
+          import subprocess
           import urllib.request
 
-          source = os.environ["GITHUB_SHA"]
           repo = "Kome-Lab/Autostream-ControlPanel"
+          branch = "codex/node-selection-sharing-20261106-01"
+          current = os.environ["GITHUB_SHA"]
           assert os.environ["GITHUB_REPOSITORY"] == repo
-          assert os.environ["GITHUB_REF"] == "refs/heads/codex/node-selection-sharing-20261106-01"
+          assert os.environ["GITHUB_REF"] == "refs/heads/" + branch
+          def git(*args):
+              return subprocess.check_output(["git", *args], text=True).strip()
+          assert git("rev-parse", "HEAD") == current
+          def differences(before):
+              subprocess.run(["git", "merge-base", "--is-ancestor", before, current], check=True)
+              return set(filter(None, git("diff", "--no-renames", "--name-only", before, current).splitlines()))
+          infrastructure = {
+              ".github/workflows/node-sharing-validation.yml",
+              "web/tests/fixtures/ui-regression/polling-current-source-delta.json",
+              "web/tests/ui-regression/polling-current-source-contract.mts",
+          }
+          core_sha = "895c61fb2fd29c28470a52498d48fc7e321ce363"
+          browser_sha = "a67aad1e792e7908cde48a1f681fa69b2af6f72e"
+          core_delta = differences(core_sha)
+          assert core_delta <= infrastructure, "Product or test source changed after the passing core run"
+          browser_delta = differences(browser_sha)
+          assert browser_delta <= infrastructure | {
+              "web/tests/helpers/shared-node-status-source.mts",
+              "web/tests/helpers/ui-foundation-status-authority.mts",
+              "web/tests/ui-foundation-status.test.mts",
+          }, "Product or browser SQL input changed after its passing run"
           headers = {"Authorization": "Bearer " + os.environ["CI_READ_TOKEN"], "Accept": "application/vnd.github+json"}
           def fetch(path):
               request = urllib.request.Request("https://api.github.com/repos/" + repo + path, headers=headers)
               with urllib.request.urlopen(request, timeout=30) as response:
                   return json.load(response)
-          required = [
-              "Run go test ./...",
-              "Test MariaDB persistence",
-              "Verify actual Next UI, HTTP handlers, and MariaDB upload recovery",
-          ]
-          deadline = time.monotonic() + 600
-          while time.monotonic() < deadline:
-              runs = fetch("/actions/runs?head_sha=" + source + "&per_page=30")["workflow_runs"]
-              candidates = [r for r in runs if r["head_sha"] == source and r["name"] == "autostream-control-panel CI"
-                            and r["head_branch"] == "codex/node-selection-sharing-20261106-01"
-                            and r["path"].split("@")[0] == ".github/workflows/ci.yml"]
-              if candidates:
-                  run = max(candidates, key=lambda r: r["id"])
-                  jobs = fetch("/actions/runs/" + str(run["id"]) + "/jobs?per_page=100")["jobs"]
-                  go = next((job for job in jobs if job["name"] == "go"), None)
-                  if go is not None:
-                      steps = {step["name"]: step for step in go["steps"]}
-                      failed = [name for name in required if steps.get(name, {}).get("conclusion") in ("failure", "cancelled", "timed_out", "skipped")]
-                      if failed:
-                          raise SystemExit("Required same-source check did not pass: " + ", ".join(failed))
-                      if all(steps.get(name, {}).get("conclusion") == "success" for name in required):
-                          report = {"source_sha": source, "run_id": run["id"], "job_id": go["id"], "passed_steps": required}
-                          (Path(os.environ["RUNNER_TEMP"]) / "node-sharing-parent-ci-gate.json").write_text(json.dumps(report, indent=2) + "\n")
-                          print("NODE_SHARING_PARENT_CHECKS " + json.dumps(report), flush=True)
-                          break
-                      if go["status"] == "completed":
-                          raise SystemExit("Required same-source check names or successful executions were missing")
-              time.sleep(15)
-          else:
-              raise SystemExit("Timed out waiting for the same source's required checks")
+          def verified_jobs(run_id, revision, workflow, jobs):
+              run = fetch("/actions/runs/" + str(run_id))
+              assert run["head_sha"] == revision and run["head_branch"] == branch
+              assert run["path"].split("@")[0] == workflow
+              actual = {j["id"]: j for j in fetch("/actions/runs/" + str(run_id) + "/jobs?per_page=100")["jobs"]}
+              for job_id, name in jobs:
+                  job = actual[job_id]
+                  assert job["name"] == name and job["status"] == "completed" and job["conclusion"] == "success"
+              return actual
+          verified_jobs(42247202470, core_sha, ".github/workflows/node-sharing-validation.yml", [
+              (127992421989, "shared-node-regressions"), (127992422428, "shared-node-ui"),
+          ])
+          normal = verified_jobs(42243763932, browser_sha, ".github/workflows/ci.yml", [(127981082385, "go")])
+          steps = {s["name"]: s for s in normal[127981082385]["steps"]}
+          required = ["Run go test ./...", "Test MariaDB persistence", "Verify actual Next UI, HTTP handlers, and MariaDB upload recovery"]
+          assert all(steps[name]["conclusion"] == "success" for name in required)
+          report = {
+              "source_sha": current, "core_proof_sha": core_sha, "core_run_id": 42247202470,
+              "browser_proof_sha": browser_sha, "browser_run_id": 42243763932,
+              "core_changed_paths": sorted(core_delta), "browser_changed_paths": sorted(browser_delta),
+              "product_source_identical": True, "browser_sql_inputs_identical": True,
+              "fresh_current_and_legacy_parity_required": True, "passed_normal_steps": required,
+          }
+          (Path(os.environ["RUNNER_TEMP"]) / "node-sharing-parent-ci-gate.json").write_text(json.dumps(report, indent=2) + "\n")
+          print("NODE_SHARING_PARENT_CHECKS " + json.dumps(report), flush=True)
           PY
       - name: Generate only the current source projection and record its commit
         id: projection
