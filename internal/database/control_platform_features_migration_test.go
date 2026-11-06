@@ -242,12 +242,16 @@ func TestMariaDBControlPlatformFeatureMigrationAndPersistence(t *testing.T) {
 	visuals := streamvisual.NewMariaDBRepository(db, media)
 	services := store.NewMariaDBAuthStore(db)
 	assignments := store.StreamCreateAssignments{EncoderServiceID: "encoder-" + userID, WorkerServiceID: "worker-" + userID}
-	for _, role := range []struct{ id, kind string }{{assignments.EncoderServiceID, "encoder_recorder"}, {assignments.WorkerServiceID, "worker"}} {
+	discordServiceID := "discord-" + userID
+	for _, role := range []struct{ id, kind string }{{assignments.EncoderServiceID, "encoder_recorder"}, {assignments.WorkerServiceID, "worker"}, {discordServiceID, "discord_bot"}} {
 		token, err := services.CreateServiceToken(ctx, role.kind, []string{"service.register"})
 		if err != nil {
 			t.Fatal(err)
 		}
 		registration := store.ServiceRegistration{ServiceID: role.id, ServiceType: role.kind, ServiceName: role.id, PublicURL: "https://" + role.id + ".example.com", Version: "ui188", Capabilities: map[string]any{"output_relay_mode": "direct"}}
+		if role.kind == "discord_bot" {
+			registration.Capabilities = map[string]any{}
+		}
 		if _, err = services.PrecreateService(ctx, token, registration); err != nil {
 			t.Fatal(err)
 		}
@@ -270,24 +274,33 @@ func TestMariaDBControlPlatformFeatureMigrationAndPersistence(t *testing.T) {
 	if err != nil || assetAfterRollback.OwnerType != "upload_draft" || assetAfterRollback.OwnerID != session.ID {
 		t.Fatalf("failed create claimed draft=%#v err=%v", assetAfterRollback, err)
 	}
+	// The valid auto-start input must carry one canonical Bot/profile binding.
+	// Keep the earlier draft rollback inputs independent of Discord selection.
+	discordConfig, err := store.NewMariaDBProfileStore(db).CreateProfile(ctx, store.ProfileDiscordConfig, "Bundle 4 Discord "+userID, map[string]any{"service_id": discordServiceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	validAssignments := assignments
+	validAssignments.DiscordServiceID = discordServiceID
+	validAssignments.DiscordConfigID = discordConfig.ID
 	// streams.scheduled_start_at is an existing DATETIME column, so persistence
 	// intentionally has second precision even though the new Bundle 4 tables use
 	// DATETIME(6). Derive the oracle from that schema authority.
 	scheduledStart := now.Add(2 * time.Hour).Truncate(time.Second)
 	createdStream, createdSettings, err := visuals.CreateStream(ctx, userID, streamvisual.Create{
-		Assignments:     assignments,
+		Assignments:     validAssignments,
 		Name:            "Bundle 4 visual stream",
 		UploadSessionID: session.ID,
 		Settings: streamvisual.Update{ExpectedRevision: 0, BackgroundMode: setVisualString("image"), BackgroundAssetID: setVisualString(background.ID), BackgroundVariantID: setVisualString(backgroundVariant.ID), HeaderTitleMode: setVisualString("custom"), HeaderTitleValue: setVisualString("Program title"), DiscordTarget: setDiscordTarget(streamvisual.DiscordTarget{
 			Mode: "manual", GuildID: "4001", TextChannelID: "4002", VoiceChannelID: "4003",
 		})},
-		StreamSettings: store.StreamSettings{ScheduledStartAt: &scheduledStart, DiscordConfigID: "discord-config-01", AutoStartTrigger: "discord_voice_join", EncoderInputURL: "rtmp://127.0.0.1/live/input"},
+		StreamSettings: store.StreamSettings{ScheduledStartAt: &scheduledStart, DiscordConfigID: discordConfig.ID, AutoStartTrigger: "discord_voice_join", EncoderInputURL: "rtmp://127.0.0.1/live/input"},
 	})
 	if err != nil || createdSettings.Revision != 1 || createdSettings.DiscordTargetMode != "manual" || createdSettings.DiscordGuildID != "4001" || createdSettings.DiscordTextChannelID != "4002" || createdSettings.DiscordVoiceChannelID != "4003" {
 		t.Fatalf("valid create settings=%#v err=%v", createdSettings, err)
 	}
 	persistedStream, err := streamStore.GetStream(ctx, createdStream.ID)
-	if err != nil || persistedStream.ScheduledStartAt == nil || !persistedStream.ScheduledStartAt.Equal(scheduledStart) || persistedStream.AutoStartTrigger != "discord_voice_join" || persistedStream.EncoderInputURL != "rtmp://127.0.0.1/live/input" {
+	if err != nil || persistedStream.ScheduledStartAt == nil || !persistedStream.ScheduledStartAt.Equal(scheduledStart) || persistedStream.AutoStartTrigger != "discord_voice_join" || persistedStream.EncoderInputURL != "rtmp://127.0.0.1/live/input" || persistedStream.DiscordConfigID != discordConfig.ID || persistedStream.SelectedDiscordID != discordServiceID {
 		t.Fatalf("atomic stream and visual settings=%#v err=%v", persistedStream, err)
 	}
 	claimed, err := media.GetAsset(ctx, userID, background.ID)
