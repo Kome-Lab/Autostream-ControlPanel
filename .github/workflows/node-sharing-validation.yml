@@ -130,6 +130,7 @@ jobs:
       PYTHONDONTWRITEBYTECODE: "1"
     permissions:
       contents: write
+      actions: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -140,6 +141,58 @@ jobs:
           node-version: 26
           cache: npm
           cache-dependency-path: web/package-lock.json
+      - name: Require the same source's ordinary, full SQL, and actual browser SQL checks
+        env:
+          CI_READ_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import sys
+          import time
+          import urllib.request
+
+          source = os.environ["GITHUB_SHA"]
+          repo = "Kome-Lab/Autostream-ControlPanel"
+          assert os.environ["GITHUB_REPOSITORY"] == repo
+          assert os.environ["GITHUB_REF"] == "refs/heads/codex/node-selection-sharing-20261106-01"
+          headers = {"Authorization": "Bearer " + os.environ["CI_READ_TOKEN"], "Accept": "application/vnd.github+json"}
+          def fetch(path):
+              request = urllib.request.Request("https://api.github.com/repos/" + repo + path, headers=headers)
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  return json.load(response)
+          required = [
+              "Run go test ./...",
+              "Test MariaDB persistence",
+              "Verify actual Next UI, HTTP handlers, and MariaDB upload recovery",
+          ]
+          deadline = time.monotonic() + 600
+          while time.monotonic() < deadline:
+              runs = fetch("/actions/runs?head_sha=" + source + "&per_page=30")["workflow_runs"]
+              candidates = [r for r in runs if r["head_sha"] == source and r["name"] == "autostream-control-panel CI"
+                            and r["head_branch"] == "codex/node-selection-sharing-20261106-01"
+                            and r["path"].split("@")[0] == ".github/workflows/ci.yml"]
+              if candidates:
+                  run = max(candidates, key=lambda r: r["id"])
+                  jobs = fetch("/actions/runs/" + str(run["id"]) + "/jobs?per_page=100")["jobs"]
+                  go = next((job for job in jobs if job["name"] == "go"), None)
+                  if go is not None:
+                      steps = {step["name"]: step for step in go["steps"]}
+                      failed = [name for name in required if steps.get(name, {}).get("conclusion") in ("failure", "cancelled", "timed_out", "skipped")]
+                      if failed:
+                          raise SystemExit("Required same-source check did not pass: " + ", ".join(failed))
+                      if all(steps.get(name, {}).get("conclusion") == "success" for name in required):
+                          report = {"source_sha": source, "run_id": run["id"], "job_id": go["id"], "passed_steps": required}
+                          (Path(os.environ["RUNNER_TEMP"]) / "node-sharing-parent-ci-gate.json").write_text(json.dumps(report, indent=2) + "\n")
+                          print("NODE_SHARING_PARENT_CHECKS " + json.dumps(report), flush=True)
+                          break
+                      if go["status"] == "completed":
+                          raise SystemExit("Required same-source check names or successful executions were missing")
+              time.sleep(15)
+          else:
+              raise SystemExit("Timed out waiting for the same source's required checks")
+          PY
       - name: Generate only the current source projection and record its commit
         id: projection
         shell: bash
@@ -300,6 +353,7 @@ jobs:
         with:
           name: node-sharing-current-projection-${{ github.sha }}
           path: |
+            ${{ runner.temp }}/node-sharing-parent-ci-gate.json
             ${{ runner.temp }}/node-sharing-projection-summary.json
             ${{ runner.temp }}/node-sharing-projection/
           if-no-files-found: warn

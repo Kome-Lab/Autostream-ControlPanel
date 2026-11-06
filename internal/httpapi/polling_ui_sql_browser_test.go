@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -76,6 +77,14 @@ func runPollingActualUIBrowser(t *testing.T, maria bool) {
 	handler := NewServer(st.streams, WithAuthStore(st.auth), WithServiceRegistryStore(st.services), WithAuditStore(st.audit), WithProfileStore(st.profiles), WithSecretStore(st.secrets), WithRuntimeSecretLeaseStore(st.leases), WithMediaAssetRepository(media), visualOption, targetOption, coverOption)
 	encoder := p2RegisterSQLService(t, st.services, "encoder_recorder")
 	worker := p2RegisterSQLService(t, st.services, "worker")
+	beforeServices := make(map[string]store.RegisteredService, 2)
+	for _, serviceID := range []string{encoder, worker} {
+		service, getErr := st.services.GetService(t.Context(), serviceID)
+		if getErr != nil {
+			t.Fatal(getErr)
+		}
+		beforeServices[serviceID] = service
+	}
 	cookie, csrf := loginForTest(t, handler, "polling-browser-admin", password)
 	// Synthetic session injection is confined to this disposable loopback test.
 	// Production authentication/permissions/CSRF and every handler/store still run.
@@ -125,14 +134,27 @@ func runPollingActualUIBrowser(t *testing.T, maria bool) {
 	if err != nil || len(settings.CoverCandidates) != wantCandidates {
 		t.Fatal("actual browser candidates did not persist")
 	}
-	assignments, err := st.services.ListStreamAssignments(t.Context(), rows[0].ID)
-	if err != nil || len(assignments) != 2 {
-		t.Fatal("actual browser primary assignments did not commit atomically")
+	selectionStore, ok := st.streams.(store.StreamNodeSelectionStore)
+	if !ok {
+		t.Fatal("actual browser fixture has no saved Node selection store")
 	}
-	for _, assignment := range assignments {
-		service, err := st.services.GetService(t.Context(), assignment.ServiceID)
-		if err != nil || service.CurrentStreamID != rows[0].ID || assignment.AssignmentRole != "primary" {
-			t.Fatal("actual browser service current binding mismatch")
+	selected, err := selectionStore.GetStreamNodeSelections(t.Context(), rows[0].ID)
+	if err != nil || selected != (store.StreamNodeSelections{EncoderServiceID: encoder, WorkerServiceID: worker}) ||
+		!rows[0].NodeSelectionsConfigured || rows[0].SelectedEncoderID != encoder || rows[0].SelectedWorkerID != worker || rows[0].SelectedDiscordID != "" {
+		t.Fatal("actual browser saved Node selections did not commit atomically")
+	}
+	assignments, err := st.services.ListStreamAssignments(t.Context(), rows[0].ID)
+	if err != nil || len(assignments) != 0 || rows[0].AssignedEncoderID != "" || rows[0].AssignedWorkerID != "" {
+		t.Fatal("actual browser save claimed execution assignments")
+	}
+	for _, serviceID := range []string{encoder, worker} {
+		service, getErr := st.services.GetService(t.Context(), serviceID)
+		if getErr != nil || !reflect.DeepEqual(beforeServices[serviceID], service) {
+			t.Fatal("actual browser save changed a selected Node's runtime state")
+		}
+		serviceAssignments, listErr := st.services.ListServiceAssignmentsForService(t.Context(), serviceID)
+		if listErr != nil || len(serviceAssignments) != 0 {
+			t.Fatal("actual browser save acquired a selected Node's execution ownership")
 		}
 	}
 	var originals, claimedSessions int
@@ -145,7 +167,7 @@ func runPollingActualUIBrowser(t *testing.T, maria bool) {
 		}
 	}
 	if evidence := os.Getenv("AUTOSTREAM_SQL_UI_EVIDENCE_DIR"); evidence != "" {
-		proof, _ := json.MarshalIndent(map[string]any{"status": "PASS_REAL_UI_HANDLER_" + kind + "_STATE", "streams": 1, "candidates": wantCandidates, "originals": originals, "claimed_sessions": claimedSessions, "primary_assignments": 2}, "", "  ")
+		proof, _ := json.MarshalIndent(map[string]any{"status": "PASS_REAL_UI_HANDLER_" + kind + "_STATE", "streams": 1, "candidates": wantCandidates, "originals": originals, "claimed_sessions": claimedSessions, "saved_node_selections": 2, "primary_assignments": len(assignments), "node_runtime_unchanged": true}, "", "  ")
 		if err = os.WriteFile(filepath.Join(evidence, "handler-state.json"), proof, 0600); err != nil {
 			t.Fatal(err)
 		}
