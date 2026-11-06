@@ -22,10 +22,18 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-      - name: Verify CP product bytes and unchanged original CI
-        run: python3 scripts/ci/ui188-full-e2e/source.py --component cp --root .
-      - name: Exercise positive and rejection contracts without live services
-        run: python3 -B -m unittest discover -s scripts/ci/ui188-full-e2e -p 'test_*.py' -v
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 26
+      - name: Verify current authored source and raw distributions
+        run: python3 -B scripts/ci/verify_source_integrity.py --repository Autostream-ControlPanel --tree "$(git rev-parse HEAD)"
+      - name: Restore and verify the immutable UI188 historical product fixture
+        run: python3 -B scripts/ci/ui188_historical_fixture.py --root . --destination "$RUNNER_TEMP/ui188-historical-cp"
+      - name: Exercise historical positive and rejection contracts without live services
+        run: python3 -B -m unittest discover -s "$RUNNER_TEMP/ui188-historical-cp/scripts/ci/ui188-full-e2e" -p 'test_*.py' -v
+      - name: Confirm historical checks did not modify current product source
+        run: git diff --exit-code HEAD --
 
   linux-bootstrap:
     if: github.event_name == 'push' && github.repository == 'Kome-Lab/Autostream-ControlPanel' && github.ref == 'refs/heads/fix/part5-ui-188-release-integration-actions' && github.run_attempt == 1

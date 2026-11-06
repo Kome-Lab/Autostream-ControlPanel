@@ -1,5 +1,4 @@
 import { japaneseCopy, type UICopy } from "@/lib/i18n/ui-v2/copy";
-import { defaultAPIErrorRegistry, defineAPIErrorRegistry } from "@/lib/foundation/api-errors/registry";
 import type { StreamActionExecutionResult } from "@/features/streams/stream-action-controller";
 import type { StreamActionIntent } from "@/features/streams/stream-action-descriptors";
 export { isStreamValue } from "@/features/streams/stream-action-response";
@@ -46,13 +45,3 @@ export function streamNodeIssueMessageKey(code: unknown): StreamNodeIssueMessage
       return undefined;
   }
 }
-
-export const streamNodeErrorRegistry = defineAPIErrorRegistry({
-  codes: {
-    ...defaultAPIErrorRegistry.codes,
-    node_execution_busy: { kind: "conflict", messageKey: "streamNodeExecutionBusy", statuses: [409] },
-    service_node_busy: { kind: "conflict", messageKey: "streamNodeExecutionBusy", statuses: [409] },
-    discord_waiting_monitor_capability_unavailable: { kind: "protected_state", messageKey: "streamDiscordMonitorUpdateRequired", statuses: [409] },
-    service_not_selected_for_stream: { kind: "forbidden", messageKey: "streamNodeNotSelected", statuses: [403] },
-  },
-});

@@ -15,7 +15,6 @@ import { isStreamValue, isConfirmedStreamStopOutcome } from "@/features/streams/
 import { definitiveStreamCreateRejection, streamCreateErrorRegistry } from "@/features/streams/stream-create-errors";
 import { withBoundedActionRevalidation } from "@/lib/actions/bounded-revalidation";
 import { APIError } from "@/lib/api/client";
-import { streamNodeErrorRegistry } from "@/features/streams/stream-action-feedback";
 
 export type StreamActionStateSnapshot = Readonly<{
   kind: "ready" | "missing" | "unknown";
@@ -75,6 +74,16 @@ const deleteErrorRegistry = defineAPIErrorRegistry({
       messageKey: "streamDeleteFinalizationPending",
       statuses: [409],
     },
+  },
+});
+
+const streamNodeErrorRegistry = defineAPIErrorRegistry({
+  codes: {
+    ...defaultAPIErrorRegistry.codes,
+    node_execution_busy: { kind: "conflict", messageKey: "streamNodeExecutionBusy", statuses: [409] },
+    service_node_busy: { kind: "conflict", messageKey: "streamNodeExecutionBusy", statuses: [409] },
+    discord_waiting_monitor_capability_unavailable: { kind: "protected_state", messageKey: "streamDiscordMonitorUpdateRequired", statuses: [409] },
+    service_not_selected_for_stream: { kind: "forbidden", messageKey: "streamNodeNotSelected", statuses: [403] },
   },
 });
 
