@@ -209,13 +209,25 @@ func TestMariaDBArchiveAuthorityRequiresExactV2Report(t *testing.T) {
 	staleStartedAt := claimed.ArchiveAuthority.StartedAt.Add(-time.Minute)
 	staleRunID := "stale-run-" + suffix
 	stalePath := fmt.Sprintf("final/%s/%s/final.mp4", stream.ID, staleRunID)
+	// This run was never claimed or recorded for this encoder. A valid current
+	// token cannot invent historical source authority by reporting a stale run.
 	if err := streams.WriteStreamArtifactReport(ctx, encoderToken, store.ServiceStreamEvent{ServiceID: encoderID, StreamID: stream.ID, EventType: "archive.artifacts.reported"}, []store.StreamArtifact{{
 		ArchiveRunID: staleRunID, ArchiveStartedAt: &staleStartedAt, Kind: "archive", Name: "final.mp4", RelativePath: stalePath, SizeBytes: 2,
-	}}); err != nil {
-		t.Fatal(err)
+	}}); !errors.Is(err, store.ErrForbidden) {
+		t.Fatalf("unrecorded stale v2 report err=%v, want ErrForbidden", err)
 	}
 	if current, getErr := streams.GetStream(ctx, stream.ID); getErr != nil || current.ArchiveReportedAt != nil {
 		t.Fatalf("stale v2 report closed authority: stream=%#v err=%v", current, getErr)
+	}
+	if artifacts, listErr := streams.ListStreamArtifacts(ctx, stream.ID); listErr != nil || len(artifacts) != 0 {
+		t.Fatalf("rejected stale report changed catalog: count=%d err=%v", len(artifacts), listErr)
+	}
+	var reportEvents int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM service_stream_events WHERE stream_id = ? AND event_type = 'archive.artifacts.reported'`, stream.ID).Scan(&reportEvents); err != nil || reportEvents != 0 {
+		t.Fatalf("rejected stale report changed event history: count=%d err=%v", reportEvents, err)
+	}
+	if _, err := auth.UnassignServiceFromStreamGuarded(ctx, store.ServiceUnassignmentMutation{ServiceID: encoderID}); !errors.Is(err, store.ErrServiceUnassignProtectedStream) {
+		t.Fatalf("unassign after rejected stale report err=%v", err)
 	}
 
 	artifact := store.StreamArtifact{

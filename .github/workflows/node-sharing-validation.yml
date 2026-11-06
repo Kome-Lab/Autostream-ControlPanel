@@ -60,7 +60,7 @@ jobs:
         run: |
           set -euo pipefail
           go test -race -timeout 5m -p 1 ./internal/store \
-            -run '^Test((Memory|MariaDB)(SharedNodeSelections|SelectedStartClaims|ArchiveRunSource|ExplicitNodeSelection)|DiscordWaitingCredential)' \
+            -run '^Test((Memory|MariaDB)(SharedNodeSelections|SelectedStartClaims|ArchiveRunSource|ExplicitNodeSelection|VCWaitingCreateRevalidatesProfileAndCurrentSnapshot|ArchiveAuthorityRequiresExactV2Report)|DiscordWaitingCredential)' \
             -count=1 -json | tee "${RUNNER_TEMP}/node-sharing-store.json"
       - name: Run real MariaDB selection migration regressions
         if: success() || failure()
@@ -90,46 +90,6 @@ jobs:
       - name: Verify current source owners and physical source limits
         if: success() || failure()
         run: python3 scripts/ci/verify_source_integrity.py --repository Autostream-ControlPanel --tree "${GITHUB_SHA}" --out "${RUNNER_TEMP}/node-sharing-source-integrity.json"
-      - name: Generate reviewed current source projection candidates
-        if: always() && steps.goformat.outcome == 'success'
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          import base64
-          import hashlib
-          import json
-          import os
-          from pathlib import Path
-          import subprocess
-          import sys
-          root = Path.cwd()
-          paths = [
-              "web/tests/fixtures/ui-regression/polling-current-source-delta.json",
-              "web/tests/ui-regression/polling-current-source-contract.mts",
-          ]
-          legacy = root / "web/tests/fixtures/ui-regression/polling-legacy-parity.json"
-          legacy_before = legacy.read_bytes()
-          input_tree = subprocess.check_output(["git", "rev-parse", os.environ["GITHUB_SHA"] + "^{tree}"], text=True).strip()
-          result = subprocess.run([
-              sys.executable, "scripts/ci/generate_polling_source_projection.py",
-              "--root", str(root), "--tree", input_tree,
-              "--accept-path-changes", "--receipt", str(Path(os.environ["RUNNER_TEMP"]) / "node-sharing-projection"),
-          ], check=False, text=True, capture_output=True)
-          if result.stderr:
-              print(result.stderr, file=sys.stderr, flush=True)
-          result.check_returncode()
-          assert legacy.read_bytes() == legacy_before, "Frozen legacy inventory changed"
-          report = {"source_sha": os.environ["GITHUB_SHA"], "legacy_unchanged": True, "generation": json.loads(result.stdout), "files": []}
-          for path in paths:
-              data = (root / path).read_bytes()
-              encoded = base64.b64encode(data).decode("ascii")
-              chunks = [encoded[index:index + 12000] for index in range(0, len(encoded), 12000)]
-              report["files"].append({"path": path, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest(), "chunks": len(chunks)})
-              for index, chunk in enumerate(chunks):
-                  print("NODE_SHARING_PROJECTION_CHUNK " + json.dumps({"path": path, "index": index, "data": chunk}), flush=True)
-          print("NODE_SHARING_PROJECTION_MANIFEST " + json.dumps(report), flush=True)
-          (Path(os.environ["RUNNER_TEMP"]) / "node-sharing-projection-summary.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
-          PY
       - name: Preserve regression observations
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -161,5 +121,183 @@ jobs:
         run: node --no-warnings ../scripts/ci/build-web-preserving-sources.mjs
       - name: Verify current shared selection and all component views
         run: npm run test:ui-regression:components
-      - name: Verify current source projection and immutable legacy parity
+
+  current-source-projection:
+    needs: [shared-node-regressions, shared-node-ui]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 26
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Generate only the current source projection and record its commit
+        id: projection
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+
+          root = Path.cwd()
+          branch = "codex/node-selection-sharing-20261106-01"
+          assert os.environ["GITHUB_REPOSITORY"] == "Kome-Lab/Autostream-ControlPanel"
+          assert os.environ["GITHUB_REF"] == "refs/heads/" + branch
+          def git(*args):
+              return subprocess.check_output(["git", *args], text=True).strip()
+          source = os.environ["GITHUB_SHA"]
+          assert git("rev-parse", "HEAD") == source
+          assert not git("status", "--porcelain", "--untracked-files=no")
+          paths = [
+              "web/tests/fixtures/ui-regression/polling-current-source-delta.json",
+              "web/tests/ui-regression/polling-current-source-contract.mts",
+          ]
+          legacy = root / "web/tests/fixtures/ui-regression/polling-legacy-parity.json"
+          legacy_before = legacy.read_bytes()
+          source_tree = git("rev-parse", source + "^{tree}")
+          result = subprocess.run([
+              sys.executable, "scripts/ci/generate_polling_source_projection.py",
+              "--root", str(root), "--tree", source_tree,
+              "--accept-path-changes",
+              "--receipt", str(Path(os.environ["RUNNER_TEMP"]) / "node-sharing-projection"),
+          ], text=True, capture_output=True, check=True)
+          if result.stderr:
+              print(result.stderr, file=sys.stderr)
+          assert legacy.read_bytes() == legacy_before, "Frozen legacy inventory changed"
+          changed = set(filter(None, git("diff", "--name-only").splitlines()))
+          assert changed <= set(paths), "Generator changed a non-current source path"
+          if changed:
+              subprocess.run(["git", "add", "--", *paths], check=True)
+              staged = set(filter(None, git("diff", "--cached", "--name-only").splitlines()))
+              assert staged == changed
+              subprocess.run([
+                  "git", "-c", "user.name=github-actions[bot]",
+                  "-c", "user.email=41898282+github-actions[bot]@users.noreply.github.com",
+                  "commit", "-m", "Refresh reviewed current source projection for shared Node selections",
+              ], check=True)
+          projected = git("rev-parse", "HEAD")
+          assert set(filter(None, git("diff", "--name-only", source, projected).splitlines())) == changed
+          report = {
+              "source_sha": source, "source_tree": source_tree,
+              "projection_sha": projected, "changed_paths": sorted(changed),
+              "legacy_unchanged": True, "generation": json.loads(result.stdout),
+              "files": [{"path": p, "sha256": hashlib.sha256((root / p).read_bytes()).hexdigest()} for p in paths],
+          }
+          (Path(os.environ["RUNNER_TEMP"]) / "node-sharing-projection-summary.json").write_text(json.dumps(report, indent=2) + "\n")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write("projection_sha=" + projected + "\n")
+          print("NODE_SHARING_VERIFIED_PROJECTION " + json.dumps(report), flush=True)
+          PY
+      - name: Read the pinned Contracts authority for status vocabulary verification
+        id: authority
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import re
+          data = json.loads(Path("web/tests/fixtures/ui-foundation-status-authority.json").read_text(encoding="utf-8"))
+          current = next(item for item in data["authorities"] if item["id"] == "contracts")["currentSource"]
+          assert current["objectKind"] == "commit" and re.fullmatch(r"[0-9a-f]{40}", current["revision"])
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write("contracts_sha=" + current["revision"] + "\n")
+          PY
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: Kome-Lab/Autostream-Contracts
+          ref: ${{ steps.authority.outputs.contracts_sha }}
+          path: status-authority-contracts
+          persist-credentials: false
+      - name: Keep authority sources outside the product tree
+        run: |
+          set -euo pipefail
+          authority_root="$RUNNER_TEMP/node-sharing-status-authority-contracts"
+          test ! -e "$authority_root"
+          mv -- status-authority-contracts "$authority_root"
+          printf 'AUTOSTREAM_STATUS_CONTRACTS_ROOT=%s\n' "$authority_root" >> "$GITHUB_ENV"
+      - run: npm ci
+        working-directory: web
+      - name: Verify the exact generated commit source owners
+        run: python3 scripts/ci/verify_source_integrity.py --repository Autostream-ControlPanel --tree "${{ steps.projection.outputs.projection_sha }}"
+      - name: Verify current source and the complete immutable legacy parity
         run: npm run test:ui-regression:parity
+        working-directory: web
+      - name: Verify unchanged status vocabularies through the current source projection
+        run: node --no-warnings --test tests/ui-foundation-status.test.mts
+        working-directory: web
+      - name: Publish only the verified projection to this isolated feature branch
+        env:
+          PROJECTION_SHA: ${{ steps.projection.outputs.projection_sha }}
+          PROJECTION_GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import base64
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+          import urllib.request
+
+          repo = "Kome-Lab/Autostream-ControlPanel"
+          branch = "codex/node-selection-sharing-20261106-01"
+          source, projected = os.environ["GITHUB_SHA"], os.environ["PROJECTION_SHA"]
+          assert os.environ["GITHUB_REPOSITORY"] == repo
+          assert os.environ["GITHUB_REF"] == "refs/heads/" + branch
+          def git(*args):
+              return subprocess.check_output(["git", *args], text=True).strip()
+          assert git("rev-parse", "HEAD") == projected
+          assert not git("status", "--porcelain", "--untracked-files=no")
+          allowed = {
+              "web/tests/fixtures/ui-regression/polling-current-source-delta.json",
+              "web/tests/ui-regression/polling-current-source-contract.mts",
+          }
+          assert set(filter(None, git("diff", "--name-only", source, projected).splitlines())) <= allowed
+          token = os.environ.pop("PROJECTION_GITHUB_TOKEN")
+          def remote_head():
+              request = urllib.request.Request(
+                  "https://api.github.com/repos/" + repo + "/git/ref/heads/" + branch,
+                  headers={"Authorization": "Bearer " + token, "Accept": "application/vnd.github+json"},
+              )
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  return json.load(response)["object"]["sha"]
+          assert remote_head() == source, "Feature branch advanced; projection writeback refused"
+          if projected != source:
+              encoded = base64.b64encode(("x-access-token:" + token).encode()).decode()
+              print("::add-mask::" + encoded, flush=True)
+              result = subprocess.run([
+                  "git", "-c", "credential.helper=",
+                  "-c", "http.https://github.com/.extraheader=AUTHORIZATION: basic " + encoded,
+                  "push", "https://github.com/" + repo + ".git", "HEAD:refs/heads/" + branch,
+              ])
+              if result.returncode:
+                  sys.exit(result.returncode)
+          assert remote_head() == projected, "Projection branch readback did not match the verified commit"
+          report_path = Path(os.environ["RUNNER_TEMP"]) / "node-sharing-projection-summary.json"
+          report = json.loads(report_path.read_text())
+          report["published_sha"] = projected
+          report_path.write_text(json.dumps(report, indent=2) + "\n")
+          print("NODE_SHARING_PROJECTION_PUBLISHED " + projected, flush=True)
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
+              summary.write("Product source: " + source + "\n\nVerified projection commit: " + projected + "\n")
+          PY
+      - name: Preserve exact projection generation and verification receipts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: node-sharing-current-projection-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/node-sharing-projection-summary.json
+            ${{ runner.temp }}/node-sharing-projection/
+          if-no-files-found: warn
