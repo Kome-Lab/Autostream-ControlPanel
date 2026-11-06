@@ -76,6 +76,14 @@ jobs:
           go test -race -timeout 5m -p 1 ./internal/httpapi \
             -run '^Test(SharedNodeSelection|DiscordWaitingMonitor|NodeSelectionServiceAuthority|ServiceStart|CreateStreamSavesSharedDiscord|CreateStreamPreservesActive|CreateStreamParallel|UpdateStreamSettingsRejectsInvalidSelection|UpdateStreamSettingsExplicitEmpty|UI188CreateMandatoryRolesPermissionAndAtomicNodeSelections)' \
             -count=1 -json | tee "${RUNNER_TEMP}/node-sharing-http.json"
+      - name: Run complete ordinary Go test suite
+        if: success() || failure()
+        env:
+          AUTOSTREAM_MARIADB_TEST_DSN: ""
+        shell: bash
+        run: |
+          set -euo pipefail
+          go test -timeout 12m -p 1 ./... -count=1 -json | tee "${RUNNER_TEMP}/node-sharing-all-go.json"
       - name: Build Linux Control Panel
         if: success() || failure()
         run: CGO_ENABLED=0 go build -p 1 ./cmd/control-panel
@@ -101,11 +109,15 @@ jobs:
           ]
           legacy = root / "web/tests/fixtures/ui-regression/polling-legacy-parity.json"
           legacy_before = legacy.read_bytes()
+          input_tree = subprocess.check_output(["git", "rev-parse", os.environ["GITHUB_SHA"] + "^{tree}"], text=True).strip()
           result = subprocess.run([
               sys.executable, "scripts/ci/generate_polling_source_projection.py",
-              "--root", str(root), "--tree", os.environ["GITHUB_SHA"],
+              "--root", str(root), "--tree", input_tree,
               "--accept-path-changes", "--receipt", str(Path(os.environ["RUNNER_TEMP"]) / "node-sharing-projection"),
-          ], check=True, text=True, capture_output=True)
+          ], check=False, text=True, capture_output=True)
+          if result.stderr:
+              print(result.stderr, file=sys.stderr, flush=True)
+          result.check_returncode()
           assert legacy.read_bytes() == legacy_before, "Frozen legacy inventory changed"
           report = {"source_sha": os.environ["GITHUB_SHA"], "legacy_unchanged": True, "generation": json.loads(result.stdout), "files": []}
           for path in paths:
