@@ -2,10 +2,10 @@
 import { mediaUploadMessages } from "./media-upload";
 export const messages = {
   ...mediaUploadMessages,
-  "担当EncoderとWorkerを選択して、配信経路と枠をまとめて保存します。": "Select an Encoder and Worker to save the stream and its assignments together.",
+  "担当EncoderとWorkerを選択して、配信経路と枠をまとめて保存します。": "Select an Encoder and Worker to save the stream with its node selections and routing.",
   "担当Workerを選択してください。": "Select a Worker.",
   "担当Encoderを選択してください。": "Select an Encoder.",
-  "別の枠で使用中のNodeは選択できません。オフラインのNodeを選んだ場合は、開始前に稼働状態を確認してください。": "Nodes used by another stream cannot be selected. Check offline nodes before starting.",
+  "同じNodeを複数の配信枠で選択できます。開始時にNodeが空いている必要があります。オフラインのNodeは開始前に稼働状態を確認してください。": "You can select the same node for multiple streams. The node must be available when starting. Check that offline nodes are running before starting.",
   "{0}の{1}を受け付けました。最新状態を確認してください。": "Accepted {1} for {0}. Check the latest state.",
   "操作結果を確認できません。再送せず、配信枠の最新状態または監査ログを確認してください。": "The operation outcome is unknown. Check the latest stream state or audit log before sending another request.",
   "{0} 再送せず、最新状態を確認してください。": "{0} Check the latest state before sending another request.",

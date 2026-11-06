@@ -26,8 +26,8 @@ export function oauthAccountName(account: Record<string, unknown>, uiText: UICop
 }
 export function serviceAssignmentPresentation(service: Parameters<typeof streamServiceAssignmentOption>[0], editingStreamID?: string, uiText: UICopy = japaneseCopy) {
   const option=streamServiceAssignmentOption(service,editingStreamID);
-  return {...option,label:option.disabled?uiText("{0}（別の配信枠で使用中）",service.label):option.label,
-    description:option.description?uiText("現在の配信枠を停止し、割り当てを解除してから選択してください。"):undefined};
+  return {...option,label:option.inUse?uiText("{0}（別の配信枠で使用中）",service.label):option.label,
+    description:option.description?uiText("他の配信枠で使用中でも選択して保存できます。開始時にNodeが空いている必要があります。"):undefined};
 }
 
 // The existing formatter sanitizes targets/errors first. Only its fixed status

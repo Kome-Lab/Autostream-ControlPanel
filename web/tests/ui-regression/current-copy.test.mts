@@ -160,9 +160,52 @@ test("UI-COPY-POLICY: recording count and busy assignment remain locale-independ
     const original=recordingDescriptor(stream);
     assert.equal(original.label,"録画中");
     const option=serviceAssignmentPresentation({value:"worker",label:"名前",currentStreamID:"other"},"s",createUICopy(locale));
-    assert.equal(option.disabled,true);assert.equal(option.value,"worker");assert.ok(option.label.includes("名前"));
+    assert.equal(option.disabled,false);assert.equal(option.inUse,true);assert.equal(option.value,"worker");assert.ok(option.label.includes("名前"));
+    assert.match(option.label,locale==="ja"?/別の配信枠で使用中/:/used by another stream/);
+    assert.match(option.description||"",locale==="ja"?/開始時にNodeが空いている必要/:/node must be available when starting/);
     assert.equal(fixedPresentationText("user-unrecognized-value",createUICopy(locale)),"user-unrecognized-value");
   }
+});
+
+test("UI-NODE-SELECTION: actual edit defaults prefer saved selections, retain explicit clears and fall back for legacy responses", async () => {
+  const { StreamSlotForm } = await import("../../src/features/streams/stream-slot-form.tsx");
+  const nodes = [
+    { id: "runtime-encoder", service_id: "runtime-encoder", service_type: "encoder_recorder", service_name: "Runtime Encoder", status: "online", current_stream_id: "stream-b" },
+    { id: "runtime-worker", service_id: "runtime-worker", service_type: "worker", service_name: "Runtime Worker", status: "online", current_stream_id: "stream-b" },
+    { id: "selected-encoder", service_id: "selected-encoder", service_type: "encoder_recorder", service_name: "Selected Encoder", status: "online", current_stream_id: "stream-a" },
+    { id: "selected-worker", service_id: "selected-worker", service_type: "worker", service_name: "Selected Worker", status: "online", current_stream_id: "stream-a" },
+  ];
+  const originalNodes = structuredClone(nodes);
+  function selectedLabel(html: string, label: string): string {
+    const field = [...html.matchAll(/<label\b[^>]*>([\s\S]*?)<\/label>/g)].map(match => match[1]).find(body => body.includes(">" + label + "</span>"));
+    assert.ok(field, "visible Node field must be present: " + label);
+    const trigger = field.match(/<button\b[^>]*>([\s\S]*?)<\/button>/);
+    assert.ok(trigger, "visible Node selection must be present");
+    return trigger[1].replace(/<[^>]*>/g, "").trim();
+  }
+  const cases = [
+    { selection: { selected_encoder_id: "selected-encoder", selected_worker_id: "selected-worker" }, expected: "selected" },
+    { selection: { selected_encoder_id: "", selected_worker_id: "" }, expected: "cleared" },
+    { selection: {}, expected: "legacy" },
+  ];
+  for (const locale of ["ja", "en"] as const) {
+    for (const fixture of cases) {
+      const stream = { id: "stream-b", name: "Frame B", status: "ready", assigned_encoder_id: "runtime-encoder", assigned_worker_id: "runtime-worker", ...fixture.selection };
+      const before = structuredClone(stream);
+      const html = renderUI(createElement(StreamSlotForm, { ...callbacks, stream }), locale, "/admin/streams/", client => {
+        client.setQueryData(["service-health"], nodes);
+      });
+      const suffix = locale === "ja" ? "（別の配信枠で使用中）" : " (used by another stream)";
+      const empty = locale === "ja" ? "未選択" : "Not selected";
+      const encoder = fixture.expected === "selected" ? "Selected Encoder" + suffix : fixture.expected === "cleared" ? empty : "Runtime Encoder";
+      const worker = fixture.expected === "selected" ? "Selected Worker" + suffix : fixture.expected === "cleared" ? empty : "Runtime Worker";
+      assert.equal(selectedLabel(html, locale === "ja" ? "担当Encoder Node" : "Assigned encoder node"), encoder);
+      assert.equal(selectedLabel(html, locale === "ja" ? "担当Worker Node" : "Assigned worker node"), worker);
+      assert.match(html, locale === "ja" ? /開始時にNodeが空いている必要/ : /node must be available when starting/);
+      assert.deepEqual(stream, before, "opening an editor must preserve the runtime owner");
+    }
+  }
+  assert.deepEqual(nodes, originalNodes, "opening an editor must preserve current Node usage");
 });
 
 test("UI-COPY-NOTIFICATION: actual safe formatter retains result policy and never feeds raw errors or targets to copy",async()=>{

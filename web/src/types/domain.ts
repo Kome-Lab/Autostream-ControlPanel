@@ -21,6 +21,11 @@ export type Stream = {
   archive_reported_at?: string;
   input_source?: string;
   output_target?: string;
+  // Saved Node selections are independent of the current execution owner.
+  selected_worker_id?: string;
+  selected_encoder_id?: string;
+  selected_discord_id?: string;
+  // Active execution ownership, not the saved selection.
   assigned_worker_id?: string;
   assigned_encoder_id?: string;
   scheduled_start_at?: string;

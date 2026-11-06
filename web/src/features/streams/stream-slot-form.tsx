@@ -74,7 +74,7 @@ export function StreamSlotForm({ stream, className, actionController, onActionRe
   const [watermarkEnabled, setWatermarkEnabled] = useState(Boolean(stream?.overlay_profile_id));
   const [overlayProfileID, setOverlayProfileID] = useState(optionOrNone(stream?.overlay_profile_id));
   const [encoderAudioGainDB, setEncoderAudioGainDB] = useState(String(stream?.encoder_audio_gain_db ?? 0));
-  // null preserves backend ownership; choosing the empty option is an explicit unassign.
+  // null preserves the saved selection; choosing the empty option explicitly clears it.
   const [encoderServiceID, setEncoderServiceID] = useState<string | null>(null);
   const [workerServiceID, setWorkerServiceID] = useState<string | null>(null);
   const [scheduledStartAt, setScheduledStartAt] = useState(() => streamScheduleInputValue(stream?.scheduled_start_at));
@@ -86,8 +86,8 @@ export function StreamSlotForm({ stream, className, actionController, onActionRe
   const [serverIssues, setServerIssues] = useState<readonly StreamCreateIssue[]>([]);
   const [savePending, setSavePending] = useState(false);
   const [saveOutcomeUnresolved, setSaveOutcomeUnresolved] = useState(false);
-  const effectiveEncoderServiceID = encoderServiceID ?? optionOrNone(stream?.assigned_encoder_id);
-  const effectiveWorkerServiceID = workerServiceID ?? optionOrNone(stream?.assigned_worker_id);
+  const effectiveEncoderServiceID = encoderServiceID ?? optionOrNone(stream?.selected_encoder_id ?? stream?.assigned_encoder_id);
+  const effectiveWorkerServiceID = workerServiceID ?? optionOrNone(stream?.selected_worker_id ?? stream?.assigned_worker_id);
 
   const payload = useMemo(
     () => liveEditing ? {
@@ -209,7 +209,7 @@ export function StreamSlotForm({ stream, className, actionController, onActionRe
                 {!editing || canAssignEncoder ? <SelectField label={uiText("担当Encoder Node")} value={effectiveEncoderServiceID} onChange={setEncoderServiceID} required={!editing} disabled={!canAssignEncoder} error={fieldError("encoder") || (!editing && selectedValue(effectiveEncoderServiceID) === "" ? uiText("担当Encoderを選択してください。") : undefined)} options={[{ value: noneValue, label: uiText("未選択") }, ...encoderNodes]} /> : null}
               </div>
             </FormSection>
-            {!editing ? <div className="flex gap-2 rounded-md border bg-muted/30 p-3 text-sm text-muted-foreground"><AlertCircle className="mt-0.5 size-4 shrink-0" />{uiText("別の枠で使用中のNodeは選択できません。オフラインのNodeを選んだ場合は、開始前に稼働状態を確認してください。")}</div> : null}
+            <div className="flex gap-2 rounded-md border bg-muted/30 p-3 text-sm text-muted-foreground"><AlertCircle className="mt-0.5 size-4 shrink-0" />{uiText("同じNodeを複数の配信枠で選択できます。開始時にNodeが空いている必要があります。オフラインのNodeは開始前に稼働状態を確認してください。")}</div>
             <FormSection id={`${sectionPrefix}-output`} title={uiText("出力と録画")} description={uiText("視聴先と事前登録した録画設定")}><div className="grid gap-3 md:grid-cols-2"><SelectField label={uiText("YouTube出力")} value={youtubeOutputID} onChange={setYouTubeOutputID} error={fieldError("youtube")} options={[{ value: noneValue, label: uiText("未選択") }, ...youtubeOutputs]} /><SelectField label={uiText("録画プロファイル")} value={archiveProfileID} onChange={setArchiveProfileID} error={fieldError("archive")} options={[{ value: noneValue, label: uiText("録画しない") }, ...archiveProfiles]} /></div>{archiveProfiles.length === 0 ? <p className="mt-3 text-sm text-muted-foreground">{uiText("録画する場合は、先に")}<Link href="/admin/archive/" className="mx-1 underline underline-offset-2">{uiText("録画・アーカイブ")}</Link>{uiText("で録画プロファイルと保存先を作成してください。")}</p> : null}</FormSection>
             <section id={`${sectionPrefix}-visual`} tabIndex={-1} aria-label={uiText("ビジュアル設定")} className="min-w-0 scroll-mt-24">{fieldError("visual") ? <p role="alert" className="mb-3 text-sm text-red-700 dark:text-red-300">{fieldError("visual")}</p> : null}<StreamVisualSettingsSection stream={stream} canUpdate={editing ? canUpdate : canCreate} mutationBlocked={savePending || saveOutcomeUnresolved} onCreateState={setCreateVisualState} /></section>
           </> : null}
