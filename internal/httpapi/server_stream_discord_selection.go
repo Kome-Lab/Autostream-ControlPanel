@@ -34,12 +34,7 @@ func (s *Server) selectedDiscordServiceID(ctx context.Context, streamID, profile
 	if err != nil {
 		return "", "get_service_failed", http.StatusInternalServerError
 	}
-	// Selecting an authentication profile is never authority to steal another
-	// waiting or active stream's Bot. Explicit guarded reassignment remains the
-	// separate service-assignment operation.
-	if service.CurrentStreamID != "" && service.CurrentStreamID != streamID {
-		return "", "service_assignment_conflict", http.StatusConflict
-	}
+	// Saving a profile selects this Bot; only a start claim may acquire it.
 	return serviceID, "", 0
 }
 
@@ -57,21 +52,15 @@ func (s *Server) prepareStreamDiscordAssignment(ctx context.Context, streamID, p
 	if s.services == nil {
 		return "service_registry_not_configured", http.StatusServiceUnavailable
 	}
-	assignments, err := s.services.ListStreamAssignments(ctx, streamID)
+	selections, ok := s.streams.(store.StreamNodeSelectionStore)
+	if !ok {
+		return "stream_node_selection_unavailable", http.StatusServiceUnavailable
+	}
+	selected, err := selections.GetStreamNodeSelections(ctx, streamID)
 	if err != nil {
-		return "list_stream_assignments_failed", http.StatusInternalServerError
+		return "get_stream_failed", http.StatusInternalServerError
 	}
-	current, count, total := "", 0, 0
-	for _, assignment := range assignments {
-		if assignment.ServiceType == "discord_bot" {
-			total++
-			if normalizeAssignmentRole(assignment.AssignmentRole) == "primary" {
-				current = assignment.ServiceID
-				count++
-			}
-		}
-	}
-	if desired != "" && desired == current && count == 1 || desired == "" && total == 0 {
+	if desired == selected.DiscordServiceID {
 		return "", 0
 	}
 	if !security.HasPermission(permissions, "services.assign") {

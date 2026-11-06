@@ -9,8 +9,8 @@ export type StreamCreateValues = {
   watermarkEnabled: boolean;
   overlayProfileID: string;
   encoderAudioGainDB: number;
-  // Creation requires both roles. On edits, undefined preserves ownership
-  // and an explicit empty string unassigns the selected role.
+  // Creation requires both roles. On edits, undefined preserves the saved
+  // selection and an explicit empty string clears the selected role.
   encoderServiceID?: string;
   workerServiceID?: string;
   scheduledStartAt?: string;
@@ -23,6 +23,8 @@ export type StreamServiceAssignmentOption = {
   value: string;
   label: string;
   description?: string;
+  // Another stream is using this Node; saving a selection does not claim it.
+  inUse?: boolean;
   disabled?: boolean;
 };
 
@@ -35,8 +37,9 @@ export function streamServiceAssignmentOption(
   return {
     value: service.value,
     label: busy ? `${service.label}（別の配信枠で使用中）` : service.label,
-    description: busy ? "現在の配信枠を停止し、割り当てを解除してから選択してください。" : undefined,
-    disabled: busy,
+    description: busy ? "他の配信枠で使用中でも選択して保存できます。開始時にNodeが空いている必要があります。" : undefined,
+    inUse: busy,
+    disabled: false,
   };
 }
 

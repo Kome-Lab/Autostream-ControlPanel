@@ -100,11 +100,19 @@ func (s *Server) startStreamWithMaterialization(w http.ResponseWriter, r *http.R
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "list_stream_assignments_failed"})
 		return
 	}
-	primaryAssignments := primaryStreamAssignments(assignments)
+	candidates, selectedNodes, err := s.selectedStartCandidates(r.Context(), stream, assignments)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "list_stream_node_selections_failed"})
+		return
+	}
+	primaryAssignments := primaryStreamAssignments(candidates)
 	missing := missingServiceTypes(primaryAssignments, requiredStartServiceTypes)
 	claimMaterializeServiceID := ""
 	claimMaterializeActorUserID := ""
-	if materialization != nil {
+	if selectedNodes != nil {
+		claimMaterializeActorUserID = currentFromContext(r.Context()).User.ID
+	}
+	if materialization != nil && selectedNodes == nil {
 		service := materialization.Service
 		service.AssignmentRole = "primary"
 		assignments = append(assignments, service)
@@ -118,7 +126,7 @@ func (s *Server) startStreamWithMaterialization(w http.ResponseWriter, r *http.R
 	// stream assignments. Auto-start has a service-token fallback for this
 	// configuration; operator start must converge to the same primary assignment
 	// before dispatch so later stop/runtime operations see the Bot as well.
-	if materialization == nil && len(missing) == 1 && missing[0] == "discord_bot" {
+	if selectedNodes == nil && materialization == nil && len(missing) == 1 && missing[0] == "discord_bot" {
 		current := currentFromContext(r.Context())
 		updatedAssignments, materializeServiceID, materializeErr := s.configuredDiscordAssignmentCandidate(r.Context(), stream.ID, body.DiscordConfigID, assignments)
 		if materializeErr != nil {
@@ -145,6 +153,15 @@ func (s *Server) startStreamWithMaterialization(w http.ResponseWriter, r *http.R
 		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.start", ResourceType: "stream", ResourceID: stream.ID, Result: "failure", Metadata: map[string]any{"missing_service_types": missing}})
 		writeJSON(w, http.StatusConflict, map[string]any{"code": "missing_stream_assignments", "missing_service_types": missing})
 		return
+	}
+	if selectedNodes != nil {
+		if issues, availabilityErr := s.selectedNodeReadinessIssues(r.Context(), stream.ID, primaryAssignments); availabilityErr != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "node_availability_check_failed"})
+			return
+		} else if len(issues) > 0 {
+			writeJSON(w, http.StatusConflict, map[string]any{"code": "stream_start_not_ready", "issues": issues})
+			return
+		}
 	}
 	if issues, readinessErr := s.controlPlatformReadinessIssues(r.Context(), stream.ID, primaryAssignments); readinessErr != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "control_platform_readiness_failed"})
@@ -242,7 +259,7 @@ func (s *Server) startStreamWithMaterialization(w http.ResponseWriter, r *http.R
 	}
 	claimedStart, err := claimStore.ClaimStreamStart(r.Context(), store.StreamStartClaimRequest{
 		StreamID: stream.ID, ExpectedStatus: stream.Status, ExpectedStreamUpdatedAt: stream.UpdatedAt,
-		ExpectedPrimaryAssignments: primaryAssignments,
+		ExpectedPrimaryAssignments: primaryAssignments, ExpectedNodeSelections: selectedNodes,
 		MaterializeServiceID:       claimMaterializeServiceID, MaterializeActorUserID: claimMaterializeActorUserID,
 		// The prepared start also needs the existing unique run fence when no
 		// archive profile is selected. Profile selection still controls archive

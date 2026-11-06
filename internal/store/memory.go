@@ -12,6 +12,7 @@ type MemoryStreamStore struct {
 	serviceAssignmentGuard                     *MemoryAuthStore
 	youtubeRelayBindingOutputMu                sync.Mutex
 	streams                                    map[string]Stream
+	archiveRunSources                          map[streamArchiveRunSourceKey]string
 	normalStopPending                          map[string]bool
 	normalStopReceipts                         map[string]time.Time
 	logs                                       map[string][]StreamLog
@@ -256,6 +257,7 @@ func (s *MemoryStreamStore) deleteStreamLocked(id string, services *MemoryAuthSt
 	}
 	stream := s.streams[id]
 	stream.Status = "completed"
+	stream.SelectedEncoderID, stream.SelectedWorkerID, stream.SelectedDiscordID = "", "", ""
 	if stream.DeletedAt == nil {
 		deletedAt := now
 		stream.DeletedAt = &deletedAt

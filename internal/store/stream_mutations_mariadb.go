@@ -131,6 +131,7 @@ func (s MariaDBStreamStore) DeleteStream(ctx context.Context, id string) (err er
 		}
 	}
 	for _, query := range []string{
+		`DELETE FROM stream_node_selections WHERE stream_id = ?`,
 		`DELETE FROM runtime_secret_leases WHERE stream_id = ?`,
 		`DELETE FROM service_remediation_executions WHERE stream_id = ?`,
 		`DELETE FROM service_stream_events WHERE stream_id = ?`,
@@ -189,9 +190,6 @@ func (s MariaDBStreamStore) UpdateStreamSettings(ctx context.Context, id string,
 	if err != nil {
 		return Stream{}, err
 	}
-	if err := validateExpectedDiscordSettingsTx(ctx, tx, id, settings); err != nil {
-		return Stream{}, err
-	}
 	var claimOutputID string
 	err = tx.QueryRowContext(ctx, `SELECT youtube_output_id FROM stream_youtube_relay_binding_claims WHERE stream_id = ? FOR UPDATE`, id).Scan(&claimOutputID)
 	if err == nil && claimOutputID != strings.TrimSpace(settings.YouTubeOutputID) {
@@ -224,6 +222,12 @@ func UpsertStreamSettingsTx(ctx context.Context, tx *sql.Tx, id string, settings
 		return err
 	}
 	now = nextStreamSettingsTime(previous, now)
+	if err := validateExpectedDiscordSettingsTx(ctx, tx, id, settings); err != nil {
+		return err
+	}
+	if err := saveStreamNodeSelectionUpdateTx(ctx, tx, id, settings.NodeSelections, now); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `UPDATE streams SET name = COALESCE(NULLIF(?, ''), name), scheduled_start_at = ?, scheduled_end_at = ?, updated_at = ? WHERE id = ?`, strings.TrimSpace(settings.Name), nullableTime(settings.ScheduledStartAt), nullableTime(settings.ScheduledEndAt), now, id); err != nil {
 		return err
 	}

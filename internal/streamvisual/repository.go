@@ -198,6 +198,9 @@ func (r *SQLRepository) CreateStream(ctx context.Context, userID string, input C
 	if _, err = tx.ExecContext(ctx, `INSERT INTO streams(id,name,status,created_at,updated_at)VALUES(?,?,'created',?,?)`, stream.ID, stream.Name, now, now); err != nil {
 		return store.Stream{}, Settings{}, err
 	}
+	if strings.TrimSpace(input.StreamSettings.DiscordConfigID) != strings.TrimSpace(input.Assignments.DiscordConfigID) {
+		return store.Stream{}, Settings{}, store.ErrServiceAssignmentConflict
+	}
 	if err = store.AssignNewStreamServicesTx(ctx, tx, stream.ID, userID, input.Assignments, now); err != nil {
 		return store.Stream{}, Settings{}, err
 	}
@@ -237,6 +240,8 @@ func (r *SQLRepository) CreateStream(ctx context.Context, userID string, input C
 	}
 	streamSettings := input.StreamSettings
 	streamSettings.Name = stream.Name
+	// Creation uses Assignments as its canonical saved Node choices.
+	streamSettings.NodeSelections = nil
 	if err = store.UpsertStreamSettingsTx(ctx, tx, stream.ID, streamSettings, now); err != nil {
 		return store.Stream{}, Settings{}, err
 	}
@@ -249,8 +254,9 @@ func (r *SQLRepository) CreateStream(ctx context.Context, userID string, input C
 		return store.Stream{}, Settings{}, err
 	}
 	applyStreamSettings(&stream, streamSettings)
-	stream.AssignedEncoderID = strings.TrimSpace(input.Assignments.EncoderServiceID)
-	stream.AssignedWorkerID = strings.TrimSpace(input.Assignments.WorkerServiceID)
+	stream.SelectedEncoderID = strings.TrimSpace(input.Assignments.EncoderServiceID)
+	stream.SelectedWorkerID = strings.TrimSpace(input.Assignments.WorkerServiceID)
+	stream.SelectedDiscordID = strings.TrimSpace(input.Assignments.DiscordServiceID)
 	return stream, settings, nil
 }
 

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"log"
 	"math"
 	"net/http"
 	"strconv"
@@ -88,6 +87,10 @@ func (s *Server) updateStreamSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	settings.ExpectedDiscordServiceID = body.expectedDiscordServiceID
+	settings.NodeSelections = &store.StreamNodeSelectionUpdate{
+		EncoderServiceID: body.EncoderServiceID, WorkerServiceID: body.WorkerServiceID,
+		DiscordServiceID: body.expectedDiscordServiceID,
+	}
 	preserveOmittedLegacyArchiveSettings(&settings, existing, body)
 	if strings.TrimSpace(existing.YouTubeOutputID) != strings.TrimSpace(settings.YouTubeOutputID) {
 		if claimed, err := s.youtubeRelayBindingStreamClaimActive(r.Context(), existing.ID); err != nil {
@@ -98,39 +101,19 @@ func (s *Server) updateStreamSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	assignments, code, status := s.applyStreamServiceAssignments(r, streamID, body, current)
-	if code != "" {
-		writeJSON(w, status, map[string]string{"code": code})
-		return
-	}
 	if streamArchiveDirectRequested(body) {
 		settings, err = s.materializeStreamArchiveSettings(r.Context(), existing, settings, body)
 		if err != nil {
-			if rollbackErr := assignments.Rollback(r.Context(), s.services, current.User.ID); rollbackErr != nil {
-				log.Printf("stream settings assignment rollback failed after archive settings error: stream_id=%s error=%v", streamID, rollbackErr)
-				writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "assign_service_rollback_failed"})
-				return
-			}
 			writeJSON(w, streamArchiveSettingsStatus(err), map[string]string{"code": streamArchiveSettingsCode(err)})
 			return
 		}
 	}
 	stream, err := s.streams.UpdateStreamSettings(r.Context(), streamID, settings)
 	if errors.Is(err, store.ErrYouTubeRelayBindingClaimActive) {
-		if rollbackErr := assignments.Rollback(r.Context(), s.services, current.User.ID); rollbackErr != nil {
-			log.Printf("stream settings assignment rollback failed after relay binding claim error: stream_id=%s error=%v", streamID, rollbackErr)
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "assign_service_rollback_failed"})
-			return
-		}
 		writeJSON(w, http.StatusConflict, map[string]string{"code": "youtube_relay_binding_release_pending"})
 		return
 	}
 	if err != nil {
-		if rollbackErr := assignments.Rollback(r.Context(), s.services, current.User.ID); rollbackErr != nil {
-			log.Printf("stream settings assignment rollback failed after settings update error: stream_id=%s error=%v", streamID, rollbackErr)
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "assign_service_rollback_failed"})
-			return
-		}
 		if errors.Is(err, store.ErrNotFound) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
 			return
@@ -145,7 +128,6 @@ func (s *Server) updateStreamSettings(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "update_stream_settings_failed"})
 		return
 	}
-	assignments.WriteAudit(r, s, current)
 	stream, err = s.streamWithAssignedNodes(r.Context(), stream)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "list_stream_assignments_failed"})

@@ -22,6 +22,13 @@ func (s *Server) discordServiceTokenConfiguredForStream(ctx context.Context, tok
 	if err != nil || !matches {
 		return store.RegisteredService{}, false, err
 	}
+	if selected := strings.TrimSpace(stream.SelectedDiscordID); selected != "" {
+		if selected != service.ServiceID {
+			return store.RegisteredService{}, false, nil
+		}
+		service.AssignmentRole = "primary"
+		return service, true, nil
+	}
 	assignments, err := s.services.ListStreamAssignments(ctx, stream.ID)
 	if err != nil {
 		return store.RegisteredService{}, false, err

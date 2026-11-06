@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"time"
 	"unicode/utf8"
 
 	"github.com/example/autostream-control-panel/internal/store"
@@ -143,8 +142,8 @@ type streamSettingsRequest struct {
 	ArchiveRetentionDays  *int    `json:"archive_retention_days,omitempty"`
 	YouTubeOutputID       string  `json:"youtube_output_id,omitempty"`
 	EncoderInputURL       string  `json:"encoder_input_url,omitempty"`
-	// Assignment IDs are presence-aware for edits: omitted preserves the
-	// existing assignment, while an explicit empty string unassigns that role.
+	// Node selections are presence-aware: omitted preserves the saved choice;
+	// an explicit empty string clears it without touching execution ownership.
 	EncoderServiceID *string `json:"encoder_service_id,omitempty"`
 	WorkerServiceID  *string `json:"worker_service_id,omitempty"`
 	// Derived only from the selected authentication profile, never from a
@@ -295,14 +294,8 @@ func (s *Server) createStream(w http.ResponseWriter, r *http.Request) {
 		writeStreamVisualError(w, err)
 		return
 	}
-	// Configuration, media claims and both unoccupied primary assignments are
-	// committed together. Creation never transfers another stream's services.
-	for _, assignment := range []struct{ id, serviceType string }{{assignments.EncoderServiceID, "encoder_recorder"}, {assignments.WorkerServiceID, "worker"}} {
-		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "services.assign", ResourceType: "service", ResourceID: assignment.id, Result: "success", Metadata: map[string]any{"stream_id": stream.ID, "service_type": assignment.serviceType, "assignment_role": "primary", "source": "stream_create"}})
-	}
-	if assignments.DiscordServiceID != "" {
-		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "services.assign", ResourceType: "service", ResourceID: assignments.DiscordServiceID, Result: "success", Metadata: map[string]any{"stream_id": stream.ID, "service_type": "discord_bot", "assignment_role": "primary", "assignment_epoch": stream.CreatedAt.UTC().Format(time.RFC3339Nano), "source": "stream_create"}})
-	}
+	// Creation persists shared selections and visual settings atomically.
+	// Execution assignments are acquired only by the start claim.
 	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "streams.create", ResourceType: "stream", ResourceID: stream.ID, Result: "success", Metadata: streamSettingsAuditMetadata(stream)})
 	writeJSON(w, http.StatusCreated, stream)
 }

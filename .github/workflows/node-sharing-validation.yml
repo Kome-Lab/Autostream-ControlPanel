@@ -1,0 +1,80 @@
+name: Shared Node selection validation
+
+on:
+  push:
+    branches: ["codex/node-selection-sharing-20261106-01"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: node-sharing-validation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  shared-node-regressions:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      GOMAXPROCS: "2"
+      AUTOSTREAM_MARIADB_TEST_DSN: root:node-sharing-ci-root@tcp(127.0.0.1:3306)/autostream_ci?parseTime=true
+    services:
+      mariadb:
+        image: mariadb:11.4.12@sha256:a794d9eb009e20de605858a11f32f63b4075cbd197c650436f0e3b457e4caed7
+        env:
+          MARIADB_DATABASE: autostream_ci
+          MARIADB_ROOT_PASSWORD: node-sharing-ci-root
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "healthcheck.sh --connect --innodb_initialized"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.mod
+      - name: Check changed Go formatting
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t files < <(git diff --name-only f7a086b993cfc242a31a21c0a975eff0e3939de8 -- '*.go')
+          if (( ${#files[@]} > 0 )); then
+            diff="$(gofmt -d "${files[@]}")"
+            if [[ -n "$diff" ]]; then
+              printf '%s\n' "$diff"
+              exit 1
+            fi
+          fi
+      - name: Run real Memory and MariaDB selection and ownership regressions
+        if: success() || failure()
+        shell: bash
+        run: |
+          set -euo pipefail
+          go test -race -p 1 ./internal/store \
+            -run '^Test(Memory|MariaDB)(SharedNodeSelections|SelectedStartClaims|ArchiveRunSource|DiscordWaiting)' \
+            -count=1 -json | tee "${RUNNER_TEMP}/node-sharing-store.json"
+      - name: Run HTTP save and refresh regression
+        if: success() || failure()
+        shell: bash
+        run: |
+          set -euo pipefail
+          go test -race -p 1 ./internal/httpapi \
+            -run '^Test(SharedNodeSelection|DiscordWaitingMonitor)' \
+            -count=1 -json | tee "${RUNNER_TEMP}/node-sharing-http.json"
+      - name: Build Linux Control Panel
+        if: success() || failure()
+        run: CGO_ENABLED=0 go build -p 1 ./cmd/control-panel
+      - name: Preserve regression observations
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: node-sharing-regressions-${{ github.sha }}
+          path: ${{ runner.temp }}/node-sharing-*.json
+          if-no-files-found: error

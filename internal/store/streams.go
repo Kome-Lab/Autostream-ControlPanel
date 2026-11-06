@@ -33,6 +33,11 @@ type Stream struct {
 	ArchiveFileName           string     `json:"archive_file_name,omitempty"`
 	YouTubeOutputID           string     `json:"youtube_output_id,omitempty"`
 	EncoderInputURL           string     `json:"encoder_input_url,omitempty"`
+	// NodeSelectionsConfigured distinguishes an explicit clear from legacy ownership.
+	NodeSelectionsConfigured bool `json:"-"`
+	SelectedEncoderID         string     `json:"selected_encoder_id"`
+	SelectedWorkerID          string     `json:"selected_worker_id"`
+	SelectedDiscordID         string     `json:"selected_discord_id"`
 	AssignedWorkerID          string     `json:"assigned_worker_id,omitempty"`
 	AssignedEncoderID         string     `json:"assigned_encoder_id,omitempty"`
 	CreatedAt                 time.Time  `json:"created_at"`
@@ -43,8 +48,10 @@ type Stream struct {
 
 type StreamSettings struct {
 	ExpectedSettingsRevision *string `json:"-"`
+	// NodeSelections is resolved by the Panel and committed with this revision.
+	NodeSelections *StreamNodeSelectionUpdate `json:"-"`
 	// Set by the Panel after resolving the authentication selection. The
-	// settings commit revalidates this owner; it is never a client wire field.
+	// settings commit revalidates this saved selection and profile binding.
 	ExpectedDiscordServiceID  *string    `json:"-"`
 	Name                      string     `json:"name,omitempty"`
 	ScheduledStartAt          *time.Time `json:"scheduled_start_at,omitempty"`

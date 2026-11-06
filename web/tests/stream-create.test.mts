@@ -113,18 +113,25 @@ test("stream editing distinguishes an explicit Node clear from an omitted assign
   assert.equal("worker_service_id" in payload,false);
 });
 
-test("stream editing marks a Node owned by another stream busy and keeps the current owner selectable", () => {
-  const busy = streamServiceAssignmentOption({ value: "encoder-01", label: "Encoder 01", currentStreamID: "stream-a" }, "stream-b");
-  assert.equal(busy.disabled, true);
-  assert.match(busy.label, /別の配信枠で使用中/);
-  assert.match(busy.description || "", /割り当てを解除/);
+test("busy Nodes remain selectable for saved selections and retain their active-use notice", () => {
+  for (const editingStreamID of [undefined, "stream-b"]) {
+    const busy = streamServiceAssignmentOption({ value: "encoder-01", label: "Encoder 01", currentStreamID: "stream-a" }, editingStreamID);
+    assert.equal(busy.disabled, false);
+    assert.equal(busy.inUse, true);
+    assert.match(busy.label, /別の配信枠で使用中/);
+    assert.match(busy.description || "", /選択して保存できます/);
+    assert.match(busy.description || "", /開始時にNodeが空いている必要/);
+  }
 
   const current = streamServiceAssignmentOption({ value: "encoder-01", label: "Encoder 01", currentStreamID: "stream-a" }, "stream-a");
   assert.equal(current.disabled, false);
+  assert.equal(current.inUse, false);
   assert.equal(current.label, "Encoder 01");
 
   const idle = streamServiceAssignmentOption({ value: "encoder-02", label: "Encoder 02" }, "stream-b");
   assert.equal(idle.disabled, false);
+  assert.equal(idle.inUse, false);
+  assert.equal(idle.description, undefined);
 });
 
 test("assignment conflicts have actionable messages without exposing identifiers", () => {

@@ -67,6 +67,9 @@ func (s *MemoryStreamStore) PrepareStreamArchiveRun(ctx context.Context, id, arc
 }
 
 func (s *MemoryStreamStore) ClaimStreamStart(ctx context.Context, request StreamStartClaimRequest) (ClaimedStreamStart, error) {
+	if request.ExpectedNodeSelections != nil {
+		return s.claimSelectedStreamStart(ctx, request)
+	}
 	if err := ctx.Err(); err != nil {
 		return ClaimedStreamStart{}, err
 	}
@@ -175,6 +178,12 @@ func (s *MemoryStreamStore) ClaimStreamStart(ctx context.Context, request Stream
 	}
 	if streamStartClockConflict(stream, now, authority) {
 		return ClaimedStreamStart{}, ErrServiceAssignmentConflict
+	}
+	recordingStream := stream
+	recordingStream.ArchiveRunID = authority.RunID
+	recordingStream.ArchiveStartedAt = cloneTimePtr(authority.StartedAt)
+	if err := memoryRecordStreamArchiveRunSourceLocked(s, recordingStream, actual["encoder_recorder"].ServiceID); err != nil {
+		return ClaimedStreamStart{}, err
 	}
 	if materialized != nil {
 		if materializePreviousKey != "" {

@@ -36,9 +36,22 @@ func (s *Server) startReadiness(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "list_stream_assignments_failed"})
 		return
 	}
-	primaryAssignments := primaryStreamAssignments(assignments)
+	candidates, selectedNodes, err := s.selectedStartCandidates(r.Context(), stream, assignments)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "list_stream_node_selections_failed"})
+		return
+	}
+	primaryAssignments := primaryStreamAssignments(candidates)
 	missing := missingServiceTypes(primaryAssignments, requiredStartServiceTypes)
 	issues := []servicecall.ReadinessIssue{}
+	if selectedNodes != nil {
+		availabilityIssues, availabilityErr := s.selectedNodeReadinessIssues(r.Context(), stream.ID, primaryAssignments)
+		if availabilityErr != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "node_availability_check_failed"})
+			return
+		}
+		issues = append(issues, availabilityIssues...)
+	}
 	if len(missing) == 0 {
 		controlIssues, controlErr := s.controlPlatformReadinessIssues(r.Context(), stream.ID, primaryAssignments)
 		if controlErr != nil {
@@ -80,7 +93,9 @@ func (s *Server) startReadiness(w http.ResponseWriter, r *http.Request) {
 		"missing_service_types":  missing,
 		"issues":                 issues,
 		"assigned_service_count": len(assignments),
-		"primary_service_count":  len(primaryAssignments),
+		"primary_service_count":  len(primaryStreamAssignments(assignments)),
+		"candidate_service_count": len(primaryAssignments),
+		"selected_services": candidates,
 		"assignments":            assignments,
 	})
 }

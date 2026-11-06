@@ -37,6 +37,9 @@ type StreamStartClaimRequest struct {
 	ExpectedStatus             string
 	ExpectedStreamUpdatedAt    time.Time
 	ExpectedPrimaryAssignments []RegisteredService
+	// Non-nil selects the shared-configuration claim path. The saved choices
+	// are revalidated under the same locks as all execution owners.
+	ExpectedNodeSelections     *StreamNodeSelections
 	MaterializeServiceID       string
 	MaterializeActorUserID     string
 	ArchiveEnabled             bool

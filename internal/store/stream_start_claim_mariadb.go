@@ -8,6 +8,9 @@ import (
 )
 
 func (s MariaDBStreamStore) ClaimStreamStart(ctx context.Context, request StreamStartClaimRequest) (claimed ClaimedStreamStart, err error) {
+	if request.ExpectedNodeSelections != nil {
+		return s.claimSelectedStreamStart(ctx, request)
+	}
 	defer func() {
 		if isMariaDBLockConflict(err) {
 			claimed = ClaimedStreamStart{}
@@ -240,6 +243,9 @@ WHERE id = ? AND status = ? AND updated_at = ? AND deleted_at IS NULL`, archiveR
 	stream.ArchiveStartedAt = cloneTimePtr(authority.StartedAt)
 	stream.ArchiveReportedAt = nil
 	stream.UpdatedAt = now
+	if err := recordStreamArchiveRunSourceTx(ctx, tx, stream, actual["encoder_recorder"].ServiceID); err != nil {
+		return ClaimedStreamStart{}, err
+	}
 	ownership := StreamStartOwnershipClaim{StreamID: stream.ID, StreamUpdatedAt: now, StreamIdentity: streamStartOwnershipIdentity(stream), Assignments: assignmentClaims, Archive: authority}
 	if err := tx.Commit(); err != nil {
 		return ClaimedStreamStart{}, err

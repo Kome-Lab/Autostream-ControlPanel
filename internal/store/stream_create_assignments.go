@@ -7,9 +7,9 @@ import (
 	"time"
 )
 
-// StreamCreateAssignments reserves the existing single-owner service roles.
-// Normal creation never transfers an existing assignment; edits retain the
-// separate guarded transfer contract.
+// StreamCreateAssignments names the saved service choices for a new stream.
+// The historical name is retained for the atomic visual-creation API; saving
+// choices never acquires, transfers, or releases execution ownership.
 type StreamCreateAssignments struct {
 	EncoderServiceID string
 	WorkerServiceID  string
@@ -45,50 +45,49 @@ func (a StreamCreateAssignments) serviceType(id string) string {
 	}
 }
 
+func (a StreamCreateAssignments) selections() StreamNodeSelections {
+	return StreamNodeSelections{
+		EncoderServiceID: strings.TrimSpace(a.EncoderServiceID),
+		WorkerServiceID:  strings.TrimSpace(a.WorkerServiceID),
+		DiscordServiceID: strings.TrimSpace(a.DiscordServiceID),
+	}
+}
+
 func AssignNewStreamServicesTx(ctx context.Context, tx *sql.Tx, streamID, actorID string, a StreamCreateAssignments, now time.Time) error {
 	if !a.valid() {
 		return ErrInvalidServiceAssignment
 	}
-	// The caller has inserted/locked its new stream. Acquire sorted services
-	// before any asset/preset references. The new ID is invisible to competing
-	// assignment callers until commit, and occupied services are never moved.
+	// The caller inserted/locked its new stream. Services and the selected
+	// profile are read under the existing stream -> registry -> profile order.
 	services, err := lockMariaDBServicesSorted(ctx, tx, a.serviceIDs())
 	if err != nil {
 		return err
 	}
 	for _, id := range a.serviceIDs() {
-		service := services[id]
-		if service.ServiceType != a.serviceType(id) {
+		if service := services[id]; service.ServiceType != a.serviceType(id) {
 			return ErrInvalidServiceAssignment
 		}
-		owner, _, err := consistentMariaDBServiceAssignment(ctx, tx, service)
-		if err != nil {
-			return err
-		}
-		if owner != "" {
+	}
+	if strings.TrimSpace(a.DiscordConfigID) != "" {
+		profile, err := scanProfile(tx.QueryRowContext(ctx, `SELECT id,kind,name,config,created_at,updated_at,youtube_relay_binding_revision FROM profiles WHERE id=? AND kind=? FOR UPDATE`, strings.TrimSpace(a.DiscordConfigID), string(ProfileDiscordConfig)))
+		if err != nil || currentDiscordConfigString(profile.Config, "service_id") != strings.TrimSpace(a.DiscordServiceID) {
 			return ErrServiceAssignmentConflict
 		}
 	}
-	if a.DiscordConfigID != "" {
-		profile, err := scanProfile(tx.QueryRowContext(ctx, `SELECT id,kind,name,config,created_at,updated_at,youtube_relay_binding_revision FROM profiles WHERE id=? AND kind=? FOR UPDATE`, a.DiscordConfigID, string(ProfileDiscordConfig)))
-		if err != nil || currentDiscordConfigString(profile.Config, "service_id") != a.DiscordServiceID {
-			return ErrServiceAssignmentConflict
-		}
-	}
-	for _, id := range a.serviceIDs() {
-		service := services[id]
-		if _, err := tx.ExecContext(ctx, `INSERT INTO stream_service_assignments(id,stream_id,service_id,service_type,assignment_role,assigned_by_user_id,assigned_at) VALUES(?,?,?,?,'primary',NULLIF(?,''),?)`, newUUID(), streamID, id, service.ServiceType, actorID, now); err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, `UPDATE services SET current_stream_id=?,status='assigned',updated_at=? WHERE service_id=?`, streamID, now, id); err != nil {
-			return err
-		}
-	}
-	return nil
+	return saveStreamNodeSelectionsTx(ctx, tx, streamID, a.selections(), now)
 }
 
 func (s *MemoryStreamStore) CreateAssignedStream(ctx context.Context, streamID, name, actorID string, settings StreamSettings, a StreamCreateAssignments) (Stream, error) {
 	if err := ctx.Err(); err != nil {
+		return Stream{}, err
+	}
+	if !a.valid() {
+		return Stream{}, ErrInvalidServiceAssignment
+	}
+	if strings.TrimSpace(settings.DiscordConfigID) != strings.TrimSpace(a.DiscordConfigID) {
+		return Stream{}, ErrServiceAssignmentConflict
+	}
+	if err := validateExpectedDiscordNodeSelection(settings, a.selections()); err != nil {
 		return Stream{}, err
 	}
 	auth := s.serviceAssignmentGuard
@@ -96,17 +95,15 @@ func (s *MemoryStreamStore) CreateAssignedStream(ctx context.Context, streamID, 
 		return Stream{}, ErrServiceAssignmentGuardUnavailable
 	}
 	// Current credential snapshots already use profiles -> registry -> streams.
-	// Recheck the selected authentication profile under that same authority;
-	// the HTTP observation alone must not survive a concurrent owner change.
-	if a.DiscordConfigID != "" {
+	if strings.TrimSpace(a.DiscordConfigID) != "" {
 		profiles := s.relayBindingClaimProfiles
 		if profiles == nil {
 			return Stream{}, ErrServiceAssignmentGuardUnavailable
 		}
 		profiles.mu.Lock()
 		defer profiles.mu.Unlock()
-		profile := profiles.profiles[a.DiscordConfigID]
-		if settings.DiscordConfigID != a.DiscordConfigID || profile.Kind != ProfileDiscordConfig || currentDiscordConfigString(profile.Config, "service_id") != a.DiscordServiceID {
+		profile := profiles.profiles[strings.TrimSpace(a.DiscordConfigID)]
+		if profile.Kind != ProfileDiscordConfig || currentDiscordConfigString(profile.Config, "service_id") != strings.TrimSpace(a.DiscordServiceID) {
 			return Stream{}, ErrServiceAssignmentConflict
 		}
 	}
@@ -114,9 +111,6 @@ func (s *MemoryStreamStore) CreateAssignedStream(ctx context.Context, streamID, 
 	defer auth.mu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !a.valid() {
-		return Stream{}, ErrInvalidServiceAssignment
-	}
 	if _, exists := s.streams[streamID]; exists {
 		return Stream{}, ErrServiceAssignmentConflict
 	}
@@ -128,25 +122,13 @@ func (s *MemoryStreamStore) CreateAssignedStream(ctx context.Context, streamID, 
 		if service.ServiceType != a.serviceType(id) {
 			return Stream{}, ErrInvalidServiceAssignment
 		}
-		owner, _, err := auth.consistentServiceAssignmentLocked(service)
-		if err != nil {
-			return Stream{}, err
-		}
-		if owner != "" {
-			return Stream{}, ErrServiceAssignmentConflict
-		}
 	}
 	now := time.Now().UTC()
 	stream := Stream{ID: streamID, Name: name, Status: "created", CreatedAt: now, UpdatedAt: now}
+	// Creation takes canonical choices from its atomic Assignments input.
+	settings.NodeSelections = nil
 	stream = applyMemoryStreamSettings(stream, settings)
-	stream.AssignedEncoderID, stream.AssignedWorkerID = strings.TrimSpace(a.EncoderServiceID), strings.TrimSpace(a.WorkerServiceID)
-	for _, id := range a.serviceIDs() {
-		service := auth.services[id]
-		key := assignmentKey(streamID, service.ServiceType, "primary", id)
-		auth.assignments[key], auth.assignmentIDs[key] = id, newUUID()
-		service.CurrentStreamID, service.Status, service.AssignmentRole, service.UpdatedAt = streamID, "assigned", "primary", now
-		auth.services[id] = service
-	}
+	applyStreamNodeSelections(&stream, a.selections())
 	s.streams[streamID] = stream
 	return stream, nil
 }

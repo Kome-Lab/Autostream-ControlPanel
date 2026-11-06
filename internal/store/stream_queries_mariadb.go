@@ -92,7 +92,7 @@ const streamSelectFields = `s.id, s.name, s.status, COALESCE(s.archive_run_id, '
   COALESCE(ss.archive_drive_destination_id, ''), COALESCE(ss.archive_oauth_account_id, ''),
   CASE WHEN dd.folder_id_fingerprint IS NULL OR dd.folder_id_fingerprint = '' THEN 0 ELSE 1 END,
   COALESCE(dd.masked_folder_id, ''), COALESCE(ss.archive_shared_drive, 0), COALESCE(ss.archive_shared_drive_id, ''),
-  COALESCE(ss.archive_file_name, ''), COALESCE(ss.encoder_input_url, ''), s.created_at, s.updated_at, s.deleted_at, ss.updated_at`
+  COALESCE(ss.archive_file_name, ''), COALESCE(ss.encoder_input_url, ''), s.created_at, s.updated_at, s.deleted_at, ss.updated_at, ` + streamNodeSelectionSelectFields + `, EXISTS(SELECT 1 FROM stream_node_selections configured WHERE configured.stream_id=s.id)`
 
 func streamListQuery(where string) string {
 	query := `SELECT ` + streamSelectFields + `
@@ -112,7 +112,7 @@ type streamRowScanner interface {
 func scanStreamRow(scanner streamRowScanner) (Stream, error) {
 	var stream Stream
 	var archiveStartedAt, archiveReportedAt, scheduledStart, scheduledEnd, deletedAt, settingsUpdatedAt sql.NullTime
-	if err := scanner.Scan(&stream.ID, &stream.Name, &stream.Status, &stream.ArchiveRunID, &archiveStartedAt, &archiveReportedAt, &scheduledStart, &scheduledEnd, &stream.DiscordConfigID, &stream.AutoStartTrigger, &stream.EncoderProfileID, &stream.CaptionProfileID, &stream.OverlayProfileID, &stream.EncoderAudioGainDB, &stream.ArchiveProfileID, &stream.YouTubeOutputID, &stream.ArchiveDriveDestinationID, &stream.ArchiveOAuthAccountID, &stream.ArchiveFolderIDConfigured, &stream.ArchiveMaskedFolderID, &stream.ArchiveSharedDrive, &stream.ArchiveSharedDriveID, &stream.ArchiveFileName, &stream.EncoderInputURL, &stream.CreatedAt, &stream.UpdatedAt, &deletedAt, &settingsUpdatedAt); err != nil {
+	if err := scanner.Scan(&stream.ID, &stream.Name, &stream.Status, &stream.ArchiveRunID, &archiveStartedAt, &archiveReportedAt, &scheduledStart, &scheduledEnd, &stream.DiscordConfigID, &stream.AutoStartTrigger, &stream.EncoderProfileID, &stream.CaptionProfileID, &stream.OverlayProfileID, &stream.EncoderAudioGainDB, &stream.ArchiveProfileID, &stream.YouTubeOutputID, &stream.ArchiveDriveDestinationID, &stream.ArchiveOAuthAccountID, &stream.ArchiveFolderIDConfigured, &stream.ArchiveMaskedFolderID, &stream.ArchiveSharedDrive, &stream.ArchiveSharedDriveID, &stream.ArchiveFileName, &stream.EncoderInputURL, &stream.CreatedAt, &stream.UpdatedAt, &deletedAt, &settingsUpdatedAt, &stream.SelectedEncoderID, &stream.SelectedWorkerID, &stream.SelectedDiscordID, &stream.NodeSelectionsConfigured); err != nil {
 		return Stream{}, err
 	}
 	stream.ScheduledStartAt = nullTimePtr(scheduledStart)

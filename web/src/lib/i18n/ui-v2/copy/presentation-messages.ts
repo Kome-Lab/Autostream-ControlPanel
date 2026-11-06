@@ -200,7 +200,7 @@ export const messages = {
   "{0}アカウント": "{0} account",
   "表示名未設定": "Display name not configured",
   "{0}（別の配信枠で使用中）": "{0} (used by another stream)",
-  "現在の配信枠を停止し、割り当てを解除してから選択してください。": "Stop the current stream and unassign the node before selecting it.",
+  "他の配信枠で使用中でも選択して保存できます。開始時にNodeが空いている必要があります。": "You can select and save this node while another stream is using it. The node must be available when starting.",
   " 詳細: ": " Details: ",
   "送信先 {0}": "Destination {0}"
 } as const;
