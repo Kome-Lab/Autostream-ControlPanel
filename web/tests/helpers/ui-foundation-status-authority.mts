@@ -7,6 +7,7 @@ import type { StatusAuthority, StatusVocabulary } from "./status-authority-types
 import { verifyStatusAuthoritySourceLocators } from "./status-authority-locators.mts";
 import { inverseR9ArchiveProcessingSource } from "../ui-regression/ui188-r9-finalization-deltas.mts";
 import { createPollingCurrentAdapter } from "../ui-regression/polling-current-source-delta.mts";
+import { inverseSharedNodeStatusSource } from "./shared-node-status-source.mts";
 
 export function readStatusAuthority(webRoot: string) {
   const authority: unknown = JSON.parse(readFileSync(
@@ -142,9 +143,9 @@ export function verifyStatusAuthoritySources(webRoot: string, authority: StatusA
         const current: Buffer = source.repository === "Autostream-ControlPanel" && source.id === "control-panel-stream-store" && locator.path === "internal/store/stream_queries_mariadb.go"
           ? (() => {
             const currentRaw: Buffer = readFileSync(join(root, locator.path));
-            // Reviewed settings-revision projection only. This independent raw
+            // Reviewed Node-selection and settings-revision projections. This raw
             // pin prevents a future outer-fixture refresh from hiding status edits.
-            assert.equal(sha256(currentRaw), "e150c7afc136eddd09c9cd7c7307f5b1ac9e4539ae96e3166e5fff852ef948ff", `${source.id}:${locator.path} current product source digest`);
+            assert.equal(sha256(inverseSharedNodeStatusSource(locator.path, currentRaw)), "e150c7afc136eddd09c9cd7c7307f5b1ac9e4539ae96e3166e5fff852ef948ff", `${source.id}:${locator.path} current product source digest`);
             const beforePolling = (() => {
               try { return createPollingCurrentAdapter(controlPanelRoot).inverse(locator.path, currentRaw); }
               catch (cause) { throw new Error(`${source.id}:${locator.path} current product source digest`, { cause }); }
@@ -174,9 +175,10 @@ export function verifyStatusAuthoritySources(webRoot: string, authority: StatusA
         catch (cause) { throw new Error(`${source.repository}:${source.path} source digest`, { cause }); }
       })();
       assert.ok(historical, "status domain must have its immutable pre-polling source");
-      // Independently permit only these two optional metadata lines. A refreshed
+      // After the exact Node-selection inverse, permit these two metadata lines.
+      // A refreshed
       // outer fixture cannot conceal any status vocabulary or other source edit.
-      let withoutMetadata = normalizeNewlines(currentBytes.toString("utf8"));
+      let withoutMetadata = normalizeNewlines(inverseSharedNodeStatusSource(source.path, currentBytes).toString("utf8"));
       for (const property of ["settings_revision", "metadata_revision"]) {
         const line = `  ${property}?: string;\n`;
         assert.equal(withoutMetadata.split(line).length, 2, `${property}: exactly one optional metadata field is permitted`);

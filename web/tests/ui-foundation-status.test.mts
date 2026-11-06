@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { register } from "node:module";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,6 +10,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { createElement } from "react";
 import ts from "typescript";
 import type { StatusMappingFixture } from "./helpers/status-authority-types.mts";
+import { inverseSharedNodeStatusSource } from "./helpers/shared-node-status-source.mts";
 
 import { assertStatusFoundationBoundaries, statusProductionConsumers } from "./helpers/ui-foundation-status-imports.mts";
 import {
@@ -172,6 +174,24 @@ test("mechanical authority oracle rejects omissions, inventions, duplicates, wro
     const candidate = structuredClone(fixture);
     mutate(candidate);
     assert.notEqual(compareStatusMappingInventory(authority, candidate).length, 0, name);
+  }
+
+  // The new read model must round-trip to the actual reviewed pre-change
+  // bytes. Its inverse cannot hide changed status values or altered ID types.
+  for (const path of ["web/src/types/domain.ts", "internal/store/stream_queries_mariadb.go"]) {
+    const current = readFileSync(join(webRoot, "..", path));
+    const before = execFileSync("git", ["-C", resolve(webRoot, ".."), "cat-file", "blob", "f7a086b993cfc242a31a21c0a975eff0e3939de8:" + path]);
+    assert.deepEqual(inverseSharedNodeStatusSource(path, current), before);
+    assert.throws(() => inverseSharedNodeStatusSource(path, Buffer.alloc(0)), /source digest/);
+    assert.throws(() => inverseSharedNodeStatusSource(path, Buffer.concat([current, current])), /source digest/);
+    const changedStatus = Buffer.from(current.toString("utf8").replace(path.endsWith("domain.ts") ? '"starting"' : "'completed'", '"invented-status"'));
+    assert.notDeepEqual(changedStatus, current, "status mutation must alter actual source");
+    assert.notDeepEqual(inverseSharedNodeStatusSource(path, changedStatus), before, "status edits cannot disappear in the inverse");
+  }
+  const currentDomain = readFileSync(join(webRoot, "..", "web/src/types/domain.ts"), "utf8");
+  for (const field of ["selected_worker_id", "selected_encoder_id", "selected_discord_id"]) {
+    assert.throws(() => inverseSharedNodeStatusSource("web/src/types/domain.ts", Buffer.from(currentDomain.replace(field + "?: string;", field + "?: number;"))), /source digest/);
+    assert.throws(() => inverseSharedNodeStatusSource("web/src/types/domain.ts", Buffer.from(currentDomain.replace("  " + field + "?: string;\n", ""))), /source digest/);
   }
 
   const changedSourceDigest = structuredClone(authority);
