@@ -3,7 +3,7 @@
 export const pollingCurrentBase = "65a601fc9d4f15c93083e9be4ab9e71586fdba69";
 export const pollingCurrentTree = "2624414bc4e1cb4bd304faccf82e5d22e3201dd2";
 export const pollingCurrentFixturePath = "web/tests/fixtures/ui-regression/polling-current-source-delta.json";
-export const pollingCurrentFixtureSHA256 = "3002af6dc82097604e90f0b96b9efcb0f0c9a0d7993252dd830ec087aac2587e";
+export const pollingCurrentFixtureSHA256 = "d2bcaddb0502af1e8535fc0f514487abd580689121a00686893b1c424ae3cee3";
 export const pollingLegacyFixturePath = "web/tests/fixtures/ui-regression/polling-legacy-parity.json";
 export const pollingLegacyFixtureSHA256 = "b2df0a26ef1f77a08a0ddbfe8762b7e77a583c21ba8ed03d22373e4ebce764a8";
 export const pollingCurrentPaths = Object.freeze([
@@ -12,17 +12,27 @@ export const pollingCurrentPaths = Object.freeze([
   ".github/workflows/node-sharing-validation.yml",
   ".github/workflows/ui-regression.yml",
   ".github/workflows/ui188-integration.yml",
+  "cmd/control-panel/main.go",
+  "cmd/control-panel/node_selection_activation.go",
+  "cmd/control-panel/node_selection_activation_test.go",
   "go.mod",
   "go.sum",
   "internal/database/control_platform_features_migration_test.go",
   "internal/database/migration_085_087_089_upgrade_mariadb_test.go",
   "internal/database/migration_086_resumable_mariadb_test.go",
+  "internal/database/migrations.go",
   "internal/database/migrations/086_upload_operation_and_candidate_names.sql",
   "internal/database/migrations/087_stream_settings_revision_precision.sql",
   "internal/database/migrations/088_profile_and_drive_revision_precision.sql",
   "internal/database/migrations/089_system_settings_revision_precision.sql",
   "internal/database/migrations/090_stream_node_selections.sql",
   "internal/database/migrations/091_stream_archive_run_sources.sql",
+  "internal/database/migrations/092_stream_node_selection_activation.sql",
+  "internal/database/node_selection_activation.go",
+  "internal/database/node_selection_activation_journal.go",
+  "internal/database/node_selection_activation_mariadb_test.go",
+  "internal/database/node_selection_activation_policy.go",
+  "internal/database/node_selection_activation_policy_test.go",
   "internal/database/node_selection_migration_test.go",
   "internal/database/stream_settings_revision_mariadb_test.go",
   "internal/httpapi/control_platform_features.go",
@@ -153,6 +163,7 @@ export const pollingCurrentPaths = Object.freeze([
   "internal/streamvisual/cover_candidates.go",
   "internal/streamvisual/memory.go",
   "internal/streamvisual/repository.go",
+  "release/README.install.md",
   "scripts/ci/build-web-preserving-sources.mjs",
   "scripts/ci/polling-create-upload-inventory.json",
   "scripts/ci/source-owner-map.json",
