@@ -15,11 +15,6 @@ func openNodeSelectionActivationFixture(t *testing.T) (*sql.DB, context.Context)
 	db, ctx := openMariaDBMigrationTest(t, false)
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
-	var permanentEngine, temporaryEngine string
-	if err := db.QueryRowContext(ctx, "SELECT @@default_storage_engine,COALESCE(@@default_tmp_storage_engine,'<default>')").Scan(&permanentEngine, &temporaryEngine); err != nil {
-		t.Fatal(err)
-	}
-	t.Logf("fixture engines: permanent=%s temporary=%s; transactional tables explicitly use InnoDB", permanentEngine, temporaryEngine)
 	for _, stmt := range []string{
 		"CREATE TEMPORARY TABLE streams(id CHAR(36) PRIMARY KEY,deleted_at DATETIME(6) NULL,created_at DATETIME(6) NOT NULL) ENGINE=InnoDB",
 		"CREATE TEMPORARY TABLE stream_settings(stream_id CHAR(36) PRIMARY KEY,discord_config_id CHAR(36) NULL,updated_at DATETIME(6) NULL) ENGINE=InnoDB",
@@ -214,36 +209,13 @@ func TestMariaDBNodeSelectionActivationPreparationIsAtomic(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := nodeActivationRows(t, ctx, db, "stream_node_selections")
-	// Minimize the rollback boundary before invoking the application startup.
-	for _, operation := range []string{"delete", "duplicate-insert", "migration-inserts"} {
-		tx, err := db.BeginTx(ctx, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if operation == "migration-inserts" {
-			err = rebuildUnactivatedNodeSelections(ctx, tx)
-		} else {
-			_, err = tx.ExecContext(ctx, "DELETE FROM stream_node_selections")
-			if err == nil && operation == "duplicate-insert" {
-				_, err = tx.ExecContext(ctx, "INSERT INTO stream_node_selections VALUES('frame','encoder_recorder','first','2026-11-07 00:00:00','2026-11-07 00:00:00'),('frame','encoder_recorder','second','2026-11-07 00:00:00','2026-11-07 00:00:00')")
-			}
-		}
-		var transactionOpen int
-		if scanErr := tx.QueryRowContext(ctx, "SELECT @@in_transaction").Scan(&transactionOpen); scanErr != nil {
-			t.Fatal(scanErr)
-		}
-		rollbackErr := tx.Rollback()
-		t.Logf("rollback boundary %s: transaction_open=%d operation_error=%v rollback_error=%v", operation, transactionOpen, err, rollbackErr)
-		after := nodeActivationRows(t, ctx, db, "stream_node_selections")
-		if !reflect.DeepEqual(before, after) {
-			t.Fatalf("isolated rollback boundary %s: before=%#v after=%#v", operation, before, after)
-		}
-	}
 	_, preparationErr := PrepareNodeSelectionActivation(ctx, db, "v2.0.7", activationFixtureCommit)
 	if preparationErr == nil {
 		t.Fatal("ambiguous legacy primary did not fail preparation")
 	}
-	t.Logf("injected preparation failure: %v", preparationErr)
+	if !strings.Contains(preparationErr.Error(), "legacy primary Node choices are ambiguous") {
+		t.Fatalf("legacy source validation did not precede destructive preparation: %v", preparationErr)
+	}
 	if !reflect.DeepEqual(before, nodeActivationRows(t, ctx, db, "stream_node_selections")) {
 		t.Fatalf("failed preparation changed isolated preference rows: before=%#v after=%#v", before, nodeActivationRows(t, ctx, db, "stream_node_selections"))
 	}

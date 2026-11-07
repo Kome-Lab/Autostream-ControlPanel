@@ -137,6 +137,24 @@ func rebuildUnactivatedNodeSelections(ctx context.Context, tx *sql.Tx) error {
 	if err != nil {
 		return err
 	}
+	// Validate the legacy source before deleting any prepared preferences. In
+	// particular, never discover duplicate primary roles by failing an INSERT
+	// after a DELETE of the same keys. The application remains quiesced here.
+	var ambiguous int
+	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM (
+ SELECT a.stream_id,a.service_type
+ FROM stream_service_assignments a
+ JOIN streams s ON s.id=a.stream_id
+ WHERE a.assignment_role='primary'
+ AND a.service_type IN ('discord_bot','encoder_recorder','worker')
+ AND s.deleted_at IS NULL
+ GROUP BY a.stream_id,a.service_type HAVING COUNT(*)>1
+ ) ambiguous_roles`).Scan(&ambiguous); err != nil {
+		return err
+	}
+	if ambiguous != 0 {
+		return errors.New("legacy primary Node choices are ambiguous")
+	}
 	if _, err = tx.ExecContext(ctx, "DELETE FROM stream_node_selections"); err != nil {
 		return err
 	}
