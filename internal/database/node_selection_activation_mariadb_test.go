@@ -71,7 +71,15 @@ func insertNodeActivationJob(t *testing.T, ctx context.Context, db *sql.DB, id s
 
 func finishNodeActivationJob(t *testing.T, ctx context.Context, db *sql.DB, id, status string) {
 	t.Helper()
-	_, err := db.ExecContext(ctx, "UPDATE system_update_jobs SET status=?,completed_at=UTC_TIMESTAMP(6),artifact_digest=?,previous_digest=? WHERE id=?", status, strings.Repeat("a", 64), strings.Repeat("b", 64), id)
+	// Match systemUpdateV2EvidenceDigests: one outcome-specific observed digest.
+	artifact, previous := "", ""
+	switch status {
+	case "succeeded":
+		artifact = "sha256:" + strings.Repeat("a", 64)
+	case "rolled_back":
+		previous = "sha256:" + strings.Repeat("b", 64)
+	}
+	_, err := db.ExecContext(ctx, "UPDATE system_update_jobs SET status=?,completed_at=UTC_TIMESTAMP(6),artifact_digest=?,previous_digest=? WHERE id=?", status, artifact, previous, id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -266,5 +274,76 @@ func TestMariaDBNodeSelectionActivationSuccessRequiresProof(t *testing.T) {
 	restart, err := PrepareNodeSelectionActivation(ctx, db, "v2.0.7", activationFixtureCommit)
 	if err != nil || !restart.Ready() {
 		t.Fatalf("activated restart did not converge: %v", err)
+	}
+}
+
+// A verified completed predecessor can be finalized by the fixed release; an
+// incomplete or different authority cannot be turned into a manual activation.
+func TestMariaDBNodeSelectionActivationCompletedPredecessorRecovery(t *testing.T) {
+	for _, tc := range []struct {
+		name, terminalStatus, mutation string
+		activeReplacement, wantReady   bool
+	}{
+		{name: "accepted v2 success", wantReady: true},
+		{name: "failed predecessor", terminalStatus: "failed"},
+		{name: "rolled back predecessor", terminalStatus: "rolled_back"},
+		{name: "unknown predecessor", terminalStatus: "unknown"},
+		{name: "missing completion", mutation: "completed_at=NULL"},
+		{name: "missing success evidence", mutation: "artifact_digest=''"},
+		{name: "changed host", mutation: "execution_host_id='other'"},
+		{name: "changed updater", mutation: "agent_service_id='other'"},
+		{name: "changed epoch", mutation: "ownership_epoch=8"},
+		{name: "changed target version", mutation: "target_version='v2.0.8'"},
+		{name: "new active plan", activeReplacement: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, ctx := openNodeSelectionActivationFixture(t)
+			insertNodeActivationJob(t, ctx, db, "job-1")
+			initial, err := PrepareNodeSelectionActivation(ctx, db, "v2.0.7", activationFixtureCommit)
+			if err != nil || initial.Ready() {
+				t.Fatalf("initial prepare: %v", err)
+			}
+			status := tc.terminalStatus
+			if status == "" {
+				status = "succeeded"
+			}
+			finishNodeActivationJob(t, ctx, db, "job-1", status)
+			if tc.mutation != "" {
+				if _, err = db.ExecContext(ctx, "UPDATE system_update_jobs SET "+tc.mutation+" WHERE id='job-1'"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.activeReplacement {
+				insertNodeActivationJob(t, ctx, db, "job-2")
+				if _, err = db.ExecContext(ctx, "UPDATE system_update_jobs SET target_version='v2.0.8',current_version='v2.0.7' WHERE id='job-2'"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			protected := map[string][][]string{}
+			for _, table := range []string{"streams", "stream_settings", "profiles", "services", "stream_service_assignments", "stream_node_selections", "system_update_jobs"} {
+				protected[table] = nodeActivationRows(t, ctx, db, table)
+			}
+			recovered, err := PrepareNodeSelectionActivation(ctx, db, "v2.0.8", strings.Repeat("c", 40))
+			if tc.wantReady {
+				if err != nil || !recovered.Ready() || !recovered.ProbeReady() || recovered.UpdateJobID() != "job-1" {
+					t.Fatalf("completed predecessor did not recover: %v", err)
+				}
+			} else if err == nil && recovered.Ready() {
+				t.Fatal("unproven predecessor activated the fixed release")
+			}
+			var jobID, preparedVersion, preparedCommit string
+			var activated sql.NullTime
+			if err = db.QueryRowContext(ctx, "SELECT update_job_id,target_version,build_commit,activated_at FROM stream_node_selection_activation WHERE singleton_id=1").Scan(&jobID, &preparedVersion, &preparedCommit, &activated); err != nil {
+				t.Fatal(err)
+			}
+			if jobID != "job-1" || preparedVersion != "v2.0.7" || preparedCommit != activationFixtureCommit || activated.Valid != tc.wantReady {
+				t.Fatalf("recovery changed original binding or activation: %s %s %s %v", jobID, preparedVersion, preparedCommit, activated.Valid)
+			}
+			for table, before := range protected {
+				if !reflect.DeepEqual(before, nodeActivationRows(t, ctx, db, table)) {
+					t.Fatalf("recovery changed %s", table)
+				}
+			}
+		})
 	}
 }

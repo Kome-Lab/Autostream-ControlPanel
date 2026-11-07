@@ -1,0 +1,181 @@
+name: Activation proof compatibility
+
+on:
+  push:
+    branches: ["fix/activation-v2-terminal-proof-20261107"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: activation-proof-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  activation-proof:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      GOMAXPROCS: "2"
+      AUTOSTREAM_MARIADB_TEST_DSN: root:node-sharing-ci-root@tcp(127.0.0.1:3306)/autostream_ci?parseTime=true
+    services:
+      mariadb:
+        image: mariadb:11.4.12@sha256:a794d9eb009e20de605858a11f32f63b4075cbd197c650436f0e3b457e4caed7
+        env:
+          MARIADB_DATABASE: autostream_ci
+          MARIADB_ROOT_PASSWORD: node-sharing-ci-root
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd "healthcheck.sh --connect --innodb_initialized"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.mod
+      - name: Reproduce the released v2.0.7 failure through canonical wire evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          before="${RUNNER_TEMP}/activation-v207-red"
+          git worktree add --detach "$before" 90c80b9a66958a1e15349acb939074491975dbcc
+          cp internal/httpapi/system_update_v2_activation_mariadb_test.go "$before/internal/httpapi/"
+          set +e
+          (cd "$before" && go test -p 1 -timeout 2m ./internal/httpapi -run '^TestMariaDBNodeSelectionActivationV2WireResults/success        shell: bash
+        run: |
+          set -euo pipefail
+          go test -p 1 -timeout 2m ./internal/database -run '^TestNodeSelectionActivation' -count=1 -json | tee "${RUNNER_TEMP}/activation-policy.json"
+      - name: Verify real MariaDB activation and completed-predecessor recovery
+        if: success() || failure()
+        shell: bash
+        run: |
+          set -euo pipefail
+          go test -p 1 -timeout 5m ./internal/database -run '^TestMariaDBNodeSelectionActivation' -count=1 -json | tee "${RUNNER_TEMP}/activation-database.json"
+      - name: Verify canonical v2 wire evidence through the real adapter
+        if: success() || failure()
+        shell: bash
+        run: |
+          set -euo pipefail
+          go test -p 1 -timeout 5m ./internal/httpapi -run '^TestMariaDBNodeSelectionActivationV2' -count=1 -json | tee "${RUNNER_TEMP}/activation-wire.json"
+      - name: Verify held HTTP requests and background workers
+        if: success() || failure()
+        shell: bash
+        run: |
+          set -euo pipefail
+          go test -p 1 -timeout 2m ./cmd/control-panel -run '^TestNodeSelectionActivation' -count=1 -json | tee "${RUNNER_TEMP}/activation-startup.json"
+      - name: Require every named recovery fixture to run and pass
+        if: success() || failure()
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          required = {
+              "activation-policy.json": ["TestNodeSelectionActivationRequiresExactInstallingJob", "TestNodeSelectionActivationRequiresDurableTerminalProof", "TestNodeSelectionActivationV2OutcomeProof"],
+              "activation-database.json": [
+                  "TestMariaDBNodeSelectionActivationRollbackEditAndRetry",
+                  "TestMariaDBNodeSelectionActivationRestartAndTerminalHold",
+                  "TestMariaDBNodeSelectionActivationRejectsChangedAuthority",
+                  "TestMariaDBNodeSelectionActivationPreparationIsAtomic",
+                  "TestMariaDBNodeSelectionActivationManualAndMissingProvenance",
+                  "TestMariaDBNodeSelectionActivationSuccessRequiresProof",
+                  "TestMariaDBNodeSelectionActivationCompletedPredecessorRecovery",
+                  "TestMariaDBNodeSelectionActivationCompletedPredecessorRecovery/accepted_v2_success",
+              ],
+              "activation-wire.json": ["TestMariaDBNodeSelectionActivationV2WireResults", "TestMariaDBNodeSelectionActivationV2WireResults/success", "TestMariaDBNodeSelectionActivationV2WireResults/rollback_and_retry", "TestMariaDBNodeSelectionActivationV2WireResults/completed_predecessor"],
+              "activation-startup.json": ["TestNodeSelectionActivationBlocksApplicationBeforeSuccess", "TestNodeSelectionActivationKeepsExactRecoveryProtocol", "TestNodeSelectionActivationDefersFirstBackgroundWork"],
+          }
+          for filename, names in required.items():
+              events = [json.loads(line) for line in (Path(os.environ["RUNNER_TEMP"]) / filename).read_text().splitlines()]
+              for name in names:
+                  actions = [event.get("Action") for event in events if event.get("Test") == name]
+                  assert actions.count("run") == 1 and actions.count("pass") == 1, (name, actions)
+                  assert not any(action in ("fail", "skip") for action in actions), (name, actions)
+          print("ACTIVATION_V2_PROOF_COMPATIBILITY_PASS")
+          PY
+      - name: Preserve exact recovery observations
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: activation-proof-${{ github.sha }}
+          path: ${{ runner.temp }}/activation-*.json
+          if-no-files-found: error
+ -count=1 -json) > "${RUNNER_TEMP}/activation-red.json"
+          red_status=$?
+          set -e
+          RED_STATUS="$red_status" python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          assert os.environ["RED_STATUS"] == "1", "Released source did not produce the expected failing test"
+          events = [json.loads(line) for line in (Path(os.environ["RUNNER_TEMP"]) / "activation-red.json").read_text().splitlines()]
+          name = "TestMariaDBNodeSelectionActivationV2WireResults/success"
+          actions = [event.get("Action") for event in events if event.get("Test") == name]
+          assert actions.count("run") == 1 and actions.count("fail") == 1 and "skip" not in actions, actions
+          assert any("canonical v2 success did not release activation" in event.get("Output", "") for event in events), "Failure was not the activation mismatch"
+          print("RELEASED_V207_ACTIVATION_FAILURE_REPRODUCED")
+          PY
+      - name: Verify outcome-specific activation evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          go test -p 1 -timeout 2m ./internal/database -run '^TestNodeSelectionActivation' -count=1 -json | tee "${RUNNER_TEMP}/activation-policy.json"
+      - name: Verify real MariaDB activation and completed-predecessor recovery
+        if: success() || failure()
+        shell: bash
+        run: |
+          set -euo pipefail
+          go test -p 1 -timeout 5m ./internal/database -run '^TestMariaDBNodeSelectionActivation' -count=1 -json | tee "${RUNNER_TEMP}/activation-database.json"
+      - name: Verify canonical v2 wire evidence through the real adapter
+        if: success() || failure()
+        shell: bash
+        run: |
+          set -euo pipefail
+          go test -p 1 -timeout 5m ./internal/httpapi -run '^TestMariaDBNodeSelectionActivationV2' -count=1 -json | tee "${RUNNER_TEMP}/activation-wire.json"
+      - name: Verify held HTTP requests and background workers
+        if: success() || failure()
+        shell: bash
+        run: |
+          set -euo pipefail
+          go test -p 1 -timeout 2m ./cmd/control-panel -run '^TestNodeSelectionActivation' -count=1 -json | tee "${RUNNER_TEMP}/activation-startup.json"
+      - name: Require every named recovery fixture to run and pass
+        if: success() || failure()
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          required = {
+              "activation-policy.json": ["TestNodeSelectionActivationRequiresExactInstallingJob", "TestNodeSelectionActivationRequiresDurableTerminalProof", "TestNodeSelectionActivationV2OutcomeProof"],
+              "activation-database.json": [
+                  "TestMariaDBNodeSelectionActivationRollbackEditAndRetry",
+                  "TestMariaDBNodeSelectionActivationRestartAndTerminalHold",
+                  "TestMariaDBNodeSelectionActivationRejectsChangedAuthority",
+                  "TestMariaDBNodeSelectionActivationPreparationIsAtomic",
+                  "TestMariaDBNodeSelectionActivationManualAndMissingProvenance",
+                  "TestMariaDBNodeSelectionActivationSuccessRequiresProof",
+                  "TestMariaDBNodeSelectionActivationCompletedPredecessorRecovery",
+              ],
+              "activation-wire.json": ["TestMariaDBNodeSelectionActivationV2WireResults"],
+              "activation-startup.json": ["TestNodeSelectionActivationBlocksApplicationBeforeSuccess", "TestNodeSelectionActivationKeepsExactRecoveryProtocol", "TestNodeSelectionActivationDefersFirstBackgroundWork"],
+          }
+          for filename, names in required.items():
+              events = [json.loads(line) for line in (Path(os.environ["RUNNER_TEMP"]) / filename).read_text().splitlines()]
+              for name in names:
+                  actions = [event.get("Action") for event in events if event.get("Test") == name]
+                  assert actions.count("run") == 1 and actions.count("pass") == 1, (name, actions)
+                  assert not any(action in ("fail", "skip") for action in actions), (name, actions)
+          print("ACTIVATION_V2_PROOF_COMPATIBILITY_PASS")
+          PY
+      - name: Preserve exact recovery observations
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: activation-proof-${{ github.sha }}
+          path: ${{ runner.temp }}/activation-*.json
+          if-no-files-found: error

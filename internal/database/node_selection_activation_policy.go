@@ -45,5 +45,17 @@ func nodeSelectionActivationTerminalProof(j nodeSelectionActivationJob) bool {
 		}
 		return true
 	}
-	return j.CompletedAt.Valid && !j.CompletedAt.Time.IsZero() && validDigest(j.ArtifactDigest) && validDigest(j.PreviousDigest)
+	if !j.CompletedAt.Valid || j.CompletedAt.Time.IsZero() {
+		return false
+	}
+	// The canonical v2 result carries the observed artifact for its outcome.
+	// Success records the candidate; rollback records the restored release.
+	switch j.Status {
+	case "succeeded":
+		return validDigest(j.ArtifactDigest)
+	case "rolled_back":
+		return validDigest(j.PreviousDigest)
+	default:
+		return false
+	}
 }

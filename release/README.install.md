@@ -218,3 +218,24 @@ returning to a version that predates saved Node selections requires a coordinate
 verified backup restoration while the application is stopped. A binary-only
 manual downgrade cannot preserve the new selection model. Missing or inconsistent
 activation provenance fails closed; do not edit update rows or activation state.
+
+## Recover an accepted v2.0.7 update with v2.0.8
+
+Control Panel v2.0.7 can keep returning `Control Panel update verification is in progress.` after the Updater has correctly recorded success. Its activation check incorrectly required both the candidate and previous digests, while the v2 result records the digest for the observed outcome only. v2.0.8 accepts that canonical success evidence and separately accepts restored-release evidence for a verified rollback.
+
+In the existing Control Panel database, inspect only the bounded status fields:
+
+```sql
+SELECT j.status,
+       (j.completed_at IS NOT NULL) AS completed,
+       CHAR_LENGTH(COALESCE(j.artifact_digest, '')) AS artifact_chars,
+       CHAR_LENGTH(COALESCE(j.previous_digest, '')) AS previous_chars,
+       (a.activated_at IS NOT NULL) AS activated
+FROM stream_node_selection_activation a
+LEFT JOIN system_update_jobs j ON j.id = a.update_job_id
+WHERE a.singleton_id = 1;
+```
+
+For the affected accepted update, the original job is `succeeded`, completion and candidate evidence are present, and activation is absent. Install the independently verified `autostream-control-panel_v2.0.8_linux_amd64.tar.gz` (or the matching arm64 archive) using the normal installer above, then explicitly restart `autostream-control-panel.service`. The fixed application verifies the original durable job and binding, preserves its prepared Node selections, and finishes activation. It retains that job and build identity rather than relabeling the completed update. Existing environment configuration and the Host Agent/Local Executor runtime are preserved.
+
+An incomplete, failed, rolled-back, missing, or changed job is not success. Continue the selected Updater release's supported reconciliation procedure for that original immutable plan when it has not completed. Recovery records and job rows remain under their owning protocol.

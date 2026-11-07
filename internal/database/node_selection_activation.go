@@ -93,19 +93,30 @@ func PrepareNodeSelectionActivation(ctx context.Context, db *sql.DB, runningVers
 		}
 		a.binding = nodeSelectionActivationBinding{JobID: active.ID, TargetVersion: runningVersion, BuildCommit: buildCommit, AgentID: active.AgentID, HostID: active.HostID, Epoch: active.Epoch, CurrentVersion: active.CurrentVersion}
 	} else if saved.JobID != "" {
-		if saved.TargetVersion != runningVersion || saved.BuildCommit != buildCommit {
-			return nil, errors.New("Node activation candidate identity changed")
-		}
 		a.binding = saved
-		if previous.Status != "succeeded" {
+		if previous.Status == "succeeded" {
+			if !nodeSelectionActivationTerminalProof(previous) {
+				return nil, errors.New("Node activation terminal proof is incomplete")
+			}
+			// The original update was already accepted. Finish its prepared
+			// transition, including when a verified fixed release starts after it.
+			// Keep that job/build binding and its prepared choices unchanged.
+			if _, err = tx.ExecContext(ctx, "UPDATE stream_node_selection_activation SET activated_at=UTC_TIMESTAMP(6) WHERE singleton_id=1"); err != nil {
+				return nil, err
+			}
 			if err = tx.Commit(); err != nil {
 				return nil, err
 			}
-			return a, nil // keep failed/unknown/rolled-back candidates closed
+			a.markReady()
+			return a, nil
 		}
-		if !nodeSelectionActivationTerminalProof(previous) {
-			return nil, errors.New("Node activation terminal proof is incomplete")
+		if saved.TargetVersion != runningVersion || saved.BuildCommit != buildCommit {
+			return nil, errors.New("Node activation candidate identity changed")
 		}
+		if err = tx.Commit(); err != nil {
+			return nil, err
+		}
+		return a, nil // keep failed/unknown/rolled-back candidates closed
 	}
 	// The unpublished transition has not accepted any application writes. Rebuild
 	// from the current legacy authority, including changes made after rollback.

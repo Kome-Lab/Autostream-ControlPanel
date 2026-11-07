@@ -56,16 +56,16 @@ func TestNodeSelectionActivationRequiresExactInstallingJob(t *testing.T) {
 }
 
 func TestNodeSelectionActivationRequiresDurableTerminalProof(t *testing.T) {
-	valid := nodeSelectionActivationJob{CompletedAt: sql.NullTime{Time: time.Now(), Valid: true}, ArtifactDigest: "sha256:" + strings.Repeat("a", 64), PreviousDigest: strings.Repeat("b", 64)}
+	valid := nodeSelectionActivationJob{Status: "succeeded", CompletedAt: sql.NullTime{Time: time.Now(), Valid: true}, ArtifactDigest: "sha256:" + strings.Repeat("a", 64), PreviousDigest: strings.Repeat("b", 64)}
 	if !nodeSelectionActivationTerminalProof(valid) {
 		t.Fatal("complete terminal proof rejected")
 	}
 	for name, change := range map[string]func(*nodeSelectionActivationJob){
-		"missing completion": func(j *nodeSelectionActivationJob) { j.CompletedAt = sql.NullTime{} },
-		"zero completion":    func(j *nodeSelectionActivationJob) { j.CompletedAt.Time = time.Time{} },
-		"missing artifact":   func(j *nodeSelectionActivationJob) { j.ArtifactDigest = "" },
-		"invalid artifact":   func(j *nodeSelectionActivationJob) { j.ArtifactDigest = strings.Repeat("z", 64) },
-		"missing baseline":   func(j *nodeSelectionActivationJob) { j.PreviousDigest = "" },
+		"missing completion":  func(j *nodeSelectionActivationJob) { j.CompletedAt = sql.NullTime{} },
+		"zero completion":     func(j *nodeSelectionActivationJob) { j.CompletedAt.Time = time.Time{} },
+		"missing artifact":    func(j *nodeSelectionActivationJob) { j.ArtifactDigest = "" },
+		"invalid artifact":    func(j *nodeSelectionActivationJob) { j.ArtifactDigest = strings.Repeat("z", 64) },
+		"nonterminal outcome": func(j *nodeSelectionActivationJob) { j.Status = "installing" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			j := valid
