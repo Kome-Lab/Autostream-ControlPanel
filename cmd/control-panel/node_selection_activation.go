@@ -43,7 +43,7 @@ func activationRecoveryRequest(r *http.Request, gate nodeSelectionActivation) bo
 	}
 	switch r.URL.Path {
 	case "/services/host-agent/policy":
-		return true
+		return activationRequestIdentity(r, "service_id", gate.UpdateAgentID(), false)
 	case "/services/update-jobs/claim":
 		return activationRequestIdentity(r, "active_job_id", gate.UpdateJobID(), false)
 	case "/services/heartbeat":
@@ -74,19 +74,50 @@ func activationRequestIdentity(r *http.Request, field, expected string, registra
 	if err != nil || len(body) > 1<<20 {
 		return false
 	}
-	var value map[string]json.RawMessage
-	if json.Unmarshal(body, &value) != nil {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	token, err := decoder.Token()
+	if err != nil || token != json.Delim('{') {
 		return false
 	}
-	var identity string
-	if json.Unmarshal(value[field], &identity) != nil || identity != expected {
-		return false
-	}
-	if registration {
-		var kind string
-		if json.Unmarshal(value["service_type"], &kind) != nil || kind != "update_agent" {
+	var identity, kind string
+	seenIdentity, seenKind := false, false
+	for decoder.More() {
+		keyToken, err := decoder.Token()
+		if err != nil {
 			return false
 		}
+		key, ok := keyToken.(string)
+		if !ok {
+			return false
+		}
+		var value json.RawMessage
+		if decoder.Decode(&value) != nil {
+			return false
+		}
+		if strings.EqualFold(key, field) {
+			// A map lookup and the downstream struct decoder disagree on case-folded
+			// duplicates. Accept one canonical identity field, or remain closed.
+			if key != field || seenIdentity || json.Unmarshal(value, &identity) != nil {
+				return false
+			}
+			seenIdentity = true
+		}
+		if registration && strings.EqualFold(key, "service_type") {
+			if key != "service_type" || seenKind || json.Unmarshal(value, &kind) != nil {
+				return false
+			}
+			seenKind = true
+		}
+	}
+	token, err = decoder.Token()
+	if err != nil || token != json.Delim('}') || decoder.Decode(&struct{}{}) != io.EOF {
+		return false
+	}
+	if !seenIdentity || identity != expected {
+		return false
+	}
+	if registration && (!seenKind || kind != "update_agent") {
+		return false
 	}
 	return true
 }

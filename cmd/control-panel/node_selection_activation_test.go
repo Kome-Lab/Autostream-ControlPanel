@@ -80,7 +80,15 @@ func TestNodeSelectionActivationKeepsExactRecoveryProtocol(t *testing.T) {
 		{"/services/register", `{"service_id":"host-agent","service_type":"encoder_recorder"}`, 503},
 		{"/services/heartbeat", `{"service_id":"host-agent"}`, 204},
 		{"/services/heartbeat", `{"service_id":"encoder"}`, 503},
-		{"/services/host-agent/policy", `{}`, 204},
+		{"/services/host-agent/policy", `{"service_id":"host-agent"}`, 204},
+		{"/services/host-agent/policy", `{"service_id":"another-agent"}`, 503},
+		{"/services/update-jobs/claim", `{"active_job_id":"pending-job","ACTIVE_JOB_ID":"another-job"}`, 503},
+		{"/services/update-jobs/claim", `{"ACTIVE_JOB_ID":"pending-job"}`, 503},
+		{"/services/update-jobs/claim", `{"active_job_id":"pending-job","active_job_id":"pending-job"}`, 503},
+		{"/services/register", `{"service_id":"host-agent","SERVICE_ID":"encoder","service_type":"update_agent"}`, 503},
+		{"/services/register", `{"service_id":"host-agent","service_type":"update_agent","SERVICE_TYPE":"encoder_recorder"}`, 503},
+		{"/services/heartbeat", `{"service_id":"host-agent","SERVICE_ID":"encoder"}`, 503},
+		{"/services/host-agent/policy", `{"service_id":"host-agent","SERVICE_ID":"another-agent"}`, 503},
 	} {
 		t.Run(request.path+request.body, func(t *testing.T) {
 			req := httptest.NewRequest("POST", request.path, strings.NewReader(request.body))

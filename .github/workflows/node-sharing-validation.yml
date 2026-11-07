@@ -114,7 +114,7 @@ jobs:
             -run '^Test(SharedNodeSelection|DiscordWaitingMonitor|NodeSelectionServiceAuthority|ServiceStart|CreateStreamSavesSharedDiscord|CreateStreamPreservesActive|CreateStreamParallel|UpdateStreamSettingsRejectsInvalidSelection|UpdateStreamSettingsExplicitEmpty|UI188CreateMandatoryRolesPermissionAndAtomicNodeSelections)' \
             -count=1 -json | tee "${RUNNER_TEMP}/node-sharing-http.json"
       - name: Run complete ordinary Go test suite
-        if: success() || failure()
+        if: success()
         env:
           AUTOSTREAM_MARIADB_TEST_DSN: ""
         shell: bash

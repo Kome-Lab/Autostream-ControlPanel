@@ -15,6 +15,11 @@ func openNodeSelectionActivationFixture(t *testing.T) (*sql.DB, context.Context)
 	db, ctx := openMariaDBMigrationTest(t, false)
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
+	var permanentEngine, temporaryEngine string
+	if err := db.QueryRowContext(ctx, "SELECT @@default_storage_engine,@@default_tmp_storage_engine").Scan(&permanentEngine, &temporaryEngine); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("fixture engines: permanent=%s temporary=%s; transactional tables explicitly use InnoDB", permanentEngine, temporaryEngine)
 	for _, stmt := range []string{
 		"CREATE TEMPORARY TABLE streams(id CHAR(36) PRIMARY KEY,deleted_at DATETIME(6) NULL,created_at DATETIME(6) NOT NULL) ENGINE=InnoDB",
 		"CREATE TEMPORARY TABLE stream_settings(stream_id CHAR(36) PRIMARY KEY,discord_config_id CHAR(36) NULL,updated_at DATETIME(6) NULL) ENGINE=InnoDB",
@@ -34,7 +39,7 @@ func openNodeSelectionActivationFixture(t *testing.T) (*sql.DB, context.Context)
 		}
 		statements := splitSQLStatements(string(body))
 		// Only create the temporary new tables. Seeding/rebuild is exercised below.
-		statement := strings.Replace(statements[0], "CREATE TABLE IF NOT EXISTS", "CREATE TEMPORARY TABLE", 1)
+		statement := strings.Replace(statements[0], "CREATE TABLE IF NOT EXISTS", "CREATE TEMPORARY TABLE", 1) + " ENGINE=InnoDB"
 		if _, err = db.ExecContext(ctx, statement); err != nil {
 			t.Fatal(err)
 		}
