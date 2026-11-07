@@ -16,7 +16,7 @@ func openNodeSelectionActivationFixture(t *testing.T) (*sql.DB, context.Context)
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
 	var permanentEngine, temporaryEngine string
-	if err := db.QueryRowContext(ctx, "SELECT @@default_storage_engine,@@default_tmp_storage_engine").Scan(&permanentEngine, &temporaryEngine); err != nil {
+	if err := db.QueryRowContext(ctx, "SELECT @@default_storage_engine,COALESCE(@@default_tmp_storage_engine,'<default>')").Scan(&permanentEngine, &temporaryEngine); err != nil {
 		t.Fatal(err)
 	}
 	t.Logf("fixture engines: permanent=%s temporary=%s; transactional tables explicitly use InnoDB", permanentEngine, temporaryEngine)
@@ -43,6 +43,13 @@ func openNodeSelectionActivationFixture(t *testing.T) (*sql.DB, context.Context)
 		if _, err = db.ExecContext(ctx, statement); err != nil {
 			t.Fatal(err)
 		}
+	}
+	var selectionTable, selectionDDL string
+	if err := db.QueryRowContext(ctx, "SHOW CREATE TABLE stream_node_selections").Scan(&selectionTable, &selectionDDL); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(selectionDDL, "ENGINE=InnoDB") {
+		t.Fatal("activation fixture must use transactional preferences")
 	}
 	for _, stmt := range []string{
 		"INSERT INTO stream_node_selection_activation(singleton_id) VALUES(1)",
@@ -207,9 +214,11 @@ func TestMariaDBNodeSelectionActivationPreparationIsAtomic(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := nodeActivationRows(t, ctx, db, "stream_node_selections")
-	if _, err := PrepareNodeSelectionActivation(ctx, db, "v2.0.7", activationFixtureCommit); err == nil {
+	_, preparationErr := PrepareNodeSelectionActivation(ctx, db, "v2.0.7", activationFixtureCommit)
+	if preparationErr == nil {
 		t.Fatal("ambiguous legacy primary did not fail preparation")
 	}
+	t.Logf("injected preparation failure: %v", preparationErr)
 	if !reflect.DeepEqual(before, nodeActivationRows(t, ctx, db, "stream_node_selections")) {
 		t.Fatal("failed preparation partially erased preferences")
 	}
