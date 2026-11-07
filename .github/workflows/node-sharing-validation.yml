@@ -68,6 +68,43 @@ jobs:
         run: |
           set -euo pipefail
           go test -timeout 5m -p 1 ./internal/database -run '^TestMariaDB(NodeSelection|ControlPlatformFeatureMigrationAndPersistence)' -count=1 -json | tee "${RUNNER_TEMP}/node-sharing-migrations.json"
+      - name: Run startup activation HTTP and worker gates
+        if: success() || failure()
+        shell: bash
+        run: |
+          set -euo pipefail
+          go test -timeout 2m -p 1 ./cmd/control-panel -run '^TestNodeSelectionActivation' -count=1 -json | tee "${RUNNER_TEMP}/node-sharing-activation.json"
+      - name: Require positive recovery compatibility evidence
+        if: success() || failure()
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          required = {
+              "node-sharing-migrations.json": [
+                  "TestMariaDBNodeSelectionActivationRollbackEditAndRetry",
+                  "TestMariaDBNodeSelectionActivationRestartAndTerminalHold",
+                  "TestMariaDBNodeSelectionActivationRejectsChangedAuthority",
+                  "TestMariaDBNodeSelectionActivationPreparationIsAtomic",
+                  "TestMariaDBNodeSelectionActivationManualAndMissingProvenance",
+                  "TestMariaDBNodeSelectionActivationSuccessRequiresProof",
+              ],
+              "node-sharing-activation.json": [
+                  "TestNodeSelectionActivationBlocksApplicationBeforeSuccess",
+                  "TestNodeSelectionActivationKeepsExactRecoveryProtocol",
+                  "TestNodeSelectionActivationDefersFirstBackgroundWork",
+              ],
+          }
+          for filename, names in required.items():
+              events = [json.loads(line) for line in (Path(os.environ["RUNNER_TEMP"]) / filename).read_text().splitlines()]
+              for name in names:
+                  actions = [event.get("Action") for event in events if event.get("Test") == name]
+                  assert actions.count("run") == 1 and actions.count("pass") == 1, (name, actions)
+                  assert not any(action in ("fail", "skip") for action in actions), (name, actions)
+          print("NODE_SELECTION_RECOVERY_COMPATIBILITY_PASS")
+          PY
       - name: Run HTTP save and refresh regression
         if: success() || failure()
         shell: bash

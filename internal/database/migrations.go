@@ -16,6 +16,9 @@ import (
 var embeddedMigrations embed.FS
 
 func RunEmbeddedMigrations(ctx context.Context, db *sql.DB) error {
+	if err := prepareNodeSelectionActivationJournal(ctx, db); err != nil {
+		return err
+	}
 	return runMigrationsFS(ctx, db, embeddedMigrations, "migrations")
 }
 

@@ -52,6 +52,12 @@ func main() {
 		log.Fatalf("run migrations: %v", err)
 	}
 
+	activation, err := database.PrepareNodeSelectionActivation(ctx, db, version.Current(), version.Commit)
+	if err != nil {
+		log.Fatal("prepare saved Node activation failed")
+	}
+	go activation.Run(runCtx)
+
 	appSettingsStore := store.NewMariaDBAppSettingsStore(db)
 	mediaRepository, err := mediaassets.NewMariaDBRepository(db, mediaassets.DefaultStorageRoot())
 	if err != nil {
@@ -83,7 +89,7 @@ func main() {
 		httpapi.WithServiceDispatcher(runtimeDispatcher),
 		httpapi.WithVideoCoverDispatcher(runtimeDispatcher),
 	)
-	handler := withStaticFiles(srv, staticWebDir(), appSettingsStore)
+	handler := withNodeSelectionActivation(withStaticFiles(srv, staticWebDir(), appSettingsStore), activation)
 	server := &http.Server{
 		Addr:              addr,
 		Handler:           handler,
@@ -102,11 +108,21 @@ func main() {
 		}
 		errCh <- err
 	}()
-	go srv.RunYouTubeCompletionRetryLoop(runCtx, durationFromEnv("AUTOSTREAM_YOUTUBE_COMPLETE_RETRY_INTERVAL", time.Minute))
-	go srv.RunYouTubeIngestHealthLoop(runCtx, durationFromEnv("AUTOSTREAM_YOUTUBE_INGEST_HEALTH_INTERVAL", 30*time.Second))
-	go srv.RunDiscordYouTubeLiveNotificationOutboxLoop(runCtx, durationFromEnv("AUTOSTREAM_YOUTUBE_LIVE_NOTIFICATION_RETRY_INTERVAL", 15*time.Second))
-	go srv.RunOAuthTokenRefreshLoop(runCtx, durationFromEnv("AUTOSTREAM_OAUTH_TOKEN_REFRESH_INTERVAL", 45*time.Minute))
-	go srv.RunMediaAssetGarbageCollector(runCtx, durationFromEnv("AUTOSTREAM_MEDIA_ASSET_GC_INTERVAL", time.Hour))
+	go runAfterNodeSelectionActivation(runCtx, activation.ReadySignal(), func(loopCtx context.Context) {
+		srv.RunYouTubeCompletionRetryLoop(loopCtx, durationFromEnv("AUTOSTREAM_YOUTUBE_COMPLETE_RETRY_INTERVAL", time.Minute))
+	})
+	go runAfterNodeSelectionActivation(runCtx, activation.ReadySignal(), func(loopCtx context.Context) {
+		srv.RunYouTubeIngestHealthLoop(loopCtx, durationFromEnv("AUTOSTREAM_YOUTUBE_INGEST_HEALTH_INTERVAL", 30*time.Second))
+	})
+	go runAfterNodeSelectionActivation(runCtx, activation.ReadySignal(), func(loopCtx context.Context) {
+		srv.RunDiscordYouTubeLiveNotificationOutboxLoop(loopCtx, durationFromEnv("AUTOSTREAM_YOUTUBE_LIVE_NOTIFICATION_RETRY_INTERVAL", 15*time.Second))
+	})
+	go runAfterNodeSelectionActivation(runCtx, activation.ReadySignal(), func(loopCtx context.Context) {
+		srv.RunOAuthTokenRefreshLoop(loopCtx, durationFromEnv("AUTOSTREAM_OAUTH_TOKEN_REFRESH_INTERVAL", 45*time.Minute))
+	})
+	go runAfterNodeSelectionActivation(runCtx, activation.ReadySignal(), func(loopCtx context.Context) {
+		srv.RunMediaAssetGarbageCollector(loopCtx, durationFromEnv("AUTOSTREAM_MEDIA_ASSET_GC_INTERVAL", time.Hour))
+	})
 	select {
 	case err := <-errCh:
 		if err != nil {

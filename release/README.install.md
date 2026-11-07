@@ -195,3 +195,26 @@ applied the matching configure revision and reported healthy observations.
 Do not fabricate artifact digests or version files, modify or recompress an
 attested archive, commit real environment files or credentials, or expose
 `/updater/version` through the public proxy.
+
+## Saved Node selections and introduction rollback
+
+The first release with shared saved Node selections keeps automatic updates
+available. While its installing Control Panel software-update job is being
+verified, only the existing application health/identity probes and the bounded,
+authenticated updater recovery routes are available. Normal UI/API requests
+return a retryable 503 and background application work has not started.
+
+Before probes become available, the candidate prepares saved choices from the
+legacy assignments and Discord profiles without changing their execution owners.
+The application opens only after the same durable update job has accepted terminal
+success. If installation rolls back, the old version continues using its own
+assignments. A verified subsequent update rebuilds the unactivated choices from
+that current legacy state, including edits made after rollback. After activation,
+restarts retain saved choices and explicit clears; they never reimport assignments.
+
+The host manifest's automatic rollback compatibility covers this introduction
+before accepted terminal success. After new saved choices have been accepted,
+returning to a version that predates saved Node selections requires a coordinated,
+verified backup restoration while the application is stopped. A binary-only
+manual downgrade cannot preserve the new selection model. Missing or inconsistent
+activation provenance fails closed; do not edit update rows or activation state.
