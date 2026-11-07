@@ -3,10 +3,11 @@
 export const pollingCurrentBase = "65a601fc9d4f15c93083e9be4ab9e71586fdba69";
 export const pollingCurrentTree = "2624414bc4e1cb4bd304faccf82e5d22e3201dd2";
 export const pollingCurrentFixturePath = "web/tests/fixtures/ui-regression/polling-current-source-delta.json";
-export const pollingCurrentFixtureSHA256 = "d2bcaddb0502af1e8535fc0f514487abd580689121a00686893b1c424ae3cee3";
+export const pollingCurrentFixtureSHA256 = "e68926f777481791a22cc102a6df66ca0deb7e72ca0ca1a068fb8887cad4b319";
 export const pollingLegacyFixturePath = "web/tests/fixtures/ui-regression/polling-legacy-parity.json";
 export const pollingLegacyFixtureSHA256 = "b2df0a26ef1f77a08a0ddbfe8762b7e77a583c21ba8ed03d22373e4ebce764a8";
 export const pollingCurrentPaths = Object.freeze([
+  ".github/workflows/activation-proof-validation.yml",
   ".github/workflows/ci.yml",
   ".github/workflows/ci017-auth-expiry-diagnostic.yml",
   ".github/workflows/node-sharing-validation.yml",
@@ -33,6 +34,7 @@ export const pollingCurrentPaths = Object.freeze([
   "internal/database/node_selection_activation_mariadb_test.go",
   "internal/database/node_selection_activation_policy.go",
   "internal/database/node_selection_activation_policy_test.go",
+  "internal/database/node_selection_activation_v2_proof_test.go",
   "internal/database/node_selection_migration_test.go",
   "internal/database/stream_settings_revision_mariadb_test.go",
   "internal/httpapi/control_platform_features.go",
@@ -83,6 +85,7 @@ export const pollingCurrentPaths = Object.freeze([
   "internal/httpapi/stream_visual_error_classification_test.go",
   "internal/httpapi/streams_management_test.go",
   "internal/httpapi/system_settings_cas_test.go",
+  "internal/httpapi/system_update_v2_activation_mariadb_test.go",
   "internal/httpapi/ui188_stream_operations_mariadb_test.go",
   "internal/httpapi/ui188_stream_operations_test.go",
   "internal/httpapi/vc_waiting_assignment_test.go",

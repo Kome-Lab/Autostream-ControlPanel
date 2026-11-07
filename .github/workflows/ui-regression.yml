@@ -40,7 +40,7 @@ jobs:
     timeout-minutes: 35
     strategy:
       fail-fast: false
-      max-parallel: 4
+      max-parallel: 8
       matrix: ${{ fromJSON(needs.export.outputs.matrix) }}
     steps:
       - name: Require the producing export artifact ID
