@@ -117,12 +117,15 @@ func (a *SQLAuthority) Generation(ctx context.Context) (uint64, error) {
 }
 
 // Save is a trusted CP-owner persistence boundary, NOT an unauthenticated
-// provisioning API. There is deliberately no route/caller, v2 importer, request
-// auto-registration or production bootstrap in this increment. Future management
-// authorization must be supplied by its owning CP workflow before calling Save.
+// provisioning API. ManagementService supplies current v3 grant authorization,
+// an epoch-locked transaction and mandatory audit before committing a bound Save.
+// No v2 importer, request auto-registration or production bootstrap is supplied.
 // A batch is atomic, CAS-versioned and append-only in history; revocation uses
 // explicit inactive/revoked/UNKNOWN current records instead of destructive delete.
 func (a *SQLAuthority) Save(ctx context.Context, expected uint64, records []AuthorityRecord) (uint64, error) {
+	if ctx == nil {
+		return 0, ErrUnavailable
+	}
 	if len(records) == 0 || len(records) > 1024 || expected == ^uint64(0) {
 		return 0, ErrInvalid
 	}
@@ -144,14 +147,28 @@ func (a *SQLAuthority) Save(ctx context.Context, expected uint64, records []Auth
 		a, b := entries[i].key, entries[j].key
 		return string(a.kind)+"\x00"+a.realm+"\x00"+a.first+"\x00"+a.second < string(b.kind)+"\x00"+b.realm+"\x00"+b.first+"\x00"+b.second
 	})
-	if a.schema(ctx) != nil {
-		return 0, ErrUnavailable
+	var tx *sql.Tx
+	var err error
+	binding, _ := ctx.Value(managementSaveKey{}).(*managementSaveTransaction)
+	owned := binding == nil
+	if binding != nil {
+		binding.mu.Lock()
+		defer binding.mu.Unlock()
+		if !binding.active || binding.used || binding.db != a.db || binding.expected != expected {
+			return 0, ErrConflict
+		}
+		binding.used = true
+		tx = binding.tx
+	} else {
+		if a.schema(ctx) != nil {
+			return 0, ErrUnavailable
+		}
+		tx, err = a.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+		if err != nil {
+			return 0, ErrUnavailable
+		}
+		defer tx.Rollback()
 	}
-	tx, err := a.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
-	if err != nil {
-		return 0, ErrUnavailable
-	}
-	defer tx.Rollback()
 	var current uint64
 	if tx.QueryRowContext(ctx, "SELECT generation FROM v3_cp_authority_epoch WHERE singleton=1 FOR UPDATE").Scan(&current) != nil {
 		return 0, ErrUnavailable
@@ -169,13 +186,17 @@ func (a *SQLAuthority) Save(ctx context.Context, expected uint64, records []Auth
 			return 0, ErrUnavailable
 		}
 	}
-	if _, err = tx.ExecContext(ctx, "UPDATE v3_cp_authority_epoch SET generation=? WHERE singleton=1 AND generation=?", next, current); err != nil {
+	updated, err := tx.ExecContext(ctx, "UPDATE v3_cp_authority_epoch SET generation=? WHERE singleton=1 AND generation=?", next, current)
+	if err != nil {
 		return 0, ErrUnavailable
+	}
+	if n, e := updated.RowsAffected(); e != nil || n != 1 {
+		return 0, ErrConflict
 	}
 	if ctx.Err() != nil {
 		return 0, ErrUnavailable
 	}
-	if tx.Commit() != nil || ctx.Err() != nil {
+	if owned && (tx.Commit() != nil || ctx.Err() != nil) {
 		return 0, ErrStoreUnknown
 	}
 	return next, nil

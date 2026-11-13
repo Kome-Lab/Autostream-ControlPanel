@@ -148,3 +148,19 @@ that temporary dependency edit are pushed to Updater/Contracts. The real CP-owne
 Its management/provisioning, Integrity/keys, qualified time, current revocation and
 independent Continuity remain unavailable; real issuance remains disabled. No startup registration,
 Migration, GuardControl, Reference mutation or service operation is added.
+
+## Management continuation
+
+The dedicated v3 ManagementService, grant model, opt-in HTTP handler and explicit
+management migration are described in [MANAGEMENT.md](MANAGEMENT.md). Management
+authorization, SQLAuthority.Save and mandatory audit share one epoch-locked
+transaction. This supersedes the earlier management-unconnected source note only
+for those implemented seams. The independent initial bootstrap trust origin,
+product bootstrap provider, HTTP mounting and environmental provisioning remain
+unselected/unconnected; no real environment is initialized. V2 authority is never
+converted. Evidence issuance remains disabled.
+
+The read-only interop fixture now uses fixed Updater
+cdc106ab795623e41e2fe42a73c598c782e5c8de with its actual reviewed Contracts module;
+no temporary Updater dependency edit or persistent related-repository change is
+needed. Historical prior-step test counts are not new management results.

@@ -9,7 +9,8 @@ import (
 )
 
 // These are CP-owned v3 registrations, never v2 permissions/Grants or remote
-// Fence/Boot/Drain assertions. No HTTP request or startup path populates them.
+// Fence/Boot/Drain assertions. Only an explicitly composed v3 management workflow
+// may provision them; startup and ordinary authorization never register targets.
 type AuthorityRecordKind string
 
 const (
