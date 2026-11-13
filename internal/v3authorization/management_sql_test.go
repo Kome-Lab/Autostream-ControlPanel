@@ -130,7 +130,7 @@ func managementCount(t *testing.T, db *sql.DB, table string) int {
 	t.Helper()
 	// Every caller supplies one fixed synthetic table name, never request input.
 	var count int
-	if db.QueryRow("SELECT COUNT(*) FROM " + table).Scan(&count) != nil {
+	if db.QueryRow("SELECT COUNT(*) FROM "+table).Scan(&count) != nil {
 		t.Fatal("count synthetic fixture", table)
 	}
 	return count
@@ -622,8 +622,14 @@ func TestSQLAuthorityManagementConcurrencyAndCancellation(t *testing.T) {
 		first, second := f.record(t, PolicyRecord), f.record(t, PolicyRecord)
 		first.Rule.Revision, second.Rule.Revision = "policy-race-a", "policy-race-b"
 		start, done := make(chan struct{}), make(chan ManagementResult, 2)
-		go func() { <-start; done <- f.manager.Apply(context.Background(), f.actor, a, []AuthorityRecord{first}, nil) }()
-		go func() { <-start; done <- f.manager.Apply(context.Background(), f.actor, b, []AuthorityRecord{second}, nil) }()
+		go func() {
+			<-start
+			done <- f.manager.Apply(context.Background(), f.actor, a, []AuthorityRecord{first}, nil)
+		}()
+		go func() {
+			<-start
+			done <- f.manager.Apply(context.Background(), f.actor, b, []AuthorityRecord{second}, nil)
+		}()
 		close(start)
 		success, conflicts := 0, 0
 		for n := 0; n < 2; n++ {
@@ -759,9 +765,9 @@ func managementRevocationSerializes(t *testing.T) {
 	defer cancel()
 	entered, release := make(chan struct{}), make(chan struct{})
 	var releaseOnce sync.Once
-	defer releaseOnce.Do(func() { close(release) })
 	db := sql.OpenDB(managementPauseConnector{base: authorityConnector(t), once: &sync.Once{}, entered: entered, release: release})
 	defer db.Close()
+	defer releaseOnce.Do(func() { close(release) })
 	manager := NewManagementService(NewSQLAuthority(db), nil)
 	meta, revokeMeta := f.metadata(t), f.metadata(t)
 	policy := f.record(t, PolicyRecord)

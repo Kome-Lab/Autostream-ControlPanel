@@ -96,10 +96,10 @@ func TestSQLAuthorityManagementQueuedCommitUnknown(t *testing.T) {
 			defer cancel()
 			entered, release := make(chan struct{}), make(chan struct{})
 			var releaseOnce sync.Once
-			defer releaseOnce.Do(func() { close(release) })
 			armed := &atomic.Bool{}
 			db := sql.OpenDB(managementLostACKConnector{base: authorityConnector(t), armed: armed, entered: entered, release: release})
 			defer db.Close()
+			defer releaseOnce.Do(func() { close(release) })
 			manager := NewManagementService(NewSQLAuthority(db), f.anchor)
 			meta, queuedMeta, before := f.metadata(t), f.metadata(t), f.generation(t)
 			policy := f.record(t, PolicyRecord)
