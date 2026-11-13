@@ -8,36 +8,14 @@ import (
 	"path/filepath"
 	"reflect"
 	"sync"
+	"strings"
 	"testing"
 
 	evidence "github.com/Kome-Lab/Autostream-Contracts/v3evidence"
 )
 
-// These records decode ONLY the synthetic request exported by the actual pinned
-// C10 fixture. They are not a new public P-A wire profile or a production copy of
-// C10 CanonicalBinding. A shared public binding contract remains unconnected.
-type cpInteropCommand struct {
-	Schema                                   uint32
-	Operation                                string
-	Scope                                    struct{ Realm, Host, Resource, Backend string }
-	Execution                                struct{ RequestID, ExecutionKey, OperationID, AttemptID, StepID string }
-	RequestingPrincipal, AuthorizationIssuer string
-	CandidateRevision, CandidateContentPin   string
-	Expected                                 struct {
-		Revision     string
-		StateVersion uint64
-	}
-	RequiredGuard GuardRequirement
-	Timing        struct {
-		TimeBase     string
-		DeadlineTick uint64
-	}
-	OriginalBudget string
-}
-type cpInteropRequest struct {
-	Command cpInteropCommand
-	Binding string
-}
+// The outer fixture is exported by the actual pinned C10 checkout. Its Request
+// is decoded ONLY by Contracts and the CP product CanonicalBindingResolver.
 type cpInteropInput struct {
 	Request   json.RawMessage           `json:"request"`
 	Scope     evidence.Scope            `json:"scope"`
@@ -45,30 +23,6 @@ type cpInteropInput struct {
 	Frame     evidence.BackendReadFrame `json:"backend_read_frame"`
 	Issuer    string                    `json:"issuer"`
 	Audience  string                    `json:"audience"`
-}
-
-type cpInteropResolver struct {
-	original json.RawMessage
-	request  cpInteropRequest
-	intent   Intent
-}
-
-func (r cpInteropResolver) Resolve(ctx context.Context, raw json.RawMessage) (Intent, error) {
-	if err := ctx.Err(); err != nil {
-		return Intent{}, err
-	}
-	var request cpInteropRequest
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	if decoder.Decode(&request) != nil || !reflect.DeepEqual(request, r.request) || request.Binding != r.request.Binding {
-		return Intent{}, ErrConflict
-	}
-	// Exact original bytes make the exported fixture the only accepted input.
-	// No local serialization is being claimed as the canonical Binding algorithm.
-	if !bytes.Equal(raw, r.original) {
-		return Intent{}, ErrConflict
-	}
-	return r.intent, nil
 }
 
 type cpInteropAuthority struct {
@@ -241,23 +195,48 @@ func TestCPProducerInterop(t *testing.T) {
 	if err := decoder.Decode(&fixture); err != nil {
 		t.Fatal("invalid disposable C10 fixture", err)
 	}
-	var request cpInteropRequest
-	decoder = json.NewDecoder(bytes.NewReader(fixture.Request))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&request); err != nil {
-		t.Fatal("invalid C10 request fixture", err)
+	request, err := evidence.DecodeRequest(fixture.Request)
+	if err != nil {
+		t.Fatal("shared Decoder rejected the actual C10 request", err)
+	}
+	if err := evidence.ValidateRequestFor(request, fixture.Scope, fixture.Execution); err != nil {
+		t.Fatal("shared request Scope/Execution differs from the exported target", err)
+	}
+	canonical, err := evidence.CanonicalBytes(request.Command)
+	if err != nil || string(canonical) != request.Binding {
+		t.Fatal("actual C10 request has different canonical bytes", err)
+	}
+	binding, err := evidence.ComputeBinding(request.Command)
+	if err != nil || binding != request.Binding || evidence.VerifyBinding(request.Command, request.Binding) != nil {
+		t.Fatal("shared Binding differs from the actual C10 request", err)
+	}
+	encoded, err := evidence.EncodeRequest(request)
+	if err != nil || !bytes.Equal(encoded, fixture.Request) {
+		t.Fatal("shared Encoder changed the actual C10 request wire", err)
+	}
+	resolver := NewCanonicalBindingResolver()
+	intent, err := resolver.Resolve(context.Background(), fixture.Request)
+	if err != nil {
+		t.Fatal("product CanonicalBindingResolver rejected actual C10 request", err)
 	}
 	c := request.Command
-	intent := Intent{
-		Scope:     evidence.Scope{Realm: c.Scope.Realm, Host: c.Scope.Host, Resource: c.Scope.Resource, Backend: c.Scope.Backend},
-		Execution: evidence.Execution{RequestID: c.Execution.RequestID, ExecutionKey: c.Execution.ExecutionKey, OperationID: c.Execution.OperationID, AttemptID: c.Execution.AttemptID, StepID: c.Execution.StepID},
-		Binding:   request.Binding, Action: c.Operation, RequestingPrincipal: c.RequestingPrincipal, AuthorizationIssuer: c.AuthorizationIssuer,
-		CandidateRevision: c.CandidateRevision, CandidateContentPin: c.CandidateContentPin, ExpectedRevision: c.Expected.Revision,
-		ExpectedStateVersion: c.Expected.StateVersion, Required: c.RequiredGuard, TimeBase: c.Timing.TimeBase, DeadlineTick: c.Timing.DeadlineTick, OriginalBudget: c.OriginalBudget,
+	// Independent complete semantic oracle: no local binding generation or
+	// duplicate Request wire shape is introduced into the CP consumer.
+	expected := Intent{
+		Scope: c.Scope, Execution: c.Execution, Binding: request.Binding, Action: c.Operation,
+		RequestingPrincipal: c.RequestingPrincipal, AuthorizationIssuer: c.AuthorizationIssuer,
+		CandidateRevision: c.CandidateRevision, CandidateContentPin: c.CandidateContentPin,
+		ExpectedRevision: c.Expected.Revision, ExpectedStateVersion: c.Expected.StateVersion,
+		Required: GuardRequirement{Policy: c.RequiredGuard.Policy, Trust: c.RequiredGuard.Trust,
+			Membership: c.RequiredGuard.Membership, OwnershipEpoch: c.RequiredGuard.OwnershipEpoch,
+			FenceEpoch: c.RequiredGuard.FenceEpoch, Generation: c.RequiredGuard.Generation,
+			BootID: c.RequiredGuard.BootID, ProcessIncarnation: c.RequiredGuard.ProcessIncarnation},
+		TimeBase: c.Timing.TimeBase, DeadlineTick: c.Timing.DeadlineTick, OriginalBudget: c.OriginalBudget,
 	}
-	if c.Schema != 1 || intent.Scope != fixture.Scope || intent.Execution != fixture.Execution || intent.AuthorizationIssuer != fixture.Issuer ||
+	if intent != expected || c.Schema != evidence.CanonicalRequestVersion || intent.Scope != fixture.Scope ||
+		intent.Execution != fixture.Execution || intent.AuthorizationIssuer != fixture.Issuer ||
 		intent.Required.Generation != fixture.Frame.Generation || !validIntent(intent) {
-		t.Fatal("C10 fixture semantic correlation failed")
+		t.Fatal("product Resolver lost or changed a C10 semantic field")
 	}
 	principal := Principal{ID: intent.RequestingPrincipal}
 	authority := cpInteropAuthority{intent: intent, principal: principal, decision: Decision{Principal: principal.ID, Scope: intent.Scope, Action: Action,
@@ -265,7 +244,7 @@ func TestCPProducerInterop(t *testing.T) {
 	security := &cpInteropSecurity{issued: make(map[string][]byte), boot: intent.Required.BootID}
 	store := &cpInteropStore{}
 	service := NewService(Config{Issuer: fixture.Issuer, Audience: fixture.Audience}, Dependencies{
-		Resolver:  cpInteropResolver{original: append(json.RawMessage(nil), fixture.Request...), request: request, intent: intent},
+		Resolver: resolver,
 		Authority: authority, Validity: security, Integrity: security, Applicability: security, Store: store,
 	})
 	issued := service.Issue(context.Background(), principal, IssueRequest{OriginalRequest: fixture.Request, Frame: fixture.Frame})
@@ -286,8 +265,56 @@ func TestCPProducerInterop(t *testing.T) {
 	if store.writes != 2 || security.seals != 1 {
 		t.Fatal("CP read repeated issuance or changed stored evidence")
 	}
+	// Reuse the ACTUAL C10-generated request for refusal paths too. Stale
+	// Binding must fail equality, while a legitimately recomputed Binding still
+	// does not grant business permission for different target/content/state.
+	for name, change := range map[string]func(*evidence.Command){
+		"scope": func(c *evidence.Command) { c.Scope.Host = "other-host" },
+		"execution": func(c *evidence.Command) { c.Execution.AttemptID = "other-attempt" },
+		"principal": func(c *evidence.Command) { c.RequestingPrincipal = "other-principal" },
+		"candidate-pin": func(c *evidence.Command) { c.CandidateContentPin = "other-content-pin" },
+		"expected-state": func(c *evidence.Command) { c.Expected.StateVersion++ },
+		"required-guard": func(c *evidence.Command) { c.RequiredGuard.Trust = "other-trust" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			changed := request
+			change(&changed.Command)
+			commandBytes, err := evidence.CanonicalBytes(changed.Command)
+			if err != nil { t.Fatal(err) }
+			// Invalid test proposal: retain the ORIGINAL Binding without asking
+			// EncodeRequest to accept a mismatched immutable value.
+			bindingJSON, err := json.Marshal(request.Binding)
+			if err != nil { t.Fatal(err) }
+			stale := append([]byte(`{"Command":`), commandBytes...)
+			stale = append(stale, `,"Binding":`...)
+			stale = append(stale, bindingJSON...)
+			stale = append(stale, '}')
+			refused := service.Issue(context.Background(), principal, IssueRequest{OriginalRequest:stale, Frame:fixture.Frame})
+			if refused.Status == Issued || refused.Status == Replay || len(refused.Envelope) != 0 { t.Fatal("stale C10 binding was accepted", refused.Status) }
+			changed.Binding, err = evidence.ComputeBinding(changed.Command)
+			if err != nil { t.Fatal(err) }
+			valid, err := evidence.EncodeRequest(changed)
+			if err != nil { t.Fatal(err) }
+			refused = service.Issue(context.Background(), principal, IssueRequest{OriginalRequest:valid, Frame:fixture.Frame})
+			if refused.Status != Denied || len(refused.Envelope) != 0 { t.Fatal("new valid Binding bypassed CP business authority", refused.Status) }
+			if store.writes != 2 || security.seals != 1 { t.Fatal("refusal created an additional issuance") }
+		})
+	}
+	for name, malformed := range map[string][]byte{
+		"unknown-version": []byte(strings.Replace(string(fixture.Request), `"Schema":1`, `"Schema":2`, 1)),
+		"duplicate": []byte(strings.Replace(string(fixture.Request), `"Schema":1`, `"Schema":1,"Schema":1`, 1)),
+		"extra": []byte(strings.Replace(string(fixture.Request), `"Schema":1`, `"Schema":1,"NotAllowed":1`, 1)),
+		"null": []byte(strings.Replace(string(fixture.Request), `"Schema":1`, `"Schema":null`, 1)),
+		"missing-guard": []byte(strings.Replace(string(fixture.Request), `"RequiredGuard":`, `"UnknownGuard":`, 1)),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if bytes.Equal(malformed, fixture.Request) { t.Fatal("malformed proposal did not change actual C10 wire") }
+			refused := service.Issue(context.Background(), principal, IssueRequest{OriginalRequest:malformed, Frame:fixture.Frame})
+			if refused.Status == Issued || refused.Status == Replay || len(refused.Envelope) != 0 || store.writes != 2 || security.seals != 1 { t.Fatal("invalid C10 proposal produced an additional issuance", refused.Status) }
+		})
+	}
 	if err := os.WriteFile(filepath.Join(directory, "cp-envelope.json"), issued.Envelope, 0600); err != nil {
 		t.Fatal("cannot retain CP service output", err)
 	}
-	t.Log("actual CP Issue/Store/Read produced exact canonical envelope; authority, binding qualification, integrity, clock and store are synthetic collaborators; no production issuance enabled")
+	t.Log("actual product CanonicalBindingResolver + CP Issue/Store/Read retained exact C10 Binding and envelope bytes; authority, integrity, clock and store are synthetic collaborators; real issuance remains disabled")
 }

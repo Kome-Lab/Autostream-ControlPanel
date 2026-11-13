@@ -29,9 +29,9 @@ const (
 type Principal struct{ ID string }
 
 // Intent is a CP semantic view, NOT another public P-A wire/binding profile.
-// A qualified resolver must verify EVERY field against the original canonical
-// request. Contracts currently carries opaque Binding only; its public P-A
-// Command/CanonicalBinding contract and a production resolver remain unconnected.
+// CanonicalBindingResolver verifies EVERY field against the Contracts-owned
+// canonical Request/Binding profile, then copies the complete semantic view.
+// A matching Binding is not caller authentication or CP business authorization.
 type Intent struct {
 	Scope                evidence.Scope
 	Execution            evidence.Execution

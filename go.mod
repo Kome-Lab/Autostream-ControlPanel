@@ -3,7 +3,7 @@ module github.com/example/autostream-control-panel
 go 1.26.5
 
 require (
-	github.com/Kome-Lab/Autostream-Contracts/v3evidence v0.0.0-20261112114129-c53da46de667
+	github.com/Kome-Lab/Autostream-Contracts/v3evidence v0.0.0-20261113091349-790be850e98c
 	github.com/example/autostream-contracts v0.0.0
 	github.com/go-sql-driver/mysql v1.10.0
 	github.com/go-webauthn/webauthn v0.17.4

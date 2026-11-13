@@ -40,6 +40,28 @@ func cpProducerExportValue(t *testing.T, f *contractsTestFixture) cpProducerFixt
 	if err := ValidateRequest(f.request); err != nil {
 		t.Fatal("C10 fixture request does not validate", err)
 	}
+	legacy, err := CanonicalBinding(f.request.Command)
+	if err != nil { t.Fatal("actual C10 canonical binding failed", err) }
+	wire, err := json.Marshal(f.request)
+	if err != nil { t.Fatal("cannot encode actual C10 request", err) }
+	shared, err := evidence.DecodeRequest(wire)
+	if err != nil { t.Fatal("shared Decoder rejected actual C10 request", err) }
+	canonical, err := evidence.CanonicalBytes(shared.Command)
+	if err != nil || string(canonical) != string(legacy) || shared.Binding != string(legacy) {
+		t.Fatal("actual C10 and shared canonical bytes differ", err)
+	}
+	computed, err := evidence.ComputeBinding(shared.Command)
+	if err != nil || computed != string(legacy) || evidence.VerifyBinding(shared.Command, string(legacy)) != nil {
+		t.Fatal("actual C10 and shared binding validation differ", err)
+	}
+	encoded, err := evidence.EncodeRequest(shared)
+	if err != nil || !bytes.Equal(encoded, wire) {
+		t.Fatal("shared canonical Request wire differs from actual C10", err)
+	}
+	back, err := DecodeRequest(encoded)
+	if err != nil || !reflect.DeepEqual(back, f.request) {
+		t.Fatal("shared Request failed actual C10 validation or lost a field", err)
+	}
 	for _, raw := range f.delivery.encoded {
 		envelope, err := evidence.Decode(raw)
 		if err != nil {
@@ -67,7 +89,7 @@ func TestCPProducerExport(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(cpProducerDirectory(t), "c10-fixture.json"), encoded, 0600); err != nil {
 		t.Fatal("cannot write synthetic interop input", err)
 	}
-	t.Log("exported actual C10 request/CanonicalBinding and synthetic target frame; no product authority established")
+	t.Log("exported actual C10 request/CanonicalBinding with byte-exact shared Codec round-trip and synthetic target frame; no product authority established")
 }
 
 // TestCPProducerImport consumes the actual CP Service's persisted/read original

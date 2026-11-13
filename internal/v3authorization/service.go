@@ -240,6 +240,8 @@ func (s *Service) readRecord(ctx context.Context, principal Principal, lookup Lo
 	return Result{Status: Replay, Envelope: append([]byte(nil), record.Envelope...), Applicability: current}
 }
 
+// immutable is the existing private issuance-liability equality record. It is
+// NOT P-A CanonicalBytes/Binding and never generates or changes Request.Binding.
 func immutable(r Record) ([]byte, error) {
 	return json.Marshal(struct {
 		Principal        string

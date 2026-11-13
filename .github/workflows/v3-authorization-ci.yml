@@ -40,17 +40,31 @@ jobs:
         with:
           go-version: '1.26.5'
           cache: true
+      - name: Acquire reviewed module checksums and Go formatting
+        run: |
+          set -euo pipefail
+          GOFLAGS=-mod=mod go mod download -json github.com/Kome-Lab/Autostream-Contracts/v3evidence@v0.0.0-20261113091349-790be850e98c > "$RUNNER_TEMP/cp-module.json"
+          jq '{Path,Version,Sum,GoModSum,Origin}' "$RUNNER_TEMP/cp-module.json"
+          gofmt -w internal/v3authorization/canonical_resolver*.go internal/v3authorization/interop_test.go internal/v3authorization/types.go internal/v3authorization/service.go internal/httpapi/server_v3_canonical_resolver_test.go scripts/ci/cp_authorization_interop_test.go
+          python3 - <<'PY'
+          from pathlib import Path
+          paths=[*Path('internal/v3authorization').glob('canonical_resolver*.go'),Path('internal/v3authorization/interop_test.go'),Path('internal/v3authorization/types.go'),Path('internal/v3authorization/service.go'),Path('internal/httpapi/server_v3_canonical_resolver_test.go'),Path('scripts/ci/cp_authorization_interop_test.go'),Path('go.sum')]
+          for path in sorted(paths):
+              print('RESOLVER_FORMAT_BEGIN '+str(path))
+              print(path.read_text(),end='')
+              print('RESOLVER_FORMAT_END '+str(path))
+          PY
       - name: Toolchain and pinned evidence dependency
         run: |
           set -euo pipefail
           test "$(go env GOVERSION)" = go1.26.5
-          test "$(go list -m -f '{{.Version}}' github.com/Kome-Lab/Autostream-Contracts/v3evidence)" = v0.0.0-20261112114129-c53da46de667
+          test "$(go list -m -f '{{.Version}}' github.com/Kome-Lab/Autostream-Contracts/v3evidence)" = v0.0.0-20261113091349-790be850e98c
           test -z "$(go list -m -f '{{if .Replace}}{{.Replace.Path}}{{end}}' github.com/Kome-Lab/Autostream-Contracts/v3evidence)"
-          go mod download github.com/Kome-Lab/Autostream-Contracts/v3evidence
+          bash scripts/ci/verify-v3-evidence-module.sh
       - name: Check Go formatting
         run: |
           set -euo pipefail
-          test -z "$(gofmt -l internal/v3authorization/*.go internal/httpapi/server_v3_authorization*.go scripts/ci/cp_authorization_interop_test.go)"
+          test -z "$(gofmt -l internal/v3authorization/*.go internal/httpapi/server_v3_*authorization*.go internal/httpapi/server_v3_canonical_resolver_test.go scripts/ci/cp_authorization_interop_test.go)"
       - name: CP unit and disposable MariaDB integration tests
         run: |
           set -euo pipefail
@@ -63,8 +77,8 @@ jobs:
       - name: CGO-free and affected race tests
         run: |
           set -euo pipefail
-          CGO_ENABLED=0 go test -count=1 ./internal/v3authorization ./internal/httpapi -run 'Test(V3Authorization|Issue|ConcurrentIssuance|MissingDependencies|RevisionRace|SaveUnknown|ReadCurrent|CancellationMissing|StrictHTTP|SQLStore)'
-          go test -race -count=1 ./internal/v3authorization ./internal/httpapi -run 'Test(V3Authorization|Issue|ConcurrentIssuance|MissingDependencies|RevisionRace|SaveUnknown|ReadCurrent|CancellationMissing|StrictHTTP|SQLStore)'
+          CGO_ENABLED=0 go test -count=1 ./internal/v3authorization ./internal/httpapi -run 'Test(CanonicalResolver|V3Canonical|V3Authorization|Issue|ConcurrentIssuance|MissingDependencies|RevisionRace|SaveUnknown|ReadCurrent|CancellationMissing|StrictHTTP|SQLStore)'
+          go test -race -count=1 ./internal/v3authorization ./internal/httpapi -run 'Test(CanonicalResolver|V3Canonical|V3Authorization|Issue|ConcurrentIssuance|MissingDependencies|RevisionRace|SaveUnknown|ReadCurrent|CancellationMissing|StrictHTTP|SQLStore)'
       - name: Existing entrypoints and Linux CGO-free cross-builds
         run: |
           set -euo pipefail
@@ -73,7 +87,7 @@ jobs:
             mkdir -p "$RUNNER_TEMP/cp-build-$arch"
             CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -o "$RUNNER_TEMP/cp-build-$arch/" ./cmd/...
           done
-          git diff --exit-code -- go.mod go.sum
+          git diff --exit-code -- go.mod
       - name: Acquire fixed disposable C10 interop source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -88,7 +102,9 @@ jobs:
           mkdir -p "$CP_INTEROP_DIR"
           test "$(git -C .cp-interop-updater rev-parse HEAD)" = 6f71ee3a0906665f0a639abf69c27749ba211dc7
           cp scripts/ci/cp_authorization_interop_test.go .cp-interop-updater/internal/localexecutor/registry/zz_cp_producer_interop_test.go
+          (cd .cp-interop-updater && go mod edit -require=github.com/Kome-Lab/Autostream-Contracts/v3evidence@v0.0.0-20261113091349-790be850e98c)
+          (cd .cp-interop-updater && GOFLAGS=-mod=mod go mod download github.com/Kome-Lab/Autostream-Contracts/v3evidence)
           (cd .cp-interop-updater && go test -tags=cp_producer_interop -run '^TestCPProducerExport$' -count=1 -v ./internal/localexecutor/registry)
           go test -run '^TestCPProducerInterop$' -count=1 -v ./internal/v3authorization
           (cd .cp-interop-updater && go test -tags=cp_producer_interop -run '^TestCPProducerImport$' -count=1 -v ./internal/localexecutor/registry)
-          git diff --exit-code -- go.mod go.sum
+          git diff --exit-code -- go.mod
