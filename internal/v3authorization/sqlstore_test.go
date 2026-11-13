@@ -84,3 +84,16 @@ func TestSQLStoreMigrationIsNotRuntimeAndNilFailsClosed(t *testing.T) {
  s:=NewSQLStore(nil);if _,_,err:=s.Claim(context.Background(),sqlTestRecord());err==nil{t.Fatal("nil store admitted")};if err:=ApplyMigrations(context.Background(),nil);err==nil{t.Fatal("nil administrative DB accepted")}
  if !sqlDuplicateJSON([]byte(`{"a":{"b":1,"b":2}}`))||!sqlDuplicateJSON([]byte(`{"a":1,"\u0061":2}`))||sqlDuplicateJSON([]byte(`{"a":[1,{"b":2}]}`)){t.Fatal("stored JSON duplicate checker")}
 }
+
+// This is the actual product Service -> real MariaDB Store -> read Service
+// path. Only authority, binding, integrity, validity and applicability are doubles.
+func TestSQLStoreServiceVerticalSlice(t *testing.T) {
+ db:=sqlTestDB(t);if err:=ApplyMigrations(context.Background(),db);err!=nil{t.Fatal(err)}
+ f:=makeTestFixture(t);f.deps.Store=NewSQLStore(db);f.service=NewService(f.service.config,f.deps)
+ issued:=f.issue();if issued.Status!=Issued{t.Fatal(issued)}
+ replay:=f.issue();if replay.Status!=Replay||!bytes.Equal(replay.Envelope,issued.Envelope){t.Fatal(replay)}
+ for n:=0;n<3;n++{read:=f.service.Read(context.Background(),f.principal,f.lookup());if read.Status!=Replay||!bytes.Equal(read.Envelope,issued.Envelope){t.Fatal(read)}}
+ if f.security.seals!=1{t.Fatal("durable replay regenerated evidence")}
+ var rows,final int
+ if db.QueryRow(`SELECT COUNT(*),SUM(state='ISSUED') FROM v3_cp_authorization_issuances`).Scan(&rows,&final)!=nil||rows!=1||final!=1{t.Fatal("durable liability not terminal")}
+}

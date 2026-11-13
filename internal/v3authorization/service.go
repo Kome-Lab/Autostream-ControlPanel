@@ -53,7 +53,7 @@ func (s *Service) Issue(ctx context.Context, principal Principal, request IssueR
  if err != nil { return failure(Unavailable, ErrUnavailable.Code) }
  stored, claim, err := s.deps.Store.Claim(ctx, cloneRecord(record))
  if err != nil { return failure(Unknown, ErrStoreUnknown.Code) }
- if claim == Collided || !bytes.Equal(stored.Immutable, record.Immutable) { return failure(Conflict, ErrConflict.Code) }
+ if claim == Collided || !bytes.Equal(stored.Immutable, record.Immutable) || !validRecord(stored) { return failure(Conflict, ErrConflict.Code) }
  if claim == Existing {
   // A replay is a read, not an independent authorization/expiry generation.
   return s.readRecord(ctx, principal, Lookup{Scope: intent.Scope, Execution: intent.Execution}, stored)
