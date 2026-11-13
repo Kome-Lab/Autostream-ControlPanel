@@ -447,3 +447,36 @@ func TestSQLAuthorityEmptySourceNeverSelfRegisters(t *testing.T) {
 		t.Fatal("read repaired or seeded ownership")
 	}
 }
+func TestSQLAuthorityOtherOwnedExecutionIsPrivate(t *testing.T) {
+	f := newAuthorityFixture(t)
+	if _, err := f.db.Exec("INSERT INTO users(id,status) VALUES('operator-2','active')"); err != nil {
+		t.Fatal(err)
+	}
+	capability := *f.records[5].Capability
+	capability.Principal = "operator-2"
+	membership := *f.records[6].Membership
+	membership.Principal = "operator-2"
+	if _, err := f.authority.Save(context.Background(), 1, []AuthorityRecord{{Kind: CapabilityRecord, Capability: &capability}, {Kind: MembershipRecord, Membership: &membership}}); err != nil {
+		t.Fatal(err)
+	}
+	command := resolverTestCommand()
+	command.RequestingPrincipal = "operator-2"
+	command.Execution = evidence.Execution{RequestID: "request-2", ExecutionKey: "execution-2", OperationID: "operation-2", AttemptID: "attempt-2", StepID: "step-2"}
+	_, raw := resolverTestRequest(t, command)
+	issued := f.service.Issue(context.Background(), Principal{ID: "operator-2"}, IssueRequest{OriginalRequest: raw, Frame: f.request.Frame})
+	if issued.Status != Issued {
+		t.Fatal("second qualified principal could not issue", issued)
+	}
+	envelope, err := evidence.Decode(issued.Envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lookup := Lookup{Scope: command.Scope, Execution: command.Execution, EvidenceID: envelope.EvidenceID}
+	if result := f.service.Read(context.Background(), f.principal, lookup); result.Status != Denied || len(result.Envelope) != 0 {
+		t.Fatal("known valid foreign Execution leaked within the same Scope", result)
+	}
+	own := f.service.Read(context.Background(), Principal{ID: "operator-2"}, lookup)
+	if own.Status != Replay || !bytes.Equal(own.Envelope, issued.Envelope) {
+		t.Fatal("legitimate history read failed", own)
+	}
+}

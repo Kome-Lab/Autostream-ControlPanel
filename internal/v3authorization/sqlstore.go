@@ -117,6 +117,10 @@ func (s *SQLStore) schemaUsing(ctx context.Context, db sqlRecordExecutor) error 
 	if s == nil || s.db == nil {
 		return errSchemaUnavailable
 	}
+	return checkSQLIssuanceSchema(ctx, db)
+}
+
+func checkSQLIssuanceSchema(ctx context.Context, db sqlRecordExecutor) error {
 	var version uint64
 	var checksum string
 	var dirty bool
@@ -226,6 +230,10 @@ func finishSQLRecord(ctx context.Context, db sqlRecordExecutor, r Record) error 
 	}
 	if n == 1 {
 		return nil
+	}
+	// Preserve the original second schema check on the idempotent/CAS fallback.
+	if err := checkSQLIssuanceSchema(ctx, db); err != nil {
+		return err
 	}
 	current, err := lookupSQLRecord(ctx, db, Lookup{Scope: r.Intent.Scope, Execution: r.Intent.Execution})
 	if err != nil {

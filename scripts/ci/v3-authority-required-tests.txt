@@ -74,3 +74,4 @@ TestSQLAuthorityReadMatrix/membership-missing
 TestSQLAuthorityReadMatrix/trust-unknown
 TestSQLAuthorityConcurrentOwnerCAS
 TestSQLAuthorityEmptySourceNeverSelfRegisters
+TestSQLAuthorityOtherOwnedExecutionIsPrivate
