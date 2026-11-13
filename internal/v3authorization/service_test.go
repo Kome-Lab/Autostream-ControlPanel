@@ -52,7 +52,7 @@ func (a *syntheticAuthority) Read(ctx context.Context, p Principal, i Intent) (D
 	a.observed = i
 	return a.decision, ctx.Err()
 }
-func (a *syntheticAuthority) WithCurrent(ctx context.Context, p Principal, i Intent, expected Decision, fn func(Decision) error) error {
+func (a *syntheticAuthority) WithCurrent(ctx context.Context, p Principal, i Intent, expected Decision, fn func(context.Context, Decision) error) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.guardErr != nil {
@@ -64,7 +64,7 @@ func (a *syntheticAuthority) WithCurrent(ctx context.Context, p Principal, i Int
 	if a.onGuard != nil {
 		a.onGuard()
 	}
-	return fn(a.decision)
+	return fn(ctx, a.decision)
 }
 func (a *syntheticAuthority) AuthorizeRead(ctx context.Context, p Principal, l Lookup) error {
 	a.mu.Lock()

@@ -40,7 +40,7 @@ func (a cpInteropAuthority) Read(ctx context.Context, principal Principal, inten
 	}
 	return a.decision, nil
 }
-func (a cpInteropAuthority) WithCurrent(ctx context.Context, principal Principal, intent Intent, decision Decision, save func(Decision) error) error {
+func (a cpInteropAuthority) WithCurrent(ctx context.Context, principal Principal, intent Intent, decision Decision, save func(context.Context, Decision) error) error {
 	current, err := a.Read(ctx, principal, intent)
 	if err != nil {
 		return err
@@ -50,7 +50,7 @@ func (a cpInteropAuthority) WithCurrent(ctx context.Context, principal Principal
 	}
 	// This immutable single-test authority is a DOUBLE. It does not implement
 	// production CP policy serialization or target-side Barrier completion.
-	return save(current)
+	return save(ctx, current)
 }
 func (a cpInteropAuthority) AuthorizeRead(ctx context.Context, principal Principal, lookup Lookup) error {
 	if err := ctx.Err(); err != nil {

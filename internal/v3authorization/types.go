@@ -78,9 +78,10 @@ type Authority interface {
 	Read(context.Context, Principal, Intent) (Decision, error)
 	// WithCurrent must serialize relevant CP permission, target, Policy and Trust
 	// changes through fn's conditional Store save. It calls fn synchronously
-	// at most once before returning; it never retains fn for delayed execution. An ordinary re-read/local copy
+	// at most once before returning, with a transaction-bound callback Context for Store.Finish.
+	// It never retains fn for delayed execution. An ordinary re-read/local copy
 	// is NOT an implementation. CP transactions do not fence remote Host commits.
-	WithCurrent(context.Context, Principal, Intent, Decision, func(Decision) error) error
+	WithCurrent(context.Context, Principal, Intent, Decision, func(context.Context, Decision) error) error
 	AuthorizeRead(context.Context, Principal, Lookup) error
 }
 type ValidityProvider interface {

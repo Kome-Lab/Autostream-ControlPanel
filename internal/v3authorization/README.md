@@ -1,6 +1,8 @@
 # CP Authorization producer boundary
 
-This package implements CP Authorization only. It does not implement the other
+This package implements CP Authorization only.
+The CP-owned v3 SQL Authority/Target/Policy source and its explicit provisioning
+boundary are documented in [AUTHORITY.md](AUTHORITY.md). It does not implement the other
 twelve Guard Producers, v2 Grant conversion, target Mutation, a D1 clock, Agent
 delivery, independent Continuity, service application or deployment.
 
@@ -45,8 +47,8 @@ JSON redactor because redacting `cp_authorization` would invalidate Integrity.
 |---|---|---|
 | Session principal + CSRF | Existing CP `authenticate` / `requirePermission` | Reused as identity only; v3 additionally requires active status |
 | v2 permissions / Grants | Existing role and updater stores | Not v3 authority; never converted |
-| v3 capability + canonical Realm/Host/Resource/Backend | Mandatory `Authority` dependency | No qualified owner/production implementation connected |
-| Policy / Trust current revisions | Mandatory Authority snapshot + synchronous `WithCurrent` | v2 updater policy is not reused; actual owner/serializer unconnected |
+| v3 capability + canonical Realm/Host/Resource/Backend | Mandatory `Authority` dependency | Product SQLAuthority + dedicated v3 records implemented; management/provisioning and real qualification remain unavailable |
+| Policy / Trust current revisions | Mandatory Authority snapshot + synchronous `WithCurrent` | Dedicated v3 Policy/Trust owner; epoch-first InnoDB locks and same-transaction SQLStore save; no v2 conversion |
 | Canonical P-A request / Binding | Contracts shared Schema1/Binding1 pinned to790be850e98c; product CanonicalBindingResolver | Implemented; exact complete Intent mapping; no business/identity authority supplied |
 | Canonical Envelope | Fixed Contracts v3evidence pseudo-version | Real Codec used; structural validation is not authenticity |
 | Integrity / keys | Mandatory `IntegrityProvider` | Algorithm, key profile/storage/rotation not selected or connected |
@@ -65,8 +67,9 @@ remain read-only in this task.
 ## Evidence and limitations
 
 Tests call the actual product CanonicalBindingResolver, Service, Handler and
-SQLStore. Authority, Integrity, time and revocation remain explicit synthetic
-collaborators. Historical tests with fixture resolvers remain synthetic; the new
+SQLStore. Existing tests retain synthetic Authority collaborators. New SQLAuthority tests
+use real owner/resolver/transaction code; Integrity, time and revocation remain
+explicit synthetic collaborators. Historical tests with fixture resolvers remain synthetic; the new
 Resolver tests use the reviewed shared Request contract.
 The separate interop workflow exports an actual C10 request from a pinned disposable
 Updater checkout, runs the actual CP issue/store/read Service, and imports its exact
@@ -81,8 +84,8 @@ remain distinct. No current claim is made about real keys/clocks, power-loss
 durability, all-Actor exclusion, arm64 native execution, production eligibility,
 Phase 1 closure or formal v2 return. Product-wide acceptance remains NOT_RUN.
 
-Before real issuance, connect the CP-owned current capability/target/revision
-source, then select and connect Integrity, qualified
+Before real issuance, authorize and connect v3 ownership management/provisioning
+(no production data is seeded here), then select and connect Integrity, qualified
 Validity and revocation under the adopted Authority/Barrier model. Compare a
 CP-owned injected signer with an external signing service by key custody, failure
 behavior, rotation/verification availability and operational cost; neither is
@@ -141,7 +144,7 @@ The interop bridge now uses this product Resolver, not its old synthetic Request
 shapes/resolver. Its disposable Updater checkout temporarily selects the SAME
 reviewed Contracts version, compares actual C10 canonical bytes/binding and imports
 the actual CP Service's saved/read Envelope. Neither consumer source changes nor
-that temporary dependency edit are pushed to Updater/Contracts. Real Authority,
-Integrity/keys, qualified time, current revocation and independent Continuity are
-still unconnected; real issuance remains disabled. No startup registration,
+that temporary dependency edit are pushed to Updater/Contracts. The real CP-owned SQL Authority is now implemented separately (AUTHORITY.md).
+Its management/provisioning, Integrity/keys, qualified time, current revocation and
+independent Continuity remain unavailable; real issuance remains disabled. No startup registration,
 Migration, GuardControl, Reference mutation or service operation is added.

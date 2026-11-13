@@ -57,14 +57,20 @@ jobs:
           go test -count=1 -json ./internal/v3authorization | tee "$RUNNER_TEMP/v3-cp-tests.json"
           test "$(jq -r 'select(.Action=="pass" and ((.Test//"")|startswith("TestSQLStore")))|.Test' "$RUNNER_TEMP/v3-cp-tests.json" | wc -l)" -ge 6
           ! jq -e 'select(.Action=="skip" and ((.Test//"")|startswith("TestSQLStore")))' "$RUNNER_TEMP/v3-cp-tests.json" >/dev/null
+          while IFS= read -r required; do
+            test -n "$required" || continue
+            test "$(jq -sr --arg test "$required" '[.[]|select(.Test==$test and .Action=="run")]|length' "$RUNNER_TEMP/v3-cp-tests.json")" = 1
+            test "$(jq -sr --arg test "$required" '[.[]|select(.Test==$test and .Action=="pass")]|length' "$RUNNER_TEMP/v3-cp-tests.json")" = 1
+            test "$(jq -sr --arg test "$required" '[.[]|select(.Test==$test and (.Action=="skip" or .Action=="fail"))]|length' "$RUNNER_TEMP/v3-cp-tests.json")" = 0
+          done < scripts/ci/v3-authority-required-tests.txt
           go test -count=1 ./...
       - name: Vet
         run: go vet ./...
       - name: CGO-free and affected race tests
         run: |
           set -euo pipefail
-          CGO_ENABLED=0 go test -count=1 ./internal/v3authorization ./internal/httpapi -run 'Test(CanonicalResolver|V3Canonical|V3Authorization|Issue|ConcurrentIssuance|MissingDependencies|RevisionRace|SaveUnknown|ReadCurrent|CancellationMissing|StrictHTTP|SQLStore)'
-          go test -race -count=1 ./internal/v3authorization ./internal/httpapi -run 'Test(CanonicalResolver|V3Canonical|V3Authorization|Issue|ConcurrentIssuance|MissingDependencies|RevisionRace|SaveUnknown|ReadCurrent|CancellationMissing|StrictHTTP|SQLStore)'
+          CGO_ENABLED=0 go test -count=1 ./internal/v3authorization ./internal/httpapi -run 'Test(SQLAuthority|CanonicalResolver|V3Canonical|V3Authorization|Issue|ConcurrentIssuance|MissingDependencies|RevisionRace|SaveUnknown|ReadCurrent|CancellationMissing|StrictHTTP|SQLStore)'
+          go test -race -count=1 ./internal/v3authorization ./internal/httpapi -run 'Test(SQLAuthority|CanonicalResolver|V3Canonical|V3Authorization|Issue|ConcurrentIssuance|MissingDependencies|RevisionRace|SaveUnknown|ReadCurrent|CancellationMissing|StrictHTTP|SQLStore)'
       - name: Existing entrypoints and Linux CGO-free cross-builds
         run: |
           set -euo pipefail

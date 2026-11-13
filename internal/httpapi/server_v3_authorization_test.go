@@ -247,7 +247,7 @@ func (f *v3AuthorizationHTTPDependencies) Read(ctx context.Context, _ v3authoriz
 	return f.decision(), ctx.Err()
 }
 
-func (f *v3AuthorizationHTTPDependencies) WithCurrent(ctx context.Context, _ v3authorization.Principal, _ v3authorization.Intent, expected v3authorization.Decision, fn func(v3authorization.Decision) error) error {
+func (f *v3AuthorizationHTTPDependencies) WithCurrent(ctx context.Context, _ v3authorization.Principal, _ v3authorization.Intent, expected v3authorization.Decision, fn func(context.Context, v3authorization.Decision) error) error {
 	f.authorityMu.Lock()
 	defer f.authorityMu.Unlock()
 	if ctx.Err() != nil {
@@ -257,7 +257,7 @@ func (f *v3AuthorizationHTTPDependencies) WithCurrent(ctx context.Context, _ v3a
 	if current != expected {
 		return v3authorization.ErrConflict
 	}
-	return fn(current)
+	return fn(ctx, current)
 }
 
 func (f *v3AuthorizationHTTPDependencies) AuthorizeRead(ctx context.Context, principal v3authorization.Principal, lookup v3authorization.Lookup) error {

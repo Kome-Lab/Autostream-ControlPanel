@@ -134,7 +134,7 @@ func (s *Service) Issue(ctx context.Context, principal Principal, request IssueR
 	callbackRan := false
 	saved := false
 	saveUnknown := false
-	err = s.deps.Authority.WithCurrent(ctx, principal, intent, decision, func(current Decision) error {
+	err = s.deps.Authority.WithCurrent(ctx, principal, intent, decision, func(saveCtx context.Context, current Decision) error {
 		if callbackRan {
 			return ErrConflict
 		}
@@ -142,12 +142,12 @@ func (s *Service) Issue(ctx context.Context, principal Principal, request IssueR
 		if validateDecision(principal, intent, current) != nil || current != decision {
 			return ErrConflict
 		}
-		applicability, e := s.deps.Applicability.Inspect(ctx, evidence.Clone(sealed), append([]byte(nil), wire...))
-		if e != nil || applicability != Current || ctx.Err() != nil {
+		applicability, e := s.deps.Applicability.Inspect(saveCtx, evidence.Clone(sealed), append([]byte(nil), wire...))
+		if e != nil || applicability != Current || ctx.Err() != nil || saveCtx.Err() != nil {
 			return ErrUnavailable
 		}
 		record.State, record.Code, record.EvidenceID, record.Envelope = "ISSUED", "", sealed.EvidenceID, wire
-		if e := s.deps.Store.Finish(ctx, cloneRecord(record)); e != nil {
+		if e := s.deps.Store.Finish(saveCtx, cloneRecord(record)); e != nil {
 			saveUnknown = true
 			return ErrStoreUnknown
 		}

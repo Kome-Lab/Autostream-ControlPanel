@@ -105,10 +105,22 @@ func (s *SQLStore) schema(ctx context.Context) error {
 	if s == nil || s.db == nil {
 		return errSchemaUnavailable
 	}
+	return s.schemaUsing(ctx, s.db)
+}
+
+type sqlRecordExecutor interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
+func (s *SQLStore) schemaUsing(ctx context.Context, db sqlRecordExecutor) error {
+	if s == nil || s.db == nil {
+		return errSchemaUnavailable
+	}
 	var version uint64
 	var checksum string
 	var dirty bool
-	if s.db.QueryRowContext(ctx, `SELECT version,checksum,dirty FROM v3_cp_authorization_schema WHERE singleton=1`).Scan(&version, &checksum, &dirty) != nil || version != issuanceSchemaVersion || checksum != issuanceChecksum() || dirty {
+	if db.QueryRowContext(ctx, "SELECT version,checksum,dirty FROM v3_cp_authorization_schema WHERE singleton=1").Scan(&version, &checksum, &dirty) != nil || version != issuanceSchemaVersion || checksum != issuanceChecksum() || dirty {
 		return errSchemaUnavailable
 	}
 	return nil
@@ -182,9 +194,15 @@ func (s *SQLStore) findIdentity(ctx context.Context, r Record) ([]Record, error)
 }
 
 func (s *SQLStore) Finish(ctx context.Context, r Record) error {
+	if binding, ok := ctx.Value(authorityTxKey{}).(*authorityTransaction); ok {
+		return binding.finish(ctx, s, r)
+	}
 	if err := s.schema(ctx); err != nil {
 		return err
 	}
+	return finishSQLRecord(ctx, s.db, r)
+}
+func finishSQLRecord(ctx context.Context, db sqlRecordExecutor, r Record) error {
 	if !sqlValidRecord(r) || (r.State != "ISSUED" && r.State != "CLOSED") {
 		return ErrInvalid
 	}
@@ -196,8 +214,9 @@ func (s *SQLStore) Finish(ctx context.Context, r Record) error {
 	if r.EvidenceID != "" {
 		id = r.EvidenceID
 	}
-	// A failed acknowledgement is UNKNOWN even if the database applied this CAS.
-	result, err := s.db.ExecContext(ctx, `UPDATE v3_cp_authorization_issuances SET state=?,evidence_id=?,record_bytes=? WHERE realm=? AND request_id=? AND claim_id=? AND immutable_bytes=? AND state='PENDING'`, r.State, id, body, r.Intent.Scope.Realm, r.Intent.Execution.RequestID, r.ClaimID, r.Immutable)
+	// The runner is the Authority transaction when invoked through WithCurrent;
+	// ordinary legacy callers retain the original autocommit/idempotence behavior.
+	result, err := db.ExecContext(ctx, "UPDATE v3_cp_authorization_issuances SET state=?,evidence_id=?,record_bytes=? WHERE realm=? AND request_id=? AND claim_id=? AND immutable_bytes=? AND state='PENDING'", r.State, id, body, r.Intent.Scope.Realm, r.Intent.Execution.RequestID, r.ClaimID, r.Immutable)
 	if err != nil {
 		return ErrStoreUnknown
 	}
@@ -208,7 +227,7 @@ func (s *SQLStore) Finish(ctx context.Context, r Record) error {
 	if n == 1 {
 		return nil
 	}
-	current, err := s.Lookup(ctx, Lookup{Scope: r.Intent.Scope, Execution: r.Intent.Execution})
+	current, err := lookupSQLRecord(ctx, db, Lookup{Scope: r.Intent.Scope, Execution: r.Intent.Execution})
 	if err != nil {
 		return err
 	}
@@ -223,10 +242,13 @@ func (s *SQLStore) Lookup(ctx context.Context, q Lookup) (Record, error) {
 	if err := s.schema(ctx); err != nil {
 		return Record{}, err
 	}
+	return lookupSQLRecord(ctx, s.db, q)
+}
+func lookupSQLRecord(ctx context.Context, db sqlRecordExecutor, q Lookup) (Record, error) {
 	if !sqlValidLookup(q) {
 		return Record{}, ErrInvalid
 	}
-	row := s.db.QueryRowContext(ctx, `SELECT `+issuanceColumns+` FROM v3_cp_authorization_issuances WHERE realm=? AND request_id=?`, q.Scope.Realm, q.Execution.RequestID)
+	row := db.QueryRowContext(ctx, "SELECT "+issuanceColumns+" FROM v3_cp_authorization_issuances WHERE realm=? AND request_id=?", q.Scope.Realm, q.Execution.RequestID)
 	r, err := sqlScanRecord(row)
 	if err != nil {
 		return Record{}, err
