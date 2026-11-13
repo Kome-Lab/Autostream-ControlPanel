@@ -92,6 +92,9 @@ The callback runs synchronously once, with no automatic retry. A private,
 request-local context value binds the exact database pool, transaction,
 Principal, Intent and Decision to SQLStore.Finish. It rejects a different pool,
 different intent, repeated finish or retained context after callback return.
+Success additionally requires a real PENDING-to-ISSUED transition through that
+bound SQLStore. Empty callbacks or a nontransactional Store reporting success
+are refused; they cannot turn a separate persistence boundary into issuance.
 There is no shared mutable transaction slot or separate autocommit issuance save.
 Legacy non-transactional SQLStore callers retain their previous behavior.
 

@@ -231,6 +231,10 @@ func finishSQLRecord(ctx context.Context, db sqlRecordExecutor, r Record) error 
 	if n == 1 {
 		return nil
 	}
+	// A bound issuance requires a new conditional PENDING -> ISSUED transition.
+	if _, bound := ctx.Value(authorityTxKey{}).(*authorityTransaction); bound {
+		return ErrConflict
+	}
 	// Preserve the original second schema check on the idempotent/CAS fallback.
 	if err := checkSQLIssuanceSchema(ctx, db); err != nil {
 		return err

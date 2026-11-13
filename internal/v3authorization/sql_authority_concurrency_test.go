@@ -185,16 +185,18 @@ func TestSQLAuthorityCallbackSerializesMutation(t *testing.T) {
 }
 func TestSQLAuthorityExistingUserDisableSerializes(t *testing.T) {
 	f := newAuthorityFixture(t)
-	d, err := f.authority.Read(context.Background(), f.principal, f.intent)
-	if err != nil {
-		t.Fatal(err)
-	}
+	pending := authorityPending(t, f)
+	issued := sqlTestIssued(t, pending)
+	d := pending.Decision
 	entered, release := make(chan struct{}), make(chan struct{})
 	done := make(chan error, 1)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	go func() {
-		done <- f.authority.WithCurrent(ctx, f.principal, f.intent, d, func(context.Context, Decision) error {
+		done <- f.authority.WithCurrent(ctx, f.principal, f.intent, d, func(txctx context.Context, _ Decision) error {
+			if err := NewSQLStore(f.db).Finish(txctx, issued); err != nil {
+				return err
+			}
 			close(entered)
 			select {
 			case <-release:

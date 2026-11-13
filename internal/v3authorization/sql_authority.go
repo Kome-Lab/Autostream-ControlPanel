@@ -316,13 +316,13 @@ func (a *SQLAuthority) AuthorizeRead(ctx context.Context, p Principal, q Lookup)
 
 type authorityTxKey struct{}
 type authorityTransaction struct {
-	mu               sync.Mutex
-	db               *sql.DB
-	tx               *sql.Tx
-	principal        Principal
-	intent           Intent
-	decision         Decision
-	active, finished bool
+	mu                      sync.Mutex
+	db                      *sql.DB
+	tx                      *sql.Tx
+	principal               Principal
+	intent                  Intent
+	decision                Decision
+	active, finished, saved bool
 }
 
 // WithCurrent is a one-shot, synchronous transaction boundary. Global epoch row
@@ -354,11 +354,12 @@ func (a *SQLAuthority) WithCurrent(ctx context.Context, p Principal, i Intent, e
 	// Retained callback contexts cannot write after this synchronous boundary.
 	binding.mu.Lock()
 	binding.active = false
+	saved := binding.saved
 	binding.mu.Unlock()
 	if err != nil {
 		return err
 	}
-	if ctx.Err() != nil {
+	if ctx.Err() != nil || !saved {
 		return ErrUnavailable
 	}
 	if view.tx.Commit() != nil || ctx.Err() != nil {
@@ -369,12 +370,14 @@ func (a *SQLAuthority) WithCurrent(ctx context.Context, p Principal, i Intent, e
 func (b *authorityTransaction) finish(ctx context.Context, s *SQLStore, r Record) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if !b.active || b.finished || s == nil || s.db != b.db || r.Principal != b.principal.ID || r.Intent != b.intent || r.Decision != b.decision {
+	if !b.active || b.finished || s == nil || s.db != b.db || r.Principal != b.principal.ID || r.Intent != b.intent || r.Decision != b.decision || r.State != "ISSUED" {
 		return ErrConflict
 	}
 	b.finished = true
 	if s.schemaUsing(ctx, b.tx) != nil {
 		return ErrUnavailable
 	}
-	return finishSQLRecord(ctx, b.tx, r)
+	err := finishSQLRecord(ctx, b.tx, r)
+	b.saved = err == nil
+	return err
 }

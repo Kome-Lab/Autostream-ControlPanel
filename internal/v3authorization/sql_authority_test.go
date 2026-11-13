@@ -480,3 +480,33 @@ func TestSQLAuthorityOtherOwnedExecutionIsPrivate(t *testing.T) {
 		t.Fatal("legitimate history read failed", own)
 	}
 }
+func TestSQLAuthorityRequiresTransactionalFinish(t *testing.T) {
+	t.Run("missing-finish", func(t *testing.T) {
+		f := newAuthorityFixture(t)
+		pending := authorityPending(t, f)
+		calls := 0
+		err := f.authority.WithCurrent(context.Background(), f.principal, f.intent, pending.Decision, func(context.Context, Decision) error { calls++; return nil })
+		if err == nil || calls != 1 {
+			t.Fatal("empty callback became a successful persistence boundary", err)
+		}
+		record, err := NewSQLStore(f.db).Lookup(context.Background(), f.lookup())
+		if err != nil || record.State != "PENDING" || len(record.Envelope) != 0 {
+			t.Fatal("missing finish changed liability", err)
+		}
+	})
+	t.Run("unbound-store", func(t *testing.T) {
+		f := newAuthorityFixture(t)
+		// This existing synthetic Store reports successful Claim/Finish but cannot
+		// participate in SQLAuthority's transaction. It must NOT qualify issuance.
+		f.deps.Store = f.store
+		f.service = NewService(f.service.config, f.deps)
+		result := f.issue()
+		if result.Status != Unknown || len(result.Envelope) != 0 || result.AuthorizesExecution || f.store.finishes != 1 {
+			t.Fatal("nontransactional Store manufactured successful issuance", result)
+		}
+		var count int
+		if f.db.QueryRow("SELECT COUNT(*) FROM v3_cp_authorization_issuances").Scan(&count) != nil || count != 0 {
+			t.Fatal("unbound Store reached authoritative persistence")
+		}
+	})
+}
