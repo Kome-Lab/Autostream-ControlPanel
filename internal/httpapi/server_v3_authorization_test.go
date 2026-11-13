@@ -63,7 +63,7 @@ func v3AuthorizationHTTPFixtureBodies(t *testing.T) (string, string) {
 		t.Fatal(err)
 	}
 	query, err := json.Marshal(v3authorization.Lookup{
-		Scope: evidence.Scope{Realm: "realm", Host: "host", Resource: "resource", Backend: "backend"},
+		Scope:     evidence.Scope{Realm: "realm", Host: "host", Resource: "resource", Backend: "backend"},
 		Execution: evidence.Execution{RequestID: "request", ExecutionKey: "execution", OperationID: "operation", AttemptID: "attempt", StepID: "step"},
 	})
 	if err != nil {
@@ -82,7 +82,7 @@ func TestV3AuthorizationHandlerAuthenticationAndClosedComposition(t *testing.T) 
 			for _, tc := range []struct {
 				name, status string
 				cookie, csrf bool
-				want int
+				want         int
 			}{
 				{"unauthenticated", "active", false, true, http.StatusUnauthorized},
 				{"csrf-required", "active", true, false, http.StatusForbidden},
@@ -120,14 +120,14 @@ func TestV3AuthorizationHandlerStrictBodyBoundary(t *testing.T) {
 	server := &Server{auth: v3AuthorizationSessionFixture{status: "active"}}
 	handler := server.V3AuthorizationHandler(nil)
 	for name, body := range map[string]string{
-		"empty": "",
-		"missing": `{}`,
-		"extra": `{"original_request":{},"backend_read_frame":{},"principal":"attacker"}`,
+		"empty":     "",
+		"missing":   `{}`,
+		"extra":     `{"original_request":{},"backend_read_frame":{},"principal":"attacker"}`,
 		"duplicate": `{"original_request":{},"original_request":{},"backend_read_frame":{}}`,
-		"case": `{"Original_Request":{},"backend_read_frame":{}}`,
-		"null": `{"original_request":null,"backend_read_frame":{}}`,
-		"trailing": `{} {}`,
-		"oversize": strings.Repeat(" ", maxControlRequestBytes+1),
+		"case":      `{"Original_Request":{},"backend_read_frame":{}}`,
+		"null":      `{"original_request":null,"backend_read_frame":{}}`,
+		"trailing":  `{} {}`,
+		"oversize":  strings.Repeat(" ", maxControlRequestBytes+1),
 	} {
 		t.Run(name, func(t *testing.T) {
 			response := httptest.NewRecorder()
@@ -166,7 +166,7 @@ func TestV3AuthorizationResultDeliversExactBytesWithoutRedaction(t *testing.T) {
 func TestV3AuthorizationResultErrorsAreSafeAndNotNegativeEvidence(t *testing.T) {
 	for _, tc := range []struct {
 		status v3authorization.Status
-		want int
+		want   int
 	}{
 		{v3authorization.Denied, http.StatusForbidden},
 		{v3authorization.Conflict, http.StatusConflict},
@@ -347,9 +347,9 @@ func (f *v3AuthorizationHTTPDependencies) Lookup(ctx context.Context, lookup v3a
 
 func TestV3AuthorizationHTTPServiceIssueSaveReadAndPrincipalBinding(t *testing.T) {
 	f := &v3AuthorizationHTTPDependencies{intent: v3authorization.Intent{
-		Scope: evidence.Scope{Realm: "realm", Host: "host", Resource: "resource", Backend: "backend"},
+		Scope:     evidence.Scope{Realm: "realm", Host: "host", Resource: "resource", Backend: "backend"},
 		Execution: evidence.Execution{RequestID: "request", ExecutionKey: "execution", OperationID: "operation", AttemptID: "attempt", StepID: "step"},
-		Binding: "synthetic-http-binding-not-a-production-profile", Action: v3authorization.Action,
+		Binding:   "synthetic-http-binding-not-a-production-profile", Action: v3authorization.Action,
 		RequestingPrincipal: "synthetic-user", AuthorizationIssuer: "cp", CandidateRevision: "candidate", CandidateContentPin: "content",
 		ExpectedRevision: "old-revision", ExpectedStateVersion: 1,
 		Required: v3authorization.GuardRequirement{Policy: "policy", Trust: "trust", Membership: "membership", OwnershipEpoch: "owner", FenceEpoch: "fence", Generation: "generation", BootID: "boot", ProcessIncarnation: "process"},
@@ -362,7 +362,7 @@ func TestV3AuthorizationHTTPServiceIssueSaveReadAndPrincipalBinding(t *testing.T
 	handler := server.V3AuthorizationHandler(service)
 	request := v3authorization.IssueRequest{
 		OriginalRequest: json.RawMessage(`{"synthetic":true}`),
-		Frame: evidence.BackendReadFrame{Issuer: "backend", ServingIncarnation: "incarnation", Generation: "generation", SnapshotID: "snapshot", ObservationProof: "observation"},
+		Frame:           evidence.BackendReadFrame{Issuer: "backend", ServingIncarnation: "incarnation", Generation: "generation", SnapshotID: "snapshot", ObservationProof: "observation"},
 	}
 	body, err := json.Marshal(request)
 	if err != nil {
