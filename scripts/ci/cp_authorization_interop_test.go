@@ -41,11 +41,17 @@ func cpProducerExportValue(t *testing.T, f *contractsTestFixture) cpProducerFixt
 		t.Fatal("C10 fixture request does not validate", err)
 	}
 	legacy, err := CanonicalBinding(f.request.Command)
-	if err != nil { t.Fatal("actual C10 canonical binding failed", err) }
+	if err != nil {
+		t.Fatal("actual C10 canonical binding failed", err)
+	}
 	wire, err := json.Marshal(f.request)
-	if err != nil { t.Fatal("cannot encode actual C10 request", err) }
+	if err != nil {
+		t.Fatal("cannot encode actual C10 request", err)
+	}
 	shared, err := evidence.DecodeRequest(wire)
-	if err != nil { t.Fatal("shared Decoder rejected actual C10 request", err) }
+	if err != nil {
+		t.Fatal("shared Decoder rejected actual C10 request", err)
+	}
 	canonical, err := evidence.CanonicalBytes(shared.Command)
 	if err != nil || string(canonical) != string(legacy) || shared.Binding != string(legacy) {
 		t.Fatal("actual C10 and shared canonical bytes differ", err)

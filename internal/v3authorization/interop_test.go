@@ -7,8 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"sync"
 	"strings"
+	"sync"
 	"testing"
 
 	evidence "github.com/Kome-Lab/Autostream-Contracts/v3evidence"
@@ -244,7 +244,7 @@ func TestCPProducerInterop(t *testing.T) {
 	security := &cpInteropSecurity{issued: make(map[string][]byte), boot: intent.Required.BootID}
 	store := &cpInteropStore{}
 	service := NewService(Config{Issuer: fixture.Issuer, Audience: fixture.Audience}, Dependencies{
-		Resolver: resolver,
+		Resolver:  resolver,
 		Authority: authority, Validity: security, Integrity: security, Applicability: security, Store: store,
 	})
 	issued := service.Issue(context.Background(), principal, IssueRequest{OriginalRequest: fixture.Request, Frame: fixture.Frame})
@@ -269,10 +269,10 @@ func TestCPProducerInterop(t *testing.T) {
 	// Binding must fail equality, while a legitimately recomputed Binding still
 	// does not grant business permission for different target/content/state.
 	for name, change := range map[string]func(*evidence.Command){
-		"scope": func(c *evidence.Command) { c.Scope.Host = "other-host" },
-		"execution": func(c *evidence.Command) { c.Execution.AttemptID = "other-attempt" },
-		"principal": func(c *evidence.Command) { c.RequestingPrincipal = "other-principal" },
-		"candidate-pin": func(c *evidence.Command) { c.CandidateContentPin = "other-content-pin" },
+		"scope":          func(c *evidence.Command) { c.Scope.Host = "other-host" },
+		"execution":      func(c *evidence.Command) { c.Execution.AttemptID = "other-attempt" },
+		"principal":      func(c *evidence.Command) { c.RequestingPrincipal = "other-principal" },
+		"candidate-pin":  func(c *evidence.Command) { c.CandidateContentPin = "other-content-pin" },
 		"expected-state": func(c *evidence.Command) { c.Expected.StateVersion++ },
 		"required-guard": func(c *evidence.Command) { c.RequiredGuard.Trust = "other-trust" },
 	} {
@@ -280,37 +280,55 @@ func TestCPProducerInterop(t *testing.T) {
 			changed := request
 			change(&changed.Command)
 			commandBytes, err := evidence.CanonicalBytes(changed.Command)
-			if err != nil { t.Fatal(err) }
+			if err != nil {
+				t.Fatal(err)
+			}
 			// Invalid test proposal: retain the ORIGINAL Binding without asking
 			// EncodeRequest to accept a mismatched immutable value.
 			bindingJSON, err := json.Marshal(request.Binding)
-			if err != nil { t.Fatal(err) }
+			if err != nil {
+				t.Fatal(err)
+			}
 			stale := append([]byte(`{"Command":`), commandBytes...)
 			stale = append(stale, `,"Binding":`...)
 			stale = append(stale, bindingJSON...)
 			stale = append(stale, '}')
-			refused := service.Issue(context.Background(), principal, IssueRequest{OriginalRequest:stale, Frame:fixture.Frame})
-			if refused.Status == Issued || refused.Status == Replay || len(refused.Envelope) != 0 { t.Fatal("stale C10 binding was accepted", refused.Status) }
+			refused := service.Issue(context.Background(), principal, IssueRequest{OriginalRequest: stale, Frame: fixture.Frame})
+			if refused.Status == Issued || refused.Status == Replay || len(refused.Envelope) != 0 {
+				t.Fatal("stale C10 binding was accepted", refused.Status)
+			}
 			changed.Binding, err = evidence.ComputeBinding(changed.Command)
-			if err != nil { t.Fatal(err) }
+			if err != nil {
+				t.Fatal(err)
+			}
 			valid, err := evidence.EncodeRequest(changed)
-			if err != nil { t.Fatal(err) }
-			refused = service.Issue(context.Background(), principal, IssueRequest{OriginalRequest:valid, Frame:fixture.Frame})
-			if refused.Status != Denied || len(refused.Envelope) != 0 { t.Fatal("new valid Binding bypassed CP business authority", refused.Status) }
-			if store.writes != 2 || security.seals != 1 { t.Fatal("refusal created an additional issuance") }
+			if err != nil {
+				t.Fatal(err)
+			}
+			refused = service.Issue(context.Background(), principal, IssueRequest{OriginalRequest: valid, Frame: fixture.Frame})
+			if refused.Status != Denied || len(refused.Envelope) != 0 {
+				t.Fatal("new valid Binding bypassed CP business authority", refused.Status)
+			}
+			if store.writes != 2 || security.seals != 1 {
+				t.Fatal("refusal created an additional issuance")
+			}
 		})
 	}
 	for name, malformed := range map[string][]byte{
 		"unknown-version": []byte(strings.Replace(string(fixture.Request), `"Schema":1`, `"Schema":2`, 1)),
-		"duplicate": []byte(strings.Replace(string(fixture.Request), `"Schema":1`, `"Schema":1,"Schema":1`, 1)),
-		"extra": []byte(strings.Replace(string(fixture.Request), `"Schema":1`, `"Schema":1,"NotAllowed":1`, 1)),
-		"null": []byte(strings.Replace(string(fixture.Request), `"Schema":1`, `"Schema":null`, 1)),
-		"missing-guard": []byte(strings.Replace(string(fixture.Request), `"RequiredGuard":`, `"UnknownGuard":`, 1)),
+		"duplicate":       []byte(strings.Replace(string(fixture.Request), `"Schema":1`, `"Schema":1,"Schema":1`, 1)),
+		"extra":           []byte(strings.Replace(string(fixture.Request), `"Schema":1`, `"Schema":1,"NotAllowed":1`, 1)),
+		"null":            []byte(strings.Replace(string(fixture.Request), `"Schema":1`, `"Schema":null`, 1)),
+		"missing-guard":   []byte(strings.Replace(string(fixture.Request), `"RequiredGuard":`, `"UnknownGuard":`, 1)),
 	} {
 		t.Run(name, func(t *testing.T) {
-			if bytes.Equal(malformed, fixture.Request) { t.Fatal("malformed proposal did not change actual C10 wire") }
-			refused := service.Issue(context.Background(), principal, IssueRequest{OriginalRequest:malformed, Frame:fixture.Frame})
-			if refused.Status == Issued || refused.Status == Replay || len(refused.Envelope) != 0 || store.writes != 2 || security.seals != 1 { t.Fatal("invalid C10 proposal produced an additional issuance", refused.Status) }
+			if bytes.Equal(malformed, fixture.Request) {
+				t.Fatal("malformed proposal did not change actual C10 wire")
+			}
+			refused := service.Issue(context.Background(), principal, IssueRequest{OriginalRequest: malformed, Frame: fixture.Frame})
+			if refused.Status == Issued || refused.Status == Replay || len(refused.Envelope) != 0 || store.writes != 2 || security.seals != 1 {
+				t.Fatal("invalid C10 proposal produced an additional issuance", refused.Status)
+			}
 		})
 	}
 	if err := os.WriteFile(filepath.Join(directory, "cp-envelope.json"), issued.Envelope, 0600); err != nil {
