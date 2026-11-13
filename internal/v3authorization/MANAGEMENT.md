@@ -118,7 +118,10 @@ server-generated correlation. No session token/hash, credential, key, SQL error
 or full payload is stored. UTC_TIMESTAMP(6) is explicitly labelled
 UNQUALIFIED_DB_OBSERVATION, never Qualified Time.
 
-Success audit and changes are atomic. Denial audit is an audit-only transaction;
+Success audit and changes are atomic. An UNKNOWN result additionally attempts a
+fixed-code uncertainty-observation audit after rollback/Commit; it is never proof
+that an authority change committed and never clears quarantine. Unavailable audit
+storage keeps the request unsuccessful. Denial audit is an audit-only transaction;
 if audit cannot be persisted the request remains refused. Append-only UPDATE/
 DELETE triggers protect audit and grant history against ordinary DML, and the
 bootstrap marker is one-way. A DB administrator able to alter/drop tables or

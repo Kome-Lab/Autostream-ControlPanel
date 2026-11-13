@@ -173,8 +173,12 @@ func (s *ManagementService) denial(ctx context.Context, p Principal, m Managemen
 		return e
 	}
 	defer v.tx.Rollback()
+	result := "DENIED"
+	if code == managementFailure(ErrStoreUnknown).Code {
+		result = "UNKNOWN"
+	}
 	for _, target := range targets {
-		if managementAudit(ctx, v.tx, p, m, target.operation, target.kind, target.id, v.generation, v.generation, "DENIED", code) != nil {
+		if managementAudit(ctx, v.tx, p, m, target.operation, target.kind, target.id, v.generation, v.generation, result, code) != nil {
 			return ErrUnavailable
 		}
 	}
@@ -187,6 +191,9 @@ func (s *ManagementService) fail(ctx context.Context, a ManagementActor, m Manag
 	if e == ErrStoreUnknown {
 		if s != nil {
 			s.uncertain.Store(true)
+			// This is an uncertainty observation, never proof of a committed
+			// authority change. Audit failure cannot turn UNKNOWN into success.
+			_ = s.denial(ctx, a.Principal, m, managementFailure(e).Code)
 		}
 		return managementFailure(e)
 	}
@@ -302,6 +309,9 @@ func managementSaveGrant(v *authorityView, g ManagementGrant, ordinal int) error
 func (s *ManagementService) Bootstrap(ctx context.Context, a ManagementActor, m ManagementMetadata, g ManagementGrant) ManagementResult {
 	release, enterErr := s.enter(ctx, true)
 	if enterErr != nil {
+		if enterErr == ErrStoreUnknown {
+			return s.fail(ctx, a, m, enterErr)
+		}
 		return managementFailure(enterErr)
 	}
 	defer release()
@@ -377,7 +387,7 @@ func (s *ManagementService) Bootstrap(ctx context.Context, a ManagementActor, m 
 		return reject(e)
 	}
 	if e = s.commit(ctx, v); e != nil {
-		return managementFailure(e)
+		return s.fail(ctx, a, m, e)
 	}
 	return ManagementResult{Status: ManagementApplied, Code: "v3_management_applied", Generation: v.generation + 1, Initialized: true}
 }
@@ -412,6 +422,9 @@ func freezeManagementChanges(records []AuthorityRecord, grants []ManagementGrant
 func (s *ManagementService) Apply(ctx context.Context, a ManagementActor, m ManagementMetadata, records []AuthorityRecord, grants []ManagementGrant) ManagementResult {
 	release, enterErr := s.enter(ctx, true)
 	if enterErr != nil {
+		if enterErr == ErrStoreUnknown {
+			return s.fail(ctx, a, m, enterErr)
+		}
 		return managementFailure(enterErr)
 	}
 	defer release()
@@ -516,13 +529,16 @@ func (s *ManagementService) Apply(ctx context.Context, a ManagementActor, m Mana
 		return reject(e)
 	}
 	if e = s.commit(ctx, v); e != nil {
-		return managementFailure(e)
+		return s.fail(ctx, a, m, e)
 	}
 	return ManagementResult{Status: ManagementApplied, Code: "v3_management_applied", Generation: v.generation + 1, Initialized: true}
 }
 func (s *ManagementService) Inspect(ctx context.Context, a ManagementActor, m ManagementMetadata) ManagementResult {
 	release, enterErr := s.enter(ctx, false)
 	if enterErr != nil {
+		if enterErr == ErrStoreUnknown {
+			return s.fail(ctx, a, m, enterErr)
+		}
 		return managementFailure(enterErr)
 	}
 	defer release()
@@ -630,7 +646,7 @@ func (s *ManagementService) Inspect(ctx context.Context, a ManagementActor, m Ma
 		return reject(e)
 	}
 	if e = s.commit(ctx, v); e != nil {
-		return managementFailure(e)
+		return s.fail(ctx, a, m, e)
 	}
 	return out
 }

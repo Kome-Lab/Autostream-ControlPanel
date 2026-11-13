@@ -154,6 +154,34 @@ func managementApplied(t *testing.T, result ManagementResult, before uint64) {
 }
 
 func TestSQLAuthorityManagementBootstrapAndUnknownState(t *testing.T) {
+	t.Run("unknown-independent-approval-is-not-retried", func(t *testing.T) {
+		f := newManagementFixture(t)
+		f.anchor.err = ErrStoreUnknown
+		before := f.generation(t)
+		meta := f.metadata(t)
+		result := f.manager.Bootstrap(context.Background(), f.actor, meta, f.grant)
+		if result.Status != Unknown || !f.manager.uncertain.Load() {
+			t.Fatal("unknown independent approval was made definite", result)
+		}
+		var observed int
+		if err := f.db.QueryRow("SELECT COUNT(*) FROM v3_cp_management_audit WHERE event_id=? AND operation='bootstrap' AND target_type='administrator' AND result='UNKNOWN' AND reason_code='v3_management_storage_unknown'", meta.EventID).Scan(&observed); err != nil || observed != 1 {
+			t.Fatal("unknown approval attempt was not safely audited", err, observed)
+		}
+		var state string
+		if err := f.db.QueryRow("SELECT state FROM v3_cp_management_bootstrap WHERE singleton=1").Scan(&state); err != nil || state != "UNINITIALIZED" {
+			t.Fatal("unknown approval changed the bootstrap marker", err, state)
+		}
+		if f.generation(t) != before || managementCount(t, f.db, "v3_cp_management_grants") != 0 {
+			t.Fatal("unknown independent approval registered authority")
+		}
+		f.anchor.err = nil
+		if retry := f.manager.Bootstrap(context.Background(), f.actor, f.metadata(t), f.grant); retry.Status != Unknown {
+			t.Fatal("resubmission cleared independent-approval uncertainty", retry)
+		}
+		if f.generation(t) != before || managementCount(t, f.db, "v3_cp_management_grants") != 0 {
+			t.Fatal("uncertain independent approval automatically regranted")
+		}
+	})
 	t.Run("unconfigured-root-is-not-v2-or-first-login", func(t *testing.T) {
 		f := newManagementFixture(t)
 		before := f.generation(t)
@@ -361,6 +389,41 @@ func TestSQLAuthorityManagementGrantDelegationAndRevocation(t *testing.T) {
 }
 
 func TestSQLAuthorityManagementRegistrationCASAndBatch(t *testing.T) {
+	for _, kind := range []AuthorityRecordKind{RealmRecord, HostRecord, ResourceRecord, BackendRecord, CandidateRecord, CapabilityRecord, MembershipRecord, PolicyRecord, TrustRecord} {
+		t.Run("management-revokes-"+string(kind), func(t *testing.T) {
+			f := newManagementFixture(t)
+			f.bootstrap(t)
+			if decision, err := f.authority.Read(context.Background(), f.principal, f.intent); err != nil || decision.State != "ALLOWED" {
+				t.Fatal("revocation baseline was not allowed", err, decision)
+			}
+			record := f.record(t, kind)
+			switch kind {
+			case RealmRecord:
+				record.Realm.State = "INACTIVE"
+			case HostRecord:
+				record.Host.State = "INACTIVE"
+			case ResourceRecord:
+				record.Resource.State = "INACTIVE"
+			case BackendRecord:
+				record.Backend.State = "INACTIVE"
+			case CandidateRecord:
+				record.Candidate.Approval, record.Candidate.Approver = "REJECTED", ""
+			case CapabilityRecord:
+				record.Capability.State = "INACTIVE"
+			case MembershipRecord:
+				record.Membership.State = "REVOKED"
+			case PolicyRecord, TrustRecord:
+				record.Rule.Revocation = "REVOKED"
+			}
+			before, history := f.generation(t), managementCount(t, f.db, "v3_cp_authority_history")
+			managementApplied(t, f.manager.Apply(context.Background(), f.actor, f.metadata(t), []AuthorityRecord{record}, nil), before)
+			if managementCount(t, f.db, "v3_cp_authority_history") != history+1 {
+				t.Fatal("management revocation did not append exactly one owner record")
+			}
+			decision, err := f.authority.Read(context.Background(), f.principal, f.intent)
+			requireRefusal(t, decision, err)
+		})
+	}
 	t.Run("single-owned-connection", func(t *testing.T) {
 		f := newManagementFixture(t)
 		f.bootstrap(t)
