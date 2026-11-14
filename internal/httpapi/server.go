@@ -11,6 +11,7 @@ import (
 	"github.com/example/autostream-control-panel/internal/mediaassets"
 	"github.com/example/autostream-control-panel/internal/oauthlogin"
 	"github.com/example/autostream-control-panel/internal/observability"
+	"github.com/example/autostream-control-panel/internal/operationalauthorization"
 	"github.com/example/autostream-control-panel/internal/servicecall"
 	"github.com/example/autostream-control-panel/internal/store"
 	"github.com/example/autostream-control-panel/internal/streamvisual"
@@ -33,6 +34,8 @@ type Server struct {
 	handler                  http.Handler
 	streams                  store.StreamStore
 	auth                     store.AuthStore
+	operational              *operationalauthorization.Service
+	operationalConfigured    bool
 	audit                    store.AuditStore
 	users                    store.UserAdminStore
 	roles                    store.RoleStore
