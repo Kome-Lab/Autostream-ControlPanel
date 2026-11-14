@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -143,109 +144,75 @@ func operationalLastAdminServer(t *testing.T, raw, actor string) operationalLast
 	return operationalLastAdminEndpoint{db: db, server: NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithOperationalAuthorization(auth)), cookie: &http.Cookie{Name: sessionCookieName, Value: session.Token}, csrf: session.CSRFToken, connection: id}
 }
 
-// The barrier holds actual InnoDB User and assignment rows before either
-// request starts. Old code waits here after its unprotected count; serialized
-// code may wait at its shared DB guard. We require both independent database
-// transactions to be in INNODB_LOCK_WAITS before releasing anything.
-func operationalLastAdminBarrier(t *testing.T, db *sql.DB, ids ...string) *sql.Tx {
-	t.Helper()
-	tx, err := db.BeginTx(t.Context(), &sql.TxOptions{Isolation: sql.LevelReadCommitted})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { tx.Rollback() })
-	for _, id := range ids {
-		var got string
-		if err = tx.QueryRowContext(t.Context(), "SELECT id FROM users WHERE id=? FOR UPDATE", id).Scan(&got); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for _, id := range ids {
-		rows, err := tx.QueryContext(t.Context(), "SELECT role_id FROM user_roles WHERE user_id=? ORDER BY role_id FOR UPDATE", id)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for rows.Next() {
-			var role string
-			if err = rows.Scan(&role); err != nil {
-				t.Fatal(err)
-			}
-		}
-		if err = rows.Err(); err != nil {
-			t.Fatal(err)
-		}
-		rows.Close()
-	}
-	return tx
+type operationalLastAdminCountStore struct {
+	store.MariaDBAuthStore
+	arrived chan<- int
+	release <-chan struct{}
 }
 
-func operationalLastAdminWaitBlocked(t *testing.T, db *sql.DB, first, second int64) {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
-	defer cancel()
-	tick := time.NewTicker(10 * time.Millisecond)
-	defer tick.Stop()
-	for {
-		var blocked int
-		err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM information_schema.INNODB_TRX WHERE trx_state='LOCK WAIT' AND trx_mysql_thread_id IN (?,?)", first, second).Scan(&blocked)
-		if err != nil {
-			stats := db.Stats()
-			t.Logf("observer pool: open=%d in_use=%d idle=%d waits=%d", stats.OpenConnections, stats.InUse, stats.Idle, stats.WaitCount)
-			t.Fatal(err)
-		}
-		if blocked == 2 {
-			t.Log("two independent MariaDB connections observed in row-lock waits")
-			return
-		}
-		select {
-		case <-ctx.Done():
-			t.Fatalf("both requests did not reach a database row-lock wait; observed=%d", blocked)
-		case <-tick.C:
-		}
+func (s operationalLastAdminCountStore) CountActiveSuperAdmins(ctx context.Context) (int, error) {
+	count, err := s.MariaDBAuthStore.CountActiveSuperAdmins(ctx)
+	if err != nil {
+		return count, err
+	}
+	select {
+	case s.arrived <- count:
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	}
+	select {
+	case <-s.release:
+		return count, nil
+	case <-ctx.Done():
+		return 0, ctx.Err()
 	}
 }
 
 func TestOperationalLastAdminSQLConcurrentRemoval(t *testing.T) {
 	db, raw := operationalLastAdminDatabase(t)
 	operationalLastAdminSeed(t, db)
-	first := operationalLastAdminServer(t, raw, "la-admin-b")
-	second := operationalLastAdminServer(t, raw, "la-admin-a")
+	first := operationalLastAdminServer(t, raw, "la-manager")
+	second := operationalLastAdminServer(t, raw, "la-manager")
 	if first.connection == second.connection {
 		t.Fatal("fixture reused a physical database connection")
 	}
-	for _, e := range []operationalLastAdminEndpoint{first, second} {
-		res := operationalRequest(t, e.server, e.cookie, e.csrf, "GET", "/users/la-admin-a", "")
-		if res.Code != 200 {
-			t.Fatalf("fixture HTTP read: %d %s", res.Code, res.Body.String())
+	arrived := make(chan int, 2)
+	release := make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	defer unblock()
+	for _, endpoint := range []operationalLastAdminEndpoint{first, second} {
+		auth := store.NewMariaDBAuthStore(endpoint.db)
+		endpoint.server.users = operationalLastAdminCountStore{MariaDBAuthStore: auth, arrived: arrived, release: release}
+		probe := operationalRequest(t, endpoint.server, endpoint.cookie, endpoint.csrf, "GET", "/users/la-admin-a", "")
+		if probe.Code != 200 {
+			t.Fatalf("SQL fixture HTTP read: %d %s", probe.Code, probe.Body.String())
 		}
 	}
-	barrier := operationalLastAdminBarrier(t, db, "la-admin-a", "la-admin-b")
 	type result struct {
 		status int
 		body   string
 	}
 	done := make(chan result, 2)
-	defer func() {
-		for {
-			select {
-			case r := <-done:
-				t.Logf("request completed before controlled release: HTTP=%d code=%s", r.status, r.body)
-			default:
-				return
-			}
-		}
-	}()
 	for i, endpoint := range []operationalLastAdminEndpoint{first, second} {
 		target := fmt.Sprintf("la-admin-%c", 'a'+i)
 		go func(e operationalLastAdminEndpoint, target string) {
-			res := operationalRequest(t, e.server, e.cookie, e.csrf, "POST", "/users/"+target+"/disable", "{}")
+			res := operationalRequest(t, e.server, e.cookie, e.csrf, "PUT", "/users/"+target, "{\"role_ids\":[]}")
 			done <- result{res.Code, res.Body.String()}
 		}(endpoint, target)
 	}
-	operationalLastAdminWaitBlocked(t, db, first.connection, second.connection)
-	if err := barrier.Rollback(); err != nil {
-		t.Fatal(err)
+	for range 2 {
+		select {
+		case count := <-arrived:
+			if count != 2 {
+				t.Fatalf("controlled pre-update SQL count=%d want=2", count)
+			}
+		case <-time.After(15 * time.Second):
+			t.Fatal("both real HTTP prechecks did not complete")
+		}
 	}
+	t.Log("two independent Server/Store/connection HTTP prechecks read active super_admin=2 before either mutation")
+	unblock()
 	results := []result{<-done, <-done}
 	count, err := store.NewMariaDBAuthStore(db).CountActiveSuperAdmins(t.Context())
 	if err != nil {
