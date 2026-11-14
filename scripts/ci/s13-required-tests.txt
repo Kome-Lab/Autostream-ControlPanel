@@ -18,6 +18,15 @@ github.com/example/autostream-control-panel/internal/httpapi TestOperationalHTTP
 github.com/example/autostream-control-panel/internal/httpapi TestOperationalHTTPLiveRevocationAndAnyPermission
 github.com/example/autostream-control-panel/internal/httpapi TestOperationalHTTPMissingSourceDoesNotAffectEvidenceSessionBoundary
 github.com/example/autostream-control-panel/internal/httpapi TestOperationalHTTPPathScopeBindings
+github.com/example/autostream-control-panel/internal/httpapi TestOperationalLastAdminSQLAdditionRemovalOrder
+github.com/example/autostream-control-panel/internal/httpapi TestOperationalLastAdminSQLAuthorityLockOrder
+github.com/example/autostream-control-panel/internal/httpapi TestOperationalLastAdminSQLConcurrentRemoval
+github.com/example/autostream-control-panel/internal/httpapi TestOperationalLastAdminSQLLegacyUnconfigured
+github.com/example/autostream-control-panel/internal/httpapi TestOperationalLastAdminSQLMigrationAndMissingGuard
+github.com/example/autostream-control-panel/internal/httpapi TestOperationalLastAdminSQLMutationMatrix
+github.com/example/autostream-control-panel/internal/httpapi TestOperationalLastAdminSQLRollbackAndCommitUnknown
+github.com/example/autostream-control-panel/internal/httpapi TestOperationalLastAdminSQLSharedGuardAndIsolation
+github.com/example/autostream-control-panel/internal/httpapi TestOperationalLastAdminSQLSingleAndAbnormalState
 github.com/example/autostream-control-panel/internal/httpapi TestOperationalWorkloadHumanSessionSeparation
 github.com/example/autostream-control-panel/internal/httpapi TestOperationalWorkloadServiceScopeAndRevocation
 github.com/example/autostream-control-panel/internal/httpapi TestOperationalWorkloadServiceTokenCannotReplaceExecutionGrant
@@ -33,6 +42,7 @@ github.com/example/autostream-control-panel/internal/operationalauthorization Te
 github.com/example/autostream-control-panel/internal/operationalauthorization TestOperationalDelegationSuperAdminExplicitConstraints
 github.com/example/autostream-control-panel/internal/operationalauthorization TestOperationalFreshRevisionCancellationAndPending
 github.com/example/autostream-control-panel/internal/operationalauthorization TestOperationalHTTPRoleSourceBoundary
+github.com/example/autostream-control-panel/internal/operationalauthorization TestOperationalLastAdminSourceBoundary
 github.com/example/autostream-control-panel/internal/operationalauthorization TestOperationalRevocationCASRollbackAndHistory
 github.com/example/autostream-control-panel/internal/operationalauthorization TestOperationalRoleChangeAndDelete
 github.com/example/autostream-control-panel/internal/operationalauthorization TestOperationalScopeAndSubject
@@ -55,5 +65,3 @@ github.com/example/autostream-control-panel/internal/store TestOperationalSQLFul
 github.com/example/autostream-control-panel/internal/store TestOperationalSQLMigration
 github.com/example/autostream-control-panel/internal/store TestOperationalSQLMutationRevocation
 github.com/example/autostream-control-panel/internal/store TestOperationalSQLSource
-github.com/example/autostream-control-panel/internal/httpapi TestOperationalLastAdminSQLConcurrentRemoval
-github.com/example/autostream-control-panel/internal/operationalauthorization TestOperationalLastAdminSourceBoundary

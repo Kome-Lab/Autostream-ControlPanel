@@ -169,6 +169,14 @@ func (s operationalLastAdminCountStore) CountActiveSuperAdmins(ctx context.Conte
 }
 
 func TestOperationalLastAdminSQLConcurrentRemoval(t *testing.T) {
+	operationalLastAdminConcurrentRemoval(t, true)
+}
+
+func TestOperationalLastAdminSQLLegacyUnconfigured(t *testing.T) {
+	operationalLastAdminConcurrentRemoval(t, false)
+}
+
+func operationalLastAdminConcurrentRemoval(t *testing.T, configured bool) {
 	db, raw := operationalLastAdminDatabase(t)
 	operationalLastAdminSeed(t, db)
 	first := operationalLastAdminServer(t, raw, "la-manager")
@@ -181,8 +189,11 @@ func TestOperationalLastAdminSQLConcurrentRemoval(t *testing.T) {
 	var once sync.Once
 	unblock := func() { once.Do(func() { close(release) }) }
 	defer unblock()
-	for _, endpoint := range []operationalLastAdminEndpoint{first, second} {
+	for _, endpoint := range []*operationalLastAdminEndpoint{&first, &second} {
 		auth := store.NewMariaDBAuthStore(endpoint.db)
+		if !configured {
+			endpoint.server = NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth))
+		}
 		endpoint.server.users = operationalLastAdminCountStore{MariaDBAuthStore: auth, arrived: arrived, release: release}
 		probe := operationalRequest(t, endpoint.server, endpoint.cookie, endpoint.csrf, "GET", "/users/la-admin-a", "")
 		if probe.Code != 200 {
