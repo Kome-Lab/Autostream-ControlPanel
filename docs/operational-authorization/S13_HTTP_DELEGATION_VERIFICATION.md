@@ -58,7 +58,7 @@ Tests use isolated in-memory synthetic data. No local DB or real Role assignment
 
 The frozen v2 commit is unchanged: 93181192d8f036bae40b490957489c9ee8290769. The 409-file / 99-Permission / 261-Route inventory remains the source basis.
 
-server_users_roles.go has seven explicit hook changes. TestOperationalHTTPRoleSourceBoundary checks the immutable v2 fixture SHA256, replays only those exact reviewed transformations over it, and compares the entire formatted result. The full-history shell SourceBoundary independently verifies the original Git blob has that same SHA256. No Handler is excluded. In-memory tamper probes against the last-admin condition, self guard, super_admin protection, delegation hook and route permission must fail comparison.
+server_users_roles.go has seven explicit hook changes. TestOperationalHTTPRoleSourceBoundary checks the immutable v2 fixture SHA256, replays only those exact reviewed transformations over it, and compares the entire formatted result. Fixture hashing canonicalizes only CRLF to LF for Windows checkouts. The full-history shell SourceBoundary independently verifies the original Git blob has that same SHA256. No Handler is excluded. In-memory tamper probes against the last-admin condition, self guard, super_admin protection, delegation hook and route permission must fail comparison.
 
 The shell SourceBoundary invokes that mandatory test for this specific file; all other protected paths retain their previous checks. Module files, existing migrations, Evidence/Authority source and the original CP CI workflow stay immutable.
 

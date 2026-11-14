@@ -52,11 +52,13 @@ func TestOperationalHTTPRoleSourceBoundary(t *testing.T) {
 		t.Fatal("source location unavailable")
 	}
 	root := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
-	digest := sha256.Sum256(operationalFrozenRoleSource)
+	// Match Git blob bytes even when Windows checkout converts text to CRLF.
+	frozen := []byte(strings.ReplaceAll(string(operationalFrozenRoleSource), "\r\n", "\n"))
+	digest := sha256.Sum256(frozen)
 	if hex.EncodeToString(digest[:]) != operationalFrozenRoleSHA256 {
 		t.Fatal("fixed v2 fixture checksum mismatch")
 	}
-	expected, err := operationalApprovedRoleSource(operationalFrozenRoleSource)
+	expected, err := operationalApprovedRoleSource(frozen)
 	if err != nil {
 		t.Fatal(err)
 	}
