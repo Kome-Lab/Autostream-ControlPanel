@@ -187,8 +187,10 @@ func operationalLastAdminWaitBlocked(t *testing.T, db *sql.DB, first, second int
 	defer tick.Stop()
 	for {
 		var blocked int
-		err := db.QueryRowContext(ctx, "SELECT COUNT(DISTINCT w.requesting_trx_id) FROM information_schema.INNODB_LOCK_WAITS w JOIN information_schema.INNODB_TRX r ON r.trx_id=w.requesting_trx_id WHERE r.trx_mysql_thread_id IN (?,?)", first, second).Scan(&blocked)
+		err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM information_schema.INNODB_TRX WHERE trx_state='LOCK WAIT' AND trx_mysql_thread_id IN (?,?)", first, second).Scan(&blocked)
 		if err != nil {
+			stats := db.Stats()
+			t.Logf("observer pool: open=%d in_use=%d idle=%d waits=%d", stats.OpenConnections, stats.InUse, stats.Idle, stats.WaitCount)
 			t.Fatal(err)
 		}
 		if blocked == 2 {
