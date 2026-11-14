@@ -2,6 +2,8 @@
 set -euo pipefail
 baseline=d42a0fb2212c2378b822effc9b8dfd7031d457cb
 git merge-base --is-ancestor "$baseline" HEAD
+frozen_role_sha="$(git show 93181192d8f036bae40b490957489c9ee8290769:internal/httpapi/server_users_roles.go | sha256sum | cut -d ' ' -f 1)"
+test "$frozen_role_sha" = "e3ee915884ddf576e46f37c350877871b678fc9e5143177181e3301f25d28e80"
 while IFS= read -r file; do
   case "$file" in
     internal/operationalauthorization/*|internal/store/operational*.go|internal/store/memory_auth.go|internal/httpapi/server_operational*.go|internal/httpapi/server.go|internal/httpapi/server_request_auth.go|docs/operational-authorization/*|scripts/ci/s13-*|.github/workflows/v3-operational-authorization-ci.yml) ;;

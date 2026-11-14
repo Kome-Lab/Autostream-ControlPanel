@@ -58,11 +58,13 @@ Tests use isolated in-memory synthetic data. No local DB or real Role assignment
 
 The frozen v2 commit is unchanged: 93181192d8f036bae40b490957489c9ee8290769. The 409-file / 99-Permission / 261-Route inventory remains the source basis.
 
-server_users_roles.go has seven explicit hook changes. TestOperationalHTTPRoleSourceBoundary replays only those exact reviewed transformations over the immutable original file and compares the entire formatted result. No Handler is excluded. In-memory tamper probes against the last-admin condition, self guard, super_admin protection, delegation hook and route permission must fail comparison.
+server_users_roles.go has seven explicit hook changes. TestOperationalHTTPRoleSourceBoundary checks the immutable v2 fixture SHA256, replays only those exact reviewed transformations over it, and compares the entire formatted result. The full-history shell SourceBoundary independently verifies the original Git blob has that same SHA256. No Handler is excluded. In-memory tamper probes against the last-admin condition, self guard, super_admin protection, delegation hook and route permission must fail comparison.
 
 The shell SourceBoundary invokes that mandatory test for this specific file; all other protected paths retain their previous checks. Module files, existing migrations, Evidence/Authority source and the original CP CI workflow stay immutable.
 
 The required inventory now has **57 named roots**: 43 Operational roots plus the 14 existing Workload roots. All new roots use the existing TestOperational selection and are included in required, CGO-free and full Race executions. No existing successful test was removed, skipped, or weakened. The operational workflow also checks formatting of the modified legacy Handler.
+
+The first follow-up CI attempt exposed a test-environment dependency: the original new source guard required a historical Git object unavailable in the existing CP workflow's shallow checkout. Its v3 product/SQL tests passed, but the subsequent full Go run failed that guard. The checksum-anchored v2 fixture removes the history requirement from ordinary Go tests without skipping verification. The full-history Operational workflow still validates the original Git object. No B/C implementation or existing test was altered.
 
 Final proof must match the final head tree in both required jobs:
 

@@ -2,15 +2,22 @@ package operationalauthorization
 
 import (
 	"bytes"
+	"crypto/sha256"
+	_ "embed"
+	"encoding/hex"
 	"fmt"
 	"go/format"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 )
+
+//go:embed testdata/v2_server_users_roles.go.txt
+var operationalFrozenRoleSource []byte
+
+const operationalFrozenRoleSHA256 = "e3ee915884ddf576e46f37c350877871b678fc9e5143177181e3301f25d28e80"
 
 // Replay only the seven reviewed delegation hooks over the immutable v2 file.
 // The entire resulting file is compared: no handler or protection is excluded.
@@ -45,13 +52,11 @@ func TestOperationalHTTPRoleSourceBoundary(t *testing.T) {
 		t.Fatal("source location unavailable")
 	}
 	root := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
-	cmd := exec.Command("git", "show", "93181192d8f036bae40b490957489c9ee8290769:internal/httpapi/server_users_roles.go")
-	cmd.Dir = root
-	frozen, err := cmd.Output()
-	if err != nil {
-		t.Fatal("fixed v2 source unavailable: ", err)
+	digest := sha256.Sum256(operationalFrozenRoleSource)
+	if hex.EncodeToString(digest[:]) != operationalFrozenRoleSHA256 {
+		t.Fatal("fixed v2 fixture checksum mismatch")
 	}
-	expected, err := operationalApprovedRoleSource(frozen)
+	expected, err := operationalApprovedRoleSource(operationalFrozenRoleSource)
 	if err != nil {
 		t.Fatal(err)
 	}
