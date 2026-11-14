@@ -55,3 +55,4 @@ github.com/example/autostream-control-panel/internal/store TestOperationalSQLFul
 github.com/example/autostream-control-panel/internal/store TestOperationalSQLMigration
 github.com/example/autostream-control-panel/internal/store TestOperationalSQLMutationRevocation
 github.com/example/autostream-control-panel/internal/store TestOperationalSQLSource
+github.com/example/autostream-control-panel/internal/httpapi TestOperationalLastAdminSQLConcurrentRemoval
