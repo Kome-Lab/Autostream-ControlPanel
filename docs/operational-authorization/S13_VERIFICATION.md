@@ -4,6 +4,8 @@ Date: 2026-11-14 JST. This report distinguishes implemented behavior, local proo
 
 The HTTP delegation follow-up is recorded in [S13_HTTP_DELEGATION_VERIFICATION.md](S13_HTTP_DELEGATION_VERIFICATION.md). Counts and CI references below describe the original S13 baseline; final follow-up proof is in PR #12.
 
+The later last-admin concurrency investigation and bounded database guarantee are recorded in [LAST_ADMIN_CONCURRENCY_VERIFICATION.md](LAST_ADMIN_CONCURRENCY_VERIFICATION.md). Historical source-only concurrency limits below describe the original baseline.
+
 ## Scope and implemented behavior
 
 - Role=PRESERVE; Scope=HYBRID; Workload Identity=SEPARATE.

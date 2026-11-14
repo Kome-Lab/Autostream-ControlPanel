@@ -69,7 +69,7 @@ The authenticated entry revision is passed as ExpectedRevision to subsequent typ
 
 The legacy assignment exception is confined to known operational permissions; it cannot grant Bootstrap approval, Trust Root changes, ledger administration, Recovery quorum, signing keys or independent approver roster management.
 
-Existing last-administrator guards are retained, not silently promoted into a new independent Recovery system. Production-wide concurrent last-admin/recovery guarantees are outside the source-only compatibility claim.
+MariaDB last-administrator management writes now recheck canonical active membership and commit inside a shared InnoDB guard transaction. The guard precedes User, Session and assignment locks; existing generation/history triggers remain inside the mutation transaction. The competing authentication lockout writer joins the same lock order without changing its policy. See LAST_ADMIN_CONCURRENCY_VERIFICATION.md for source-derived routes, executed red/green proof and limits. No independent Recovery system or full account-availability guarantee is introduced.
 
 ## Store and migration boundary
 

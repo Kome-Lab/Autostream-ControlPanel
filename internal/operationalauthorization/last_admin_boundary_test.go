@@ -16,6 +16,9 @@ import (
 //go:embed testdata/v2_admin.go.txt
 var lastAdminV2Source []byte
 
+//go:embed testdata/v2_auth_sessions_mariadb.go.txt
+var lastAdminV2AuthSource []byte
+
 func TestOperationalLastAdminSourceBoundary(t *testing.T) {
 	_, file, _, ok := runtime.Caller(0)
 	if !ok {
@@ -62,6 +65,27 @@ func TestOperationalLastAdminSourceBoundary(t *testing.T) {
 		if e == nil && bytes.Equal(changedSource, expected) {
 			t.Fatal("unauthorized Store edit passed")
 		}
+	}
+	authFrozen := strings.ReplaceAll(string(lastAdminV2AuthSource), "\r\n", "\n")
+	authDigest := sha256.Sum256([]byte(authFrozen))
+	if hex.EncodeToString(authDigest[:]) != "9f38933fccd635d515c65638e0892df013dd598a790c31f8b0ef2bfca1c7e3c1" {
+		t.Fatal("fixed v2 auth fixture changed")
+	}
+	authBefore, authAfter := "\tif lockoutThreshold < 1 {\n\t\tlockoutThreshold = defaultSecurityConfig.LoginLockoutThreshold\n\t}\n\t_, err := s.db.ExecContext(ctx, `UPDATE users SET failed_login_count = failed_login_count + 1, status = IF(failed_login_count + 1 >= ?, 'locked', status), updated_at = ? WHERE username = ?`, lockoutThreshold, time.Now().UTC(), username)\n\treturn err\n}\n\nfunc (s MariaDBAuthStore) GetUserAvatar(ctx context.Context, userID string) (UserAvatar, error) {\n", "\tif lockoutThreshold < 1 {\n\t\tlockoutThreshold = defaultSecurityConfig.LoginLockoutThreshold\n\t}\n\treturn s.recordLoginFailureGuarded(ctx, username, lockoutThreshold)\n}\n\nfunc (s MariaDBAuthStore) GetUserAvatar(ctx context.Context, userID string) (UserAvatar, error) {\n"
+	if strings.Count(authFrozen, authBefore) != 1 {
+		t.Fatal("authentication hook has no unique v2 match")
+	}
+	authExpected, err := format.Source([]byte(strings.Replace(authFrozen, authBefore, authAfter, 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	authActual, err := os.ReadFile(filepath.Join(root, "internal/store/auth_sessions_mariadb.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	authCanonical, err := format.Source(authActual)
+	if err != nil || !bytes.Equal(authCanonical, authExpected) {
+		t.Fatal("authentication source changes exceed the shared-lock hook")
 	}
 	migration, err := os.ReadFile(filepath.Join(root, "internal/database/migrations/093_user_admin_guard.sql"))
 	if err != nil {

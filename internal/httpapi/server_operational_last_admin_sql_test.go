@@ -141,7 +141,7 @@ func operationalLastAdminServer(t *testing.T, raw, actor string) operationalLast
 	if err = db.QueryRowContext(t.Context(), "SELECT CONNECTION_ID()").Scan(&id); err != nil {
 		t.Fatal(err)
 	}
-	return operationalLastAdminEndpoint{db: db, server: NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithOperationalAuthorization(auth)), cookie: &http.Cookie{Name: sessionCookieName, Value: session.Token}, csrf: session.CSRFToken, connection: id}
+	return operationalLastAdminEndpoint{db: db, server: NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(store.NewMariaDBAuditStore(db)), WithOperationalAuthorization(auth)), cookie: &http.Cookie{Name: sessionCookieName, Value: session.Token}, csrf: session.CSRFToken, connection: id}
 }
 
 type operationalLastAdminCountStore struct {

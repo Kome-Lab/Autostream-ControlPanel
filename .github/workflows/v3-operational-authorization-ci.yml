@@ -46,7 +46,7 @@ jobs:
           set -euo pipefail
           bash scripts/ci/s13-source-boundary.sh
           git log -1 --format='S13 tested commit: %H%nS13 tested tree: %T'
-          files="$(gofmt -l internal/operationalauthorization/*.go internal/store/operational*.go internal/httpapi/server_operational*.go internal/httpapi/server_request_auth.go internal/httpapi/server_users_roles.go internal/httpapi/server.go internal/store/memory_auth.go internal/store/admin.go)"
+          files="$(gofmt -l internal/operationalauthorization/*.go internal/store/operational*.go internal/httpapi/server_operational*.go internal/httpapi/server_request_auth.go internal/httpapi/server_users_roles.go internal/httpapi/server.go internal/store/memory_auth.go internal/store/admin.go internal/store/auth_sessions_mariadb.go)"
           test -z "$files" || { printf '%s\n' "$files"; exit 1; }
       - name: Required Operational and HTTP inventory
         run: |

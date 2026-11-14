@@ -60,7 +60,7 @@ func operationalLastAdminCapture(t *testing.T, db *sql.DB) operationalLastAdminS
 		{"SELECT generation FROM operational_authorization_epoch WHERE singleton=1", &state.generation},
 		{"SELECT COUNT(*) FROM operational_authorization_history", &state.history},
 		{"SELECT COUNT(*) FROM sessions WHERE user_id='la-admin-a'", &state.sessions},
-		{"SELECT COUNT(*) FROM audit_events", &state.audits},
+		{"SELECT COUNT(*) FROM audit_logs", &state.audits},
 	} {
 		if err = db.QueryRowContext(t.Context(), q.query).Scan(q.value); err != nil {
 			t.Fatal(err)
@@ -108,7 +108,7 @@ func TestOperationalLastAdminSQLRollbackAndCommitUnknown(t *testing.T) {
 					t.Fatalf("unknown commit replayed or misclassified: commits=%d", owner.commits.Load())
 				}
 				var audits int64
-				if err = db.QueryRowContext(t.Context(), "SELECT COUNT(*) FROM audit_events").Scan(&audits); err != nil {
+				if err = db.QueryRowContext(t.Context(), "SELECT COUNT(*) FROM audit_logs").Scan(&audits); err != nil {
 					t.Fatal(err)
 				}
 				if audits != before.audits {

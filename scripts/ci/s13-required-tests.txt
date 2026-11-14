@@ -19,6 +19,7 @@ github.com/example/autostream-control-panel/internal/httpapi TestOperationalHTTP
 github.com/example/autostream-control-panel/internal/httpapi TestOperationalHTTPMissingSourceDoesNotAffectEvidenceSessionBoundary
 github.com/example/autostream-control-panel/internal/httpapi TestOperationalHTTPPathScopeBindings
 github.com/example/autostream-control-panel/internal/httpapi TestOperationalLastAdminSQLAdditionRemovalOrder
+github.com/example/autostream-control-panel/internal/httpapi TestOperationalLastAdminSQLAuthenticationLockoutOrder
 github.com/example/autostream-control-panel/internal/httpapi TestOperationalLastAdminSQLAuthorityLockOrder
 github.com/example/autostream-control-panel/internal/httpapi TestOperationalLastAdminSQLConcurrentRemoval
 github.com/example/autostream-control-panel/internal/httpapi TestOperationalLastAdminSQLLegacyUnconfigured

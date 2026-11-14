@@ -30,7 +30,7 @@ func operationalLastAdminServerDB(t *testing.T, db *sql.DB, actor string) operat
 	if err = db.QueryRowContext(t.Context(), "SELECT CONNECTION_ID()").Scan(&id); err != nil {
 		t.Fatal(err)
 	}
-	return operationalLastAdminEndpoint{db: db, server: NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithOperationalAuthorization(auth)), cookie: &http.Cookie{Name: sessionCookieName, Value: session.Token}, csrf: session.CSRFToken, connection: id}
+	return operationalLastAdminEndpoint{db: db, server: NewServer(store.NewMemoryStreamStore(), WithAuthStore(auth), WithAuditStore(store.NewMariaDBAuditStore(db)), WithOperationalAuthorization(auth)), cookie: &http.Cookie{Name: sessionCookieName, Value: session.Token}, csrf: session.CSRFToken, connection: id}
 }
 func operationalLastAdminActor(operation, target string) string {
 	if operation == "unassign" {
@@ -383,4 +383,80 @@ func TestOperationalLastAdminSQLAdditionRemovalOrder(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestOperationalLastAdminSQLAuthenticationLockoutOrder(t *testing.T) {
+	db, raw := operationalLastAdminDatabase(t)
+	t.Run("lockout-before-management", func(t *testing.T) {
+		operationalLastAdminSeed(t, db)
+		acquired, release := make(chan struct{}), make(chan struct{})
+		var once sync.Once
+		unblock := func() { once.Do(func() { close(release) }) }
+		defer unblock()
+		authOwner := &operationalLastAdminDriver{afterGuard: func() { close(acquired); <-release }}
+		authDB := operationalLastAdminWrappedDB(t, raw, authOwner)
+		ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+		defer cancel()
+		authDone := make(chan error, 1)
+		go func() { authDone <- store.NewMariaDBAuthStore(authDB).RecordLoginFailure(ctx, "la-admin-b", 1) }()
+		select {
+		case <-acquired:
+		case err := <-authDone:
+			t.Fatalf("automatic lockout missed shared guard: %v", err)
+		case <-ctx.Done():
+			t.Fatal("lockout guard timed out")
+		}
+		operationalLastAdminMustBeLocked(t, db, "SELECT singleton FROM user_admin_guard WHERE singleton=1 FOR UPDATE NOWAIT")
+		attempted := make(chan struct{})
+		owner := &operationalLastAdminDriver{beforeGuard: func() { close(attempted) }}
+		manager := operationalLastAdminServerDB(t, operationalLastAdminWrappedDB(t, raw, owner), "la-manager")
+		done := make(chan *httptest.ResponseRecorder, 1)
+		go func() { done <- operationalLastAdminRequest(ctx, t, manager, "unassign", "la-admin-a") }()
+		select {
+		case <-attempted:
+		case r := <-done:
+			t.Fatalf("management did not attempt the shared guard: %d", r.Code)
+		case <-ctx.Done():
+			t.Fatal("management guard attempt timed out")
+		}
+		unblock()
+		select {
+		case err := <-authDone:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-ctx.Done():
+			t.Fatal("automatic lockout did not finish")
+		}
+		select {
+		case r := <-done:
+			if r.Code != 409 {
+				t.Fatalf("stale count after lockout accepted: %d %s", r.Code, r.Body.String())
+			}
+		case <-ctx.Done():
+			t.Fatal("management did not finish")
+		}
+		count, err := store.NewMariaDBAuthStore(db).CountActiveSuperAdmins(t.Context())
+		if err != nil || count != 1 {
+			t.Fatalf("count=%d err=%v", count, err)
+		}
+	})
+	t.Run("existing-authentication-policy-preserved", func(t *testing.T) {
+		operationalLastAdminSeed(t, db)
+		operationalLastAdminExec(t, db, "DELETE FROM user_roles WHERE user_id='la-admin-a'")
+		auth := store.NewMariaDBAuthStore(db)
+		if err := auth.RecordLoginFailure(t.Context(), "la-admin-b", 1); err != nil {
+			t.Fatal(err)
+		}
+		user, err := auth.GetUser(t.Context(), "la-admin-b")
+		if err != nil || user.Status != "locked" {
+			t.Fatal("existing authentication lockout policy was changed")
+		}
+		count, err := auth.CountActiveSuperAdmins(t.Context())
+		if err != nil || count != 0 {
+			t.Fatal("automatic lockout was silently refused or recovered")
+		}
+		// This is an authentication policy event, not a management removal. No
+		// availability claim or automatic recovery is added for this pre-existing case.
+	})
 }

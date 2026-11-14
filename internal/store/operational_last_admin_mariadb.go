@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"time"
 )
 
 // A commit error cannot prove rollback. Callers must return failure and must
@@ -18,13 +19,20 @@ type lastAdminUser struct {
 // The shared DB guard is acquired before User/session/assignment locks. It has
 // no foreign keys to those rows or to the Operational/Authority epochs.
 // The canonical User/Role rows, not this lock row, determine administrator count.
-func lockLastAdminUser(ctx context.Context, tx *sql.Tx, id string) (lastAdminUser, error) {
+func lockUserAdministration(ctx context.Context, tx *sql.Tx) error {
 	var singleton int
 	if err := tx.QueryRowContext(ctx, "SELECT singleton FROM user_admin_guard WHERE singleton=1 FOR UPDATE").Scan(&singleton); err != nil {
-		return lastAdminUser{}, err
+		return err
 	}
 	if singleton != 1 {
-		return lastAdminUser{}, ErrUnauthorized
+		return ErrUnauthorized
+	}
+	return nil
+}
+
+func lockLastAdminUser(ctx context.Context, tx *sql.Tx, id string) (lastAdminUser, error) {
+	if err := lockUserAdministration(ctx, tx); err != nil {
+		return lastAdminUser{}, err
 	}
 	var target lastAdminUser
 	err := tx.QueryRowContext(ctx, "SELECT status FROM users WHERE id=? FOR UPDATE", id).Scan(&target.status)
@@ -54,4 +62,28 @@ func commitUserAdministration(tx *sql.Tx) error {
 		return errors.Join(ErrUserAdministrationUnknown, err)
 	}
 	return nil
+}
+
+// Authentication lockout keeps its original threshold and status policy. It
+// participates in the same lock order so a management transaction cannot use
+// a count read before a concurrent automatic lockout commits.
+func (s MariaDBAuthStore) recordLoginFailureGuarded(ctx context.Context, username string, threshold int) error {
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := lockUserAdministration(ctx, tx); err != nil {
+		return err
+	}
+	var id string
+	if err := tx.QueryRowContext(ctx, "SELECT id FROM users WHERE username=? FOR UPDATE", username).Scan(&id); errors.Is(err, sql.ErrNoRows) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE users SET failed_login_count = failed_login_count + 1, status = IF(failed_login_count + 1 >= ?, 'locked', status), updated_at = ? WHERE username = ?`, threshold, time.Now().UTC(), username); err != nil {
+		return err
+	}
+	return commitUserAdministration(tx)
 }
