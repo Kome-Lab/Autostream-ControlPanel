@@ -11,9 +11,10 @@ import (
 )
 
 type currentUser struct {
-	User        store.User
-	Session     store.Session
-	Permissions []string
+	User                store.User
+	Session             store.Session
+	Permissions         []string
+	OperationalRevision uint64
 }
 
 type currentUserKey struct{}

@@ -136,6 +136,9 @@ func (s *Service) ValidateDelegation(ctx context.Context, request DelegationRequ
 	if snapshot.Principal.State != StateActive {
 		return ErrDenied
 	}
+	if request.ExpectedRevision != 0 && request.ExpectedRevision != snapshot.Revision {
+		return ErrStaleRevision
+	}
 	entry := decide(snapshot, Request{PrincipalID: request.PrincipalID, Operation: request.Action, Scope: request.Scope, SubjectID: request.SubjectID})
 	if !entry.Allowed {
 		return ErrDenied
@@ -182,11 +185,13 @@ func (s *Service) ValidateDelegation(ctx context.Context, request DelegationRequ
 		if !entryContains {
 			return ErrDenied
 		}
-		if assignmentException {
-			continue
-		}
-		contained := false
+		// The legacy super_admin assignment exception covers unheld operations.
+		// It cannot erase explicit typed constraints on a represented operation.
+		represented, contained := false, false
 		for _, parent := range snapshot.Grants {
+			if parent.Operation == child.Operation {
+				represented = true
+			}
 			if parent.State != StateActive || parent.Operation != child.Operation || parent.Delegation.Mode != DelegationSubset || !scopeContains(parent.Scope, child.Scope) {
 				continue
 			}
@@ -195,7 +200,7 @@ func (s *Service) ValidateDelegation(ctx context.Context, request DelegationRequ
 				break
 			}
 		}
-		if !contained {
+		if !contained && !(assignmentException && !represented) {
 			return ErrDenied
 		}
 	}

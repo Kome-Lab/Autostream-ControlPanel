@@ -47,7 +47,7 @@ The identity boundary checks Session existence/expiry, User and CSRF. Operationa
 
 The same validated snapshot supplies **both** effective operations and Role names used by existing special conditions. Stale `super_admin` identity from an earlier read cannot retain the Role-assignment exception after the Operational snapshot has removed it.
 
-Subject-restricted or delegation-restricted grants cannot be flattened into unrestricted permissions without their required matching context. No independent grants may be combined to manufacture one broader scope/constraint.
+Current() retains DelegationNone operations for ordinary use. Subject-restricted grants require a matching trusted context and are not flattened into unrestricted permissions. HTTP Role and User mutation hooks separately validate typed delegation against the complete Global/Subset Role effect and authenticated entry revision. No independent grants may be combined to manufacture one broader scope/constraint.
 
 Revision freshness is an authorization-entry guarantee. The existing v2 Handlers are not rewritten into the B/C issuance transaction; in-flight remote side effects and Session revocation after entry are not certified as atomic with a later response. Revocations affect the next fresh decision. DB-local generations are not independent restore-continuity evidence.
 
@@ -63,7 +63,9 @@ The unchanged Handler/Store protections remain binding:
 - last active `super_admin` protection, password/status special conditions, and deletion subset checks remain;
 - permissions such as `roles.assign`, `users.update`, `users.reset_password` remain required at their original entry points.
 
-The new evaluator's delegation checks retain operation and Scope containment for ordinary actors. Even the assignment exception remains inside the Scope and Subject boundary of the entry roles.assign Grant. A scoped roles.assign grant cannot delegate Global or another Stream. The checked target Principal is bound to the delegated Principal.
+The evaluator's delegation checks are connected before save in Role create/update, User create/update Role assignments, and the common helper used by OAuth Provider default Role create/update. Ordinary actors must satisfy operation, Scope and Subject containment. Even the assignment exception remains inside the Scope/Subject/delegation boundary of the entry roles.assign Grant. It preserves assignment of unheld known operations but cannot erase explicit constraints or revocation on represented operations. The checked target Principal is bound to the loaded target User; new Users and provider policies have an unknown future Principal. Body identity/scope claims are never authoritative.
+
+The authenticated entry revision is passed as ExpectedRevision to subsequent typed delegation checks. See S13_HTTP_DELEGATION_VERIFICATION.md for executed red/green HTTP results, preserved legacy exceptions, mandatory tests and precise limits.
 
 The legacy assignment exception is confined to known operational permissions; it cannot grant Bootstrap approval, Trust Root changes, ledger administration, Recovery quorum, signing keys or independent approver roster management.
 

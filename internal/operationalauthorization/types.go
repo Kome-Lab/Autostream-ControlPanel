@@ -90,10 +90,11 @@ type Decision struct {
 	Reason   string
 }
 type DelegationRequest struct {
-	PrincipalID string
-	Action      string
-	RoleName    string
-	Grants      []Grant
-	Scope       Scope
-	SubjectID   string
+	PrincipalID      string
+	Action           string
+	RoleName         string
+	Grants           []Grant
+	Scope            Scope
+	SubjectID        string
+	ExpectedRevision uint64
 }

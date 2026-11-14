@@ -42,6 +42,7 @@ func (s *Server) operationalCurrent(w http.ResponseWriter, r *http.Request, curr
 		current.User.RoleIDs = append(current.User.RoleIDs, role.ID)
 	}
 	current.Permissions = permissions
+	current.OperationalRevision = snapshot.Revision
 	return current, true
 }
 

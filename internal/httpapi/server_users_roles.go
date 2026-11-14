@@ -75,7 +75,7 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 	if !s.passwordMeetsConfiguredPolicy(w, r, body.TemporaryPassword) {
 		return
 	}
-	if len(body.RoleIDs) > 0 && !security.HasPermission(currentFromContext(r.Context()).Permissions, "roles.assign") {
+	if len(body.RoleIDs) > 0 && !s.hasRoleAssignmentPermission(r.Context(), "") {
 		writeJSON(w, http.StatusForbidden, map[string]string{"code": "permission_denied"})
 		return
 	}
@@ -127,7 +127,7 @@ func (s *Server) updateUser(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "bad_request"})
 		return
 	}
-	if body.RoleIDs != nil && !security.HasPermission(currentFromContext(r.Context()).Permissions, "roles.assign") {
+	if body.RoleIDs != nil && !s.hasRoleAssignmentPermission(r.Context(), r.PathValue("id")) {
 		writeJSON(w, http.StatusForbidden, map[string]string{"code": "permission_denied"})
 		return
 	}
@@ -195,7 +195,7 @@ func (s *Server) validateUserRoleUpdate(ctx context.Context, targetUserID string
 	if err != nil {
 		return err
 	}
-	if err := s.validateRoleAssignments(ctx, roleIDs); err != nil {
+	if err := s.validateRoleAssignmentsForSubject(ctx, roleIDs, target.ID); err != nil {
 		return err
 	}
 	if !userHasRoleName(target, "super_admin") || target.Status != "active" {
@@ -219,6 +219,10 @@ func (s *Server) validateUserRoleUpdate(ctx context.Context, targetUserID string
 }
 
 func (s *Server) validateRoleAssignments(ctx context.Context, roleIDs []string) error {
+	return s.validateRoleAssignmentsForSubject(ctx, roleIDs, "")
+}
+
+func (s *Server) validateRoleAssignmentsForSubject(ctx context.Context, roleIDs []string, subjectID string) error {
 	roles := make([]store.Role, 0, len(roleIDs))
 	for _, roleID := range roleIDs {
 		role, err := s.roles.GetRole(ctx, roleID)
@@ -234,11 +238,18 @@ func (s *Server) validateRoleAssignments(ctx context.Context, roleIDs []string) 
 	if err := store.ValidateRoleAssignment(current.User, roles); err != nil {
 		return err
 	}
-	if userHasRoleName(current.User, "super_admin") {
-		return nil
+	if !userHasRoleName(current.User, "super_admin") {
+		for _, role := range roles {
+			if err := store.ValidateRolePermissions(current.Permissions, role.Permissions); err != nil {
+				return err
+			}
+		}
+	}
+	if len(roles) == 0 {
+		return s.validateOperationalRoleDelegation(ctx, "roles.assign", store.Role{}, subjectID)
 	}
 	for _, role := range roles {
-		if err := store.ValidateRolePermissions(current.Permissions, role.Permissions); err != nil {
+		if err := s.validateOperationalRoleDelegation(ctx, "roles.assign", role, subjectID); err != nil {
 			return err
 		}
 	}
@@ -453,6 +464,10 @@ func (s *Server) createRole(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, status, map[string]string{"code": code})
 		return
 	}
+	if err := s.validateOperationalRoleDelegation(r.Context(), "roles.create", store.Role{Name: strings.TrimSpace(body.Name), Permissions: body.Permissions}, ""); err != nil {
+		writeJSON(w, http.StatusForbidden, map[string]string{"code": "permission_escalation"})
+		return
+	}
 	role, err := s.roles.CreateRole(r.Context(), strings.TrimSpace(body.Name), body.Permissions)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "create_role_failed"})
@@ -511,6 +526,10 @@ func (s *Server) updateRole(w http.ResponseWriter, r *http.Request) {
 			code = "permission_escalation"
 		}
 		writeJSON(w, status, map[string]string{"code": code})
+		return
+	}
+	if err := s.validateOperationalRoleDelegation(r.Context(), "roles.update", store.Role{ID: existing.ID, Name: strings.TrimSpace(body.Name), Permissions: body.Permissions}, ""); err != nil {
+		writeJSON(w, http.StatusForbidden, map[string]string{"code": "permission_escalation"})
 		return
 	}
 	role, err := s.roles.UpdateRole(r.Context(), id, strings.TrimSpace(body.Name), body.Permissions)

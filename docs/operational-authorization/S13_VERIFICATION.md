@@ -2,6 +2,8 @@
 
 Date: 2026-11-14 JST. This report distinguishes implemented behavior, local proof, required CI proof, fixed-source confirmation, and unperformed environmental work.
 
+The HTTP delegation follow-up is recorded in [S13_HTTP_DELEGATION_VERIFICATION.md](S13_HTTP_DELEGATION_VERIFICATION.md). Counts and CI references below describe the original S13 baseline; final follow-up proof is in PR #12.
+
 ## Scope and implemented behavior
 
 - Role=PRESERVE; Scope=HYBRID; Workload Identity=SEPARATE.
