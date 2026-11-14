@@ -389,8 +389,12 @@ func TestOperationalSQLFullLegacySchema(t *testing.T) {
 		t.Fatal(err)
 	}
 	var migrations int
-	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM schema_migrations").Scan(&migrations); err != nil || migrations != 93 {
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM schema_migrations").Scan(&migrations); err != nil || migrations != 94 {
 		t.Fatalf("fixed legacy migrations=%d err=%v", migrations, err)
+	}
+	var legacyMigrations int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM schema_migrations WHERE id<>'093_user_admin_guard.sql'").Scan(&legacyMigrations); err != nil || legacyMigrations != 93 {
+		t.Fatalf("fixed legacy migration inventory changed: %d err=%v", legacyMigrations, err)
 	}
 	auth := NewMariaDBAuthStore(db)
 	admin, err := auth.CreateFirstAdmin(ctx, "synthetic-s13-admin", "synthetic-only-s13-password", security.DefaultPermissions)

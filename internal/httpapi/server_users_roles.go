@@ -168,6 +168,10 @@ func (s *Server) updateUser(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	user, err := s.users.UpdateUser(r.Context(), r.PathValue("id"), store.UserPatch{Username: strings.TrimSpace(body.Username), Email: body.Email, RoleIDs: body.RoleIDs})
+	if errors.Is(err, store.ErrLastSuperAdmin) {
+		writeJSON(w, http.StatusConflict, map[string]string{"code": "last_super_admin"})
+		return
+	}
 	if errors.Is(err, store.ErrNotFound) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
 		return
@@ -424,7 +428,10 @@ func (s *Server) resetPassword(w http.ResponseWriter, r *http.Request) {
 	if !s.passwordMeetsConfiguredPolicy(w, r, body.TemporaryPassword) {
 		return
 	}
-	if err := s.users.ResetPassword(r.Context(), target.ID, body.TemporaryPassword); errors.Is(err, store.ErrNotFound) {
+	if err := s.users.ResetPassword(r.Context(), target.ID, body.TemporaryPassword); errors.Is(err, store.ErrLastSuperAdmin) {
+		writeJSON(w, http.StatusConflict, map[string]string{"code": "last_super_admin"})
+		return
+	} else if errors.Is(err, store.ErrNotFound) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
 		return
 	} else if err != nil {

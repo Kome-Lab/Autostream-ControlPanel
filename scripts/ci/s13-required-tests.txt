@@ -56,3 +56,4 @@ github.com/example/autostream-control-panel/internal/store TestOperationalSQLMig
 github.com/example/autostream-control-panel/internal/store TestOperationalSQLMutationRevocation
 github.com/example/autostream-control-panel/internal/store TestOperationalSQLSource
 github.com/example/autostream-control-panel/internal/httpapi TestOperationalLastAdminSQLConcurrentRemoval
+github.com/example/autostream-control-panel/internal/operationalauthorization TestOperationalLastAdminSourceBoundary

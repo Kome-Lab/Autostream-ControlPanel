@@ -180,11 +180,30 @@ func (s MariaDBAuthStore) CreateOAuthUser(ctx context.Context, username, email s
 }
 
 func (s MariaDBAuthStore) UpdateUser(ctx context.Context, id string, patch UserPatch) (User, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return User{}, err
 	}
 	defer tx.Rollback()
+	if patch.RoleIDs != nil {
+		target, err := lockLastAdminUser(ctx, tx, id)
+		if err != nil {
+			return User{}, err
+		}
+		retainsSuper := false
+		for _, roleID := range patch.RoleIDs {
+			var name string
+			if err := tx.QueryRowContext(ctx, "SELECT name FROM roles WHERE id=?", roleID).Scan(&name); err != nil {
+				return User{}, err
+			}
+			retainsSuper = retainsSuper || name == "super_admin"
+		}
+		if target.super && target.status == "active" && !retainsSuper {
+			if err := requireAnotherActiveSuperAdmin(ctx, tx); err != nil {
+				return User{}, err
+			}
+		}
+	}
 	if patch.Username != "" {
 		if _, err := tx.ExecContext(ctx, `UPDATE users SET username = ?, updated_at = ? WHERE id = ?`, patch.Username, time.Now().UTC(), id); err != nil {
 			return User{}, err
@@ -209,27 +228,29 @@ func (s MariaDBAuthStore) UpdateUser(ctx context.Context, id string, patch UserP
 			}
 		}
 	}
-	if err := tx.Commit(); err != nil {
+	if err := commitUserAdministration(tx); err != nil {
 		return User{}, err
 	}
 	return s.GetUser(ctx, id)
 }
 
 func (s MariaDBAuthStore) SetUserStatus(ctx context.Context, id, status string) (User, error) {
-	hasSuperAdmin, err := s.UserHasRole(ctx, id, "super_admin")
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return User{}, err
 	}
-	if hasSuperAdmin && (status == "disabled" || status == "locked") {
-		count, err := s.CountActiveSuperAdmins(ctx)
-		if err != nil {
+	defer tx.Rollback()
+	target, err := lockLastAdminUser(ctx, tx, id)
+	if err != nil {
+		return User{}, err
+	}
+	// Retain the legacy disabled/locked refusal, including inactive Role holders.
+	if target.super && (status == "disabled" || status == "locked" || (target.status == "active" && status != "active")) {
+		if err := requireAnotherActiveSuperAdmin(ctx, tx); err != nil {
 			return User{}, err
 		}
-		if count <= 1 {
-			return User{}, ErrLastSuperAdmin
-		}
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE users SET status = ?, updated_at = ? WHERE id = ?`, status, time.Now().UTC(), id)
+	result, err := tx.ExecContext(ctx, `UPDATE users SET status = ?, updated_at = ? WHERE id = ?`, status, time.Now().UTC(), id)
 	if err != nil {
 		return User{}, err
 	}
@@ -240,28 +261,27 @@ func (s MariaDBAuthStore) SetUserStatus(ctx context.Context, id, status string) 
 	if affected == 0 {
 		return User{}, ErrNotFound
 	}
+	if err := commitUserAdministration(tx); err != nil {
+		return User{}, err
+	}
 	return s.GetUser(ctx, id)
 }
 
 func (s MariaDBAuthStore) DeleteUser(ctx context.Context, id string) error {
-	user, err := s.GetUser(ctx, id)
-	if err != nil {
-		return err
-	}
-	if hasRole(user, "super_admin") && user.Status == "active" {
-		count, err := s.CountActiveSuperAdmins(ctx)
-		if err != nil {
-			return err
-		}
-		if count <= 1 {
-			return ErrLastSuperAdmin
-		}
-	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	target, err := lockLastAdminUser(ctx, tx, id)
+	if err != nil {
+		return err
+	}
+	if target.super && target.status == "active" {
+		if err := requireAnotherActiveSuperAdmin(ctx, tx); err != nil {
+			return err
+		}
+	}
 	for _, query := range []string{
 		`DELETE FROM sessions WHERE user_id = ?`,
 		`DELETE FROM oauth_user_links WHERE user_id = ?`,
@@ -287,7 +307,7 @@ func (s MariaDBAuthStore) DeleteUser(ctx context.Context, id string) error {
 	if affected == 0 {
 		return ErrNotFound
 	}
-	return tx.Commit()
+	return commitUserAdministration(tx)
 }
 
 func (s MariaDBAuthStore) ResetPassword(ctx context.Context, id, temporaryPassword string) error {
@@ -295,7 +315,21 @@ func (s MariaDBAuthStore) ResetPassword(ctx context.Context, id, temporaryPasswo
 	if err != nil {
 		return err
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE users SET password_hash = ?, status = 'pending_password_change', updated_at = ? WHERE id = ?`, hash, time.Now().UTC(), id)
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	target, err := lockLastAdminUser(ctx, tx, id)
+	if err != nil {
+		return err
+	}
+	if target.super && target.status == "active" {
+		if err := requireAnotherActiveSuperAdmin(ctx, tx); err != nil {
+			return err
+		}
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE users SET password_hash = ?, status = 'pending_password_change', updated_at = ? WHERE id = ?`, hash, time.Now().UTC(), id)
 	if err != nil {
 		return err
 	}
@@ -306,7 +340,7 @@ func (s MariaDBAuthStore) ResetPassword(ctx context.Context, id, temporaryPasswo
 	if affected == 0 {
 		return ErrNotFound
 	}
-	return nil
+	return commitUserAdministration(tx)
 }
 
 func (s MariaDBAuthStore) CountActiveSuperAdmins(ctx context.Context) (int, error) {
