@@ -1,0 +1,125 @@
+name: v3 CP Authorization
+on:
+  push:
+    branches: ['v3-dev']
+  pull_request:
+    branches: ['v3-dev']
+permissions:
+  contents: read
+concurrency:
+  group: v3-cp-authorization-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  v3-cp-authorization-checks:
+    name: v3-cp-authorization-checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      GOTOOLCHAIN: local
+      GOWORK: 'off'
+      GOFLAGS: '-mod=readonly'
+      GOMAXPROCS: '2'
+      AUTOSTREAM_V3_AUTH_TEST_DSN: 'autostream_v3_auth_ci:synthetic-ci-only@tcp(127.0.0.1:3306)/autostream_v3_auth_ci?parseTime=true'
+    services:
+      mariadb:
+        image: mariadb:11.4.12@sha256:a794d9eb009e20de605858a11f32f63b4075cbd197c650436f0e3b457e4caed7
+        env:
+          MARIADB_DATABASE: autostream_v3_auth_ci
+          MARIADB_USER: autostream_v3_auth_ci
+          MARIADB_PASSWORD: synthetic-ci-only
+          MARIADB_ROOT_PASSWORD: synthetic-ci-root-only
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd "healthcheck.sh --connect --innodb_initialized"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version: '1.26.5'
+          cache: true
+      - name: Toolchain and pinned evidence dependency
+        run: |
+          set -euo pipefail
+          test "$(go env GOVERSION)" = go1.26.5
+          test "$(go list -m -f '{{.Version}}' github.com/Kome-Lab/Autostream-Contracts/v3evidence)" = v0.0.0-20261113091349-790be850e98c
+          test -z "$(go list -m -f '{{if .Replace}}{{.Replace.Path}}{{end}}' github.com/Kome-Lab/Autostream-Contracts/v3evidence)"
+          bash scripts/ci/verify-v3-evidence-module.sh
+      - name: Check Go formatting
+        run: |
+          set -euo pipefail
+          unformatted="$(gofmt -l internal/v3authorization/*.go internal/httpapi/server_v3_*authorization*.go internal/httpapi/server_v3_canonical_resolver_test.go scripts/ci/cp_authorization_interop_test.go)"
+          if test -n "$unformatted"; then
+            gofmt -d internal/v3authorization/*.go internal/httpapi/server_v3_*authorization*.go internal/httpapi/server_v3_canonical_resolver_test.go scripts/ci/cp_authorization_interop_test.go
+            exit 1
+          fi
+      - name: CP unit and disposable MariaDB integration tests
+        run: |
+          set -euo pipefail
+          go test -count=1 -json ./internal/v3authorization | tee "$RUNNER_TEMP/v3-cp-tests.json"
+          test "$(jq -r 'select(.Action=="pass" and ((.Test//"")|startswith("TestSQLStore")))|.Test' "$RUNNER_TEMP/v3-cp-tests.json" | wc -l)" -ge 6
+          ! jq -e 'select(.Action=="skip" and ((.Test//"")|startswith("TestSQLStore")))' "$RUNNER_TEMP/v3-cp-tests.json" >/dev/null
+          while IFS= read -r required; do
+            test -n "$required" || continue
+            test "$(jq -sr --arg test "$required" '[.[]|select(.Test==$test and .Action=="run")]|length' "$RUNNER_TEMP/v3-cp-tests.json")" = 1
+            test "$(jq -sr --arg test "$required" '[.[]|select(.Test==$test and .Action=="pass")]|length' "$RUNNER_TEMP/v3-cp-tests.json")" = 1
+            test "$(jq -sr --arg test "$required" '[.[]|select(.Test==$test and (.Action=="skip" or .Action=="fail"))]|length' "$RUNNER_TEMP/v3-cp-tests.json")" = 0
+          done < scripts/ci/v3-authority-required-tests.txt
+          go test -count=1 ./...
+      - name: Management HTTP boundary required inventory
+        run: |
+          set -euo pipefail
+          go test -count=1 -json ./internal/httpapi -run '^TestV3AuthorizationManagementHTTP' | tee "$RUNNER_TEMP/v3-management-http-tests.json"
+          while IFS= read -r required; do
+            test -n "$required" || continue
+            test "$(jq -sr --arg test "$required" '[.[]|select(.Test==$test and .Action=="run")]|length' "$RUNNER_TEMP/v3-management-http-tests.json")" = 1
+            test "$(jq -sr --arg test "$required" '[.[]|select(.Test==$test and .Action=="pass")]|length' "$RUNNER_TEMP/v3-management-http-tests.json")" = 1
+            test "$(jq -sr --arg test "$required" '[.[]|select(.Test==$test and (.Action=="skip" or .Action=="fail"))]|length' "$RUNNER_TEMP/v3-management-http-tests.json")" = 0
+          done < scripts/ci/v3-management-http-required-tests.txt
+      - name: Vet
+        run: go vet ./...
+      - name: CGO-free and affected race tests
+        run: |
+          set -euo pipefail
+          CGO_ENABLED=0 go test -count=1 ./internal/v3authorization ./internal/httpapi -run 'Test(SQLAuthority|CanonicalResolver|V3Canonical|V3Authorization|Issue|ConcurrentIssuance|MissingDependencies|RevisionRace|SaveUnknown|ReadCurrent|CancellationMissing|StrictHTTP|SQLStore)'
+          go test -race -count=1 ./internal/v3authorization ./internal/httpapi -run 'Test(SQLAuthority|CanonicalResolver|V3Canonical|V3Authorization|Issue|ConcurrentIssuance|MissingDependencies|RevisionRace|SaveUnknown|ReadCurrent|CancellationMissing|StrictHTTP|SQLStore)'
+      - name: Management HTTP through real disposable SQL owner
+        run: |
+          set -euo pipefail
+          go test -tags=v3_management_http_sql -count=1 -json ./internal/httpapi -run '^TestV3AuthorizationManagementHTTPSQL$' | tee "$RUNNER_TEMP/v3-management-http-sql-tests.json"
+          for action in run pass; do
+            test "$(jq -sr --arg action "$action" '[.[]|select(.Test=="TestV3AuthorizationManagementHTTPSQL" and .Action==$action)]|length' "$RUNNER_TEMP/v3-management-http-sql-tests.json")" = 1
+          done
+          ! jq -e 'select(.Action=="skip" or .Action=="fail")' "$RUNNER_TEMP/v3-management-http-sql-tests.json" >/dev/null
+          go vet -tags=v3_management_http_sql ./internal/httpapi
+          CGO_ENABLED=0 go test -tags=v3_management_http_sql -count=1 ./internal/httpapi -run '^TestV3AuthorizationManagementHTTPSQL$'
+          go test -race -tags=v3_management_http_sql -count=1 ./internal/httpapi -run '^TestV3AuthorizationManagementHTTPSQL$'
+      - name: Existing entrypoints and Linux CGO-free cross-builds
+        run: |
+          set -euo pipefail
+          go build ./cmd/...
+          for arch in amd64 arm64; do
+            mkdir -p "$RUNNER_TEMP/cp-build-$arch"
+            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -o "$RUNNER_TEMP/cp-build-$arch/" ./cmd/...
+          done
+          git diff --exit-code -- go.mod go.sum
+      - name: Acquire fixed disposable C10 interop source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: Kome-Lab/Autostream-Updater
+          ref: cdc106ab795623e41e2fe42a73c598c782e5c8de
+          path: .cp-interop-updater
+          persist-credentials: false
+      - name: CP Service to canonical Codec to C10 (synthetic collaborators)
+        run: |
+          set -euo pipefail
+          export CP_INTEROP_DIR="$RUNNER_TEMP/cp-authorization-interop"
+          mkdir -p "$CP_INTEROP_DIR"
+          test "$(git -C .cp-interop-updater rev-parse HEAD)" = cdc106ab795623e41e2fe42a73c598c782e5c8de
+          cp scripts/ci/cp_authorization_interop_test.go .cp-interop-updater/internal/localexecutor/registry/zz_cp_producer_interop_test.go
+          (cd .cp-interop-updater && go test -tags=cp_producer_interop -run '^TestCPProducerExport$' -count=1 -v ./internal/localexecutor/registry)
+          go test -run '^TestCPProducerInterop$' -count=1 -v ./internal/v3authorization
+          (cd .cp-interop-updater && go test -tags=cp_producer_interop -run '^TestCPProducerImport$' -count=1 -v ./internal/localexecutor/registry)
+          git diff --exit-code -- go.mod go.sum

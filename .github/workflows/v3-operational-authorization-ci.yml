@@ -1,0 +1,83 @@
+name: v3 Operational Authorization
+on:
+  pull_request:
+    branches: ['v3-dev']
+  push:
+    branches: ['v3-dev']
+permissions:
+  contents: read
+concurrency:
+  group: s13-operational-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  v3-operational-authorization-checks:
+    name: v3-operational-authorization-checks
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 45
+    env:
+      GOTOOLCHAIN: local
+      GOWORK: 'off'
+      GOFLAGS: '-mod=readonly'
+      GOMAXPROCS: '2'
+      AUTOSTREAM_S13_TEST_DSN: 'autostream_s13_ci:synthetic-s13-only@tcp(127.0.0.1:3306)/autostream_s13_ci?parseTime=true'
+    services:
+      mariadb:
+        image: mariadb:11.4.12@sha256:a794d9eb009e20de605858a11f32f63b4075cbd197c650436f0e3b457e4caed7
+        env:
+          MARIADB_DATABASE: autostream_s13_ci
+          MARIADB_USER: autostream_s13_ci
+          MARIADB_PASSWORD: synthetic-s13-only
+          MARIADB_ROOT_PASSWORD: synthetic-s13-root-only
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd "healthcheck.sh --connect --innodb_initialized"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version: '1.26.5'
+          cache: true
+      - name: Protected source boundaries and formatting
+        run: |
+          set -euo pipefail
+          bash scripts/ci/s13-source-boundary.sh
+          git log -1 --format='S13 tested commit: %H%nS13 tested tree: %T'
+          files="$(gofmt -l internal/operationalauthorization/*.go internal/store/operational*.go internal/httpapi/server_operational*.go internal/httpapi/server_request_auth.go internal/httpapi/server_users_roles.go internal/httpapi/server.go internal/store/memory_auth.go internal/store/admin.go internal/store/auth_sessions_mariadb.go)"
+          test -z "$files" || { printf '%s\n' "$files"; exit 1; }
+      - name: Required Operational and HTTP inventory
+        run: |
+          set -euo pipefail
+          go test -p 1 -count=1 -json ./internal/operationalauthorization ./internal/store ./internal/httpapi -run '^(TestOperational|TestMemorySystemUpdateMutationGrant|TestMemoryHostSelfUpdateGrantExactBindingAndResponseLossReplay|TestConsumedHostSelfUpdateGrantRejectsEveryTerminalParent|TestSystemUpdateV2LeaseReportAndMutationGrantRoundTrip|TestHostSelfUpdateHTTPPolicyAndGrantRemainExactlyBound|TestHostSelfUpdateGrantConsumeRateLimitsInvalidSoleBearer)' | tee "$RUNNER_TEMP/s13-tests.json"
+          while IFS=' ' read -r package required; do
+            test -n "$required" || continue
+            for action in run pass; do
+              test "$(jq -sr --arg package "$package" --arg name "$required" --arg action "$action" '[.[]|select(.Package==$package and .Test==$name and .Action==$action)]|length' "$RUNNER_TEMP/s13-tests.json")" = 1
+            done
+            test "$(jq -sr --arg package "$package" --arg name "$required" '[.[]|select(.Package==$package and .Test==$name and (.Action=="skip" or .Action=="fail"))]|length' "$RUNNER_TEMP/s13-tests.json")" = 0
+          done < scripts/ci/s13-required-tests.txt
+          ! jq -e 'select(.Action=="skip" or .Action=="fail")' "$RUNNER_TEMP/s13-tests.json" >/dev/null
+          jq -s '{new_roots:([.[]|select(.Action=="pass" and ((.Test//"")|startswith("TestOperational")) and ((.Test//"")|contains("/")|not))]|length), new_tests_including_subcases:([.[]|select(.Action=="pass" and ((.Test//"")|startswith("TestOperational")))]|length), legacy_workload_roots:([.[]|select(.Action=="pass" and (.Test!=null) and ((.Test//"")|startswith("TestOperational")|not) and ((.Test//"")|contains("/")|not))]|length)}' "$RUNNER_TEMP/s13-tests.json"
+      - name: Full Go tests and vet
+        run: |
+          set -euo pipefail
+          go test -p 1 -count=1 ./...
+          go vet -p 1 ./...
+      - name: CGO-free and Race
+        run: |
+          set -euo pipefail
+          CGO_ENABLED=0 go test -p 1 -count=1 ./internal/operationalauthorization ./internal/store ./internal/httpapi -run '^(TestOperational|TestMemorySystemUpdateMutationGrant|TestMemoryHostSelfUpdateGrantExactBindingAndResponseLossReplay|TestConsumedHostSelfUpdateGrantRejectsEveryTerminalParent|TestSystemUpdateV2LeaseReportAndMutationGrantRoundTrip|TestHostSelfUpdateHTTPPolicyAndGrantRemainExactlyBound|TestHostSelfUpdateGrantConsumeRateLimitsInvalidSoleBearer)'
+          go test -race -p 1 -count=1 ./...
+      - name: Build and Linux cross-build
+        run: |
+          set -euo pipefail
+          go build -p 1 ./cmd/...
+          for arch in amd64 arm64; do
+            mkdir -p "$RUNNER_TEMP/s13-build-$arch"
+            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -p 1 -o "$RUNNER_TEMP/s13-build-$arch/" ./cmd/...
+          done
+          git diff --exit-code -- go.mod go.sum
+          bash scripts/ci/s13-source-boundary.sh

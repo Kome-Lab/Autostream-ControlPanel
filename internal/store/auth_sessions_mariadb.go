@@ -103,8 +103,7 @@ func (s MariaDBAuthStore) RecordLoginFailure(ctx context.Context, username strin
 	if lockoutThreshold < 1 {
 		lockoutThreshold = defaultSecurityConfig.LoginLockoutThreshold
 	}
-	_, err := s.db.ExecContext(ctx, `UPDATE users SET failed_login_count = failed_login_count + 1, status = IF(failed_login_count + 1 >= ?, 'locked', status), updated_at = ? WHERE username = ?`, lockoutThreshold, time.Now().UTC(), username)
-	return err
+	return s.recordLoginFailureGuarded(ctx, username, lockoutThreshold)
 }
 
 func (s MariaDBAuthStore) GetUserAvatar(ctx context.Context, userID string) (UserAvatar, error) {

@@ -11,9 +11,10 @@ import (
 )
 
 type currentUser struct {
-	User        store.User
-	Session     store.Session
-	Permissions []string
+	User                store.User
+	Session             store.Session
+	Permissions         []string
+	OperationalRevision uint64
 }
 
 type currentUserKey struct{}
@@ -31,6 +32,13 @@ func (s *Server) requirePermission(permission string, next http.HandlerFunc) htt
 		if isUnsafeMethod(r.Method) && !security.VerifyTokenHash(r.Header.Get("X-CSRF-Token"), current.Session.CSRFTokenHash) {
 			writeJSON(w, http.StatusForbidden, map[string]string{"code": "csrf_failed"})
 			return
+		}
+		if permission != "" || operationalHandlerChecksPermission(r) {
+			var allowed bool
+			current, allowed = s.operationalCurrent(w, r, current)
+			if !allowed {
+				return
+			}
 		}
 		if current.User.Status == "pending_password_change" && !isPasswordChangeAllowedPath(r.URL.Path) {
 			writeJSON(w, http.StatusForbidden, map[string]string{"code": "password_change_required"})
@@ -58,6 +66,13 @@ func (s *Server) requireAnyPermission(permissions []string, next http.HandlerFun
 		if isUnsafeMethod(r.Method) && !security.VerifyTokenHash(r.Header.Get("X-CSRF-Token"), current.Session.CSRFTokenHash) {
 			writeJSON(w, http.StatusForbidden, map[string]string{"code": "csrf_failed"})
 			return
+		}
+		if len(permissions) > 0 {
+			var allowed bool
+			current, allowed = s.operationalCurrent(w, r, current)
+			if !allowed {
+				return
+			}
 		}
 		if current.User.Status == "pending_password_change" && !isPasswordChangeAllowedPath(r.URL.Path) {
 			writeJSON(w, http.StatusForbidden, map[string]string{"code": "password_change_required"})
