@@ -199,7 +199,7 @@ func operationalLastAdminWaitBlocked(t *testing.T, db *sql.DB, first, second int
 		}
 		select {
 		case <-ctx.Done():
-			t.Fatal("both requests did not reach a database row-lock wait")
+			t.Fatalf("both requests did not reach a database row-lock wait; observed=%d", blocked)
 		case <-tick.C:
 		}
 	}
@@ -213,12 +213,28 @@ func TestOperationalLastAdminSQLConcurrentRemoval(t *testing.T) {
 	if first.connection == second.connection {
 		t.Fatal("fixture reused a physical database connection")
 	}
+	for _, e := range []operationalLastAdminEndpoint{first, second} {
+		res := operationalRequest(t, e.server, e.cookie, e.csrf, "GET", "/users/la-admin-a", "")
+		if res.Code != 200 {
+			t.Fatalf("fixture HTTP read: %d %s", res.Code, res.Body.String())
+		}
+	}
 	barrier := operationalLastAdminBarrier(t, db, "la-admin-a", "la-admin-b")
 	type result struct {
 		status int
 		body   string
 	}
 	done := make(chan result, 2)
+	defer func() {
+		for {
+			select {
+			case r := <-done:
+				t.Logf("request completed before controlled release: HTTP=%d code=%s", r.status, r.body)
+			default:
+				return
+			}
+		}
+	}()
 	for i, endpoint := range []operationalLastAdminEndpoint{first, second} {
 		target := fmt.Sprintf("la-admin-%c", 'a'+i)
 		go func(e operationalLastAdminEndpoint, target string) {
