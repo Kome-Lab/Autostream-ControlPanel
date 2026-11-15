@@ -171,3 +171,31 @@ func TestB2IdentityPrivateRequestLifetime(t *testing.T) {
 		t.Fatal("expired request exposed its proof references")
 	}
 }
+
+func TestB2IdentityRetainsHumanReadPreparation(t *testing.T) {
+	intent := Intent{Mode: Read, Purpose: "CURRENT_READ", Operation: "identity.prepare", OperationContent: "lock-order-only", Scope: Scope{Type: "RESOURCE", ID: SyntheticReference("human-1")}, Subject: "product"}
+	auth := Authorization{Actor: "human-1", PrincipalKind: "HUMAN", Intent: intent}
+	if validateAuthorization(auth, intent) != nil {
+		t.Fatal("accepted B1 Human read preparation changed")
+	}
+	call := Call{Operation: "identity.prepare", Purpose: "CURRENT_READ", Actor: "human-1", Target: "human-1"}
+	if !identityGateCallValid(context.Background(), &Gate{}, call) {
+		t.Fatal("accepted B1 read preparation could not acquire its prefix")
+	}
+	for _, kind := range []string{"PREAUTH", "SYSTEM", "WORKLOAD"} {
+		auth.PrincipalKind = kind
+		if validateAuthorization(auth, intent) == nil {
+			t.Fatal("non-Human acquired the legacy Human preparation")
+		}
+	}
+	auth.PrincipalKind = "HUMAN"
+	intent.Mode, intent.Purpose = Write, "IDENTITY_CHANGE"
+	auth.Intent = intent
+	if validateAuthorization(auth, intent) == nil {
+		t.Fatal("read preparation became an Identity Writer bypass")
+	}
+	call.Purpose = "IDENTITY_CHANGE"
+	if identityGateCallValid(context.Background(), &Gate{}, call) {
+		t.Fatal("product write reused read preparation")
+	}
+}

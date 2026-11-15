@@ -93,7 +93,7 @@
     "internal/lifecyclefoundation/types.go": [
       {
         "old": "}\n\nfunc validateAuthorization(a Authorization, i Intent) error {\n\tif !validID(a.Actor) || a.PrincipalKind != \"HUMAN\" || a.Intent != i {\n\t\treturn ErrHeld\n\t}\n\tif a.Approval != nil && (!validID(a.Approval.Origin) || !validID(a.Approval.ID) ||\n",
-        "new": "}\n\nfunc validateAuthorization(a Authorization, i Intent) error {\n\tif !validID(a.Actor) || a.Intent != i {\n\t\treturn ErrHeld\n\t}\n\tif strings.HasPrefix(i.Operation, \"identity.\") || a.Identity != nil {\n\t\treturn validateIdentityAuthorization(a, i)\n\t}\n\tif a.PrincipalKind != \"HUMAN\" {\n\t\treturn ErrHeld\n\t}\n\tif a.Approval != nil && (!validID(a.Approval.Origin) || !validID(a.Approval.ID) ||\n"
+        "new": "}\n\nfunc validateAuthorization(a Authorization, i Intent) error {\n\tif !validID(a.Actor) || a.Intent != i {\n\t\treturn ErrHeld\n\t}\n\tif a.Identity == nil && a.Approval == nil && a.PrincipalKind == \"HUMAN\" && identityPreparationIntent(i, a.Actor) {\n\t\treturn nil\n\t}\n\tif strings.HasPrefix(i.Operation, \"identity.\") || a.Identity != nil {\n\t\treturn validateIdentityAuthorization(a, i)\n\t}\n\tif a.PrincipalKind != \"HUMAN\" {\n\t\treturn ErrHeld\n\t}\n\tif a.Approval != nil && (!validID(a.Approval.Origin) || !validID(a.Approval.ID) ||\n"
       },
       {
         "old": "\tPrincipalKind string\n\tIntent        Intent\n\tApproval      *Approval\n}\n\n// Authorizer is a trusted composition dependency, not an HTTP DTO decoder.\n",

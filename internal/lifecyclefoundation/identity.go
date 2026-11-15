@@ -131,6 +131,13 @@ func identityClassCode(class IdentityClass) string {
 	return ""
 }
 
+// The accepted B1 preparation probes only its Human actor's lock prefix. It is
+// a pure read admission, never an Identity Writer or non-Human permission.
+func identityPreparationIntent(intent Intent, actor string) bool {
+	return intent.Operation == "identity.prepare" && intent.Purpose == "CURRENT_READ" && intent.Mode == Read &&
+		intent.Subject == "product" && intent.Scope == (Scope{Type: "RESOURCE", ID: SyntheticReference(actor)})
+}
+
 func (b IdentityBinding) validate(intent Intent) error {
 	rule, ok := identityRules[intent.Operation]
 	class := identityClassCode(b.Class)
@@ -264,6 +271,10 @@ func (g *Gate) IdentityBinding(ctx context.Context) (IdentityBinding, error) {
 // Service contract remains backward compatible with its accepted fixtures.
 func identityGateCallValid(ctx context.Context, g *Gate, call Call) bool {
 	r, _ := ctx.Value(identityRequestKey{}).(*identityRequest)
+	if call.Operation == "identity.prepare" && call.Purpose == "CURRENT_READ" && r == nil && validID(call.Actor) {
+		target, ok := call.Target.(string)
+		return ok && target == call.Actor
+	}
 	identity := strings.HasPrefix(call.Operation, "identity.") || call.Purpose == "IDENTITY_CHANGE"
 	if !identity {
 		return r == nil

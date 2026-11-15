@@ -266,6 +266,9 @@ func validateAuthorization(a Authorization, i Intent) error {
 	if !validID(a.Actor) || a.Intent != i {
 		return ErrHeld
 	}
+	if a.Identity == nil && a.Approval == nil && a.PrincipalKind == "HUMAN" && identityPreparationIntent(i, a.Actor) {
+		return nil
+	}
 	if strings.HasPrefix(i.Operation, "identity.") || a.Identity != nil {
 		return validateIdentityAuthorization(a, i)
 	}
