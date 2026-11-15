@@ -185,7 +185,7 @@ func (s *Server) writeCoverLifecycleOutcome(w http.ResponseWriter, r *http.Reque
 	target := binding.Original.Effect.Target
 	local := lifecycle.BoundaryAddress{Kind: lifecycle.LocalPersistence, OwnerID: target.OwnerID, Resource: target, SubBoundary: lifecycle.LocalDBCommit}
 	var backend lifecycle.BoundaryAddress
-	backend, _ = coverBackendBoundary(binding, expected.StreamID, encoder.ID)
+	backend, _ = coverBackendBoundary(binding, expected.StreamID, encoder.ServiceID)
 	if backend.OwnerID == "" {
 		return
 	}

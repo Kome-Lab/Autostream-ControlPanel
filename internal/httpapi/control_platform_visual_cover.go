@@ -398,7 +398,7 @@ func (s *Server) getVideoCoverState(w http.ResponseWriter, r *http.Request) {
 			if lookupErr == nil && found && reportedBool(encoder, servicecall.CapabilityLiveVideoCoverV1) {
 				if wantsLifecycleOutcome(r) {
 					binding, bound := s.coverLifecycleBinding(r.Context(), state)
-					_, backendBound := coverBackendBoundary(binding, state.StreamID, encoder.ID)
+					_, backendBound := coverBackendBoundary(binding, state.StreamID, encoder.ServiceID)
 					if !bound || !backendBound {
 						w.Header().Set(lifecycleResultHeader, "NEEDS_EVIDENCE")
 						writeJSON(w, http.StatusConflict, map[string]string{"code": "lifecycle_outcome_binding_unavailable"})
