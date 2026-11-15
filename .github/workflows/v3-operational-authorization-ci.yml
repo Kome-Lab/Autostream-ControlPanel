@@ -41,6 +41,8 @@ jobs:
         with:
           go-version: '1.26.5'
           cache: true
+      - name: S12-B0 required Lifecycle Foundation
+        run: bash scripts/ci/b0-checks.sh
       - name: Protected source boundaries and formatting
         run: |
           set -euo pipefail

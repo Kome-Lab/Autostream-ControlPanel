@@ -10,6 +10,8 @@ frozen_auth_sha="$(git show 93181192d8f036bae40b490957489c9ee8290769:internal/st
 test "$frozen_auth_sha" = "9f38933fccd635d515c65638e0892df013dd598a790c31f8b0ef2bfca1c7e3c1"
 while IFS= read -r file; do
   case "$file" in
+    docs/lifecycle-foundation/CONNECTION_INVENTORY.md|docs/lifecycle-foundation/S12_B0_IMPLEMENTATION.md|internal/lifecyclefoundation/foundation_test.go|internal/lifecyclefoundation/migration.go|internal/lifecyclefoundation/migration_test.go|internal/lifecyclefoundation/migrations/001_lifecycle.sql|internal/lifecyclefoundation/process_test.go|internal/lifecyclefoundation/service.go|internal/lifecyclefoundation/store.go|internal/lifecyclefoundation/synthetic_test.go|internal/lifecyclefoundation/types.go|scripts/ci/b0-checks.sh|scripts/ci/b0-required-tests.txt|scripts/ci/b0-source-boundary.py) ;;
+    .github/workflows/v3-authorization-ci.yml) python3 scripts/ci/b0-source-boundary.py ;;
     internal/operationalauthorization/*|internal/store/operational*.go|internal/store/memory_auth.go|internal/httpapi/server_operational*.go|internal/httpapi/server.go|internal/httpapi/server_request_auth.go|docs/operational-authorization/*|scripts/ci/s13-*|.github/workflows/v3-operational-authorization-ci.yml) ;;
     internal/store/admin.go|internal/store/auth_sessions_mariadb.go|internal/database/migrations/093_user_admin_guard.sql)
       go test -p 1 -count=1 ./internal/operationalauthorization -run '^TestOperationalLastAdminSourceBoundary$'
@@ -20,5 +22,6 @@ while IFS= read -r file; do
     *) printf 'S13 protected source changed: %s\n' "$file" >&2; exit 1 ;;
   esac
 done < <(git diff --name-only "$baseline" HEAD)
-git diff --exit-code "$baseline" HEAD -- go.mod go.sum internal/database/migrations internal/v3authorization internal/httpapi/server_v3_authorization.go internal/httpapi/server_v3_authorization_management.go .github/workflows/v3-authorization-ci.yml ':(exclude)internal/database/migrations/093_user_admin_guard.sql'
+git diff --exit-code "$baseline" HEAD -- go.mod go.sum internal/database/migrations internal/v3authorization internal/httpapi/server_v3_authorization.go internal/httpapi/server_v3_authorization_management.go ':(exclude)internal/database/migrations/093_user_admin_guard.sql'
+python3 scripts/ci/b0-source-boundary.py
 printf 'S13 protected source boundary: PASS\n'
