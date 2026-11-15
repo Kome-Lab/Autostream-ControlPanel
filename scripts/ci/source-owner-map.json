@@ -4507,7 +4507,7 @@
       },
       {
         "path": "internal/store/auth.go",
-        "sha256": "0439e3012b9509e92191c7513b09ac6c3ceb1852c47fb5cd7b891510f6590267",
+        "sha256": "2fd04fa2e6ca5e72a313712c44c1a33c74d348f21b1a4225f8880eafce58a945",
         "symbols": [
           "AuditEvent",
           "AuditFilter",
@@ -4553,7 +4553,7 @@
       },
       {
         "path": "internal/store/auth_email_change_mariadb.go",
-        "sha256": "f39daf15aacdb159872f541d237bcd7eda845178a7e139f47e1bf22b7ef38b4e",
+        "sha256": "14b4a32877b8575c42f7eda033f0a96cfc1f2da8ca73ad1cdae2945e6c82f363",
         "symbols": [
           "MariaDBAuthStore.ConsumeEmailChangeChallenge",
           "MariaDBAuthStore.CreateEmailChangeChallenge",
@@ -4564,7 +4564,7 @@
       },
       {
         "path": "internal/store/auth_mfa_mariadb.go",
-        "sha256": "e177b3e409bc1216cac4cdf1a793fbcd9ad4d063b5095e4bfbb200288f3dcd94",
+        "sha256": "ead522b3ae44be7f8c5953eeaf0894f35a9e5210ffbe5d59027e1bb0d7f6a4d3",
         "symbols": [
           "MariaDBAuthStore.ConfirmTOTPEnrollment",
           "MariaDBAuthStore.ConsumeRecoveryCode",
@@ -4580,7 +4580,7 @@
       },
       {
         "path": "internal/store/auth_passkeys_mariadb.go",
-        "sha256": "86efdab32c84384230f00d25cefb498ef8d19267a669f09fadc1a42080e72eaa",
+        "sha256": "28cef19ab132f118249c5316bbf41b084db5e84ccecc60bd2fd56ea51c73571c",
         "symbols": [
           "MariaDBAuthStore.ConsumePasskeyCeremonySession",
           "MariaDBAuthStore.CreatePasskeyCeremonySession",
@@ -4600,7 +4600,7 @@
       },
       {
         "path": "internal/store/auth_sessions_mariadb.go",
-        "sha256": "9f38933fccd635d515c65638e0892df013dd598a790c31f8b0ef2bfca1c7e3c1",
+        "sha256": "e1fcea8325522ac326e0b0aa8a2812d3f8512dd5fb870d2f2b0bd2b7af4dca63",
         "symbols": [
           "MariaDBAuthStore.CreateSession",
           "MariaDBAuthStore.DeleteSession",
@@ -4619,7 +4619,7 @@
       },
       {
         "path": "internal/store/auth_user_credentials_mariadb.go",
-        "sha256": "fdefd60d49697c044f80547196d88362e4b68a1421f6dc9fa68386b958811ff7",
+        "sha256": "c3f5c68a89859186913780fa7334bc2a362c75ced8639a1da4720990089f1ba3",
         "symbols": [
           "MariaDBAuthStore.ChangePassword",
           "MariaDBAuthStore.CountUsers",
@@ -5463,7 +5463,7 @@
       },
       {
         "path": "web/src/features/application/updater-bootstrap-status-sections.tsx",
-        "sha256": "472249ef6915acbc064cf42217b0a79aadc72b67077648e67298197592a6b711",
+        "sha256": "325c9ba04cfa7acaf01c6f5f95daf68150648fb27ad598d893d56eb4526e555b",
         "symbols": [
           "BootstrapFeedback",
           "BootstrapHostResults",
@@ -6077,7 +6077,7 @@
       },
       {
         "path": "web/src/features/nodes/node-registration-view.tsx",
-        "sha256": "4ce5e93e6324f606aa80882e2ebdc37f7c794b990d1cbde477bf28ca57c66f58",
+        "sha256": "a516c46a619a76e986739773de2ea8a6a5d6630e2f00e07133ceb87d8f041eeb",
         "symbols": [
           "LegacyNodeRegistrationView",
           "NodeRegistrationView",
@@ -6148,7 +6148,7 @@
       },
       {
         "path": "web/src/features/application/updater-settings-form.tsx",
-        "sha256": "f23c72929ed79a5d23c433d63ab343ca70d06c81b1ead6fd2e0d746c7cd8a547",
+        "sha256": "fff4a01cc310fccd2fe66cec5f87271f82d931905e158a389355f05fad43b6db",
         "symbols": [
           "OwnershipStateItem",
           "UpdaterSettingsForm",
@@ -6180,7 +6180,7 @@
       },
       {
         "path": "web/src/components/layout/detail-section.tsx",
-        "sha256": "5490bd9851a96f2d8fcfaec392f3a584dd5f8b10351407b8e1bda94e36b66dc0",
+        "sha256": "cd839d0093e4513131b5d7b6dd7656ce217d61e6a86e936232540bae80305bef",
         "symbols": [
           "DetailSection",
           "SectionNavigation"
@@ -6332,7 +6332,7 @@
       },
       {
         "path": "web/src/features/application/updater-settings-form.tsx",
-        "sha256": "f23c72929ed79a5d23c433d63ab343ca70d06c81b1ead6fd2e0d746c7cd8a547",
+        "sha256": "fff4a01cc310fccd2fe66cec5f87271f82d931905e158a389355f05fad43b6db",
         "symbols": [
           "OwnershipStateItem",
           "UpdaterSettingsForm",
