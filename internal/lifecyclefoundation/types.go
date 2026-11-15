@@ -14,9 +14,9 @@ import (
 )
 
 var (
-	ErrHeld = errors.New("lifecycle held")
+	ErrHeld     = errors.New("lifecycle held")
 	ErrConflict = errors.New("lifecycle conflict")
-	ErrUnknown = errors.New("lifecycle outcome unknown")
+	ErrUnknown  = errors.New("lifecycle outcome unknown")
 )
 
 const SyntheticProfile = "b0-synthetic-v1"
@@ -24,71 +24,71 @@ const SyntheticProfile = "b0-synthetic-v1"
 type Phase string
 
 const (
-	Reserved Phase = "RESERVED"
-	CPCommitted Phase = "CP_COMMITTED"
-	Finalized Phase = "FINALIZED"
+	Reserved     Phase = "RESERVED"
+	CPCommitted  Phase = "CP_COMMITTED"
+	Finalized    Phase = "FINALIZED"
 	ReceiptSaved Phase = "RECEIPT_SAVED"
-	Completed Phase = "COMPLETED"
+	Completed    Phase = "COMPLETED"
 )
 
 type Mode string
 
 const (
-	Read Mode = "READ"
+	Read  Mode = "READ"
 	Write Mode = "WRITE"
 )
 
 type Binding struct {
-	Deployment string
-	Ledger string
-	Store string
-	Incarnation string
-	Protocol string
-	Coverage string
+	Deployment    string
+	Ledger        string
+	Store         string
+	Incarnation   string
+	Protocol      string
+	Coverage      string
 	RootReference string
 }
 
 type Checkpoint struct {
 	OperationalRevision uint64
-	AuthorityEpoch uint64
-	IdentityRevision uint64
-	Count uint64
-	Content string
-	HistoryHead string
+	AuthorityEpoch      uint64
+	IdentityRevision    uint64
+	Count               uint64
+	Content             string
+	HistoryHead         string
 }
 
 type Scope struct {
 	Type string
-	ID string
+	ID   string
 }
 
 type Intent struct {
-	Mode Mode
-	Purpose string
-	Operation string
+	Mode             Mode
+	Purpose          string
+	Operation        string
 	OperationContent string
-	Scope Scope
-	Subject string
+	Scope            Scope
+	Subject          string
 }
 
 type Request struct {
-	ID string
+	ID     string
 	Intent Intent
 }
 
 type Approval struct {
-	Origin string
-	ID string
+	Origin   string
+	ID       string
 	Manifest string
-	Purpose string
+	Purpose  string
 }
 
 type Authorization struct {
 	// Supplied only by the explicitly configured trusted local authorizer.
-	Actor string
+	Actor         string
 	PrincipalKind string
-	Intent Intent
-	Approval *Approval
+	Intent        Intent
+	Approval      *Approval
 }
 
 // Authorizer is a trusted composition dependency, not an HTTP DTO decoder.
@@ -99,33 +99,33 @@ type Authorizer interface {
 }
 
 type Frame struct {
-	Binding Binding
-	Sequence uint64
+	Binding    Binding
+	Sequence   uint64
 	Checkpoint Checkpoint
-	Attempt string
-	Phase Phase
+	Attempt    string
+	Phase      Phase
 }
 
 type Reservation struct {
-	Binding Binding
-	Before Frame
-	Request Request
+	Binding       Binding
+	Before        Frame
+	Request       Request
 	Authorization Authorization
-	Sequence uint64
+	Sequence      uint64
 }
 
 type CommitRecord struct {
 	Reservation Reservation
-	After Checkpoint
+	After       Checkpoint
 }
 
 type Receipt struct {
-	Commit CommitRecord
+	Commit         CommitRecord
 	LedgerSequence uint64
 }
 
 type receiptConfirmation struct {
-	db *sql.DB
+	db   *sql.DB
 	body string
 }
 
@@ -133,7 +133,7 @@ type receiptConfirmation struct {
 // Encoding a Finalize receipt cannot manufacture this private confirmation.
 type SavedReceipt struct {
 	Receipt Receipt
-	proof *receiptConfirmation
+	proof   *receiptConfirmation
 }
 
 func (r SavedReceipt) Validate() error {
@@ -145,21 +145,21 @@ func (r SavedReceipt) Validate() error {
 
 type Head struct {
 	Frame Frame
-	Slot *Reservation
+	Slot  *Reservation
 	Phase Phase
 }
 
 type Observation struct {
-	Binding Binding
+	Binding   Binding
 	Challenge string
-	Head Head
+	Head      Head
 }
 
 type Attempt struct {
 	Reservation Reservation
-	Phase Phase
-	Commit *CommitRecord
-	Receipt *Receipt
+	Phase       Phase
+	Commit      *CommitRecord
+	Receipt     *Receipt
 }
 
 type Port interface {
@@ -172,22 +172,22 @@ type Port interface {
 
 // RecoveryContract defines purposes only. B0 provides no Abort/Reconcile implementation.
 type RecoveryContract struct {
-	Purpose string
-	Attempt string
-	WriterFence string
+	Purpose                      string
+	Attempt                      string
+	WriterFence                  string
 	IndependentApprovalReference string
 }
 
 type Result struct {
 	Outcome string
 	Attempt string
-	Phase Phase
+	Phase   Phase
 }
 
 type Inspection struct {
-	Ledger Attempt
-	CP *CommitRecord
-	Receipt *Receipt
+	Ledger      Attempt
+	CP          *CommitRecord
+	Receipt     *Receipt
 	Quarantined bool
 }
 

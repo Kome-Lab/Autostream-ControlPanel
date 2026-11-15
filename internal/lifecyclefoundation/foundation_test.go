@@ -103,7 +103,7 @@ func reserveFixture(t *testing.T, f *fixture, req Request) Reservation {
 	must(t, err)
 	auth, err := f.auth.Resolve(context.Background(), req.Intent)
 	must(t, err)
-	r, err := f.ledger.Reserve(context.Background(), Reservation{Binding: f.binding, Before: frame, Request: req, Authorization: auth, Sequence: frame.Sequence+1})
+	r, err := f.ledger.Reserve(context.Background(), Reservation{Binding: f.binding, Before: frame, Request: req, Authorization: auth, Sequence: frame.Sequence + 1})
 	must(t, err)
 	return r
 }

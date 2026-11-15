@@ -16,14 +16,14 @@ import (
 type processConfig struct {
 	Binding Binding
 	Request Request
-	Mode string
-	Stage Phase
+	Mode    string
+	Stage   Phase
 }
 
 type childProcess struct {
-	cmd *exec.Cmd
+	cmd    *exec.Cmd
 	reader *bufio.Reader
-	input io.WriteCloser
+	input  io.WriteCloser
 	cancel context.CancelFunc
 }
 

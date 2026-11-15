@@ -9,9 +9,9 @@ import (
 )
 
 type SQLStore struct {
-	db *sql.DB
+	db      *sql.DB
 	binding Binding
-	commit func(*sql.Tx) error
+	commit  func(*sql.Tx) error
 }
 
 // NewSQLStore performs no migration, enrollment, credential lookup or network I/O.
@@ -25,16 +25,16 @@ func NewSQLStore(db *sql.DB, binding Binding) (*SQLStore, error) {
 type participationKey struct{}
 
 type participation struct {
-	mu sync.Mutex
-	store *SQLStore
+	mu      sync.Mutex
+	store   *SQLStore
 	request Request
-	active bool
+	active  bool
 }
 
 // Transaction has no Commit/Rollback method. Its context is private, exact-request
 // bound and invalid as soon as the owning callback returns.
 type Transaction struct {
-	tx *sql.Tx
+	tx    *sql.Tx
 	proof *participation
 }
 

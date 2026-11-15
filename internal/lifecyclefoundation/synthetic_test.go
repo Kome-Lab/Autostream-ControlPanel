@@ -16,9 +16,9 @@ import (
 // This provider exists only in _test.go, on disposable SQL. It is not a product
 // adapter, independent trust origin, physical storage qualification or Root.
 type syntheticLedger struct {
-	db *sql.DB
-	fault Phase
-	after bool
+	db        *sql.DB
+	fault     Phase
+	after     bool
 	onReserve func()
 }
 
@@ -73,19 +73,19 @@ func fixtureBinding() Binding {
 }
 
 type fixture struct {
-	db *sql.DB
-	cp *SQLStore
-	ledger *syntheticLedger
-	auth *syntheticAuthorizer
+	db      *sql.DB
+	cp      *SQLStore
+	ledger  *syntheticLedger
+	auth    *syntheticAuthorizer
 	service *Service
 	binding Binding
-	before Checkpoint
+	before  Checkpoint
 }
 
 type syntheticAuthorizer struct {
-	db *sql.DB
-	deployment string
-	approval *Approval
+	db           *sql.DB
+	deployment   string
+	approval     *Approval
 	intentChange func(*Authorization)
 }
 
@@ -132,7 +132,10 @@ func newFixture(t *testing.T) *fixture {
 	binding := fixtureBinding()
 	before := initialCheckpoint()
 	frame := Frame{Binding: binding, Checkpoint: before, Phase: Completed}
-	for _, entry := range []struct{ query string; args []any }{
+	for _, entry := range []struct {
+		query string
+		args  []any
+	}{
 		{"INSERT INTO v3_cp_lifecycle_heads VALUES(?,?)", []any{binding.Deployment, encode(frame)}},
 		{"INSERT INTO b0_test_ledger_heads VALUES(?,?)", []any{binding.Deployment, encode(Head{Frame: frame, Phase: Completed})}},
 		{"INSERT INTO b0_test_effects VALUES(?,0)", []any{binding.Deployment}},

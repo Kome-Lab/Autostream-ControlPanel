@@ -9,8 +9,8 @@ import (
 )
 
 type Service struct {
-	store *SQLStore
-	ledger Port
+	store      *SQLStore
+	ledger     Port
 	authorizer Authorizer
 }
 

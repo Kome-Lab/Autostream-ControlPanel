@@ -46,7 +46,7 @@ func TestLifecycleMigrationReplayAndTamper(t *testing.T) {
 func TestLifecycleMigrationPartialFailure(t *testing.T) {
 	db := disposableDB(t)
 	drop := func() {
-		for i := len(tables)-1; i >= 0; i-- {
+		for i := len(tables) - 1; i >= 0; i-- {
 			_, err := db.Exec("DROP TABLE IF EXISTS " + tables[i])
 			must(t, err)
 		}
