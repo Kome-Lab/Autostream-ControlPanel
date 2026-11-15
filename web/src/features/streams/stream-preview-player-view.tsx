@@ -101,6 +101,7 @@ export function StreamPreviewPlayerView({ token }: { token: string }) {
       setMessage(text);
     };
     const play = () => {
+      if (cancelled) return;
       void video.play().catch(() => {
         // Autoplay can be denied even though the stream is healthy. The video
         // remains muted and the controls provide an explicit user gesture.
@@ -125,21 +126,23 @@ export function StreamPreviewPlayerView({ token }: { token: string }) {
       return;
     }
     const onPlaying = () => {
+      if (cancelled) return;
       setIsPlaying(true);
       setState("playing");
       setMessage("配信映像を再生中です。");
     };
-    const onPause = () => setIsPlaying(false);
-    const onVolumeChange = () => setIsMuted(video.muted);
+    const onPause = () => { if (!cancelled) setIsPlaying(false); };
+    const onVolumeChange = () => { if (!cancelled) setIsMuted(video.muted); };
     const onError = () => fail("映像のデコードに失敗しました。Encoderの出力を確認してください。");
+    const onSeekWindowChange = () => { if (!cancelled) refreshSeekWindow(); };
     video.addEventListener("playing", onPlaying);
     video.addEventListener("pause", onPause);
     video.addEventListener("volumechange", onVolumeChange);
     video.addEventListener("error", onError);
-    video.addEventListener("loadedmetadata", refreshSeekWindow);
-    video.addEventListener("durationchange", refreshSeekWindow);
-    video.addEventListener("progress", refreshSeekWindow);
-    video.addEventListener("timeupdate", refreshSeekWindow);
+    video.addEventListener("loadedmetadata", onSeekWindowChange);
+    video.addEventListener("durationchange", onSeekWindowChange);
+    video.addEventListener("progress", onSeekWindowChange);
+    video.addEventListener("timeupdate", onSeekWindowChange);
     if (Hls.isSupported()) {
       hls = new Hls({
         enableWorker: true,
@@ -149,9 +152,10 @@ export function StreamPreviewPlayerView({ token }: { token: string }) {
         fragLoadingMaxRetry: 3,
         fragLoadingRetryDelay: 1_000,
       });
-      hls.on(Hls.Events.MEDIA_ATTACHED, () => hls?.loadSource(playlistURL));
+      hls.on(Hls.Events.MEDIA_ATTACHED, () => { if (!cancelled) hls?.loadSource(playlistURL); });
       hls.on(Hls.Events.MANIFEST_PARSED, play);
       hls.on(Hls.Events.ERROR, (_event, data) => {
+        if (cancelled) return;
         if (data.fatal && data.type === ErrorTypes.NETWORK_ERROR) retryLoad();
         else if (data.fatal && data.type === ErrorTypes.MEDIA_ERROR) hls?.recoverMediaError();
         else if (data.fatal) fail("HLSプレイリストを再生できませんでした。");
@@ -168,10 +172,10 @@ export function StreamPreviewPlayerView({ token }: { token: string }) {
       video.removeEventListener("pause", onPause);
       video.removeEventListener("volumechange", onVolumeChange);
       video.removeEventListener("error", onError);
-      video.removeEventListener("loadedmetadata", refreshSeekWindow);
-      video.removeEventListener("durationchange", refreshSeekWindow);
-      video.removeEventListener("progress", refreshSeekWindow);
-      video.removeEventListener("timeupdate", refreshSeekWindow);
+      video.removeEventListener("loadedmetadata", onSeekWindowChange);
+      video.removeEventListener("durationchange", onSeekWindowChange);
+      video.removeEventListener("progress", onSeekWindowChange);
+      video.removeEventListener("timeupdate", onSeekWindowChange);
       hls?.destroy();
       video.removeAttribute("src");
       video.load();

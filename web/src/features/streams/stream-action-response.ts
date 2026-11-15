@@ -12,7 +12,18 @@ export function isConfirmedStreamStopOutcome(value: unknown, intent: StreamActio
   const stream = streamActionResponseStream(value, intent.stream?.id);
   return Boolean(value && typeof value === "object" && "stop_confirmed" in value && value.stop_confirmed === true
     && "source_updated_at" in value && value.source_updated_at === intent.stream?.updated_at
-    && stream);
+    && stream?.status === "completed");
+}
+
+// The normal synchronous route returns the completed row together with its
+// service dispatch results. A bare completed/stopping row is not that response.
+// This local route acknowledgement is not a global/Provider completion proof.
+export function isStreamStopResponse(value: unknown, intent: StreamActionIntent) {
+  if (isConfirmedStreamStopOutcome(value, intent)) return true;
+  const stream = streamActionResponseStream(value, intent.stream?.id);
+  if (!stream || stream.status !== "completed" || !value || typeof value !== "object" || !("dispatch" in value) || !Array.isArray(value.dispatch) || !value.dispatch.length) return false;
+  return value.dispatch.every((row: unknown) => row && typeof row === "object"
+    && ("success" in row && row.success === true || "accepted" in row && row.accepted === true));
 }
 
 export function streamActionResponseStream(value: unknown, expectedID?: string): Stream | undefined {

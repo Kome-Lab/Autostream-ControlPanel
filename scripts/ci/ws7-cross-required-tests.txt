@@ -1,0 +1,1 @@
+WS7-OPS-008: fixed shared results reach the actual display without granting delivery or recovery

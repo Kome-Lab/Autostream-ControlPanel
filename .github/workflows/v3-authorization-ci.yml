@@ -188,3 +188,129 @@ jobs:
           path: ${{ runner.temp }}/iu-*.json
           if-no-files-found: error
           retention-days: 14
+
+  v3-ws7-ui-checks:
+    name: v3-ws7-ui-checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    permissions:
+      contents: read
+    env:
+      NEXT_TELEMETRY_DISABLED: '1'
+      GOTELEMETRY: 'off'
+      CI: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 26
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: WS7 exact roots, existing UI regressions, build and browser fixture
+        run: bash scripts/ci/ws7-ui-checks.sh
+      - name: Preserve WS7 root execution evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ws7-ui-events-${{ github.sha }}
+          path: ${{ runner.temp }}/ws7-ui.tap
+          if-no-files-found: error
+          retention-days: 14
+
+  v3-ws7-producer-consumer-checks:
+    name: v3-ws7-producer-consumer-checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      GOTOOLCHAIN: local
+      GOWORK: 'off'
+      GOFLAGS: '-mod=readonly'
+      GOTELEMETRY: 'off'
+      GOMAXPROCS: '2'
+      NEXT_TELEMETRY_DISABLED: '1'
+      CI: '1'
+      WS7_OBSERVABILITY_SHA: '14da2031a46c755c9201f94ac57a7a2a99f8d0b9'
+      WS7_UPDATER_SHA: '5741d48d94f6fe7c6727f637ea32667860882dfd'
+      WS7_ENCODER_SHA: '7c7ec14d2b06b866ebd5b006331f55ba01da8dfe'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version: '1.26.5'
+          check-latest: false
+          cache: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 26
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Fixed notification Caller source, disposable read-only copy
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: Kome-Lab/Autostream-Observability
+          ref: ${{ env.WS7_OBSERVABILITY_SHA }}
+          path: .ws7-observability
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Fixed requirements evaluator source, disposable read-only copy
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: Kome-Lab/Autostream-Updater
+          ref: ${{ env.WS7_UPDATER_SHA }}
+          path: .ws7-updater
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Fixed Media source, isolated fake queue and process only
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: Kome-Lab/Autostream-Encoder-Recorder
+          ref: ${{ env.WS7_ENCODER_SHA }}
+          path: .ws7-encoder
+          persist-credentials: false
+      - name: Actual product outputs to the same UI consumer with independent oracles
+        run: |
+          set -euo pipefail
+          python3 scripts/ci/iu-source-boundary.py
+          test "$(git -C .ws7-observability rev-parse HEAD)" = "$WS7_OBSERVABILITY_SHA"
+          test "$(git -C .ws7-updater rev-parse HEAD)" = "$WS7_UPDATER_SHA"
+          test "$(git -C .ws7-encoder rev-parse HEAD)" = "$WS7_ENCODER_SHA"
+          export WS5_CROSS_RESULT_DIR="$RUNNER_TEMP/ws7-notification-results"
+          mkdir "$WS5_CROSS_RESULT_DIR"
+          (cd .ws7-observability && python3 scripts/ci/verify_ws5_exact_delta.py)
+          (cd .ws7-observability && go test -json ./internal/httpapi -run '^TestWS5NotificationHTTPBoundaries$' -count=1) | tee "$RUNNER_TEMP/ws7-ws5-producer.json"
+          python3 scripts/ci/iu-json-events.py scripts/ci/ws7-ws5-producer-required-tests.txt "$RUNNER_TEMP/ws7-ws5-producer.json"
+          (cd .ws7-updater && python3 scripts/ci/iu-source-boundary.py && CGO_ENABLED=0 go build -trimpath -o "$RUNNER_TEMP/ws7-release-evaluator" ./tools/check-v3-release-requirements)
+          jq '.base' .ws7-updater/internal/releasequalification/testdata/conformance.json > "$RUNNER_TEMP/ws7-release-descriptor.json"
+          "$RUNNER_TEMP/ws7-release-evaluator" --max-input-bytes 2097152 --max-depth 64 < "$RUNNER_TEMP/ws7-release-descriptor.json" > "$RUNNER_TEMP/ws7-release-result.json"
+          (cd .ws7-encoder && CGO_ENABLED=0 go test -tags=iu_crossrepo -c -o "$RUNNER_TEMP/ws7-media-fixture" ./internal/httpapi)
+          mkdir "$RUNNER_TEMP/ws7-media-results"
+          node scripts/ci/ws7-media-producer.mjs "$RUNNER_TEMP/ws7-media-fixture" "$GITHUB_WORKSPACE/.ws7-encoder" "$RUNNER_TEMP/ws7-media-results"
+          export WS7_WS5_RESULT_DIR="$WS5_CROSS_RESULT_DIR"
+          export WS7_WS6_RESULT_FILE="$RUNNER_TEMP/ws7-release-result.json"
+          export WS7_WS3_RESULT_FILE="$RUNNER_TEMP/ws7-media-results/ws7-media-ingest.json"
+          test -s "$WS7_WS6_RESULT_FILE" && test -s "$WS7_WS3_RESULT_FILE"
+          for name in provider-accepted-local-known provider-ack-unknown provider-accepted-local-unknown; do test -s "$WS7_WS5_RESULT_DIR/$name.json"; done
+          (cd web && npm ci --ignore-scripts --no-audit --no-fund && node --no-warnings --test --test-reporter=tap tests/v3-workstream-results.test.mts) | tee "$RUNNER_TEMP/ws7-cross.tap"
+          node scripts/ci/ws7-ui-events.mjs scripts/ci/ws7-cross-required-tests.txt "$RUNNER_TEMP/ws7-cross.tap"
+          git -C .ws7-observability diff --exit-code HEAD --
+          git -C .ws7-updater diff --exit-code HEAD --
+          git -C .ws7-encoder diff --exit-code HEAD --
+          python3 scripts/ci/iu-source-boundary.py
+      - name: Preserve producer and consumer root evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ws7-cross-events-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/ws7-ws5-producer.json
+            ${{ runner.temp }}/ws7-cross.tap
+          if-no-files-found: error
+          retention-days: 14

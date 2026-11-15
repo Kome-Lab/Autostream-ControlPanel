@@ -11,7 +11,8 @@ import { adaptAPIError } from "@/lib/foundation/api-errors/adapter";
 import type { AdaptedAPIError } from "@/lib/foundation/api-errors/contracts";
 import { defaultAPIErrorRegistry, defineAPIErrorRegistry } from "@/lib/foundation/api-errors/registry";
 import { evaluateActionPermission, type PermissionSnapshot } from "@/lib/foundation/permissions/evaluator";
-import { isStreamValue, isConfirmedStreamStopOutcome } from "@/features/streams/stream-action-response";
+import { isStreamStopResponse, isConfirmedStreamStopOutcome } from "@/features/streams/stream-action-response";
+import { snapshotStreamIntent } from "@/features/streams/stream-intent-snapshot";
 import { definitiveStreamCreateRejection, streamCreateErrorRegistry } from "@/features/streams/stream-create-errors";
 import { withBoundedActionRevalidation } from "@/lib/actions/bounded-revalidation";
 import { APIError } from "@/lib/api/client";
@@ -91,6 +92,7 @@ export function createStreamActionController(dependencies: StreamActionControlle
   const active = new Map<string, ActiveOperation>();
   const generations = new Map<string, number>();
   const unresolved = new Set<string>();
+  const stopOrigins = new Map<string, StreamActionIntent>();
 
   const evaluateBase = (intent: StreamActionIntent, proven?: Readonly<{ permissions: PermissionSnapshot; state: StreamActionStateSnapshot }>): ActionEvaluation => {
     const descriptor = buildStreamActionDescriptor(intent);
@@ -130,6 +132,8 @@ export function createStreamActionController(dependencies: StreamActionControlle
   };
 
   const open = async (intent: StreamActionIntent): Promise<StreamActionOpenResult> => {
+    try { intent = snapshotStreamIntent(intent); }
+    catch { return blocked("invalid-intent"); }
     const reason = evaluationReason(evaluate(intent));
     if (reason) return blocked(reason, reason === "state-unavailable" || reason === "not-applicable" ? dependencies.getState(intent) : undefined);
     const descriptor = buildStreamActionDescriptor(intent);
@@ -179,15 +183,27 @@ export function createStreamActionController(dependencies: StreamActionControlle
       const requestValue = streamActionRequest(opened.intent);
       if (!requestValue || !current(scope, operation)) return blocked("cancelled");
       confirmation.onRevalidated?.();
+      // Observer activity alone does not invalidate the fresh local proof. An
+      // observed different target/revision or a known permission revocation does.
+      const latest = dependencies.getState(opened.intent);
+      if (latest.fingerprint && latest.fingerprint !== state.fingerprint || latest.kind === "missing" || latest.baselineChanged) return blocked("authority-changed", latest);
+      const latestPermission = dependencies.getPermissions();
+      if (latestPermission.kind !== "ready") return blocked("permission-unknown");
+      if (latestPermission.kind === "ready") {
+        const currentEvaluation = evaluateBase(opened.intent, { permissions: latestPermission, state });
+        const currentReason = evaluationReason(currentEvaluation);
+        if (currentReason) return blocked(currentReason);
+      }
       try {
+        if (opened.intent.id === "STR-05") stopOrigins.set(scope, opened.intent);
         operation.sent = true;
         const value = await dependencies.mutate(Object.freeze({ ...requestValue, signal: operation.abort.signal }));
         if (!current(scope, operation)) return blocked("cancelled");
         if (opened.intent.id === "STR-05") {
-          const stream = value && typeof value === "object" && "stream" in value ? value.stream : value;
-          if (!isStreamValue(stream) || stream.id !== opened.intent.stream?.id || stream.status !== "completed") {
+          if (!isStreamStopResponse(value, opened.intent)) {
             throw new Error("Stop result requires state reconciliation");
           }
+          stopOrigins.delete(scope);
         }
         return Object.freeze({ kind: "succeeded", value });
       } catch (error) {
@@ -205,6 +221,7 @@ export function createStreamActionController(dependencies: StreamActionControlle
               if (!current(scope, operation)) return blocked("cancelled");
               if (isConfirmedStreamStopOutcome(value, opened.intent)) {
                 unresolved.delete(scope);
+                stopOrigins.delete(scope);
                 return Object.freeze({ kind: "succeeded", value });
               }
             } catch { /* Keep the unresolved latch when the read is unavailable. */ }
@@ -262,13 +279,16 @@ export function createStreamActionController(dependencies: StreamActionControlle
     reconcileStop: async (intent) => {
       const scope = streamActionScope(intent);
       if (!scope || intent.id !== "STR-05" || !dependencies.readStopOutcome) return blocked("invalid-intent");
+      const original = stopOrigins.get(scope) ?? intent;
+      if (original.stream?.id !== intent.stream?.id || original.stream?.updated_at !== intent.stream?.updated_at) return blocked("invalid-intent");
       const operation = acquire(scope);
       if (!operation) return blocked("duplicate");
       try {
-        const value = await dependencies.readStopOutcome(intent);
+        const value = await dependencies.readStopOutcome(original);
         if (!current(scope, operation)) return blocked("cancelled");
-        if (isConfirmedStreamStopOutcome(value, intent)) {
+        if (isConfirmedStreamStopOutcome(value, original)) {
           unresolved.delete(scope);
+          stopOrigins.delete(scope);
           return Object.freeze({ kind: "succeeded", value });
         }
         return Object.freeze({ kind: "outcome_unknown", nextAction: "refresh-resource" });

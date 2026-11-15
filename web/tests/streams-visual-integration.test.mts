@@ -227,8 +227,8 @@ test("visual save sends its fixed revision, including a new legacy default at re
   for (const revision of [0, 4]) {
     const controller = createStreamVisualActionController({
       getPermission: () => ({ kind: "ready", permissions: ["streams.update"] }),
-      getState: () => ({ kind: "ready", freshness: "fresh", revision, fingerprint: `r${revision}` }),
-      mutate: async (request) => { requests.push(request); return {} as never; },
+      getState: () => ({ kind: "ready", freshness: "fresh", revision, fingerprint: `r${revision}`, streamID: "fixed-stream" }),
+      mutate: async (request) => { requests.push(request); return { stream_id: "fixed-stream", revision: revision + 1, background_mode: "default", header_title_mode: "default", discord_snapshot_revision: 0, cover_source: "none", cover_start_active: false }; },
     });
     assert.equal((await controller.issue({ header_title_mode: "default", expected_revision: 99 }, revision)).kind, "succeeded");
     assert.equal(requests.at(-1)?.expected_revision, revision);

@@ -16,6 +16,8 @@ import {
   buildVideoCoverAction,
   coverActionAvailability,
   createVideoCoverActionController,
+  isVideoCoverActionResponse,
+  isVideoCoverStateForStream,
   newVideoCoverIdempotencyKey,
   visualPresentation,
   type CoverCapabilitySnapshot,
@@ -30,15 +32,20 @@ import { apiGet, apiPut } from "@/lib/api/client";
 import { adaptAPIError } from "@/lib/foundation/api-errors/adapter";
 import type { CurrentUser, Stream, WorkerNode } from "@/types/domain";
 import { withBoundedActionRevalidation } from "@/lib/actions/bounded-revalidation";
+import { readStreamLifecycleOutcome } from "./stream-lifecycle-outcome";
+import { unavailableLifecycleOutcome } from "./lifecycle-outcome-presentation";
+import { LifecycleOutcomeView } from "./lifecycle-outcome-view";
 
 class CoverActionUnavailable extends Error {}
 type CoverAuthorityTarget = Pick<Stream, "id" | "status" | "assigned_encoder_id">;
 
-export function StreamControlPlatformPanel({ stream }: { stream: Stream }) {
-  return <StreamControlPlatformPanelContent key={stream.id} stream={stream} />;
+type OperationsResults = Readonly<{ notification?: unknown; media?: unknown; release?: unknown }>;
+
+export function StreamControlPlatformPanel({ stream, operationsResults }: { stream: Stream; operationsResults?: OperationsResults }) {
+  return <StreamControlPlatformPanelContent key={stream.id} stream={stream} operationsResults={operationsResults} />;
 }
 
-function StreamControlPlatformPanelContent({ stream }: { stream: Stream }) {
+function StreamControlPlatformPanelContent({ stream, operationsResults }: { stream: Stream; operationsResults?: OperationsResults }) {
   const streamRef = useRef(stream);
   useLayoutEffect(() => { streamRef.current = stream; }, [stream]);
   const { locale, t } = useI18n();
@@ -49,6 +56,8 @@ function StreamControlPlatformPanelContent({ stream }: { stream: Stream }) {
   const [selectedCandidate,setSelectedCandidate]=useState("");
   const [needsReconciliation, setNeedsReconciliation] = useState(false);
   const [hideOpen, setHideOpen] = useState(false);
+  const [requestReceipt, setRequestReceipt] = useState<"none" | "accepted" | "unknown">("none");
+  const [lifecycleOutcome, setLifecycleOutcome] = useState(unavailableLifecycleOutcome);
   const uiText = useUICopy();
   const showReasonID = useId();
   const hideReasonID = useId();
@@ -59,7 +68,12 @@ function StreamControlPlatformPanelContent({ stream }: { stream: Stream }) {
   });
   const cover = useQuery({
     queryKey: ["streams", stream.id, "video-cover-state"],
-    queryFn: ({ signal }) => apiGet<VideoCoverState>(`/streams/${encodeURIComponent(stream.id)}/video-cover-state`, signal),
+    queryFn: async ({ signal }) => {
+      const observed = await readStreamLifecycleOutcome<VideoCoverState>(`/streams/${encodeURIComponent(stream.id)}/video-cover-state`, stream.id, signal);
+      if (!isVideoCoverStateForStream(observed.value,stream.id)) throw new Error("video_cover_response_identity_invalid");
+      if (!signal.aborted && streamRef.current.id === stream.id) setLifecycleOutcome(observed.presentation);
+      return observed.value;
+    },
     retry: false,
   });
 
@@ -104,12 +118,13 @@ function StreamControlPlatformPanelContent({ stream }: { stream: Stream }) {
       if (input.streamID !== streamRef.current.id || input.owner !== controllerRef.current) throw new CoverActionUnavailable("対象の設定または担当Encoderが変更されました。最新状態を確認してください。");
       const result = await input.owner.issueRequest(input.request, input.baseline);
       if (!result.sent) throw new CoverActionUnavailable(result.reason);
-      if (result.value?.stream_id !== input.streamID) throw new Error("video_cover_response_identity_invalid");
+      if (!isVideoCoverActionResponse(result.value, input.request, input.streamID)) throw new Error("video_cover_response_identity_invalid");
       return result.value;
     },
-    onMutate: (input) => { if (input.streamID === streamRef.current.id && input.owner === controllerRef.current) setNotice(""); },
+    onMutate: (input) => { if (input.streamID === streamRef.current.id && input.owner === controllerRef.current) { setNotice(""); setRequestReceipt("none"); setLifecycleOutcome(unavailableLifecycleOutcome()); } },
     onSuccess: async (state, input) => {
       if (input.streamID !== streamRef.current.id || input.owner !== controllerRef.current || state.stream_id !== input.streamID) return;
+      setRequestReceipt("accepted");
       const key = ["streams", input.streamID, "video-cover-state"];
       await queryClient.cancelQueries({ queryKey: key, exact: true });
       if (input.streamID !== streamRef.current.id || input.owner !== controllerRef.current) return;
@@ -120,12 +135,15 @@ function StreamControlPlatformPanelContent({ stream }: { stream: Stream }) {
         setNotice(locale === "ja" ? "Encoderの適用結果は未確定です。再送せず最新状態を確認してください。" : "The Encoder result is unconfirmed. Do not resend; refresh the latest state.");
       } else {
         setNeedsReconciliation(false);
-        setNotice(locale === "ja" ? "フタ画像の適用結果を確認しました。" : "The Video Cover result is confirmed.");
+        setNotice(state.status === "failed"
+          ? locale === "ja" ? "Encoderでの適用失敗を確認しました。" : "The Encoder reported an application failure."
+          : locale === "ja" ? "Encoderの適用結果を確認しました。Remote Proofは未資格です。" : "The Encoder result is confirmed. Remote proof remains unqualified.");
       }
     },
     onError: (error, input) => {
       if (!(error instanceof CoverActionUnavailable)) input.owner.holdForReconciliation();
       if (input.streamID !== streamRef.current.id || input.owner !== controllerRef.current) return;
+      if (!(error instanceof CoverActionUnavailable)) setRequestReceipt("unknown");
       setNeedsReconciliation(!(error instanceof CoverActionUnavailable));
       setNotice(error instanceof CoverActionUnavailable ? fixedPresentationText(error.message, uiText) : t(adaptAPIError(error).messageKey));
     },
@@ -207,9 +225,11 @@ function StreamControlPlatformPanelContent({ stream }: { stream: Stream }) {
       <dl className="grid gap-2 text-sm sm:grid-cols-2">
         <div><dt className="text-muted-foreground">Discord</dt><dd>{presentation.discord}</dd></div><div><dt className="text-muted-foreground">{locale === "ja" ? "開始時Cover" : "Start cover"}</dt><dd>{presentation.cover}</dd></div>
         <div><dt className="text-muted-foreground">{locale==="ja"?"要求した表示状態":"Requested state"}</dt><dd>{cover.data ? `${cover.data.desired_active ? "ON" : "OFF"} r${cover.data.desired_revision}` : locale === "ja" ? "未初期化" : "Not initialized"}</dd></div>
+        <div><dt className="text-muted-foreground">{locale==="ja"?"要求の受領状況":"Request acceptance"}</dt><dd>{requestReceipt==="accepted" ? locale==="ja"?"この要求の受領を確認・適用は別に照合":"This request was accepted; application is separate" : requestReceipt==="unknown" ? "UNKNOWN" : locale==="ja"?"この操作の受領は未確認":"This operation is not confirmed accepted"}</dd></div>
         <div><dt className="text-muted-foreground">{locale==="ja"?"Encoderの反映確認":"Encoder confirmed state"}</dt><dd>{cover.data?.applied_revision == null ? locale === "ja" ? "未確認" : "Unconfirmed" : `${cover.data.applied_active ? "ON" : "OFF"} r${cover.data.applied_revision}`}</dd></div>
         <div><dt className="text-muted-foreground">{locale==="ja"?"実行世代・確認状況":"Execution and confirmation"}</dt><dd>{cover.data ? `${locale==="ja"?"実行世代":"Generation"} ${cover.data.job_generation} / ${locale==="ja"?({idle:"未反映",confirming:"反映を照合中",applied:"Encoderで反映確認済み",failed:"反映失敗"}[cover.data.status]||"状態不明"):cover.data.status}` : "—"}</dd></div><div><dt className="text-muted-foreground">{locale === "ja" ? "最終確認" : "Last confirmed"}</dt><dd>{cover.data?.applied_revision == null ? "—" : `r${cover.data.applied_revision}`}</dd></div>
       </dl>
+      <LifecycleOutcomeView outcome={lifecycleOutcome} notification={operationsResults?.notification} media={operationsResults?.media} release={operationsResults?.release} locale={locale} />
       {mismatch || reconcileRequired ? <p role="status" className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:bg-amber-950/30 dark:text-amber-200">{locale === "ja" ? "要求した状態の反映は未確認です。現在の画像を保持し、再送せずEncoderの状態を読み取ります。" : "Desired and applied differ. Desired is not shown as applied; refresh the confirmed Encoder state without resending."}</p> : null}
       {notice ? <p role="status" aria-live="polite" className="text-sm text-muted-foreground">{notice}</p> : null}
       {candidates.length ? <CoverCandidateGrid candidates={candidates} locale={locale} imageURL={(candidate) => mediaURL(candidate.variant_id)} startVariantID={visual.data?.cover_variant_id} selectedVariantID={candidateID} appliedVariantID={cover.data?.applied_active ? cover.data.applied_asset_variant_id : undefined} actions={(candidate) => <Button type="button" variant="outline" size="sm" className="h-auto min-h-10 min-w-0 whitespace-normal [overflow-wrap:anywhere]" disabled={coverPending || reconcileRequired || candidateID === candidate.variant_id} onClick={() => setSelectedCandidate(candidate.variant_id)}>{candidateID === candidate.variant_id ? locale === "ja" ? "切替対象" : "Selected for switching" : locale === "ja" ? "切替対象にする" : "Select for switching"}</Button>} /> : null}

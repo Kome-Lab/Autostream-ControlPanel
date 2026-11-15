@@ -3,6 +3,7 @@ import { adaptAPIError } from "@/lib/foundation/api-errors/adapter";
 import type { AdaptedAPIError } from "@/lib/foundation/api-errors/contracts";
 import { APIError } from "@/lib/api/client";
 import { withBoundedActionRevalidation } from "@/lib/actions/bounded-revalidation";
+import { snapshotStreamIntent } from "@/features/streams/stream-intent-snapshot";
 
 export type VisualActionPermissionSnapshot = Readonly<{
   kind: "ready" | "refreshing" | "unavailable";
@@ -55,9 +56,11 @@ export function createStreamVisualActionController(dependencies: Readonly<{
     get unresolved() { return unresolved; },
     async issue(fields: Record<string, unknown>, expectedRevision: number, uploadSessionID?: string): Promise<VisualActionResult> {
       if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) return blocked("state-unavailable");
+      try { fields = snapshotStreamIntent(fields); }
+      catch { return blocked("state-unavailable"); }
       const unavailable = evaluate();
       if (unavailable) return unavailable;
-      const opened = dependencies.getState();
+      const opened = Object.freeze({ ...dependencies.getState() });
       if (opened.kind !== "ready" || opened.revision === undefined || !opened.fingerprint) return blocked("state-unavailable");
       if (opened.revision !== expectedRevision) return blocked("authority-changed");
       pending = true;
@@ -78,10 +81,15 @@ export function createStreamVisualActionController(dependencies: Readonly<{
           return blocked("state-unavailable");
         }
         if (current.revision !== expectedRevision || current.fingerprint !== opened.fingerprint) return blocked("authority-changed");
+        const latest = dependencies.getState();
+        if (latest.kind === "missing" || latest.fingerprint && latest.fingerprint !== opened.fingerprint) return blocked("authority-changed");
+        const latestPermission = dependencies.getPermission();
+        if (latestPermission.kind === "ready" && !latestPermission.permissions.includes("*") && !latestPermission.permissions.includes("streams.update")) return blocked("permission-denied");
         try {
           if (operation.abort.signal.aborted) return blocked("state-unavailable");
           operation.sent = true;
           const value = await dependencies.mutate({ ...buildVisualUpdate(expectedRevision, fields, uploadSessionID), expected_revision: expectedRevision }, operation.abort.signal);
+          if (!value || value.stream_id !== opened.streamID || !Number.isSafeInteger(value.revision) || value.revision <= expectedRevision || !visualRequestObserved(value, fields)) throw new Error("visual_response_correlation_invalid");
           return Object.freeze({ kind: "succeeded" as const, value });
         } catch (error) {
           const adapted = adaptAPIError(error);
@@ -122,8 +130,9 @@ function definitiveVisualRejection(error: unknown) {
 function visualRequestObserved(settings: StreamVisualSettings, fields: Record<string, unknown>) {
   const direct = new Set(["background_mode", "background_asset_id", "background_variant_id", "header_title_mode", "header_title_value", "cover_source", "cover_preset_id", "cover_preset_revision", "cover_asset_id", "cover_variant_id", "cover_start_active"]);
   const nullableText = new Set(["background_asset_id", "background_variant_id", "header_title_value", "cover_preset_id", "cover_asset_id", "cover_variant_id"]);
-  if (!Object.keys(fields).length) return false;
-  for (const [key, expected] of Object.entries(fields)) {
+  const requested = Object.entries(fields).filter(([key]) => key !== "expected_revision" && key !== "upload_session_id");
+  if (!requested.length) return false;
+  for (const [key, expected] of requested) {
     if (direct.has(key)) {
       const actual = settings[key as keyof StreamVisualSettings];
       if (nullableText.has(key)) {

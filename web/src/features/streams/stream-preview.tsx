@@ -49,6 +49,7 @@ export function StreamPreview({ stream, controller }: { stream: Stream; controll
   const [issuePending, setIssuePending] = useState(false);
   const [playbackError, setPlaybackError] = useState("");
   const [playbackDetail, setPlaybackDetail] = useState("");
+  const [playbackRetry, setPlaybackRetry] = useState(0);
   const [copied, setCopied] = useState(false);
   const [participants, setParticipants] = useState<PreviewParticipant[]>([]);
   const [participantFeedBurnIn, setParticipantFeedBurnIn] = useState<boolean | null>(null);
@@ -72,7 +73,8 @@ export function StreamPreview({ stream, controller }: { stream: Stream; controll
         return;
       }
       const result = await controller.submit(opened, { confirmed: true });
-      if (result.kind !== "succeeded" || !isPreviewLink(result.value)) {
+      if (streamRef.current.id !== intent.stream.id || streamRef.current.updated_at !== intent.stream.updated_at) return;
+      if (result.kind !== "succeeded" || !isPreviewLink(result.value) || result.value.stream_id !== intent.stream.id) {
         setPreviewLink(null);
         setPreviewLinkError(result.kind === "failed"
           ? t(result.error.messageKey)
@@ -130,7 +132,7 @@ export function StreamPreview({ stream, controller }: { stream: Stream; controll
   }, [controller, stream.id]);
   useStreamPreviewPlayback({
     videoRef, playbackURL, playbackDiagnosticRef,
-    setPlaybackState, setPlaybackError, setPlaybackDetail,
+    setPlaybackState, setPlaybackError, setPlaybackDetail, retryKey: playbackRetry,
   });
 
   useEffect(() => {
@@ -213,9 +215,10 @@ export function StreamPreview({ stream, controller }: { stream: Stream; controll
             </Button>
           </div>
         ) : null}
-        <Button type="button" variant="ghost" size="sm" className="h-auto min-w-0 max-w-full whitespace-normal [overflow-wrap:anywhere]" onClick={() => void issuePreviewLink()} disabled={issuePending}>
+        <Button type="button" variant="ghost" size="sm" className="h-auto min-w-0 max-w-full whitespace-normal [overflow-wrap:anywhere]" onClick={() => setPlaybackRetry(value => value + 1)} disabled={issuePending || !playbackURL}>
           {uiText("再試行")}</Button>
       </div>
+      <p className="text-xs text-muted-foreground">プレビューの再生状態は、このブラウザーでの観測です。YouTube・Archive等のRemote Proofは未資格です。</p>
       {previewLink ? <p className="text-xs text-muted-foreground">{uiText("有効期限:")}{new Date(previewLink.expires_at).toLocaleString("ja-JP")}</p> : null}
       {previewLinkError ? <p className="text-sm text-destructive" role="alert">{previewLinkError}</p> : null}
       {playbackError ? <p className="text-sm text-destructive" role="alert">{playbackError}</p> : null}

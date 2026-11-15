@@ -6256,7 +6256,7 @@
       },
       {
         "path": "web/src/features/streams/stream-preview.tsx",
-        "sha256": "5ed99810725f45e26c8decc35c66483c1229a94e8b8c9c5592163ea19425cd89",
+        "sha256": "29328e15f516e61e1aa9d958251a604fad8a007fda17b59a3f4eb6a220654088",
         "symbols": [
           "ParticipantAccessibilityList",
           "PreviewStatus",
@@ -6270,7 +6270,7 @@
       },
       {
         "path": "web/src/features/streams/use-stream-preview-playback.ts",
-        "sha256": "85bfa50377322ba41ef8410b0e2e57a0d5e103d1c3df0f4dcc2650f2a87a51ce",
+        "sha256": "971b4373e3bdf47612d7853ca4b8d6cc2ec1169cbf18bf8762066f96fd9359cf",
         "symbols": [
           "clearTimers",
           "failPlayback",

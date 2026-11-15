@@ -12,13 +12,15 @@ export function useStreamPreviewPlayback({
   setPlaybackState,
   setPlaybackError,
   setPlaybackDetail,
+  retryKey = 0,
 }: {
   videoRef: {current: HTMLVideoElement | null};
   playbackURL: string | null;
   playbackDiagnosticRef: {current: StreamPreviewPlaybackDiagnostic | null};
   setPlaybackState: (state: PlaybackState) => void;
   setPlaybackError: (message: string) => void;
-  setPlaybackDetail: (detail: string) => void
+  setPlaybackDetail: (detail: string) => void;
+  retryKey?: number;
 }) {
 
   useEffect(() => {
@@ -49,10 +51,12 @@ export function useStreamPreviewPlayback({
       }
     };
     const markCanPlay = () => {
+      if (terminal) return;
       canPlay = true;
       markReadyWhenPlaybackAdvances();
     };
     const markPlaying = () => {
+      if (terminal) return;
       playing = true;
       playbackStartTime = video.currentTime;
       markReadyWhenPlaybackAdvances();
@@ -89,6 +93,7 @@ export function useStreamPreviewPlayback({
     };
     const markNativeError = () => failPlayback("Encoderプレビューを取得できません。Encoder Nodeの稼働状態と配信状態を確認してください。");
     const markPlaybackStalled = () => {
+      if (terminal) return;
       playbackDiagnosticRef.current = { source: "browser", reason: "stalled" };
       failPlayback("プレビューの再生が停止しました。Encoder Nodeの稼働状態と配信状態を確認してから再試行してください。");
     };
@@ -102,11 +107,13 @@ export function useStreamPreviewPlayback({
     );
     const requestPlayback = () => {
       void video.play().catch(() => {
+        if (terminal) return;
         playbackDiagnosticRef.current = { source: "browser", reason: "play_rejected" };
         failPlayback("プレビューの再生を開始できませんでした。ブラウザーの自動再生設定とEncoder Nodeの稼働状態を確認してから再試行してください。");
       });
     };
     const nativeErrorWithDiagnostic = () => {
+      if (terminal) return;
       playbackDiagnosticRef.current = { source: "native", code: video.error?.code };
       markNativeError();
     };
@@ -208,6 +215,6 @@ export function useStreamPreviewPlayback({
       video.removeAttribute("src");
       video.load();
     };
-  }, [playbackDiagnosticRef, playbackURL, setPlaybackDetail, setPlaybackError, setPlaybackState, videoRef]);
+  }, [playbackDiagnosticRef, playbackURL, setPlaybackDetail, setPlaybackError, setPlaybackState, videoRef, retryKey]);
   return undefined;
 }
