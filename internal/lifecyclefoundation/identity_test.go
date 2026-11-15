@@ -40,16 +40,18 @@ func TestB2IdentityClassPurposeBoundary(t *testing.T) {
 
 func TestB2IdentityBindingRejectsStaleOrMissingContext(t *testing.T) {
 	for name, mutate := range map[string]func(*Authorization){
-		"no-binding": func(a *Authorization) { a.Identity = nil },
-		"wrong-kind": func(a *Authorization) { a.PrincipalKind = "HUMAN" },
-		"no-proof": func(a *Authorization) { a.Identity.ProofReference = "" },
-		"no-flow": func(a *Authorization) { a.Identity.Flow = "" },
+		"no-binding":    func(a *Authorization) { a.Identity = nil },
+		"wrong-kind":    func(a *Authorization) { a.PrincipalKind = "HUMAN" },
+		"no-proof":      func(a *Authorization) { a.Identity.ProofReference = "" },
+		"no-flow":       func(a *Authorization) { a.Identity.Flow = "" },
 		"zero-revision": func(a *Authorization) { a.Identity.Revision = 0 },
-		"real-profile": func(a *Authorization) { a.Identity.Coverage = "real-secret-profile" },
-		"other-target": func(a *Authorization) { a.Identity.Target = "user-2" },
+		"real-profile":  func(a *Authorization) { a.Identity.Coverage = "real-secret-profile" },
+		"other-target":  func(a *Authorization) { a.Identity.Target = "user-2" },
 		"wrong-purpose": func(a *Authorization) { a.Intent.Purpose = "AUTHORITY_CHANGE" },
-		"read-mode": func(a *Authorization) { a.Intent.Mode = Read },
-		"approval-reuse": func(a *Authorization) { a.Approval = &Approval{Origin: "origin-1", ID: "approval-1", Manifest: "manifest-1", Purpose: a.Intent.Purpose} },
+		"read-mode":     func(a *Authorization) { a.Intent.Mode = Read },
+		"approval-reuse": func(a *Authorization) {
+			a.Approval = &Approval{Origin: "origin-1", ID: "approval-1", Manifest: "manifest-1", Purpose: a.Intent.Purpose}
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			a := identityTestAuthorization("identity.session.issue_login", IdentityPreauth)
@@ -80,10 +82,10 @@ func TestB2IdentityNonHumanCannotAcquireAuthority(t *testing.T) {
 func TestB2IdentityCanonicalCompatibility(t *testing.T) {
 	a := Authorization{Actor: "human-1", PrincipalKind: "HUMAN", Intent: Intent{Mode: Read, Purpose: "CURRENT_READ", Operation: "authority.read", OperationContent: "ref-1", Scope: Scope{Type: "GLOBAL"}, Subject: "product"}}
 	old := struct {
-		Actor string
+		Actor         string
 		PrincipalKind string
-		Intent Intent
-		Approval *Approval
+		Intent        Intent
+		Approval      *Approval
 	}{a.Actor, a.PrincipalKind, a.Intent, a.Approval}
 	if encode(old) != encode(a) || strings.Contains(encode(a), "Identity") {
 		t.Fatal("old B0/B1 canonical authorization bytes changed")
@@ -136,16 +138,19 @@ func TestB2IdentityPrivateRequestLifetime(t *testing.T) {
 	request.active.Store(true)
 	ctx := context.WithValue(context.Background(), identityRequestKey{}, request)
 	call := Call{Operation: request.call.Operation, Purpose: "IDENTITY_CHANGE", Target: request.call.Target,
-		Content: struct { Binding IdentityBinding; Reference string }{request.binding, request.call.ContentReference}}
+		Content: struct {
+			Binding   IdentityBinding
+			Reference string
+		}{request.binding, request.call.ContentReference}}
 	if !identityGateCallValid(ctx, g, call) {
 		t.Fatal("exact private identity call was refused")
 	}
 	for name, mutate := range map[string]func(*Call){
 		"other-operation": func(c *Call) { c.Operation = "identity.user.delete" },
 		"authority-reuse": func(c *Call) { c.Operation = "authority.save"; c.Purpose = "AUTHORITY_CHANGE" },
-		"other-target": func(c *Call) { c.Target = "user-2" },
-		"other-effect": func(c *Call) { c.Content = "other-effect" },
-		"actor-input": func(c *Call) { c.Actor = "untrusted-actor" },
+		"other-target":    func(c *Call) { c.Target = "user-2" },
+		"other-effect":    func(c *Call) { c.Content = "other-effect" },
+		"actor-input":     func(c *Call) { c.Actor = "untrusted-actor" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			changed := call

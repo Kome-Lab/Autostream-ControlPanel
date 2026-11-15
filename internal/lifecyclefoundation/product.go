@@ -12,8 +12,8 @@ import (
 // Gate has no configured production constructor in B1. A zero/required Gate
 // rejects; only _test.go can attach the persistent synthetic Service and source.
 type Gate struct {
-	service *Service
-	source  CheckpointSource
+	service         *Service
+	source          CheckpointSource
 	identityCapture func(context.Context, Executor) (IdentityProjection, error)
 }
 

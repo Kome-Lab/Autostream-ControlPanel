@@ -75,7 +75,10 @@ func (s MariaDBAuthStore) ListUsers(ctx context.Context) ([]User, error) {
 }
 
 func (s MariaDBAuthStore) CreateUser(ctx context.Context, username, email, temporaryPassword string, roleIDs []string) (User, error) {
-	content := lf.SyntheticReference(struct { Username, Email string; RoleIDs []string }{username, email, roleIDs})
+	content := lf.SyntheticReference(struct {
+		Username, Email string
+		RoleIDs         []string
+	}{username, email, roleIDs})
 	return identityValueContent(ctx, s.identityGate, "identity.user.create", "users", content, func(partCtx context.Context) (User, error) {
 		return s.identityCreateUser(partCtx, username, email, temporaryPassword, roleIDs)
 	})
@@ -97,7 +100,11 @@ func (s MariaDBAuthStore) GetUser(ctx context.Context, id string) (User, error) 
 }
 
 func (s MariaDBAuthStore) UpdateUser(ctx context.Context, id string, patch UserPatch) (User, error) {
-	content := lf.SyntheticReference(struct { Username string; Email *string; RoleIDs []string }{patch.Username, patch.Email, patch.RoleIDs})
+	content := lf.SyntheticReference(struct {
+		Username string
+		Email    *string
+		RoleIDs  []string
+	}{patch.Username, patch.Email, patch.RoleIDs})
 	return identityValueContent(ctx, s.identityGate, "identity.user.update", id, content, func(partCtx context.Context) (User, error) {
 		return s.identityUpdateUser(partCtx, id, patch)
 	})
@@ -136,7 +143,10 @@ func (s MariaDBAuthStore) ListRoles(ctx context.Context) ([]Role, error) {
 }
 
 func (s MariaDBAuthStore) CreateRole(ctx context.Context, name string, permissions []string) (Role, error) {
-	content := lf.SyntheticReference(struct { Name string; Permissions []string }{name, permissions})
+	content := lf.SyntheticReference(struct {
+		Name        string
+		Permissions []string
+	}{name, permissions})
 	return identityValueContent(ctx, s.identityGate, "identity.role.create", "roles", content, func(partCtx context.Context) (Role, error) {
 		return s.identityCreateRole(partCtx, name, permissions)
 	})
@@ -149,7 +159,10 @@ func (s MariaDBAuthStore) GetRole(ctx context.Context, id string) (Role, error) 
 }
 
 func (s MariaDBAuthStore) UpdateRole(ctx context.Context, id, name string, permissions []string) (Role, error) {
-	content := lf.SyntheticReference(struct { Name string; Permissions []string }{name, permissions})
+	content := lf.SyntheticReference(struct {
+		Name        string
+		Permissions []string
+	}{name, permissions})
 	return identityValueContent(ctx, s.identityGate, "identity.role.update", id, content, func(partCtx context.Context) (Role, error) {
 		return s.identityUpdateRole(partCtx, id, name, permissions)
 	})

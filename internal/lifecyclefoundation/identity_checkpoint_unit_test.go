@@ -11,7 +11,7 @@ func TestB2IdentityProjectionContract(t *testing.T) {
 		t.Fatal("explicit synthetic projection rejected")
 	}
 	for name, mutate := range map[string]func(*IdentityProjection){
-		"zero-identity-revision":   func(p *IdentityProjection) { p.Revision = 0 },
+		"zero-identity-revision":    func(p *IdentityProjection) { p.Revision = 0 },
 		"zero-operational-revision": func(p *IdentityProjection) { p.OperationalRevision = 0 },
 		"zero-authority-epoch":      func(p *IdentityProjection) { p.AuthorityEpoch = 0 },
 		"missing-content":           func(p *IdentityProjection) { p.ContentReference = "" },

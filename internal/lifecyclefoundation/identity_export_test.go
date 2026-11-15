@@ -16,7 +16,7 @@ import (
 // It is not a product Provider, secret-commitment profile or deployment approval.
 type IdentityTestEnvironment struct {
 	*ProductTestEnvironment
-	Class IdentityClass
+	Class         IdentityClass
 	FixedRevision uint64
 }
 
@@ -28,11 +28,13 @@ var identityProductTables = []string{
 	"v3_cp_identity_history", "v3_cp_identity_projection", "v3_cp_identity_schema_history", "v3_cp_identity_schema",
 }
 
-type identityTestAuthorizer struct { env *IdentityTestEnvironment }
+type identityTestAuthorizer struct{ env *IdentityTestEnvironment }
 
 func (a identityTestAuthorizer) ResolveIdentity(ctx context.Context, call IdentityCall) (IdentityBinding, error) {
 	p, err := ReadIdentityProjection(ctx, a.env.DB)
-	if err != nil { return IdentityBinding{}, err }
+	if err != nil {
+		return IdentityBinding{}, err
+	}
 	class := a.env.Class
 	if class == "" {
 		class = IdentityHuman
@@ -42,7 +44,9 @@ func (a identityTestAuthorizer) ResolveIdentity(ctx context.Context, call Identi
 		}
 	}
 	revision := p.Revision
-	if a.env.FixedRevision != 0 { revision = a.env.FixedRevision }
+	if a.env.FixedRevision != 0 {
+		revision = a.env.FixedRevision
+	}
 	return IdentityBinding{Class: class, Target: call.Target, Flow: "synthetic-flow", ProofReference: "synthetic-verified-proof", Coverage: IdentityFixtureCoverage, Revision: revision}, nil
 }
 
@@ -51,10 +55,16 @@ func (a identityTestAuthorizer) Resolve(ctx context.Context, intent Intent) (Aut
 		return Authorization{Actor: "operator-1", PrincipalKind: "HUMAN", Intent: intent}, ctx.Err()
 	}
 	_, binding, err := IdentityRequest(ctx)
-	if err != nil { return Authorization{}, err }
+	if err != nil {
+		return Authorization{}, err
+	}
 	kind := "HUMAN"
-	if binding.Class == IdentityPreauth { kind = "PREAUTH" }
-	if binding.Class == IdentitySystem { kind = "SYSTEM" }
+	if binding.Class == IdentityPreauth {
+		kind = "PREAUTH"
+	}
+	if binding.Class == IdentitySystem {
+		kind = "SYSTEM"
+	}
 	return Authorization{Actor: "operator-1", PrincipalKind: kind, Intent: intent, Identity: &binding}, ctx.Err()
 }
 
@@ -62,8 +72,12 @@ func (a identityTestAuthorizer) ValidateTx(ctx context.Context, tx *sql.Tx, auth
 	// These immutable fixture grants require no User lock before last-admin's
 	// guard. Actual product authorization/proof composition remains unavailable.
 	var state string
-	if tx.QueryRowContext(ctx, "SELECT status FROM users WHERE id='operator-1'").Scan(&state) != nil || state != "active" { return ErrHeld }
-	if auth.Identity != nil && auth.Identity.Revision != checkpoint.IdentityRevision { return ErrHeld }
+	if tx.QueryRowContext(ctx, "SELECT status FROM users WHERE id='operator-1'").Scan(&state) != nil || state != "active" {
+		return ErrHeld
+	}
+	if auth.Identity != nil && auth.Identity.Revision != checkpoint.IdentityRevision {
+		return ErrHeld
+	}
 	return ctx.Err()
 }
 
@@ -82,7 +96,9 @@ func NewIdentityTestEnvironment(t *testing.T) *IdentityTestEnvironment {
 	for _, table := range identityProductTables {
 		var count int
 		must(t, e.DB.QueryRow("SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=?", table).Scan(&count))
-		if count != 0 { t.Fatal("B2 requires an empty disposable identity namespace: " + table) }
+		if count != 0 {
+			t.Fatal("B2 requires an empty disposable identity namespace: " + table)
+		}
 	}
 	t.Cleanup(func() {
 		for _, table := range identityProductTables {
@@ -127,7 +143,10 @@ func NewIdentityTestEnvironment(t *testing.T) *IdentityTestEnvironment {
 		"INSERT INTO roles VALUES('role-admin','super_admin',UTC_TIMESTAMP(6)),('role-start','starter',UTC_TIMESTAMP(6))",
 		"INSERT INTO role_permissions VALUES('role-admin','roles.create'),('role-admin','streams.start'),('role-start','streams.start')",
 		"INSERT INTO user_roles VALUES('operator-1','role-admin'),('member-1','role-start')",
-	} { _, err := e.DB.Exec(sql); must(t, err) }
+	} {
+		_, err := e.DB.Exec(sql)
+		must(t, err)
+	}
 	must(t, ApplyIdentityMigrations(context.Background(), e.DB))
 	_, err := e.DB.Exec("INSERT INTO v3_cp_identity_projection(singleton,revision,operational_revision,authority_epoch,entity_count,content_reference,history_reference,coverage,qualified) VALUES(1,1,1,1,0,'synthetic-unenrolled','synthetic-history-initial',?,0)", IdentityFixtureCoverage)
 	must(t, err)
@@ -143,9 +162,15 @@ func NewIdentityTestEnvironment(t *testing.T) *IdentityTestEnvironment {
 // Its output cannot qualify a real secret checkpoint or trusted clock.
 func captureIdentityFixture(ctx context.Context, q Executor) (IdentityProjection, error) {
 	p, err := ReadIdentityProjection(ctx, q)
-	if err != nil { return p, err }
-	if err = q.QueryRowContext(ctx, "SELECT generation FROM operational_authorization_epoch WHERE singleton=1").Scan(&p.OperationalRevision); err != nil { return p, err }
-	if err = q.QueryRowContext(ctx, "SELECT generation FROM v3_cp_authority_epoch WHERE singleton=1").Scan(&p.AuthorityEpoch); err != nil { return p, err }
+	if err != nil {
+		return p, err
+	}
+	if err = q.QueryRowContext(ctx, "SELECT generation FROM operational_authorization_epoch WHERE singleton=1").Scan(&p.OperationalRevision); err != nil {
+		return p, err
+	}
+	if err = q.QueryRowContext(ctx, "SELECT generation FROM v3_cp_authority_epoch WHERE singleton=1").Scan(&p.AuthorityEpoch); err != nil {
+		return p, err
+	}
 	var roots []any
 	p.Count = 0
 	for _, query := range []string{
@@ -163,19 +188,40 @@ func captureIdentityFixture(ctx context.Context, q Executor) (IdentityProjection
 		"SELECT id,user_id FROM webauthn_ceremony_sessions ORDER BY id",
 	} {
 		rows, readErr := q.QueryContext(ctx, query)
-		if readErr != nil { return p, readErr }
-		columns, readErr := rows.Columns()
-		if readErr != nil { rows.Close(); return p, readErr }
-		for rows.Next() {
-			values := make([]sql.RawBytes, len(columns)); scan := make([]any, len(columns))
-			for i := range values { scan[i] = &values[i] }
-			if readErr = rows.Scan(scan...); readErr != nil { rows.Close(); return p, readErr }
-			entry := make([]string, len(values))
-			for i, value := range values { if value == nil { entry[i] = "fixture-null" } else { entry[i] = string(value) } }
-			roots = append(roots, entry); p.Count++
+		if readErr != nil {
+			return p, readErr
 		}
-		readErr = rows.Err(); rows.Close()
-		if readErr != nil { return p, readErr }
+		columns, readErr := rows.Columns()
+		if readErr != nil {
+			rows.Close()
+			return p, readErr
+		}
+		for rows.Next() {
+			values := make([]sql.RawBytes, len(columns))
+			scan := make([]any, len(columns))
+			for i := range values {
+				scan[i] = &values[i]
+			}
+			if readErr = rows.Scan(scan...); readErr != nil {
+				rows.Close()
+				return p, readErr
+			}
+			entry := make([]string, len(values))
+			for i, value := range values {
+				if value == nil {
+					entry[i] = "fixture-null"
+				} else {
+					entry[i] = string(value)
+				}
+			}
+			roots = append(roots, entry)
+			p.Count++
+		}
+		readErr = rows.Err()
+		rows.Close()
+		if readErr != nil {
+			return p, readErr
+		}
 	}
 	p.ContentReference = SyntheticReference(roots)
 	return p, nil
@@ -183,22 +229,24 @@ func captureIdentityFixture(ctx context.Context, q Executor) (IdentityProjection
 
 func identityFixtureCheckpoint(ctx context.Context, q Executor) (Checkpoint, error) {
 	p, err := captureIdentityFixture(ctx, q)
-	return Checkpoint{OperationalRevision:p.OperationalRevision,AuthorityEpoch:p.AuthorityEpoch,IdentityRevision:p.Revision,Count:p.Count,Content:SyntheticReference([]any{p.ContentReference,p.Revision}),HistoryHead:p.HistoryReference}, err
+	return Checkpoint{OperationalRevision: p.OperationalRevision, AuthorityEpoch: p.AuthorityEpoch, IdentityRevision: p.Revision, Count: p.Count, Content: SyntheticReference([]any{p.ContentReference, p.Revision}), HistoryHead: p.HistoryReference}, err
 }
 
 func (e *IdentityTestEnvironment) attachIdentity(t *testing.T) {
 	service, err := NewService(e.f.cp, productTestPort{e.ProductTestEnvironment}, identityTestAuthorizer{e})
 	must(t, err)
 	e.f.service = service
-	e.Gate = &Gate{service:service,source:identityFixtureCheckpoint,identityCapture:captureIdentityFixture}
+	e.Gate = &Gate{service: service, source: identityFixtureCheckpoint, identityCapture: captureIdentityFixture}
 }
 
 func (e *IdentityTestEnvironment) enroll(t *testing.T) {
 	checkpoint, err := identityFixtureCheckpoint(context.Background(), e.DB)
 	must(t, err)
-	frame := Frame{Binding:e.Binding,Checkpoint:checkpoint,Phase:Completed}
-	_, err = e.DB.Exec("UPDATE v3_cp_lifecycle_heads SET body=? WHERE deployment=?", encode(frame), e.Binding.Deployment); must(t, err)
-	_, err = e.DB.Exec("UPDATE b0_test_ledger_heads SET body=? WHERE deployment=?", encode(Head{Frame:frame,Phase:Completed}), e.Binding.Deployment); must(t, err)
+	frame := Frame{Binding: e.Binding, Checkpoint: checkpoint, Phase: Completed}
+	_, err = e.DB.Exec("UPDATE v3_cp_lifecycle_heads SET body=? WHERE deployment=?", encode(frame), e.Binding.Deployment)
+	must(t, err)
+	_, err = e.DB.Exec("UPDATE b0_test_ledger_heads SET body=? WHERE deployment=?", encode(Head{Frame: frame, Phase: Completed}), e.Binding.Deployment)
+	must(t, err)
 	e.attachIdentity(t)
 }
 
@@ -209,18 +257,24 @@ func (e *IdentityTestEnvironment) SealFixture(t *testing.T) {
 	var attempts, history int
 	must(t, e.DB.QueryRow("SELECT COUNT(*) FROM v3_cp_lifecycle_attempts WHERE deployment=?", e.Binding.Deployment).Scan(&attempts))
 	must(t, e.DB.QueryRow("SELECT COUNT(*) FROM v3_cp_identity_history").Scan(&history))
-	if attempts != 0 || history != 0 { t.Fatal("cannot reseal an admitted identity fixture") }
-	p, err := captureIdentityFixture(context.Background(), e.DB); must(t, err)
-	_, err = e.DB.Exec("UPDATE v3_cp_identity_projection SET operational_revision=?,authority_epoch=?,entity_count=?,content_reference=? WHERE singleton=1", p.OperationalRevision,p.AuthorityEpoch,p.Count,p.ContentReference); must(t, err)
+	if attempts != 0 || history != 0 {
+		t.Fatal("cannot reseal an admitted identity fixture")
+	}
+	p, err := captureIdentityFixture(context.Background(), e.DB)
+	must(t, err)
+	_, err = e.DB.Exec("UPDATE v3_cp_identity_projection SET operational_revision=?,authority_epoch=?,entity_count=?,content_reference=? WHERE singleton=1", p.OperationalRevision, p.AuthorityEpoch, p.Count, p.ContentReference)
+	must(t, err)
 	e.enroll(t)
 }
 
 func ResumeIdentityTestEnvironment(t *testing.T, binding Binding) *IdentityTestEnvironment {
-	t.Helper(); requireIdentitySQLFixture(t)
+	t.Helper()
+	requireIdentitySQLFixture(t)
 	db := disposableDB(t)
-	cp, err := NewSQLStore(db, binding); must(t, err)
-	f := &fixture{db:db,cp:cp,ledger:&syntheticLedger{db:db},binding:binding}
-	e := &IdentityTestEnvironment{ProductTestEnvironment:&ProductTestEnvironment{DB:db,Binding:binding,f:f}}
+	cp, err := NewSQLStore(db, binding)
+	must(t, err)
+	f := &fixture{db: db, cp: cp, ledger: &syntheticLedger{db: db}, binding: binding}
+	e := &IdentityTestEnvironment{ProductTestEnvironment: &ProductTestEnvironment{DB: db, Binding: binding, f: f}}
 	e.attachIdentity(t)
 	return e
 }
