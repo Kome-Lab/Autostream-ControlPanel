@@ -1,12 +1,12 @@
 package main
 
 import (
-	lf "github.com/example/autostream-control-panel/internal/lifecyclefoundation"
 	"bytes"
 	"context"
 	"database/sql"
 	"errors"
 	"fmt"
+	lf "github.com/example/autostream-control-panel/internal/lifecyclefoundation"
 	"log"
 	"net/http"
 	"os"

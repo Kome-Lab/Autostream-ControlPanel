@@ -5,8 +5,8 @@ import (
 	lf "github.com/example/autostream-control-panel/internal/lifecyclefoundation"
 )
 
-type Service struct{
-	store Store
+type Service struct {
+	store     Store
 	lifecycle *lf.Gate
 }
 
@@ -53,13 +53,24 @@ func (s *Service) fresh(ctx context.Context, snapshot Snapshot) error {
 func (s *Service) Current(ctx context.Context, principalID string, scope Scope) (Snapshot, []string, error) {
 	if s != nil && s.lifecycle != nil {
 		joined, err := s.lifecycle.Require(ctx, "operational.current")
-		if err != nil { return Snapshot{}, nil, ErrUnavailable }
+		if err != nil {
+			return Snapshot{}, nil, ErrUnavailable
+		}
 		if !joined {
 			call := lf.Call{Operation: "operational.current", Purpose: "CURRENT_READ", Actor: principalID, Target: scope, Content: scope}
-			type currentResult struct { Snapshot Snapshot; Permissions []string }
+			type currentResult struct {
+				Snapshot    Snapshot
+				Permissions []string
+			}
 			var result currentResult
-			err := s.lifecycle.Do(ctx, call, func(admitted context.Context) error { var e error; result.Snapshot, result.Permissions, e = s.Current(admitted, principalID, scope); return e })
-			if err != nil { return Snapshot{}, nil, ErrUnavailable }
+			err := s.lifecycle.Do(ctx, call, func(admitted context.Context) error {
+				var e error
+				result.Snapshot, result.Permissions, e = s.Current(admitted, principalID, scope)
+				return e
+			})
+			if err != nil {
+				return Snapshot{}, nil, ErrUnavailable
+			}
 			return result.Snapshot, result.Permissions, nil
 		}
 	}
@@ -96,12 +107,20 @@ func (s *Service) Permissions(ctx context.Context, principalID string, scope Sco
 func (s *Service) Authorize(ctx context.Context, request Request) (Decision, error) {
 	if s != nil && s.lifecycle != nil {
 		joined, err := s.lifecycle.Require(ctx, "operational.authorize")
-		if err != nil { return Decision{}, ErrUnavailable }
+		if err != nil {
+			return Decision{}, ErrUnavailable
+		}
 		if !joined {
 			call := lf.Call{Operation: "operational.authorize", Purpose: "CURRENT_READ", Actor: request.PrincipalID, Target: request.Scope, Content: request}
 			var result Decision
-			err := s.lifecycle.Do(ctx, call, func(admitted context.Context) error { var e error; result, e = s.Authorize(admitted, request); return e })
-			if err != nil { return Decision{}, ErrUnavailable }
+			err := s.lifecycle.Do(ctx, call, func(admitted context.Context) error {
+				var e error
+				result, e = s.Authorize(admitted, request)
+				return e
+			})
+			if err != nil {
+				return Decision{}, ErrUnavailable
+			}
 			return result, nil
 		}
 	}
@@ -152,12 +171,16 @@ func decide(snapshot Snapshot, request Request) Decision {
 func (s *Service) ValidateDelegation(ctx context.Context, request DelegationRequest) error {
 	if s != nil && s.lifecycle != nil {
 		joined, err := s.lifecycle.Require(ctx, "operational.delegate")
-		if err != nil { return ErrUnavailable }
+		if err != nil {
+			return ErrUnavailable
+		}
 		if !joined {
 			call := lf.Call{Operation: "operational.delegate", Purpose: "CURRENT_READ", Actor: request.PrincipalID, Target: request.Scope, Content: request}
 			owned := cloneDelegation(request)
 			call.Content = owned
-			if err := s.lifecycle.Do(ctx, call, func(admitted context.Context) error { return s.ValidateDelegation(admitted, owned) }); err != nil { return ErrUnavailable }
+			if err := s.lifecycle.Do(ctx, call, func(admitted context.Context) error { return s.ValidateDelegation(admitted, owned) }); err != nil {
+				return ErrUnavailable
+			}
 			return nil
 		}
 	}

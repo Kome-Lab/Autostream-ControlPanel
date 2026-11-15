@@ -1,10 +1,10 @@
 package v3authorization
 
 import (
-	lf "github.com/example/autostream-control-panel/internal/lifecyclefoundation"
 	"context"
 	"database/sql"
 	"errors"
+	lf "github.com/example/autostream-control-panel/internal/lifecyclefoundation"
 	"sync"
 
 	evidence "github.com/Kome-Lab/Autostream-Contracts/v3evidence"
@@ -250,7 +250,9 @@ func (a *SQLAuthority) snapshot(ctx context.Context, fn func(*authorityView) err
 func (a *SQLAuthority) Read(ctx context.Context, p Principal, i Intent) (Decision, error) {
 	if a != nil && a.lifecycle != nil {
 		joined, err := a.lifecycle.Require(ctx, "authority.read")
-		if err != nil { return Decision{}, lifecycleError(err) }
+		if err != nil {
+			return Decision{}, lifecycleError(err)
+		}
 		if !joined {
 			return lifecycleCall(ctx, a.lifecycle, lf.Call{Operation: "authority.read", Purpose: "CURRENT_READ", Actor: p.ID, Target: i.Scope, Content: i}, func(admitted context.Context) (Decision, error) { return a.Read(admitted, p, i) })
 		}
@@ -265,7 +267,9 @@ func (a *SQLAuthority) Read(ctx context.Context, p Principal, i Intent) (Decisio
 func (a *SQLAuthority) ResolveTarget(ctx context.Context, i Intent) (ResolvedTarget, error) {
 	if a != nil && a.lifecycle != nil {
 		joined, err := a.lifecycle.Require(ctx, "authority.target")
-		if err != nil { return ResolvedTarget{}, lifecycleError(err) }
+		if err != nil {
+			return ResolvedTarget{}, lifecycleError(err)
+		}
 		if !joined {
 			return lifecycleCall(ctx, a.lifecycle, lf.Call{Operation: "authority.target", Purpose: "CURRENT_READ", Actor: "", Target: i.Scope, Content: i}, func(admitted context.Context) (ResolvedTarget, error) { return a.ResolveTarget(admitted, i) })
 		}
@@ -280,9 +284,13 @@ func (a *SQLAuthority) ResolveTarget(ctx context.Context, i Intent) (ResolvedTar
 func (a *SQLAuthority) ResolvePolicyTrust(ctx context.Context, scope evidence.Scope, action string) (ResolvedPolicyTrust, error) {
 	if a != nil && a.lifecycle != nil {
 		joined, err := a.lifecycle.Require(ctx, "authority.policy")
-		if err != nil { return ResolvedPolicyTrust{}, lifecycleError(err) }
+		if err != nil {
+			return ResolvedPolicyTrust{}, lifecycleError(err)
+		}
 		if !joined {
-			return lifecycleCall(ctx, a.lifecycle, lf.Call{Operation: "authority.policy", Purpose: "CURRENT_READ", Actor: "", Target: scope, Content: action}, func(admitted context.Context) (ResolvedPolicyTrust, error) { return a.ResolvePolicyTrust(admitted, scope, action) })
+			return lifecycleCall(ctx, a.lifecycle, lf.Call{Operation: "authority.policy", Purpose: "CURRENT_READ", Actor: "", Target: scope, Content: action}, func(admitted context.Context) (ResolvedPolicyTrust, error) {
+				return a.ResolvePolicyTrust(admitted, scope, action)
+			})
 		}
 	}
 	var result ResolvedPolicyTrust
@@ -300,7 +308,9 @@ func (a *SQLAuthority) ResolvePolicyTrust(ctx context.Context, scope evidence.Sc
 func (a *SQLAuthority) AuthorizeRead(ctx context.Context, p Principal, q Lookup) error {
 	if a != nil && a.lifecycle != nil {
 		joined, err := a.lifecycle.Require(ctx, "authority.history")
-		if err != nil { return lifecycleError(err) }
+		if err != nil {
+			return lifecycleError(err)
+		}
 		if !joined {
 			_, err := lifecycleCall(ctx, a.lifecycle, lf.Call{Operation: "authority.history", Purpose: "CURRENT_READ", Actor: p.ID, Target: q.Scope, Content: q}, func(admitted context.Context) (struct{}, error) { return struct{}{}, a.AuthorizeRead(admitted, p, q) })
 			return err
@@ -364,9 +374,16 @@ type authorityTransaction struct {
 func (a *SQLAuthority) WithCurrent(ctx context.Context, p Principal, i Intent, expected Decision, fn func(context.Context, Decision) error) error {
 	if a != nil && a.lifecycle != nil {
 		joined, err := a.lifecycle.Require(ctx, "evidence.finish")
-		if err != nil { return lifecycleError(err) }
+		if err != nil {
+			return lifecycleError(err)
+		}
 		if !joined {
-			_, err := lifecycleCall(ctx, a.lifecycle, lf.Call{Operation: "evidence.finish", Purpose: "EVIDENCE_CHANGE", Actor: p.ID, Target: i.Scope, Content: struct{ Intent Intent; Decision Decision }{i, expected}}, func(admitted context.Context) (struct{}, error) { return struct{}{}, a.WithCurrent(admitted, p, i, expected, fn) })
+			_, err := lifecycleCall(ctx, a.lifecycle, lf.Call{Operation: "evidence.finish", Purpose: "EVIDENCE_CHANGE", Actor: p.ID, Target: i.Scope, Content: struct {
+				Intent   Intent
+				Decision Decision
+			}{i, expected}}, func(admitted context.Context) (struct{}, error) {
+				return struct{}{}, a.WithCurrent(admitted, p, i, expected, fn)
+			})
 			return err
 		}
 	}

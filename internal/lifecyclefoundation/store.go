@@ -25,16 +25,16 @@ func NewSQLStore(db *sql.DB, binding Binding) (*SQLStore, error) {
 type participationKey struct{}
 
 type participation struct {
-	mu      sync.Mutex
-	store   *SQLStore
-	request Request
-	active  bool
-	failed bool
-	gate *Gate
-	tx *sql.Tx
-	before Checkpoint
+	mu            sync.Mutex
+	store         *SQLStore
+	request       Request
+	active        bool
+	failed        bool
+	gate          *Gate
+	tx            *sql.Tx
+	before        Checkpoint
 	authorization Authorization
-	joins []*joinedTransaction
+	joins         []*joinedTransaction
 }
 
 // Transaction has no Commit/Rollback method. Its context is private, exact-request
@@ -214,9 +214,13 @@ func (s *SQLStore) apply(ctx context.Context, r Reservation, auth Authorizer, ef
 	}
 	p.mu.Lock()
 	participantsComplete := !p.failed
-	for _, joined := range p.joins { participantsComplete = participantsComplete && joined.done }
+	for _, joined := range p.joins {
+		participantsComplete = participantsComplete && joined.done
+	}
 	p.mu.Unlock()
-	if !participantsComplete { return CommitRecord{}, ErrHeld }
+	if !participantsComplete {
+		return CommitRecord{}, ErrHeld
+	}
 	if !nextCheckpoint(frame.Checkpoint, after, r.Request.Intent) {
 		return CommitRecord{}, ErrHeld
 	}

@@ -1,7 +1,6 @@
 package v3authorization
 
 import (
-	lf "github.com/example/autostream-control-panel/internal/lifecyclefoundation"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -10,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	lf "github.com/example/autostream-control-panel/internal/lifecyclefoundation"
 	"io"
 	"regexp"
 	"strings"
@@ -29,8 +29,8 @@ var errSchemaUnavailable = SafeError{"v3_authorization_schema_unavailable"}
 
 // SQLStore borrows an existing CP-owned pool. It never opens, closes, repairs or
 // migrates that pool. These tables have no relationship to v2 mutation Grants.
-type SQLStore struct{
-	db *sql.DB
+type SQLStore struct {
+	db        *sql.DB
 	lifecycle *lf.Gate
 }
 
@@ -137,9 +137,14 @@ func checkSQLIssuanceSchema(ctx context.Context, db sqlRecordExecutor) error {
 func (s *SQLStore) Claim(ctx context.Context, r Record) (Record, ClaimStatus, error) {
 	if s != nil && s.lifecycle != nil {
 		joined, err := s.lifecycle.Require(ctx, "evidence.claim")
-		if err != nil { return Record{}, "", lifecycleError(err) }
+		if err != nil {
+			return Record{}, "", lifecycleError(err)
+		}
 		if !joined {
-			type claimResult struct { Record Record; Status ClaimStatus }
+			type claimResult struct {
+				Record Record
+				Status ClaimStatus
+			}
 			owned := sqlCloneRecord(r)
 			result, err := lifecycleCall(ctx, s.lifecycle, lf.Call{Operation: "evidence.claim", Purpose: "EVIDENCE_CHANGE", Actor: owned.Principal, Target: owned.Intent.Scope, Content: owned}, func(admitted context.Context) (claimResult, error) {
 				record, status, err := s.Claim(admitted, owned)
@@ -158,11 +163,17 @@ func (s *SQLStore) Claim(ctx context.Context, r Record) (Record, ClaimStatus, er
 	if err != nil {
 		return Record{}, "", ErrInvalid
 	}
-	if _, bound, err := lf.SQL(ctx, s.db); err != nil { return Record{}, "", ErrUnavailable } else if bound {
+	if _, bound, err := lf.SQL(ctx, s.db); err != nil {
+		return Record{}, "", ErrUnavailable
+	} else if bound {
 		found, err := s.findIdentity(ctx, r)
-		if err != nil { return Record{}, "", err }
+		if err != nil {
+			return Record{}, "", err
+		}
 		if len(found) != 0 {
-			if len(found) != 1 || !bytes.Equal(found[0].Immutable, r.Immutable) { return Record{}, Collided, nil }
+			if len(found) != 1 || !bytes.Equal(found[0].Immutable, r.Immutable) {
+				return Record{}, Collided, nil
+			}
 			return found[0], Existing, nil
 		}
 	}
@@ -201,7 +212,9 @@ const issuanceColumns = `realm,request_id,execution_key,operation_id,attempt_id,
 func (s *SQLStore) findIdentity(ctx context.Context, r Record) ([]Record, error) {
 	e := r.Intent.Execution
 	query, err := lifecycleExecutor(ctx, s.db)
-	if err != nil { return nil, ErrUnavailable }
+	if err != nil {
+		return nil, ErrUnavailable
+	}
 	rows, err := query.QueryContext(ctx, `SELECT `+issuanceColumns+` FROM v3_cp_authorization_issuances WHERE realm=? AND (request_id=? OR execution_key=? OR (operation_id=? AND attempt_id=? AND step_id=?))`, r.Intent.Scope.Realm, e.RequestID, e.ExecutionKey, e.OperationID, e.AttemptID, e.StepID)
 	if err != nil {
 		return nil, ErrStoreUnknown
@@ -227,11 +240,17 @@ func (s *SQLStore) findIdentity(ctx context.Context, r Record) ([]Record, error)
 func (s *SQLStore) Finish(ctx context.Context, r Record) error {
 	if s != nil && s.lifecycle != nil {
 		operation := "evidence.close"
-		if ctx != nil && ctx.Value(authorityTxKey{}) != nil { operation = "evidence.store.finish" }
+		if ctx != nil && ctx.Value(authorityTxKey{}) != nil {
+			operation = "evidence.store.finish"
+		}
 		joined, err := s.lifecycle.Require(ctx, operation)
-		if err != nil { return lifecycleError(err) }
+		if err != nil {
+			return lifecycleError(err)
+		}
 		if !joined {
-			if operation != "evidence.close" || r.State != "CLOSED" { return ErrUnavailable }
+			if operation != "evidence.close" || r.State != "CLOSED" {
+				return ErrUnavailable
+			}
 			owned := sqlCloneRecord(r)
 			_, err := lifecycleCall(ctx, s.lifecycle, lf.Call{Operation: operation, Purpose: "EVIDENCE_CHANGE", Actor: owned.Principal, Target: owned.Intent.Scope, Content: owned}, func(admitted context.Context) (struct{}, error) { return struct{}{}, s.Finish(admitted, owned) })
 			return err
@@ -244,7 +263,9 @@ func (s *SQLStore) Finish(ctx context.Context, r Record) error {
 		return err
 	}
 	query, err := lifecycleExecutor(ctx, s.db)
-	if err != nil { return ErrUnavailable }
+	if err != nil {
+		return ErrUnavailable
+	}
 	return finishSQLRecord(ctx, query, r)
 }
 func finishSQLRecord(ctx context.Context, db sqlRecordExecutor, r Record) error {
@@ -294,14 +315,20 @@ func finishSQLRecord(ctx context.Context, db sqlRecordExecutor, r Record) error 
 func (s *SQLStore) Lookup(ctx context.Context, q Lookup) (Record, error) {
 	if s != nil && s.lifecycle != nil {
 		joined, err := s.lifecycle.Require(ctx, "evidence.lookup")
-		if err != nil { return Record{}, lifecycleError(err) }
-		if !joined { return lifecycleCall(ctx, s.lifecycle, lf.Call{Operation: "evidence.lookup", Purpose: "CURRENT_READ", Target: q.Scope, Content: q}, func(admitted context.Context) (Record, error) { return s.Lookup(admitted, q) }) }
+		if err != nil {
+			return Record{}, lifecycleError(err)
+		}
+		if !joined {
+			return lifecycleCall(ctx, s.lifecycle, lf.Call{Operation: "evidence.lookup", Purpose: "CURRENT_READ", Target: q.Scope, Content: q}, func(admitted context.Context) (Record, error) { return s.Lookup(admitted, q) })
+		}
 	}
 	if err := s.schema(ctx); err != nil {
 		return Record{}, err
 	}
 	query, err := lifecycleExecutor(ctx, s.db)
-	if err != nil { return Record{}, ErrUnavailable }
+	if err != nil {
+		return Record{}, ErrUnavailable
+	}
 	return lookupSQLRecord(ctx, query, q)
 }
 func lookupSQLRecord(ctx context.Context, db sqlRecordExecutor, q Lookup) (Record, error) {

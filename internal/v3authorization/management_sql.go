@@ -1,13 +1,13 @@
 package v3authorization
 
 import (
-	lf "github.com/example/autostream-control-panel/internal/lifecyclefoundation"
 	"bytes"
 	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
 	"errors"
+	lf "github.com/example/autostream-control-panel/internal/lifecyclefoundation"
 	"sync"
 	"sync/atomic"
 
@@ -155,7 +155,9 @@ func (s *ManagementService) auditView(ctx context.Context) (*authorityView, erro
 }
 
 func (s *ManagementService) denial(ctx context.Context, p Principal, m ManagementMetadata, code string) error {
-	if s != nil && s.authority != nil && s.authority.lifecycle != nil { return ErrUnavailable }
+	if s != nil && s.authority != nil && s.authority.lifecycle != nil {
+		return ErrUnavailable
+	}
 	if s.schema(ctx) != nil {
 		return ErrUnavailable
 	}
@@ -205,7 +207,9 @@ func (s *ManagementService) fail(ctx context.Context, a ManagementActor, m Manag
 	return managementFailure(e)
 }
 func (s *ManagementService) RecordTransportDenial(ctx context.Context, p Principal, code string) error {
-	if s != nil && s.authority != nil && s.authority.lifecycle != nil { return ErrUnavailable }
+	if s != nil && s.authority != nil && s.authority.lifecycle != nil {
+		return ErrUnavailable
+	}
 	allowed := false
 	for _, v := range []string{"unauthenticated", "csrf_denied", "method_denied", "body_invalid", "inactive_principal", "route_not_found"} {
 		if code == v {
@@ -310,7 +314,9 @@ func managementSaveGrant(v *authorityView, g ManagementGrant, ordinal int) error
 // Bootstrap is internal composition only; no HTTP/startup/CLI caller or default
 // authorizer is supplied. V2 identity never provides its independent approval.
 func (s *ManagementService) Bootstrap(ctx context.Context, a ManagementActor, m ManagementMetadata, g ManagementGrant) ManagementResult {
-	if s != nil && s.authority != nil && s.authority.lifecycle != nil { return managementFailure(ErrUnavailable) }
+	if s != nil && s.authority != nil && s.authority.lifecycle != nil {
+		return managementFailure(ErrUnavailable)
+	}
 	release, enterErr := s.enter(ctx, true)
 	if enterErr != nil {
 		if enterErr == ErrStoreUnknown {
@@ -426,15 +432,25 @@ func freezeManagementChanges(records []AuthorityRecord, grants []ManagementGrant
 func (s *ManagementService) Apply(ctx context.Context, a ManagementActor, m ManagementMetadata, records []AuthorityRecord, grants []ManagementGrant) ManagementResult {
 	if s != nil && s.authority != nil && s.authority.lifecycle != nil {
 		joined, err := s.authority.lifecycle.Require(ctx, "management.apply")
-		if err != nil { return managementLifecycleResult(err) }
+		if err != nil {
+			return managementLifecycleResult(err)
+		}
 		if !joined {
 			owned, gs, err := freezeManagementChanges(records, grants)
-			if err != nil { return managementFailure(err) }
-			result, err := lifecycleCall(ctx, s.authority.lifecycle, lf.Call{Operation: "management.apply", Purpose: "AUTHORITY_CHANGE", Actor: a.Principal.ID, Target: m.Scope, Content: struct{ Metadata ManagementMetadata; Records []AuthorityRecord; Grants []ManagementGrant }{m, owned, gs}}, func(admitted context.Context) (ManagementResult, error) {
+			if err != nil {
+				return managementFailure(err)
+			}
+			result, err := lifecycleCall(ctx, s.authority.lifecycle, lf.Call{Operation: "management.apply", Purpose: "AUTHORITY_CHANGE", Actor: a.Principal.ID, Target: m.Scope, Content: struct {
+				Metadata ManagementMetadata
+				Records  []AuthorityRecord
+				Grants   []ManagementGrant
+			}{m, owned, gs}}, func(admitted context.Context) (ManagementResult, error) {
 				result := s.Apply(admitted, a, m, owned, gs)
 				return result, managementLifecycleError(result)
 			})
-			if err != nil { return managementFailure(err) }
+			if err != nil {
+				return managementFailure(err)
+			}
 			return result
 		}
 	}
@@ -554,13 +570,17 @@ func (s *ManagementService) Apply(ctx context.Context, a ManagementActor, m Mana
 func (s *ManagementService) Inspect(ctx context.Context, a ManagementActor, m ManagementMetadata) ManagementResult {
 	if s != nil && s.authority != nil && s.authority.lifecycle != nil {
 		joined, err := s.authority.lifecycle.Require(ctx, "management.inspect")
-		if err != nil { return managementLifecycleResult(err) }
+		if err != nil {
+			return managementLifecycleResult(err)
+		}
 		if !joined {
 			result, err := lifecycleCall(ctx, s.authority.lifecycle, lf.Call{Operation: "management.inspect", Purpose: "CURRENT_READ", Actor: a.Principal.ID, Target: m.Scope, Content: m}, func(admitted context.Context) (ManagementResult, error) {
 				result := s.Inspect(admitted, a, m)
 				return result, managementLifecycleError(result)
 			})
-			if err != nil { return managementFailure(err) }
+			if err != nil {
+				return managementFailure(err)
+			}
 			return result
 		}
 	}
