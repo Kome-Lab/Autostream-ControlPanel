@@ -23,6 +23,8 @@ Identity write order is Lifecycle head/projection prefix -> existing last-admin 
 
 No Ledger/OAuth/SMTP/Turnstile call is added under product SQL locks. The synthetic SQL probes test native NOWAIT exclusion and external stage lock release. Public HTTP does not wrap a whole network flow in a SQL transaction.
 
+The accepted B1 `identity.prepare` remains an exact Human-only, self-targeted CURRENT_READ admission for its fixed SELECT/lock callback. It is not an Identity Writer, cannot enter `RequireIdentity`, and grants no non-Human or Workload authority. Its retained SQL query interfaces are trusted owner interfaces, not a general sandbox for arbitrary SQL strings. Write purposes and unknown Identity operations still require the typed private request.
+
 ## Projection and secrets
 
 New explicit `migrations/002_identity.sql` adds a dedicated schema journal, projection and append-only history. It is never applied by constructors/startup and seeds no identities or projection. Tests apply it only to an explicitly disposable Actions loopback DB. Dirty/checksum/engine/trigger/qualified-profile mismatches refuse.
