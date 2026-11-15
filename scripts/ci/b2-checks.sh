@@ -8,7 +8,7 @@ if test -n "$unformatted"; then
     printf 'B2_GOFMT_BEGIN:%s\n' "$file"
     gofmt "$file" | base64 -w0
     printf '\nB2_GOFMT_END\n'
-    gofmt -d "$file"
+    gofmt -d "$file" || true
   done <<< "$unformatted"
   exit 1
 fi

@@ -49,7 +49,7 @@ type IdentityAuthorizer interface {
 
 type identityRequestKey struct{}
 type identityRequest struct {
-	active atomic.Bool
+	active  atomic.Bool
 	gate    *Gate
 	call    IdentityCall
 	binding IdentityBinding
@@ -198,7 +198,7 @@ func (g *Gate) DoIdentity(ctx context.Context, call IdentityCall, fn func(contex
 	bound := context.WithValue(ctx, identityRequestKey{}, request)
 	return g.Do(bound, Call{Operation: call.Operation, Purpose: purpose, Target: call.Target,
 		Content: struct {
-			Binding IdentityBinding
+			Binding   IdentityBinding
 			Reference string
 		}{binding, call.ContentReference}}, func(partCtx context.Context) error {
 		p, _ := partCtx.Value(participationKey{}).(*participation)
@@ -279,6 +279,9 @@ func identityGateCallValid(ctx context.Context, g *Gate, call Call) bool {
 	if !ok || (rule.mode == Read && call.Purpose != "CURRENT_READ") || (rule.mode == Write && call.Purpose != "IDENTITY_CHANGE") {
 		return false
 	}
-	want := struct { Binding IdentityBinding; Reference string }{r.binding, r.call.ContentReference}
+	want := struct {
+		Binding   IdentityBinding
+		Reference string
+	}{r.binding, r.call.ContentReference}
 	return same(want, call.Content)
 }
