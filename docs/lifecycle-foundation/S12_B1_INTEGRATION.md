@@ -121,7 +121,11 @@ The B1 guard applies every literal reviewed edit to complete B0 files, formats
 Go with the pinned toolchain and compares the full result. Every new path must
 be absent from B0. S13 allows only these reviewed edits; identity/last-admin,
 existing migrations, module pins, HTTP and pure codecs remain immutable.
-Existing tests are not weakened or skipped.
+Operational's former standard-library/security-only rule adds exactly the Lifecycle
+infrastructure path. It also checks that every production Lifecycle file imports
+only the standard library, rejecting a transitive product-authority/workload/provider
+bridge. Other foreign dependencies remain forbidden. Existing successful cases
+are retained and no test is skipped.
 
 Executable evidence and final commit/tree/CI URLs are recorded in PR #12 after
 the final candidate succeeds. Initial/pending attempts are not claimed as PASS.

@@ -33,8 +33,33 @@ func TestOperationalSourceBoundary(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if strings.Contains(dependency, ".") && dependency != "github.com/example/autostream-control-panel/internal/security" {
+			if strings.Contains(dependency, ".") && dependency != "github.com/example/autostream-control-panel/internal/security" && dependency != "github.com/example/autostream-control-panel/internal/lifecyclefoundation" {
 				t.Errorf("foreign authority dependency in %s: %s", entry.Name(), dependency)
+			}
+		}
+	}
+	// The sole new infrastructure dependency must remain independent of every
+	// product authority/workload/provider package; do not allow a transitive bridge.
+	foundation := filepath.Join(filepath.Dir(file), "..", "lifecyclefoundation")
+	foundationEntries, err := os.ReadDir(foundation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range foundationEntries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
+			continue
+		}
+		parsed, err := parser.ParseFile(token.NewFileSet(), filepath.Join(foundation, entry.Name()), nil, parser.ImportsOnly)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, spec := range parsed.Imports {
+			dependency, err := strconv.Unquote(spec.Path.Value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(dependency, ".") {
+				t.Errorf("Lifecycle infrastructure imports product/provider authority in %s: %s", entry.Name(), dependency)
 			}
 		}
 	}

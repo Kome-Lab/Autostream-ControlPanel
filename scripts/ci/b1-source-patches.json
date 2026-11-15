@@ -310,6 +310,16 @@
         "old": "git diff --exit-code \"$baseline\" HEAD -- go.mod go.sum internal/database/migrations internal/v3authorization internal/httpapi/server_v3_authorization.go internal/httpapi/server_v3_authorization_management.go ':(exclude)internal/database/migrations/093_user_admin_guard.sql'",
         "new": "git diff --exit-code \"$baseline\" HEAD -- go.mod go.sum internal/database/migrations internal/v3authorization internal/httpapi/server_v3_authorization.go internal/httpapi/server_v3_authorization_management.go ':(exclude)internal/database/migrations/093_user_admin_guard.sql' ':(exclude)internal/v3authorization/lifecycle.go' ':(exclude)internal/v3authorization/authority_store.go' ':(exclude)internal/v3authorization/sql_authority.go' ':(exclude)internal/v3authorization/sqlstore.go' ':(exclude)internal/v3authorization/service.go' ':(exclude)internal/v3authorization/management_sql.go'"
       }
+    ],
+    "internal/operationalauthorization/boundary_test.go": [
+      {
+        "old": "if strings.Contains(dependency, \".\") && dependency != \"github.com/example/autostream-control-panel/internal/security\" {",
+        "new": "if strings.Contains(dependency, \".\") && dependency != \"github.com/example/autostream-control-panel/internal/security\" && dependency != \"github.com/example/autostream-control-panel/internal/lifecyclefoundation\" {"
+      },
+      {
+        "old": "\t\t}\n\t}\n}\n",
+        "new": "\t\t}\n\t}\n\t// The sole new infrastructure dependency must remain independent of every\n\t// product authority/workload/provider package; do not allow a transitive bridge.\n\tfoundation := filepath.Join(filepath.Dir(file), \"..\", \"lifecyclefoundation\")\n\tfoundationEntries, err := os.ReadDir(foundation)\n\tif err != nil { t.Fatal(err) }\n\tfor _, entry := range foundationEntries {\n\t\tif entry.IsDir() || !strings.HasSuffix(entry.Name(), \".go\") || strings.HasSuffix(entry.Name(), \"_test.go\") { continue }\n\t\tparsed, err := parser.ParseFile(token.NewFileSet(), filepath.Join(foundation, entry.Name()), nil, parser.ImportsOnly)\n\t\tif err != nil { t.Fatal(err) }\n\t\tfor _, spec := range parsed.Imports {\n\t\t\tdependency, err := strconv.Unquote(spec.Path.Value)\n\t\t\tif err != nil { t.Fatal(err) }\n\t\t\tif strings.Contains(dependency, \".\") { t.Errorf(\"Lifecycle infrastructure imports product/provider authority in %s: %s\", entry.Name(), dependency) }\n\t\t}\n\t}\n}\n"
+      }
     ]
   }
 }
