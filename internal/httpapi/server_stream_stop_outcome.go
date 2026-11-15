@@ -15,6 +15,20 @@ func (s *Server) getStreamStopOutcome(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	source = stamp.UTC().Format(time.RFC3339Nano)
+	if observer, ok := s.streams.(store.NormalStopOutcomeStore); ok {
+		snapshot, observeErr := observer.ObserveNormalStop(r.Context(), r.PathValue("id"), source)
+		if errors.Is(observeErr, store.ErrNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
+			return
+		}
+		if observeErr != nil || snapshot.Stream.ID != r.PathValue("id") || snapshot.SourceVersion != source {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "read_stop_receipt_failed"})
+			return
+		}
+		s.writeStopLifecycleOutcome(w, r, snapshot)
+		writeJSON(w, http.StatusOK, map[string]any{"stream": snapshot.Stream, "stop_confirmed": snapshot.ReceiptFound, "source_updated_at": source})
+		return
+	}
 	stream, err := s.streams.GetStream(r.Context(), r.PathValue("id"))
 	if errors.Is(err, store.ErrNotFound) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})

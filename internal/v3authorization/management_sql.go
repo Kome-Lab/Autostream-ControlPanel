@@ -331,7 +331,14 @@ func (s *ManagementService) Bootstrap(ctx context.Context, a ManagementActor, m 
 	}
 	g = own[0]
 	ctx = context.WithValue(ctx, managementAuditTargetsKey{}, []managementAuditTarget{{"bootstrap", "administrator", g.Principal}})
-	v, e := s.begin(ctx, a, m)
+	// Independent verification/consumption completes before opening a CP SQL
+	// transaction. The private ApprovalView is revalidated on that exact Tx.
+	prepared, approvalPrepareErr := s.prepareBootstrapApproval(ctx, a, m, g)
+	if approvalPrepareErr != nil {
+		return s.fail(ctx, a, m, approvalPrepareErr)
+	}
+	ctx = prepared
+	v, e := s.beginBootstrapApproval(ctx, a, m, g)
 	if e != nil {
 		return s.fail(ctx, a, m, e)
 	}
@@ -363,12 +370,17 @@ func (s *ManagementService) Bootstrap(ctx context.Context, a ManagementActor, m 
 	}
 	approvalBytes, _ := encodeManagementGrant(g)
 	approvalGrant, _ := decodeManagementGrant(approvalBytes)
-	if approvalErr := s.bootstrap.AuthorizeBootstrap(ctx, ManagementActor{Principal: a.Principal}, m, approvalGrant); approvalErr != nil {
+	if approvalErr := s.consumeBootstrapApproval(ctx, v, a, m, approvalGrant); approvalErr != nil {
 		switch approvalErr {
 		case ErrStoreUnknown:
 			return reject(ErrStoreUnknown)
 		case ErrDenied:
 			return reject(ErrDenied)
+		case ErrConflict:
+			if _, optedIn := s.bootstrap.(*approvalAuthorizer); optedIn {
+				return reject(ErrConflict)
+			}
+			return reject(ErrUnavailable)
 		default:
 			return reject(ErrUnavailable)
 		}

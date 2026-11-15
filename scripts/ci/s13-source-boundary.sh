@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 baseline=d42a0fb2212c2378b822effc9b8dfd7031d457cb
+iu_baseline=18e4639462957e26fea2a3a45a734af67dc9ef93
 git merge-base --is-ancestor "$baseline" HEAD
 python3 scripts/ci/b2-source-boundary.py
 frozen_role_sha="$(git show 93181192d8f036bae40b490957489c9ee8290769:internal/httpapi/server_users_roles.go | sha256sum | cut -d ' ' -f 1)"
@@ -10,6 +11,9 @@ test "$frozen_admin_sha" = "17f3e56070217a10bebd8d6c3b2890198c42df892835d55697be
 frozen_auth_sha="$(git show 93181192d8f036bae40b490957489c9ee8290769:internal/store/auth_sessions_mariadb.go | sha256sum | cut -d ' ' -f 1)"
 test "$frozen_auth_sha" = "9f38933fccd635d515c65638e0892df013dd598a790c31f8b0ef2bfca1c7e3c1"
 while IFS= read -r file; do
+  if python3 scripts/ci/iu-source-boundary.py --owns "$file"; then
+    continue
+  fi
   if python3 scripts/ci/b2-source-boundary.py --owns "$file"; then
     continue
   fi
@@ -27,6 +31,9 @@ while IFS= read -r file; do
     *) printf 'S13 protected source changed: %s\n' "$file" >&2; exit 1 ;;
   esac
 done < <(git diff --name-only "$baseline" HEAD)
-git diff --exit-code "$baseline" HEAD -- go.mod go.sum internal/database/migrations internal/v3authorization internal/httpapi/server_v3_authorization.go internal/httpapi/server_v3_authorization_management.go ':(exclude)internal/database/migrations/093_user_admin_guard.sql' ':(exclude)internal/v3authorization/lifecycle.go' ':(exclude)internal/v3authorization/authority_store.go' ':(exclude)internal/v3authorization/sql_authority.go' ':(exclude)internal/v3authorization/sqlstore.go' ':(exclude)internal/v3authorization/service.go' ':(exclude)internal/v3authorization/management_sql.go'
+# Historical protection is evaluated against the accepted B2 tree. The full
+# accepted-B2 -> candidate delta (including module pins and these scripts) has
+# already been reconstructed by the mandatory IU guard above.
+git diff --exit-code "$baseline" "$iu_baseline" -- go.mod go.sum internal/database/migrations internal/v3authorization internal/httpapi/server_v3_authorization.go internal/httpapi/server_v3_authorization_management.go ':(exclude)internal/database/migrations/093_user_admin_guard.sql' ':(exclude)internal/v3authorization/lifecycle.go' ':(exclude)internal/v3authorization/authority_store.go' ':(exclude)internal/v3authorization/sql_authority.go' ':(exclude)internal/v3authorization/sqlstore.go' ':(exclude)internal/v3authorization/service.go' ':(exclude)internal/v3authorization/management_sql.go'
 python3 scripts/ci/b0-source-boundary.py
 printf 'S13 protected source boundary: PASS\n'

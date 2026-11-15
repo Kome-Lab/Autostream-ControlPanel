@@ -78,6 +78,7 @@ type Server struct {
 	streamVisual             streamvisual.Repository
 	videoCovers              videocover.Repository
 	videoCoverDispatcher     servicecall.VideoCoverDispatcher
+	lifecycleOutcomes        *LifecycleOutcomeBridge
 }
 
 type serviceDispatcher interface {

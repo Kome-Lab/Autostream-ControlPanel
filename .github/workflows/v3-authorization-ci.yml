@@ -130,3 +130,61 @@ jobs:
           go test -run '^TestCPProducerInterop$' -count=1 -v ./internal/v3authorization
           (cd .cp-interop-updater && go test -tags=cp_producer_interop -run '^TestCPProducerImport$' -count=1 -v ./internal/localexecutor/registry)
           git diff --exit-code -- go.mod go.sum
+
+  v3-product-integration-checks:
+    name: v3-product-integration-checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      GOTOOLCHAIN: local
+      GOWORK: 'off'
+      GOFLAGS: '-mod=readonly'
+      GOTELEMETRY: 'off'
+      GOMAXPROCS: '2'
+      AUTOSTREAM_S13_TEST_DSN: 'autostream_s13_ci:synthetic-s13-only@tcp(127.0.0.1:3306)/autostream_s13_ci?parseTime=true'
+      AUTOSTREAM_V3_AUTH_TEST_DSN: 'autostream_v3_auth_ci:synthetic-ci-only@tcp(127.0.0.1:3307)/autostream_v3_auth_ci?parseTime=true'
+    services:
+      iu-s13-mariadb:
+        image: mariadb:11.4.12@sha256:a794d9eb009e20de605858a11f32f63b4075cbd197c650436f0e3b457e4caed7
+        env:
+          MARIADB_DATABASE: autostream_s13_ci
+          MARIADB_USER: autostream_s13_ci
+          MARIADB_PASSWORD: synthetic-s13-only
+          MARIADB_ROOT_PASSWORD: synthetic-s13-root-only
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd "healthcheck.sh --connect --innodb_initialized"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+      iu-auth-mariadb:
+        image: mariadb:11.4.12@sha256:a794d9eb009e20de605858a11f32f63b4075cbd197c650436f0e3b457e4caed7
+        env:
+          MARIADB_DATABASE: autostream_v3_auth_ci
+          MARIADB_USER: autostream_v3_auth_ci
+          MARIADB_PASSWORD: synthetic-ci-only
+          MARIADB_ROOT_PASSWORD: synthetic-ci-root-only
+        ports: ['3307:3306']
+        options: >-
+          --health-cmd "healthcheck.sh --connect --innodb_initialized"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version: '1.26.5'
+          check-latest: false
+          cache: false
+      - name: Required IU-WS1 and IU-WS2 SQL, process and HTTP inventory
+        run: bash scripts/ci/iu-checks.sh
+      - name: Preserve exact root execution evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: iu-cp-root-events-${{ github.sha }}
+          path: ${{ runner.temp }}/iu-*.json
+          if-no-files-found: error
+          retention-days: 14
