@@ -1,6 +1,7 @@
 package store
 
 import (
+	lf "github.com/example/autostream-control-panel/internal/lifecyclefoundation"
 	"context"
 	"database/sql"
 	"errors"
@@ -12,11 +13,11 @@ var errOperationalSource = errors.New("operational source unavailable or inconsi
 
 // Epoch lock precedes every consistent read. Legacy authorization writes join
 // this generation through transactional triggers, without a copied authority.
-func operationalRead(ctx context.Context, db *sql.DB, f func(*sql.Tx, uint64) error) error {
+func operationalRead(ctx context.Context, db *sql.DB, f func(lf.Executor, uint64) error) error {
 	if ctx == nil || db == nil {
 		return errOperationalSource
 	}
-	tx, err := db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	tx, err := lf.BeginSQL(ctx, db, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return err
 	}
@@ -42,13 +43,13 @@ func operationalRead(ctx context.Context, db *sql.DB, f func(*sql.Tx, uint64) er
 
 func (s MariaDBAuthStore) Revision(ctx context.Context) (uint64, error) {
 	var generation uint64
-	err := operationalRead(ctx, s.db, func(_ *sql.Tx, current uint64) error { generation = current; return nil })
+	err := operationalRead(ctx, s.db, func(_ lf.Executor, current uint64) error { generation = current; return nil })
 	return generation, err
 }
 
 func (s MariaDBAuthStore) Snapshot(ctx context.Context, principalID string) (oa.Snapshot, error) {
 	var snapshot oa.Snapshot
-	err := operationalRead(ctx, s.db, func(tx *sql.Tx, generation uint64) error {
+	err := operationalRead(ctx, s.db, func(tx lf.Executor, generation uint64) error {
 		principal := oa.Principal{Kind: oa.KindHuman}
 		if err := tx.QueryRowContext(ctx, `SELECT id,status FROM users WHERE id=?`, principalID).Scan(&principal.ID, &principal.State); err != nil {
 			return err

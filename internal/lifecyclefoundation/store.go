@@ -29,6 +29,12 @@ type participation struct {
 	store   *SQLStore
 	request Request
 	active  bool
+	failed bool
+	gate *Gate
+	tx *sql.Tx
+	before Checkpoint
+	authorization Authorization
+	joins []*joinedTransaction
 }
 
 // Transaction has no Commit/Rollback method. Its context is private, exact-request
@@ -140,6 +146,10 @@ func nextCheckpoint(before, after Checkpoint, intent Intent) bool {
 	if intent.Mode == Read {
 		return after == before
 	}
+	if intent.Purpose == "EVIDENCE_CHANGE" {
+		return after.OperationalRevision == before.OperationalRevision && after.AuthorityEpoch == before.AuthorityEpoch && after.IdentityRevision == before.IdentityRevision &&
+			(after == before || after.Content != before.Content && after.HistoryHead != before.HistoryHead)
+	}
 	if after.Content == before.Content || after.HistoryHead == before.HistoryHead ||
 		after.OperationalRevision < before.OperationalRevision ||
 		after.AuthorityEpoch < before.AuthorityEpoch || after.IdentityRevision < before.IdentityRevision {
@@ -189,7 +199,7 @@ func (s *SQLStore) apply(ctx context.Context, r Reservation, auth Authorizer, ef
 			return CommitRecord{}, ErrConflict
 		}
 	}
-	p := &participation{store: s, request: r.Request, active: true}
+	p := &participation{store: s, request: r.Request, active: true, tx: tx, before: frame.Checkpoint, authorization: r.Authorization}
 	partCtx := context.WithValue(ctx, participationKey{}, p)
 	after, effectErr := func() (Checkpoint, error) {
 		defer func() {
@@ -202,6 +212,11 @@ func (s *SQLStore) apply(ctx context.Context, r Reservation, auth Authorizer, ef
 	if effectErr != nil {
 		return CommitRecord{}, effectErr
 	}
+	p.mu.Lock()
+	participantsComplete := !p.failed
+	for _, joined := range p.joins { participantsComplete = participantsComplete && joined.done }
+	p.mu.Unlock()
+	if !participantsComplete { return CommitRecord{}, ErrHeld }
 	if !nextCheckpoint(frame.Checkpoint, after, r.Request.Intent) {
 		return CommitRecord{}, ErrHeld
 	}

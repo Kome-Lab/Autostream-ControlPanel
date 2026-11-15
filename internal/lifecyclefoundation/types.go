@@ -232,7 +232,7 @@ func (i Intent) Validate() error {
 		if i.Mode != Read {
 			return ErrHeld
 		}
-	case "AUTHORITY_CHANGE", "OPERATIONAL_CHANGE", "IDENTITY_CHANGE":
+	case "AUTHORITY_CHANGE", "OPERATIONAL_CHANGE", "IDENTITY_CHANGE", "EVIDENCE_CHANGE":
 		if i.Mode != Write {
 			return ErrHeld
 		}

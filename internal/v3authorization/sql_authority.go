@@ -1,6 +1,7 @@
 package v3authorization
 
 import (
+	lf "github.com/example/autostream-control-panel/internal/lifecyclefoundation"
 	"context"
 	"database/sql"
 	"errors"
@@ -11,7 +12,7 @@ import (
 
 type authorityView struct {
 	ctx        context.Context
-	tx         *sql.Tx
+	tx         lf.SQLTransaction
 	generation uint64
 	observedAt string
 	locking    bool
@@ -214,7 +215,7 @@ func (a *SQLAuthority) view(ctx context.Context, locking bool) (*authorityView, 
 	if locking {
 		options = &sql.TxOptions{Isolation: sql.LevelReadCommitted}
 	}
-	tx, err := a.db.BeginTx(ctx, options)
+	tx, err := lf.BeginSQL(ctx, a.db, options)
 	if err != nil {
 		return nil, ErrUnavailable
 	}
@@ -247,6 +248,13 @@ func (a *SQLAuthority) snapshot(ctx context.Context, fn func(*authorityView) err
 	return nil
 }
 func (a *SQLAuthority) Read(ctx context.Context, p Principal, i Intent) (Decision, error) {
+	if a != nil && a.lifecycle != nil {
+		joined, err := a.lifecycle.Require(ctx, "authority.read")
+		if err != nil { return Decision{}, lifecycleError(err) }
+		if !joined {
+			return lifecycleCall(ctx, a.lifecycle, lf.Call{Operation: "authority.read", Purpose: "CURRENT_READ", Actor: p.ID, Target: i.Scope, Content: i}, func(admitted context.Context) (Decision, error) { return a.Read(admitted, p, i) })
+		}
+	}
 	var decision Decision
 	err := a.snapshot(ctx, func(v *authorityView) error { var err error; decision, err = v.decision(p, i); return err })
 	if err != nil {
@@ -255,6 +263,13 @@ func (a *SQLAuthority) Read(ctx context.Context, p Principal, i Intent) (Decisio
 	return decision, nil
 }
 func (a *SQLAuthority) ResolveTarget(ctx context.Context, i Intent) (ResolvedTarget, error) {
+	if a != nil && a.lifecycle != nil {
+		joined, err := a.lifecycle.Require(ctx, "authority.target")
+		if err != nil { return ResolvedTarget{}, lifecycleError(err) }
+		if !joined {
+			return lifecycleCall(ctx, a.lifecycle, lf.Call{Operation: "authority.target", Purpose: "CURRENT_READ", Actor: "", Target: i.Scope, Content: i}, func(admitted context.Context) (ResolvedTarget, error) { return a.ResolveTarget(admitted, i) })
+		}
+	}
 	var result ResolvedTarget
 	err := a.snapshot(ctx, func(v *authorityView) error { var err error; result, err = v.target(i); return err })
 	if err != nil {
@@ -263,6 +278,13 @@ func (a *SQLAuthority) ResolveTarget(ctx context.Context, i Intent) (ResolvedTar
 	return result, nil
 }
 func (a *SQLAuthority) ResolvePolicyTrust(ctx context.Context, scope evidence.Scope, action string) (ResolvedPolicyTrust, error) {
+	if a != nil && a.lifecycle != nil {
+		joined, err := a.lifecycle.Require(ctx, "authority.policy")
+		if err != nil { return ResolvedPolicyTrust{}, lifecycleError(err) }
+		if !joined {
+			return lifecycleCall(ctx, a.lifecycle, lf.Call{Operation: "authority.policy", Purpose: "CURRENT_READ", Actor: "", Target: scope, Content: action}, func(admitted context.Context) (ResolvedPolicyTrust, error) { return a.ResolvePolicyTrust(admitted, scope, action) })
+		}
+	}
 	var result ResolvedPolicyTrust
 	err := a.snapshot(ctx, func(v *authorityView) error { var err error; result, err = v.rules(scope, action); return err })
 	if err != nil {
@@ -276,6 +298,14 @@ func (a *SQLAuthority) ResolvePolicyTrust(ctx context.Context, scope evidence.Sc
 // Issue permission, Candidate approval or Policy/Trust eligibility for a historic
 // record. Knowing an Evidence ID never broadens a lookup.
 func (a *SQLAuthority) AuthorizeRead(ctx context.Context, p Principal, q Lookup) error {
+	if a != nil && a.lifecycle != nil {
+		joined, err := a.lifecycle.Require(ctx, "authority.history")
+		if err != nil { return lifecycleError(err) }
+		if !joined {
+			_, err := lifecycleCall(ctx, a.lifecycle, lf.Call{Operation: "authority.history", Purpose: "CURRENT_READ", Actor: p.ID, Target: q.Scope, Content: q}, func(admitted context.Context) (struct{}, error) { return struct{}{}, a.AuthorizeRead(admitted, p, q) })
+			return err
+		}
+	}
 	if !sqlValidLookup(q) {
 		return ErrInvalid
 	}
@@ -318,7 +348,7 @@ type authorityTxKey struct{}
 type authorityTransaction struct {
 	mu                      sync.Mutex
 	db                      *sql.DB
-	tx                      *sql.Tx
+	tx                      lf.SQLTransaction
 	principal               Principal
 	intent                  Intent
 	decision                Decision
@@ -332,6 +362,14 @@ type authorityTransaction struct {
 // SQLStore.Finish receives this SAME transaction via saveCtx; no global mutable
 // transaction, separate autocommit save, timeout success or automatic retry exists.
 func (a *SQLAuthority) WithCurrent(ctx context.Context, p Principal, i Intent, expected Decision, fn func(context.Context, Decision) error) error {
+	if a != nil && a.lifecycle != nil {
+		joined, err := a.lifecycle.Require(ctx, "evidence.finish")
+		if err != nil { return lifecycleError(err) }
+		if !joined {
+			_, err := lifecycleCall(ctx, a.lifecycle, lf.Call{Operation: "evidence.finish", Purpose: "EVIDENCE_CHANGE", Actor: p.ID, Target: i.Scope, Content: struct{ Intent Intent; Decision Decision }{i, expected}}, func(admitted context.Context) (struct{}, error) { return struct{}{}, a.WithCurrent(admitted, p, i, expected, fn) })
+			return err
+		}
+	}
 	if fn == nil {
 		return ErrInvalid
 	}

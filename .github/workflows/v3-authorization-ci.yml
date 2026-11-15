@@ -41,6 +41,8 @@ jobs:
         with:
           go-version: '1.26.5'
           cache: true
+      - name: S12-B1 required product Lifecycle integration
+        run: bash scripts/ci/b1-checks.sh
       - name: S12-B0 required Lifecycle Foundation
         run: bash scripts/ci/b0-checks.sh
       - name: Toolchain and pinned evidence dependency

@@ -1,6 +1,7 @@
 package v3authorization
 
 import (
+	lf "github.com/example/autostream-control-panel/internal/lifecyclefoundation"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -81,7 +82,10 @@ func ApplyAuthorityMigrations(ctx context.Context, db *sql.DB) error {
 // SQLAuthority borrows the same CP pool as SQLStore. All supported v3 mutations
 // use Save, and all conditional saves use WithCurrent. Neither method converts
 // a v2 role, policy, Grant or Host enrollment into v3 permission.
-type SQLAuthority struct{ db *sql.DB }
+type SQLAuthority struct{
+	db *sql.DB
+	lifecycle *lf.Gate
+}
 
 var _ Authority = (*SQLAuthority)(nil)
 
@@ -106,11 +110,18 @@ func (a *SQLAuthority) schema(ctx context.Context) error {
 	return nil
 }
 func (a *SQLAuthority) Generation(ctx context.Context) (uint64, error) {
+	if a != nil && a.lifecycle != nil {
+		joined, err := a.lifecycle.Require(ctx, "authority.generation")
+		if err != nil { return 0, lifecycleError(err) }
+		if !joined { return lifecycleCall(ctx, a.lifecycle, lf.Call{Operation: "authority.generation", Purpose: "CURRENT_READ", Target: "authority", Content: "generation"}, func(admitted context.Context) (uint64, error) { return a.Generation(admitted) }) }
+	}
 	if a.schema(ctx) != nil {
 		return 0, ErrUnavailable
 	}
 	var generation uint64
-	if a.db.QueryRowContext(ctx, "SELECT generation FROM v3_cp_authority_epoch WHERE singleton=1").Scan(&generation) != nil {
+	q, err := lifecycleExecutor(ctx, a.db)
+	if err != nil { return 0, ErrUnavailable }
+	if q.QueryRowContext(ctx, "SELECT generation FROM v3_cp_authority_epoch WHERE singleton=1").Scan(&generation) != nil {
 		return 0, ErrUnavailable
 	}
 	return generation, nil
@@ -123,6 +134,18 @@ func (a *SQLAuthority) Generation(ctx context.Context) (uint64, error) {
 // A batch is atomic, CAS-versioned and append-only in history; revocation uses
 // explicit inactive/revoked/UNKNOWN current records instead of destructive delete.
 func (a *SQLAuthority) Save(ctx context.Context, expected uint64, records []AuthorityRecord) (uint64, error) {
+	if a != nil && a.lifecycle != nil {
+		joined, err := a.lifecycle.Require(ctx, "authority.save")
+		if err != nil { return 0, lifecycleError(err) }
+		if !joined {
+			// An already-locked Management/WithCurrent owner may not acquire a
+			// new Lifecycle prefix or perform external I/O at this point.
+			if ctx.Value(managementSaveKey{}) != nil || ctx.Value(authorityTxKey{}) != nil { return 0, ErrUnavailable }
+			owned, _, err := freezeManagementChanges(records, nil)
+			if err != nil { return 0, err }
+			return lifecycleCall(ctx, a.lifecycle, lf.Call{Operation: "authority.save", Purpose: "AUTHORITY_CHANGE", Target: "authority", Content: struct{ Expected uint64; Records []AuthorityRecord }{expected, owned}}, func(admitted context.Context) (uint64, error) { return a.Save(admitted, expected, owned) })
+		}
+	}
 	if ctx == nil {
 		return 0, ErrUnavailable
 	}
@@ -147,7 +170,7 @@ func (a *SQLAuthority) Save(ctx context.Context, expected uint64, records []Auth
 		a, b := entries[i].key, entries[j].key
 		return string(a.kind)+"\x00"+a.realm+"\x00"+a.first+"\x00"+a.second < string(b.kind)+"\x00"+b.realm+"\x00"+b.first+"\x00"+b.second
 	})
-	var tx *sql.Tx
+	var tx lf.SQLTransaction
 	var err error
 	binding, _ := ctx.Value(managementSaveKey{}).(*managementSaveTransaction)
 	owned := binding == nil
@@ -163,7 +186,7 @@ func (a *SQLAuthority) Save(ctx context.Context, expected uint64, records []Auth
 		if a.schema(ctx) != nil {
 			return 0, ErrUnavailable
 		}
-		tx, err = a.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+		tx, err = lf.BeginSQL(ctx, a.db, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 		if err != nil {
 			return 0, ErrUnavailable
 		}

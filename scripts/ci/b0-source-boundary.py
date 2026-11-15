@@ -4,6 +4,7 @@ import pathlib
 import subprocess
 
 BASE = "ee26856bbf7e808424a658345dd5f362d5500bb6"
+B0 = "2446b5b451cc3749a3245be640b5b43cf086183e"
 EXTRAS = [
     "docs/lifecycle-foundation/CONNECTION_INVENTORY.md",
     "docs/lifecycle-foundation/S12_B0_IMPLEMENTATION.md",
@@ -29,7 +30,7 @@ def git(*args):
     return subprocess.check_output(["git", *args]).decode("utf-8")
 
 subprocess.run(["git", "merge-base", "--is-ancestor", BASE, "HEAD"], check=True)
-changed = git("diff", "--name-only", BASE, "HEAD").splitlines()
+changed = git("diff", "--name-only", BASE, B0).splitlines()
 allowed = set(EXTRAS + WORKFLOWS + [S13])
 assert set(changed) <= allowed, "B0 changed protected or unrelated source"
 for path in EXTRAS:
@@ -43,15 +44,16 @@ for path in WORKFLOWS:
     anchor = "      - name: Toolchain and pinned evidence dependency\n" if path == WORKFLOWS[0] else "      - name: Protected source boundaries and formatting\n"
     assert original.count(anchor) == 1, "CI extension anchor drifted"
     expected_workflow = original.replace(anchor, STEP + anchor, 1)
-    assert pathlib.Path(path).read_text() == expected_workflow, "existing CI changed beyond the exact B0 extension"
+    assert git("show", B0 + ":" + path) == expected_workflow, "existing CI changed beyond the exact B0 extension"
 original = git("show", BASE + ":" + S13)
 expected = original.replace('  case "$file" in\n', '  case "$file" in\n' + INSERTION, 1)
 expected = expected.replace(" .github/workflows/v3-authorization-ci.yml ':(exclude)", " ':(exclude)", 1)
 expected = expected.replace("printf 'S13 protected source boundary: PASS",
                             "python3 scripts/ci/b0-source-boundary.py\nprintf 'S13 protected source boundary: PASS", 1)
-assert pathlib.Path(S13).read_text() == expected, "S13 guard changed beyond its exact reviewed extension"
+assert git("show", B0 + ":" + S13) == expected, "S13 guard changed beyond its exact reviewed extension"
 protected = ["go.mod", "go.sum", "cmd", "internal/database", "internal/operationalauthorization",
              "internal/v3authorization", "internal/httpapi", "internal/store"]
-subprocess.run(["git", "diff", "--exit-code", BASE, "HEAD", "--", *protected], check=True)
+subprocess.run(["git", "diff", "--exit-code", BASE, B0, "--", *protected], check=True)
 print(git("log", "-1", "--format=B0 tested commit: %H%nB0 tested tree: %T").strip())
-print("B0 exact source boundary: PASS")
+subprocess.run(["python3", "scripts/ci/b1-source-boundary.py"], check=True)
+print("B0 historical exact source boundary and B1 reviewed extensions: PASS")

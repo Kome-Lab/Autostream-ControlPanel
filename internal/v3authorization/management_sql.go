@@ -1,6 +1,7 @@
 package v3authorization
 
 import (
+	lf "github.com/example/autostream-control-panel/internal/lifecyclefoundation"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -17,7 +18,7 @@ type managementSaveKey struct{}
 type managementSaveTransaction struct {
 	mu           sync.Mutex
 	db           *sql.DB
-	tx           *sql.Tx
+	tx           lf.SQLTransaction
 	expected     uint64
 	active, used bool
 }
@@ -128,7 +129,7 @@ func currentManagementGrant(v *authorityView, p Principal, scope evidence.Scope,
 	}
 	return g, nil
 }
-func managementAudit(ctx context.Context, tx *sql.Tx, p Principal, m ManagementMetadata, operation, targetType, targetID string, before, after uint64, result, code string) error {
+func managementAudit(ctx context.Context, tx lf.SQLTransaction, p Principal, m ManagementMetadata, operation, targetType, targetID string, before, after uint64, result, code string) error {
 	var id [16]byte
 	if _, e := rand.Read(id[:]); e != nil {
 		return ErrUnavailable
@@ -141,7 +142,7 @@ func managementAudit(ctx context.Context, tx *sql.Tx, p Principal, m ManagementM
 	return nil
 }
 func (s *ManagementService) auditView(ctx context.Context) (*authorityView, error) {
-	tx, e := s.authority.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	tx, e := lf.BeginSQL(ctx, s.authority.db, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if e != nil {
 		return nil, ErrUnavailable
 	}
@@ -154,6 +155,7 @@ func (s *ManagementService) auditView(ctx context.Context) (*authorityView, erro
 }
 
 func (s *ManagementService) denial(ctx context.Context, p Principal, m ManagementMetadata, code string) error {
+	if s != nil && s.authority != nil && s.authority.lifecycle != nil { return ErrUnavailable }
 	if s.schema(ctx) != nil {
 		return ErrUnavailable
 	}
@@ -203,6 +205,7 @@ func (s *ManagementService) fail(ctx context.Context, a ManagementActor, m Manag
 	return managementFailure(e)
 }
 func (s *ManagementService) RecordTransportDenial(ctx context.Context, p Principal, code string) error {
+	if s != nil && s.authority != nil && s.authority.lifecycle != nil { return ErrUnavailable }
 	allowed := false
 	for _, v := range []string{"unauthenticated", "csrf_denied", "method_denied", "body_invalid", "inactive_principal", "route_not_found"} {
 		if code == v {
@@ -307,6 +310,7 @@ func managementSaveGrant(v *authorityView, g ManagementGrant, ordinal int) error
 // Bootstrap is internal composition only; no HTTP/startup/CLI caller or default
 // authorizer is supplied. V2 identity never provides its independent approval.
 func (s *ManagementService) Bootstrap(ctx context.Context, a ManagementActor, m ManagementMetadata, g ManagementGrant) ManagementResult {
+	if s != nil && s.authority != nil && s.authority.lifecycle != nil { return managementFailure(ErrUnavailable) }
 	release, enterErr := s.enter(ctx, true)
 	if enterErr != nil {
 		if enterErr == ErrStoreUnknown {
@@ -420,6 +424,20 @@ func freezeManagementChanges(records []AuthorityRecord, grants []ManagementGrant
 }
 
 func (s *ManagementService) Apply(ctx context.Context, a ManagementActor, m ManagementMetadata, records []AuthorityRecord, grants []ManagementGrant) ManagementResult {
+	if s != nil && s.authority != nil && s.authority.lifecycle != nil {
+		joined, err := s.authority.lifecycle.Require(ctx, "management.apply")
+		if err != nil { return managementLifecycleResult(err) }
+		if !joined {
+			owned, gs, err := freezeManagementChanges(records, grants)
+			if err != nil { return managementFailure(err) }
+			result, err := lifecycleCall(ctx, s.authority.lifecycle, lf.Call{Operation: "management.apply", Purpose: "AUTHORITY_CHANGE", Actor: a.Principal.ID, Target: m.Scope, Content: struct{ Metadata ManagementMetadata; Records []AuthorityRecord; Grants []ManagementGrant }{m, owned, gs}}, func(admitted context.Context) (ManagementResult, error) {
+				result := s.Apply(admitted, a, m, owned, gs)
+				return result, managementLifecycleError(result)
+			})
+			if err != nil { return managementFailure(err) }
+			return result
+		}
+	}
 	release, enterErr := s.enter(ctx, true)
 	if enterErr != nil {
 		if enterErr == ErrStoreUnknown {
@@ -534,6 +552,18 @@ func (s *ManagementService) Apply(ctx context.Context, a ManagementActor, m Mana
 	return ManagementResult{Status: ManagementApplied, Code: "v3_management_applied", Generation: v.generation + 1, Initialized: true}
 }
 func (s *ManagementService) Inspect(ctx context.Context, a ManagementActor, m ManagementMetadata) ManagementResult {
+	if s != nil && s.authority != nil && s.authority.lifecycle != nil {
+		joined, err := s.authority.lifecycle.Require(ctx, "management.inspect")
+		if err != nil { return managementLifecycleResult(err) }
+		if !joined {
+			result, err := lifecycleCall(ctx, s.authority.lifecycle, lf.Call{Operation: "management.inspect", Purpose: "CURRENT_READ", Actor: a.Principal.ID, Target: m.Scope, Content: m}, func(admitted context.Context) (ManagementResult, error) {
+				result := s.Inspect(admitted, a, m)
+				return result, managementLifecycleError(result)
+			})
+			if err != nil { return managementFailure(err) }
+			return result
+		}
+	}
 	release, enterErr := s.enter(ctx, false)
 	if enterErr != nil {
 		if enterErr == ErrStoreUnknown {

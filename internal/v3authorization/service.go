@@ -1,6 +1,7 @@
 package v3authorization
 
 import (
+	lf "github.com/example/autostream-control-panel/internal/lifecyclefoundation"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -17,11 +18,12 @@ import (
 type Service struct {
 	config Config
 	deps   Dependencies
+	lifecycle *lf.Gate
 }
 
 // NewService installs no test signer, clock, v2 permission bridge or default
 // resolver. Unconfigured services/handlers are explicitly fail-closed.
-func NewService(config Config, deps Dependencies) *Service { return &Service{config, deps} }
+func NewService(config Config, deps Dependencies) *Service { return &Service{config: config, deps: deps} }
 func (s *Service) configured() bool {
 	return s != nil && validID(s.config.Issuer) && validID(s.config.Audience) &&
 		s.deps.Resolver != nil && s.deps.Authority != nil && s.deps.Validity != nil &&
@@ -44,6 +46,7 @@ func dependencyFailure(err error) Result {
 }
 
 func (s *Service) Issue(ctx context.Context, principal Principal, request IssueRequest) Result {
+	if s != nil && s.lifecycleDependencies() != nil { return failure(Unavailable, ErrUnavailable.Code) }
 	if !validID(principal.ID) {
 		return failure(Denied, ErrDenied.Code)
 	}
@@ -179,6 +182,7 @@ func (s *Service) closeUnissued(ctx context.Context, record Record, status Statu
 }
 
 func (s *Service) Read(ctx context.Context, principal Principal, lookup Lookup) Result {
+	if s != nil && s.lifecycleDependencies() != nil { return failure(Unavailable, ErrUnavailable.Code) }
 	if !validID(principal.ID) {
 		return failure(Denied, ErrDenied.Code)
 	}
