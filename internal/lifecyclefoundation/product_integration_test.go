@@ -59,6 +59,13 @@ func TestB1AuthorityReadersAndCAS(t *testing.T) {
 		require(t, err)
 		check(t, next == 2 && f.generation(t) == 2, "owner CAS not shared")
 		check(t, f.attempts(t, "authority.save") == 1, "Save has no participant")
+		var id string
+		require(t, f.db.QueryRow("SELECT attempt FROM v3_cp_lifecycle_attempts WHERE deployment=? AND JSON_UNQUOTE(JSON_EXTRACT(body,'$.Reservation.Request.Intent.Operation'))='authority.save'", f.env.Binding.Deployment).Scan(&id))
+		_, err = f.env.Gate.Inspect(ctx, "authority", id)
+		require(t, err)
+		_, err = f.env.Gate.Inspect(ctx, "other-authority", id)
+		check(t, err != nil, "Inspect accepted an authorized target different from the stored Attempt")
+		check(t, f.generation(t) == 2, "pure inspection changed product state")
 	})
 	t.Run("stale-generation-rolls-back", func(t *testing.T) {
 		f := newProductFixture(t)

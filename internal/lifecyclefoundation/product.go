@@ -275,8 +275,16 @@ func (g *Gate) Inspect(ctx context.Context, target any, id string) (Inspection, 
 	if g.Ready() != nil {
 		return Inspection{}, ErrHeld
 	}
-	return g.service.Inspect(ctx, Intent{Mode: Read, Purpose: "CURRENT_READ", Operation: "lifecycle.inspect",
-		OperationContent: SyntheticReference(id), Scope: Scope{Type: "RESOURCE", ID: SyntheticReference(target)}, Subject: "product"}, id)
+	intent := Intent{Mode: Read, Purpose: "CURRENT_READ", Operation: "lifecycle.inspect",
+		OperationContent: SyntheticReference(id), Scope: Scope{Type: "RESOURCE", ID: SyntheticReference(target)}, Subject: "product"}
+	result, err := g.service.Inspect(ctx, intent, id)
+	if err != nil {
+		return Inspection{}, err
+	}
+	if result.Ledger.Reservation.Request.Intent.Scope != intent.Scope || result.Ledger.Reservation.Request.Intent.Subject != intent.Subject {
+		return Inspection{}, ErrHeld
+	}
+	return result, nil
 }
 
 func (j *joinedTransaction) available() bool {
