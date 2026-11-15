@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	_ "embed"
 	"encoding/hex"
+	"encoding/json"
 	"go/format"
 	"os"
 	"path/filepath"
@@ -48,6 +49,7 @@ func TestOperationalLastAdminSourceBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	expected = applyB2LastAdminPatch(t, root, "internal/store/admin.go", expected)
 	actual, err := os.ReadFile(filepath.Join(root, "internal/store/admin.go"))
 	if err != nil {
 		t.Fatal(err)
@@ -79,6 +81,7 @@ func TestOperationalLastAdminSourceBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	authExpected = applyB2LastAdminPatch(t, root, "internal/store/auth_sessions_mariadb.go", authExpected)
 	authActual, err := os.ReadFile(filepath.Join(root, "internal/store/auth_sessions_mariadb.go"))
 	if err != nil {
 		t.Fatal(err)
@@ -95,4 +98,37 @@ func TestOperationalLastAdminSourceBoundary(t *testing.T) {
 	if hex.EncodeToString(md[:]) != "4feba2b60385d37eab73224705cf9d1a3587a7bc7324108400ec685cd789cee1" {
 		t.Fatal("last-admin migration is not the reviewed singleton lock-row schema")
 	}
+}
+
+// Preserve the complete accepted S13 reconstruction and replay only the exact
+// B2 transaction-participation edits. Existing guard SQL and tamper probes above
+// remain mandatory; neither Store file is excluded from whole-file comparison.
+func applyB2LastAdminPatch(t *testing.T, root, path string, baseline []byte) []byte {
+	t.Helper()
+	body, err := os.ReadFile(filepath.Join(root, "scripts/ci/b2-source-patches.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest struct {
+		Baseline string `json:"baseline"`
+		Patches  map[string][]struct {
+			Old string `json:"old"`
+			New string `json:"new"`
+		} `json:"patches"`
+	}
+	if err = json.Unmarshal(body, &manifest); err != nil || manifest.Baseline != "60137bb7f6bbcf830485ead3f5850809b767c5a4" {
+		t.Fatal("invalid B2 source manifest")
+	}
+	expected := string(baseline)
+	for _, edit := range manifest.Patches[path] {
+		if edit.Old == "" || strings.Count(expected, edit.Old) != 1 {
+			t.Fatal("B2 last-admin exact edit anchor drift: " + path)
+		}
+		expected = strings.Replace(expected, edit.Old, edit.New, 1)
+	}
+	formatted, err := format.Source([]byte(expected))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return formatted
 }

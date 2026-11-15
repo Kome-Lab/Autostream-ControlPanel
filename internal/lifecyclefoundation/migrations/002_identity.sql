@@ -1,0 +1,7 @@
+CREATE TABLE v3_cp_identity_projection (singleton TINYINT PRIMARY KEY, revision BIGINT UNSIGNED NOT NULL, operational_revision BIGINT UNSIGNED NOT NULL, authority_epoch BIGINT UNSIGNED NOT NULL, entity_count BIGINT UNSIGNED NOT NULL, content_reference VARCHAR(96) COLLATE utf8mb4_bin NOT NULL, history_reference VARCHAR(96) COLLATE utf8mb4_bin NOT NULL, coverage VARCHAR(96) COLLATE utf8mb4_bin NOT NULL, qualified BOOLEAN NOT NULL) ENGINE=InnoDB;
+CREATE TABLE v3_cp_identity_history (revision BIGINT UNSIGNED PRIMARY KEY, attempt VARCHAR(96) COLLATE utf8mb4_bin NOT NULL UNIQUE, body LONGTEXT NOT NULL) ENGINE=InnoDB;
+CREATE TABLE v3_cp_identity_schema_history (generation BIGINT UNSIGNED PRIMARY KEY, checksum CHAR(64) NOT NULL) ENGINE=InnoDB;
+CREATE TRIGGER v3_cp_identity_history_no_update BEFORE UPDATE ON v3_cp_identity_history FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='identity history is append only';
+CREATE TRIGGER v3_cp_identity_history_no_delete BEFORE DELETE ON v3_cp_identity_history FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='identity history is append only';
+CREATE TRIGGER v3_cp_identity_schema_history_no_update BEFORE UPDATE ON v3_cp_identity_schema_history FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='identity schema history is append only';
+CREATE TRIGGER v3_cp_identity_schema_history_no_delete BEFORE DELETE ON v3_cp_identity_schema_history FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='identity schema history is append only';

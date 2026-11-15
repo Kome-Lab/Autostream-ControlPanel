@@ -2,23 +2,34 @@ package store
 
 import (
 	"context"
+	lf "github.com/example/autostream-control-panel/internal/lifecyclefoundation"
 	"database/sql"
 	"github.com/example/autostream-control-panel/internal/security"
 	"time"
 )
 
-func (s MariaDBAuthStore) CountUsers(ctx context.Context) (int, error) {
+func (s MariaDBAuthStore) identityCountUsers(ctx context.Context) (int, error) {
+	identityQ, identityErr := s.identitySQL(ctx)
+	if identityErr != nil {
+		return 0, identityErr
+	}
 	var count int
-	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users`).Scan(&count)
+	err := identityQ.QueryRowContext(ctx, `SELECT COUNT(*) FROM users`).Scan(&count)
 	return count, err
 }
 
 func (s MariaDBAuthStore) CreateFirstAdmin(ctx context.Context, username, password string, permissions []string) (User, error) {
+	if s.identityGate != nil {
+		return User{}, lf.ErrHeld
+	}
+	if _, bound, err := lf.SQL(ctx, s.db); err != nil || bound {
+		return User{}, lf.ErrHeld
+	}
 	hash, err := security.HashPassword(password)
 	if err != nil {
 		return User{}, err
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.identityBeginSQL(ctx, nil)
 	if err != nil {
 		return User{}, err
 	}
@@ -47,11 +58,15 @@ func (s MariaDBAuthStore) CreateFirstAdmin(ctx context.Context, username, passwo
 	return user, nil
 }
 
-func (s MariaDBAuthStore) FindUserByUsername(ctx context.Context, username string) (User, error) {
+func (s MariaDBAuthStore) identityFindUserByUsername(ctx context.Context, username string) (User, error) {
+	identityQ, identityErr := s.identitySQL(ctx)
+	if identityErr != nil {
+		return User{}, identityErr
+	}
 	var user User
 	var lastLoginAt sql.NullTime
 	var lastLoginIP sql.NullString
-	err := s.db.QueryRowContext(ctx, `SELECT id, username, COALESCE(email, ''), password_hash, status, last_login_at, last_login_ip FROM users WHERE username = ?`, username).Scan(&user.ID, &user.Username, &user.Email, &user.PasswordHash, &user.Status, &lastLoginAt, &lastLoginIP)
+	err := identityQ.QueryRowContext(ctx, `SELECT id, username, COALESCE(email, ''), password_hash, status, last_login_at, last_login_ip FROM users WHERE username = ?`, username).Scan(&user.ID, &user.Username, &user.Email, &user.PasswordHash, &user.Status, &lastLoginAt, &lastLoginIP)
 	if err == sql.ErrNoRows {
 		return User{}, ErrNotFound
 	}
@@ -64,15 +79,22 @@ func (s MariaDBAuthStore) FindUserByUsername(ctx context.Context, username strin
 	if lastLoginIP.Valid {
 		user.LastLoginIP = lastLoginIP.String
 	}
-	user.RoleIDs, user.Roles, _ = s.userRoleAssignments(ctx, user.ID)
+	user.RoleIDs, user.Roles, err = s.userRoleAssignments(ctx, user.ID)
+	if err != nil && s.identityGate != nil {
+		return User{}, err
+	}
 	return user, nil
 }
 
-func (s MariaDBAuthStore) GetUser(ctx context.Context, id string) (User, error) {
+func (s MariaDBAuthStore) identityGetUser(ctx context.Context, id string) (User, error) {
+	identityQ, identityErr := s.identitySQL(ctx)
+	if identityErr != nil {
+		return User{}, identityErr
+	}
 	var user User
 	var lastLoginAt sql.NullTime
 	var lastLoginIP sql.NullString
-	err := s.db.QueryRowContext(ctx, `SELECT id, username, COALESCE(email, ''), password_hash, status, last_login_at, last_login_ip FROM users WHERE id = ?`, id).Scan(&user.ID, &user.Username, &user.Email, &user.PasswordHash, &user.Status, &lastLoginAt, &lastLoginIP)
+	err := identityQ.QueryRowContext(ctx, `SELECT id, username, COALESCE(email, ''), password_hash, status, last_login_at, last_login_ip FROM users WHERE id = ?`, id).Scan(&user.ID, &user.Username, &user.Email, &user.PasswordHash, &user.Status, &lastLoginAt, &lastLoginIP)
 	if err == sql.ErrNoRows {
 		return User{}, ErrNotFound
 	}
@@ -85,12 +107,19 @@ func (s MariaDBAuthStore) GetUser(ctx context.Context, id string) (User, error) 
 	if lastLoginIP.Valid {
 		user.LastLoginIP = lastLoginIP.String
 	}
-	user.RoleIDs, user.Roles, _ = s.userRoleAssignments(ctx, user.ID)
+	user.RoleIDs, user.Roles, err = s.userRoleAssignments(ctx, user.ID)
+	if err != nil && s.identityGate != nil {
+		return User{}, err
+	}
 	return user, nil
 }
 
 func (s MariaDBAuthStore) userRoleAssignments(ctx context.Context, userID string) ([]string, []string, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT r.id, r.name FROM roles r INNER JOIN user_roles ur ON ur.role_id = r.id WHERE ur.user_id = ? ORDER BY r.name`, userID)
+	identityQ, identityErr := s.identitySQL(ctx)
+	if identityErr != nil {
+		return nil, nil, identityErr
+	}
+	rows, err := identityQ.QueryContext(ctx, `SELECT r.id, r.name FROM roles r INNER JOIN user_roles ur ON ur.role_id = r.id WHERE ur.user_id = ? ORDER BY r.name`, userID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -109,8 +138,12 @@ func (s MariaDBAuthStore) userRoleAssignments(ctx context.Context, userID string
 	return roleIDs, roles, rows.Err()
 }
 
-func (s MariaDBAuthStore) GetUserPermissions(ctx context.Context, id string) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT rp.permission FROM role_permissions rp INNER JOIN user_roles ur ON ur.role_id = rp.role_id WHERE ur.user_id = ?`, id)
+func (s MariaDBAuthStore) identityGetUserPermissions(ctx context.Context, id string) ([]string, error) {
+	identityQ, identityErr := s.identitySQL(ctx)
+	if identityErr != nil {
+		return nil, identityErr
+	}
+	rows, err := identityQ.QueryContext(ctx, `SELECT DISTINCT rp.permission FROM role_permissions rp INNER JOIN user_roles ur ON ur.role_id = rp.role_id WHERE ur.user_id = ?`, id)
 	if err != nil {
 		return nil, err
 	}
@@ -126,12 +159,16 @@ func (s MariaDBAuthStore) GetUserPermissions(ctx context.Context, id string) ([]
 	return permissions, rows.Err()
 }
 
-func (s MariaDBAuthStore) ChangePassword(ctx context.Context, id, newPassword string) error {
+func (s MariaDBAuthStore) identityChangePassword(ctx context.Context, id, newPassword string) error {
+	identityQ, identityErr := s.identitySQL(ctx)
+	if identityErr != nil {
+		return identityErr
+	}
 	hash, err := security.HashPassword(newPassword)
 	if err != nil {
 		return err
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE users SET password_hash = ?, status = 'active', updated_at = ? WHERE id = ?`, hash, time.Now().UTC(), id)
+	result, err := identityQ.ExecContext(ctx, `UPDATE users SET password_hash = ?, status = 'active', updated_at = ? WHERE id = ?`, hash, time.Now().UTC(), id)
 	if err != nil {
 		return err
 	}

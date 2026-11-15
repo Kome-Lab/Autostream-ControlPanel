@@ -375,6 +375,9 @@ func NewServer(streams store.StreamStore, opts ...ServerOption) *Server {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if s.identityHTTPCompositionClosed(w, r) {
+		return
+	}
 	if r.URL.Path == "/updater/version" {
 		w.Header().Set("Cache-Control", "no-store")
 	}

@@ -14,6 +14,7 @@ import (
 type Gate struct {
 	service *Service
 	source  CheckpointSource
+	identityCapture func(context.Context, Executor) (IdentityProjection, error)
 }
 
 type Executor interface {
@@ -104,7 +105,7 @@ func (g *Gate) Do(ctx context.Context, call Call, fn func(context.Context) error
 	if g.Ready() != nil || ctx == nil || fn == nil {
 		return ErrHeld
 	}
-	if ctx.Value(gateKey{}) != nil || ctx.Value(participationKey{}) != nil {
+	if !identityGateCallValid(ctx, g, call) || ctx.Value(gateKey{}) != nil || ctx.Value(participationKey{}) != nil {
 		return ErrHeld
 	}
 	mode := Write

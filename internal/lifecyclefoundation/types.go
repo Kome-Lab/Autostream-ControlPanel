@@ -89,6 +89,7 @@ type Authorization struct {
 	PrincipalKind string
 	Intent        Intent
 	Approval      *Approval
+	Identity      *IdentityBinding `json:",omitempty"`
 }
 
 // Authorizer is a trusted composition dependency, not an HTTP DTO decoder.
@@ -262,7 +263,13 @@ func (r Request) Validate() error {
 }
 
 func validateAuthorization(a Authorization, i Intent) error {
-	if !validID(a.Actor) || a.PrincipalKind != "HUMAN" || a.Intent != i {
+	if !validID(a.Actor) || a.Intent != i {
+		return ErrHeld
+	}
+	if strings.HasPrefix(i.Operation, "identity.") || a.Identity != nil {
+		return validateIdentityAuthorization(a, i)
+	}
+	if a.PrincipalKind != "HUMAN" {
 		return ErrHeld
 	}
 	if a.Approval != nil && (!validID(a.Approval.Origin) || !validID(a.Approval.ID) ||

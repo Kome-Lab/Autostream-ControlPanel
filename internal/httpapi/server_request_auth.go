@@ -24,8 +24,11 @@ func (s *Server) requirePermission(permission string, next http.HandlerFunc) htt
 		if isOAuthCallbackPath(r.URL.Path) {
 			setOAuthCallbackNoStoreHeaders(w)
 		}
-		current, ok := s.authenticate(r)
-		if !ok {
+		current, err := s.authenticateIdentity(r)
+		if err != nil {
+			if s.writeIdentityLifecycleFailure(w, err) {
+				return
+			}
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"code": "unauthorized"})
 			return
 		}
@@ -58,8 +61,11 @@ func (s *Server) requireAnyPermission(permissions []string, next http.HandlerFun
 		if isOAuthCallbackPath(r.URL.Path) {
 			setOAuthCallbackNoStoreHeaders(w)
 		}
-		current, ok := s.authenticate(r)
-		if !ok {
+		current, err := s.authenticateIdentity(r)
+		if err != nil {
+			if s.writeIdentityLifecycleFailure(w, err) {
+				return
+			}
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"code": "unauthorized"})
 			return
 		}
@@ -95,26 +101,37 @@ func (s *Server) requireAnyPermission(permissions []string, next http.HandlerFun
 }
 
 func (s *Server) authenticate(r *http.Request) (currentUser, bool) {
+	current, err := s.authenticateIdentity(r)
+	return current, err == nil
+}
+
+func (s *Server) authenticateIdentity(r *http.Request) (currentUser, error) {
 	if s.auth == nil {
-		return currentUser{}, false
+		return currentUser{}, store.ErrUnauthorized
 	}
 	cookie, err := r.Cookie(sessionCookieName)
 	if err != nil || cookie.Value == "" {
-		return currentUser{}, false
+		return currentUser{}, store.ErrUnauthorized
 	}
 	session, err := s.auth.GetSession(r.Context(), cookie.Value)
 	if err != nil {
-		return currentUser{}, false
+		return currentUser{}, s.identitySourceError(err)
 	}
 	user, err := s.auth.GetUser(r.Context(), session.UserID)
-	if err != nil || user.Status == "disabled" || user.Status == "locked" {
-		return currentUser{}, false
+	if err != nil {
+		return currentUser{}, s.identitySourceError(err)
+	}
+	if user.Status == "disabled" || user.Status == "locked" {
+		return currentUser{}, store.ErrUnauthorized
+	}
+	if s.identityLifecycleRequired() && user.Status != "active" && user.Status != "pending_password_change" {
+		return currentUser{}, s.identityMutationError(store.ErrUnauthorized)
 	}
 	permissions, err := s.auth.GetUserPermissions(r.Context(), user.ID)
 	if err != nil {
-		return currentUser{}, false
+		return currentUser{}, s.identitySourceError(err)
 	}
-	return currentUser{User: user, Session: session, Permissions: permissions}, true
+	return currentUser{User: user, Session: session, Permissions: permissions}, nil
 }
 
 func (s *Server) authenticateService(w http.ResponseWriter, r *http.Request, requiredScope string) (store.ServiceToken, bool) {

@@ -11,6 +11,9 @@ import (
 )
 
 func (s MariaDBAuthStore) CreatePasskeyRegistrationChallenge(ctx context.Context, userID, rpID, rpName, userName, userDisplayName string, ttl time.Duration) (PasskeyRegistrationChallenge, error) {
+	if err := s.identityFactorUnavailable(ctx); err != nil {
+		return PasskeyRegistrationChallenge{}, err
+	}
 	challenge, err := newPasskeyRegistrationChallenge(userID, rpID, rpName, userName, userDisplayName, ttl)
 	if err != nil {
 		return PasskeyRegistrationChallenge{}, err
@@ -24,6 +27,9 @@ func (s MariaDBAuthStore) CreatePasskeyRegistrationChallenge(ctx context.Context
 }
 
 func (s MariaDBAuthStore) GetPasskeyRegistrationChallenge(ctx context.Context, rawToken string) (PasskeyRegistrationChallenge, error) {
+	if err := s.identityFactorUnavailable(ctx); err != nil {
+		return PasskeyRegistrationChallenge{}, err
+	}
 	hash := security.HashToken(strings.TrimSpace(rawToken))
 	var challenge PasskeyRegistrationChallenge
 	challenge.Token = rawToken
@@ -43,11 +49,17 @@ func (s MariaDBAuthStore) GetPasskeyRegistrationChallenge(ctx context.Context, r
 }
 
 func (s MariaDBAuthStore) DeletePasskeyRegistrationChallenge(ctx context.Context, rawToken string) error {
+	if err := s.identityFactorUnavailable(ctx); err != nil {
+		return err
+	}
 	_, err := s.db.ExecContext(ctx, `DELETE FROM webauthn_registration_challenges WHERE id = ?`, security.HashToken(strings.TrimSpace(rawToken)))
 	return err
 }
 
 func (s MariaDBAuthStore) CreatePasskeyCeremonySession(ctx context.Context, userID, ceremony string, sessionJSON []byte, ttl time.Duration) (PasskeyCeremonySession, error) {
+	if err := s.identityFactorUnavailable(ctx); err != nil {
+		return PasskeyCeremonySession{}, err
+	}
 	session, err := newPasskeyCeremonySession(userID, ceremony, sessionJSON, ttl)
 	if err != nil {
 		return PasskeyCeremonySession{}, err
@@ -65,6 +77,9 @@ func (s MariaDBAuthStore) CreatePasskeyCeremonySession(ctx context.Context, user
 }
 
 func (s MariaDBAuthStore) GetPasskeyCeremonySession(ctx context.Context, rawToken, ceremony string) (PasskeyCeremonySession, error) {
+	if err := s.identityFactorUnavailable(ctx); err != nil {
+		return PasskeyCeremonySession{}, err
+	}
 	hash := security.HashToken(strings.TrimSpace(rawToken))
 	var session PasskeyCeremonySession
 	var userID sql.NullString
@@ -88,6 +103,9 @@ func (s MariaDBAuthStore) GetPasskeyCeremonySession(ctx context.Context, rawToke
 }
 
 func (s MariaDBAuthStore) ConsumePasskeyCeremonySession(ctx context.Context, rawToken, ceremony string) (PasskeyCeremonySession, error) {
+	if err := s.identityFactorUnavailable(ctx); err != nil {
+		return PasskeyCeremonySession{}, err
+	}
 	hash := security.HashToken(strings.TrimSpace(rawToken))
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -124,11 +142,17 @@ func (s MariaDBAuthStore) ConsumePasskeyCeremonySession(ctx context.Context, raw
 }
 
 func (s MariaDBAuthStore) DeletePasskeyCeremonySession(ctx context.Context, rawToken string) error {
+	if err := s.identityFactorUnavailable(ctx); err != nil {
+		return err
+	}
 	_, err := s.db.ExecContext(ctx, `DELETE FROM webauthn_ceremony_sessions WHERE id = ?`, security.HashToken(strings.TrimSpace(rawToken)))
 	return err
 }
 
 func (s MariaDBAuthStore) ListPasskeyCredentials(ctx context.Context, userID string) ([]PasskeyCredential, error) {
+	if err := s.identityFactorUnavailable(ctx); err != nil {
+		return nil, err
+	}
 	rows, err := s.db.QueryContext(ctx, `SELECT id, user_id, name, credential_id_hash, sign_count, transports_json, aaguid, backup_eligible, backed_up, created_at, updated_at, last_used_at FROM webauthn_credentials WHERE user_id = ? ORDER BY created_at ASC`, userID)
 	if err != nil {
 		return nil, err
@@ -146,6 +170,9 @@ func (s MariaDBAuthStore) ListPasskeyCredentials(ctx context.Context, userID str
 }
 
 func (s MariaDBAuthStore) ListPasskeyCredentialsForVerification(ctx context.Context, userID string) ([]PasskeyCredential, error) {
+	if err := s.identityFactorUnavailable(ctx); err != nil {
+		return nil, err
+	}
 	rows, err := s.db.QueryContext(ctx, `SELECT id, user_id, name, credential_id, credential_id_hash, public_key_cbor, sign_count, transports_json, aaguid, backup_eligible, backed_up, created_at, updated_at, last_used_at FROM webauthn_credentials WHERE user_id = ? ORDER BY created_at ASC`, userID)
 	if err != nil {
 		return nil, err
@@ -171,6 +198,9 @@ func (s MariaDBAuthStore) ListPasskeyCredentialsForVerification(ctx context.Cont
 }
 
 func (s MariaDBAuthStore) CreatePasskeyCredential(ctx context.Context, credential PasskeyCredential) (PasskeyCredential, error) {
+	if err := s.identityFactorUnavailable(ctx); err != nil {
+		return PasskeyCredential{}, err
+	}
 	credential, err := normalizePasskeyCredential(credential)
 	if err != nil {
 		return PasskeyCredential{}, err
@@ -188,6 +218,9 @@ func (s MariaDBAuthStore) CreatePasskeyCredential(ctx context.Context, credentia
 }
 
 func (s MariaDBAuthStore) FindPasskeyCredentialByCredentialID(ctx context.Context, credentialID []byte) (PasskeyCredential, error) {
+	if err := s.identityFactorUnavailable(ctx); err != nil {
+		return PasskeyCredential{}, err
+	}
 	row := s.db.QueryRowContext(ctx, `SELECT id, user_id, name, credential_id, credential_id_hash, public_key_cbor, sign_count, transports_json, aaguid, backup_eligible, backed_up, created_at, updated_at, last_used_at FROM webauthn_credentials WHERE credential_id_hash = ?`, passkeyCredentialIDHash(credentialID))
 	var credential PasskeyCredential
 	var transportsRaw string
@@ -209,6 +242,9 @@ func (s MariaDBAuthStore) FindPasskeyCredentialByCredentialID(ctx context.Contex
 }
 
 func (s MariaDBAuthStore) UpdatePasskeySignCount(ctx context.Context, id string, signCount uint32) error {
+	if err := s.identityFactorUnavailable(ctx); err != nil {
+		return err
+	}
 	result, err := s.db.ExecContext(ctx, `UPDATE webauthn_credentials SET sign_count = ?, last_used_at = ?, updated_at = ? WHERE id = ?`, signCount, time.Now().UTC(), time.Now().UTC(), id)
 	if err != nil {
 		return err
@@ -224,6 +260,9 @@ func (s MariaDBAuthStore) UpdatePasskeySignCount(ctx context.Context, id string,
 }
 
 func (s MariaDBAuthStore) DeletePasskeyCredential(ctx context.Context, userID, id string) error {
+	if err := s.identityFactorUnavailable(ctx); err != nil {
+		return err
+	}
 	result, err := s.db.ExecContext(ctx, `DELETE FROM webauthn_credentials WHERE user_id = ? AND id = ?`, userID, id)
 	if err != nil {
 		return err

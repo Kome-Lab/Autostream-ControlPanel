@@ -2,6 +2,7 @@
 set -euo pipefail
 baseline=d42a0fb2212c2378b822effc9b8dfd7031d457cb
 git merge-base --is-ancestor "$baseline" HEAD
+python3 scripts/ci/b2-source-boundary.py
 frozen_role_sha="$(git show 93181192d8f036bae40b490957489c9ee8290769:internal/httpapi/server_users_roles.go | sha256sum | cut -d ' ' -f 1)"
 test "$frozen_role_sha" = "e3ee915884ddf576e46f37c350877871b678fc9e5143177181e3301f25d28e80"
 frozen_admin_sha="$(git show 93181192d8f036bae40b490957489c9ee8290769:internal/store/admin.go | sha256sum | cut -d ' ' -f 1)"
@@ -9,6 +10,9 @@ test "$frozen_admin_sha" = "17f3e56070217a10bebd8d6c3b2890198c42df892835d55697be
 frozen_auth_sha="$(git show 93181192d8f036bae40b490957489c9ee8290769:internal/store/auth_sessions_mariadb.go | sha256sum | cut -d ' ' -f 1)"
 test "$frozen_auth_sha" = "9f38933fccd635d515c65638e0892df013dd598a790c31f8b0ef2bfca1c7e3c1"
 while IFS= read -r file; do
+  if python3 scripts/ci/b2-source-boundary.py --owns "$file"; then
+    continue
+  fi
   case "$file" in
     internal/lifecyclefoundation/product.go|internal/lifecyclefoundation/product_export_test.go|internal/lifecyclefoundation/product_fixture_test.go|internal/lifecyclefoundation/product_integration_test.go|internal/lifecyclefoundation/product_process_test.go|internal/v3authorization/lifecycle.go|internal/operationalauthorization/lifecycle.go|scripts/ci/b1-checks.sh|scripts/ci/b1-required-tests.txt|scripts/ci/b1-source-boundary.py|scripts/ci/b1-source-patches.json|docs/lifecycle-foundation/S12_B1_INTEGRATION.md|docs/lifecycle-foundation/B1_CONNECTION_INVENTORY.md|cmd/control-panel/main.go|internal/lifecyclefoundation/types.go|internal/lifecyclefoundation/store.go|internal/v3authorization/authority_store.go|internal/v3authorization/sql_authority.go|internal/v3authorization/sqlstore.go|internal/v3authorization/service.go|internal/v3authorization/management_sql.go) python3 scripts/ci/b1-source-boundary.py ;;
     docs/lifecycle-foundation/CONNECTION_INVENTORY.md|docs/lifecycle-foundation/S12_B0_IMPLEMENTATION.md|internal/lifecyclefoundation/foundation_test.go|internal/lifecyclefoundation/migration.go|internal/lifecyclefoundation/migration_test.go|internal/lifecyclefoundation/migrations/001_lifecycle.sql|internal/lifecyclefoundation/process_test.go|internal/lifecyclefoundation/service.go|internal/lifecyclefoundation/store.go|internal/lifecyclefoundation/synthetic_test.go|internal/lifecyclefoundation/types.go|scripts/ci/b0-checks.sh|scripts/ci/b0-required-tests.txt|scripts/ci/b0-source-boundary.py) ;;

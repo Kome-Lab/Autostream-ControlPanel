@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	lf "github.com/example/autostream-control-panel/internal/lifecyclefoundation"
 	"time"
 )
 
@@ -200,6 +201,7 @@ type AuditStore interface {
 }
 
 type MariaDBAuthStore struct {
+	identityGate      *lf.Gate
 	db                *sql.DB
 	secretKeyMaterial string
 }

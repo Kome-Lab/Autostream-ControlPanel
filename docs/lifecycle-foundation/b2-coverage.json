@@ -1,0 +1,617 @@
+{
+  "baseline": "60137bb7f6bbcf830485ead3f5850809b767c5a4",
+  "entries": [
+    {
+      "id": "U01",
+      "function": "CreateUser",
+      "state": "接続構造のみ",
+      "reason": "private participantを使うStore接続。該当する全HTTP条件・全効果の網羅試験とは扱わない。",
+      "test": ""
+    },
+    {
+      "id": "U02",
+      "function": "CreateOAuthUser",
+      "state": "明示L2要求時は拒否",
+      "reason": "必要なproof/Provider/consume-stage契約が未完成。legacy offの正常動作は保持。",
+      "test": ""
+    },
+    {
+      "id": "U03",
+      "function": "UpdateUser username branch",
+      "state": "接続構造のみ",
+      "reason": "Store同一Tx・Checkpoint・履歴接続を実装。合成試験をCI必須Inventoryへ追加（実行結果は最終CI参照）。",
+      "test": "TestB2IdentityUserRoleSameTransaction / AssignmentNilEmptyAndLastAdmin / SessionPendingAndCurrentState / CascadeAndRestrictRollback"
+    },
+    {
+      "id": "U04",
+      "function": "UpdateUser email branch",
+      "state": "接続構造のみ",
+      "reason": "private participantを使うStore接続。該当する全HTTP条件・全効果の網羅試験とは扱わない。",
+      "test": ""
+    },
+    {
+      "id": "U05",
+      "function": "UpdateUser RoleIDs replacement",
+      "state": "接続構造のみ",
+      "reason": "Store同一Tx・Checkpoint・履歴接続を実装。合成試験をCI必須Inventoryへ追加（実行結果は最終CI参照）。",
+      "test": "TestB2IdentityUserRoleSameTransaction / AssignmentNilEmptyAndLastAdmin / SessionPendingAndCurrentState / CascadeAndRestrictRollback"
+    },
+    {
+      "id": "U06",
+      "function": "SetUserStatus / Disable",
+      "state": "接続構造のみ",
+      "reason": "Store同一Tx・Checkpoint・履歴接続を実装。合成試験をCI必須Inventoryへ追加（実行結果は最終CI参照）。",
+      "test": "TestB2IdentityUserRoleSameTransaction / AssignmentNilEmptyAndLastAdmin / SessionPendingAndCurrentState / CascadeAndRestrictRollback"
+    },
+    {
+      "id": "U07",
+      "function": "SetUserStatus / Lock",
+      "state": "接続構造のみ",
+      "reason": "Store同一Tx・Checkpoint・履歴接続を実装。合成試験をCI必須Inventoryへ追加（実行結果は最終CI参照）。",
+      "test": "TestB2IdentityUserRoleSameTransaction / AssignmentNilEmptyAndLastAdmin / SessionPendingAndCurrentState / CascadeAndRestrictRollback"
+    },
+    {
+      "id": "U08",
+      "function": "SetUserStatus / Unlock/Enable",
+      "state": "接続構造のみ",
+      "reason": "private participantを使うStore接続。該当する全HTTP条件・全効果の網羅試験とは扱わない。",
+      "test": ""
+    },
+    {
+      "id": "U09",
+      "function": "SetUserStatus / Force Password Change",
+      "state": "接続構造のみ",
+      "reason": "private participantを使うStore接続。該当する全HTTP条件・全効果の網羅試験とは扱わない。",
+      "test": ""
+    },
+    {
+      "id": "U10",
+      "function": "DeleteUser",
+      "state": "接続構造のみ",
+      "reason": "Store同一Tx・Checkpoint・履歴接続を実装。合成試験をCI必須Inventoryへ追加（実行結果は最終CI参照）。",
+      "test": "TestB2IdentityUserRoleSameTransaction / AssignmentNilEmptyAndLastAdmin / SessionPendingAndCurrentState / CascadeAndRestrictRollback"
+    },
+    {
+      "id": "U11",
+      "function": "RecordLoginSuccess",
+      "state": "接続構造のみ",
+      "reason": "Store同一Tx・Checkpoint・履歴接続を実装。合成試験をCI必須Inventoryへ追加（実行結果は最終CI参照）。",
+      "test": "TestB2IdentityUserRoleSameTransaction / AssignmentNilEmptyAndLastAdmin / SessionPendingAndCurrentState / CascadeAndRestrictRollback"
+    },
+    {
+      "id": "U12",
+      "function": "recordLoginFailureGuarded",
+      "state": "接続構造のみ",
+      "reason": "private participantを使うStore接続。該当する全HTTP条件・全効果の網羅試験とは扱わない。",
+      "test": ""
+    },
+    {
+      "id": "C01",
+      "function": "ResetPassword",
+      "state": "接続構造のみ",
+      "reason": "private participantを使うStore接続。該当する全HTTP条件・全効果の網羅試験とは扱わない。",
+      "test": ""
+    },
+    {
+      "id": "C02",
+      "function": "ChangePassword",
+      "state": "接続構造のみ",
+      "reason": "Store同一Tx・Checkpoint・履歴接続を実装。合成試験をCI必須Inventoryへ追加（実行結果は最終CI参照）。",
+      "test": "TestB2IdentityUserRoleSameTransaction / AssignmentNilEmptyAndLastAdmin / SessionPendingAndCurrentState / CascadeAndRestrictRollback"
+    },
+    {
+      "id": "S01",
+      "function": "CreateSession",
+      "state": "接続構造のみ",
+      "reason": "Store同一Tx・Checkpoint・履歴接続を実装。合成試験をCI必須Inventoryへ追加（実行結果は最終CI参照）。",
+      "test": "TestB2IdentityUserRoleSameTransaction / AssignmentNilEmptyAndLastAdmin / SessionPendingAndCurrentState / CascadeAndRestrictRollback"
+    },
+    {
+      "id": "S02",
+      "function": "RefreshSession / refreshSessionAt",
+      "state": "接続構造のみ",
+      "reason": "Store同一Tx・Checkpoint・履歴接続を実装。合成試験をCI必須Inventoryへ追加（実行結果は最終CI参照）。",
+      "test": "TestB2IdentityUserRoleSameTransaction / AssignmentNilEmptyAndLastAdmin / SessionPendingAndCurrentState / CascadeAndRestrictRollback"
+    },
+    {
+      "id": "S03",
+      "function": "GetSession expiry branch",
+      "state": "接続構造のみ",
+      "reason": "SessionのL2 getterは期限切れを拒否し、物理削除をしない純Read。暗黙cleanup参加は未接続。他factor getterはclosed。",
+      "test": ""
+    },
+    {
+      "id": "S04",
+      "function": "DeleteSession",
+      "state": "接続構造のみ",
+      "reason": "private participantを使うStore接続。該当する全HTTP条件・全効果の網羅試験とは扱わない。",
+      "test": ""
+    },
+    {
+      "id": "S05",
+      "function": "DeleteUserSessions",
+      "state": "接続構造のみ",
+      "reason": "Store同一Tx・Checkpoint・履歴接続を実装。合成試験をCI必須Inventoryへ追加（実行結果は最終CI参照）。",
+      "test": "TestB2IdentityUserRoleSameTransaction / AssignmentNilEmptyAndLastAdmin / SessionPendingAndCurrentState / CascadeAndRestrictRollback"
+    },
+    {
+      "id": "M01",
+      "function": "StartTOTPEnrollment",
+      "state": "明示L2要求時は拒否",
+      "reason": "Recovery以外のfactor-stageはproof/current-state参加を未資格として閉じる。",
+      "test": ""
+    },
+    {
+      "id": "M02",
+      "function": "ConfirmTOTPEnrollment",
+      "state": "明示L2要求時は拒否",
+      "reason": "Recovery以外のfactor-stageはproof/current-state参加を未資格として閉じる。",
+      "test": ""
+    },
+    {
+      "id": "M03",
+      "function": "DisableMFA",
+      "state": "明示L2要求時は拒否",
+      "reason": "Recovery以外のfactor-stageはproof/current-state参加を未資格として閉じる。",
+      "test": ""
+    },
+    {
+      "id": "M04",
+      "function": "RegenerateRecoveryCodes",
+      "state": "明示L2要求時は拒否",
+      "reason": "Recovery以外のfactor-stageはproof/current-state参加を未資格として閉じる。",
+      "test": ""
+    },
+    {
+      "id": "M05",
+      "function": "ConsumeRecoveryCode",
+      "state": "接続構造のみ",
+      "reason": "Recovery消費を同一Txへ接続。後続Sessionまで一つの原子処理とは扱わない。",
+      "test": "TestB2IdentityRecoveryOneUseAndStageFailure"
+    },
+    {
+      "id": "M06",
+      "function": "CreateMFAChallenge",
+      "state": "明示L2要求時は拒否",
+      "reason": "Recovery以外のfactor-stageはproof/current-state参加を未資格として閉じる。",
+      "test": ""
+    },
+    {
+      "id": "M07",
+      "function": "GetMFAChallenge expired branch",
+      "state": "明示L2要求時は拒否",
+      "reason": "Recovery以外のfactor-stageはproof/current-state参加を未資格として閉じる。",
+      "test": ""
+    },
+    {
+      "id": "M08",
+      "function": "DeleteMFAChallenge",
+      "state": "明示L2要求時は拒否",
+      "reason": "Recovery以外のfactor-stageはproof/current-state参加を未資格として閉じる。",
+      "test": ""
+    },
+    {
+      "id": "K01",
+      "function": "CreatePasskeyRegistrationChallenge",
+      "state": "明示L2要求時は拒否",
+      "reason": "必要なproof/Provider/consume-stage契約が未完成。legacy offの正常動作は保持。",
+      "test": ""
+    },
+    {
+      "id": "K02",
+      "function": "GetPasskeyRegistrationChallenge expired branch",
+      "state": "明示L2要求時は拒否",
+      "reason": "必要なproof/Provider/consume-stage契約が未完成。legacy offの正常動作は保持。",
+      "test": ""
+    },
+    {
+      "id": "K03",
+      "function": "DeletePasskeyRegistrationChallenge",
+      "state": "明示L2要求時は拒否",
+      "reason": "必要なproof/Provider/consume-stage契約が未完成。legacy offの正常動作は保持。",
+      "test": ""
+    },
+    {
+      "id": "K04",
+      "function": "CreatePasskeyCeremonySession",
+      "state": "明示L2要求時は拒否",
+      "reason": "必要なproof/Provider/consume-stage契約が未完成。legacy offの正常動作は保持。",
+      "test": ""
+    },
+    {
+      "id": "K05",
+      "function": "GetPasskeyCeremonySession invalid branch",
+      "state": "明示L2要求時は拒否",
+      "reason": "必要なproof/Provider/consume-stage契約が未完成。legacy offの正常動作は保持。",
+      "test": ""
+    },
+    {
+      "id": "K06",
+      "function": "ConsumePasskeyCeremonySession",
+      "state": "明示L2要求時は拒否",
+      "reason": "必要なproof/Provider/consume-stage契約が未完成。legacy offの正常動作は保持。",
+      "test": ""
+    },
+    {
+      "id": "K07",
+      "function": "DeletePasskeyCeremonySession",
+      "state": "明示L2要求時は拒否",
+      "reason": "必要なproof/Provider/consume-stage契約が未完成。legacy offの正常動作は保持。",
+      "test": ""
+    },
+    {
+      "id": "K08",
+      "function": "CreatePasskeyCredential",
+      "state": "明示L2要求時は拒否",
+      "reason": "必要なproof/Provider/consume-stage契約が未完成。legacy offの正常動作は保持。",
+      "test": ""
+    },
+    {
+      "id": "K09",
+      "function": "UpdatePasskeySignCount",
+      "state": "明示L2要求時は拒否",
+      "reason": "必要なproof/Provider/consume-stage契約が未完成。legacy offの正常動作は保持。",
+      "test": ""
+    },
+    {
+      "id": "K10",
+      "function": "DeletePasskeyCredential",
+      "state": "明示L2要求時は拒否",
+      "reason": "必要なproof/Provider/consume-stage契約が未完成。legacy offの正常動作は保持。",
+      "test": ""
+    },
+    {
+      "id": "E01",
+      "function": "CreateEmailChangeChallenge",
+      "state": "明示L2要求時は拒否",
+      "reason": "必要なproof/Provider/consume-stage契約が未完成。legacy offの正常動作は保持。",
+      "test": ""
+    },
+    {
+      "id": "E02",
+      "function": "GetEmailChangeChallenge expired branch",
+      "state": "明示L2要求時は拒否",
+      "reason": "必要なproof/Provider/consume-stage契約が未完成。legacy offの正常動作は保持。",
+      "test": ""
+    },
+    {
+      "id": "E03",
+      "function": "ConsumeEmailChangeChallenge",
+      "state": "明示L2要求時は拒否",
+      "reason": "必要なproof/Provider/consume-stage契約が未完成。legacy offの正常動作は保持。",
+      "test": ""
+    },
+    {
+      "id": "E04",
+      "function": "deleteEmailChangeChallenge",
+      "state": "明示L2要求時は拒否",
+      "reason": "必要なproof/Provider/consume-stage契約が未完成。legacy offの正常動作は保持。",
+      "test": ""
+    },
+    {
+      "id": "O01",
+      "function": "CreateOAuthLoginState(login)",
+      "state": "未接続",
+      "reason": "OAuth state/Link/Provider版/外部検証Flowは未接続。明示L2の公開HTTP経路はpre-muxで拒否。",
+      "test": ""
+    },
+    {
+      "id": "O02",
+      "function": "CreateOAuthLoginState(account_link)",
+      "state": "未接続",
+      "reason": "OAuth state/Link/Provider版/外部検証Flowは未接続。明示L2の公開HTTP経路はpre-muxで拒否。",
+      "test": ""
+    },
+    {
+      "id": "O03",
+      "function": "CreateOAuthLoginState(connected_account)",
+      "state": "未接続",
+      "reason": "OAuth state/Link/Provider版/外部検証Flowは未接続。明示L2の公開HTTP経路はpre-muxで拒否。",
+      "test": ""
+    },
+    {
+      "id": "O04",
+      "function": "ConsumeOAuthLoginState",
+      "state": "未接続",
+      "reason": "OAuth state/Link/Provider版/外部検証Flowは未接続。明示L2の公開HTTP経路はpre-muxで拒否。",
+      "test": ""
+    },
+    {
+      "id": "O05",
+      "function": "continueOAuthLogin / completeLoginRedirect",
+      "state": "未接続",
+      "reason": "OAuth state/Link/Provider版/外部検証Flowは未接続。明示L2の公開HTTP経路はpre-muxで拒否。",
+      "test": ""
+    },
+    {
+      "id": "O06",
+      "function": "LinkOAuthUser",
+      "state": "未接続",
+      "reason": "OAuth state/Link/Provider版/外部検証Flowは未接続。明示L2の公開HTTP経路はpre-muxで拒否。",
+      "test": ""
+    },
+    {
+      "id": "O07",
+      "function": "autoProvisionOAuthUser",
+      "state": "未接続",
+      "reason": "OAuth state/Link/Provider版/外部検証Flowは未接続。明示L2の公開HTTP経路はpre-muxで拒否。",
+      "test": ""
+    },
+    {
+      "id": "O08",
+      "function": "DeleteOAuthUserLink(admin)",
+      "state": "未接続",
+      "reason": "OAuth state/Link/Provider版/外部検証Flowは未接続。明示L2の公開HTTP経路はpre-muxで拒否。",
+      "test": ""
+    },
+    {
+      "id": "O09",
+      "function": "DeleteOAuthUserLink(self)",
+      "state": "未接続",
+      "reason": "OAuth state/Link/Provider版/外部検証Flowは未接続。明示L2の公開HTTP経路はpre-muxで拒否。",
+      "test": ""
+    },
+    {
+      "id": "O10",
+      "function": "CreateOAuthAccount",
+      "state": "未接続",
+      "reason": "Integration資格の別coverage。Human Identityへ合算しない。専用Store/外部rotation/版CASは未接続。",
+      "test": ""
+    },
+    {
+      "id": "O11",
+      "function": "UpdateOAuthAccount(relink)",
+      "state": "未接続",
+      "reason": "Integration資格の別coverage。Human Identityへ合算しない。専用Store/外部rotation/版CASは未接続。",
+      "test": ""
+    },
+    {
+      "id": "O12",
+      "function": "UpdateOAuthAccount(no token)",
+      "state": "未接続",
+      "reason": "Integration資格の別coverage。Human Identityへ合算しない。専用Store/外部rotation/版CASは未接続。",
+      "test": ""
+    },
+    {
+      "id": "O13",
+      "function": "DeleteOAuthAccount",
+      "state": "未接続",
+      "reason": "Integration資格の別coverage。Human Identityへ合算しない。専用Store/外部rotation/版CASは未接続。",
+      "test": ""
+    },
+    {
+      "id": "O14",
+      "function": "RecordOAuthAccountTokenRefreshAttempt",
+      "state": "未接続",
+      "reason": "Integration資格の別coverage。Human Identityへ合算しない。専用Store/外部rotation/版CASは未接続。",
+      "test": ""
+    },
+    {
+      "id": "O15",
+      "function": "RecordOAuthAccountTokenRefresh(no rotation)",
+      "state": "未接続",
+      "reason": "Integration資格の別coverage。Human Identityへ合算しない。専用Store/外部rotation/版CASは未接続。",
+      "test": ""
+    },
+    {
+      "id": "O16",
+      "function": "RecordOAuthAccountTokenRefresh(rotation)",
+      "state": "未接続",
+      "reason": "Integration資格の別coverage。Human Identityへ合算しない。専用Store/外部rotation/版CASは未接続。",
+      "test": ""
+    },
+    {
+      "id": "O17",
+      "function": "RecordOAuthAccountTokenRefreshFailure",
+      "state": "未接続",
+      "reason": "Integration資格の別coverage。Human Identityへ合算しない。専用Store/外部rotation/版CASは未接続。",
+      "test": ""
+    },
+    {
+      "id": "P01",
+      "function": "CreateOAuthProvider",
+      "state": "未接続",
+      "reason": "Provider/Policy/Secret/独立した所有元の参加契約が未完成。製品L2資格なし。",
+      "test": ""
+    },
+    {
+      "id": "P02",
+      "function": "UpdateOAuthProvider",
+      "state": "未接続",
+      "reason": "Provider/Policy/Secret/独立した所有元の参加契約が未完成。製品L2資格なし。",
+      "test": ""
+    },
+    {
+      "id": "P03",
+      "function": "DeleteOAuthProvider",
+      "state": "未接続",
+      "reason": "Provider/Policy/Secret/独立した所有元の参加契約が未完成。製品L2資格なし。",
+      "test": ""
+    },
+    {
+      "id": "P04",
+      "function": "UpdateSecuritySettingsRevision",
+      "state": "未接続",
+      "reason": "Provider/Policy/Secret/独立した所有元の参加契約が未完成。製品L2資格なし。",
+      "test": ""
+    },
+    {
+      "id": "P05",
+      "function": "UpdateAppSettingsRevision",
+      "state": "未接続",
+      "reason": "Provider/Policy/Secret/独立した所有元の参加契約が未完成。製品L2資格なし。",
+      "test": ""
+    },
+    {
+      "id": "P06",
+      "function": "UpdateSecret",
+      "state": "未接続",
+      "reason": "Provider/Policy/Secret/独立した所有元の参加契約が未完成。製品L2資格なし。",
+      "test": ""
+    },
+    {
+      "id": "P07",
+      "function": "Memory settings/secret implementations",
+      "state": "SOURCE_ONLY",
+      "reason": "既存Memory代替実装58関数との対応を維持。永続性/Restart/L2の証明にはしない。",
+      "test": ""
+    },
+    {
+      "id": "P08",
+      "function": "productionEnvironment / config readers",
+      "state": "対象外（理由を記載）",
+      "reason": "今回のIdentity参加所有元の外。config/表示/UI/avatarの全体保証へ拡張しない。User削除の実FK閉包は別途実環境確認が必要。",
+      "test": ""
+    },
+    {
+      "id": "X01",
+      "function": "main / ProductStartup composition",
+      "state": "SOURCE_ONLY",
+      "reason": "既存設計・Sourceのみ。起動は明示L2時にDB/migrationより前で拒否。監査の独立DMLは今回L2へ接続しない。",
+      "test": ""
+    },
+    {
+      "id": "X02",
+      "function": "RunEmbeddedMigrations / runMigrationsFS / applyMigrationBody",
+      "state": "SOURCE_ONLY",
+      "reason": "既存設計・Sourceのみ。起動は明示L2時にDB/migrationより前で拒否。監査の独立DMLは今回L2へ接続しない。",
+      "test": ""
+    },
+    {
+      "id": "X03",
+      "function": "super_admin permission insert",
+      "state": "SOURCE_ONLY",
+      "reason": "既存設計・Sourceのみ。起動は明示L2時にDB/migrationより前で拒否。監査の独立DMLは今回L2へ接続しない。",
+      "test": ""
+    },
+    {
+      "id": "X04",
+      "function": "CreateFirstAdmin",
+      "state": "明示L2要求時は拒否",
+      "reason": "必要なproof/Provider/consume-stage契約が未完成。legacy offの正常動作は保持。",
+      "test": ""
+    },
+    {
+      "id": "X05",
+      "function": "CreateRole",
+      "state": "接続構造のみ",
+      "reason": "Store同一Tx・Checkpoint・履歴接続を実装。合成試験をCI必須Inventoryへ追加（実行結果は最終CI参照）。",
+      "test": "TestB2IdentityUserRoleSameTransaction / AssignmentNilEmptyAndLastAdmin / SessionPendingAndCurrentState / CascadeAndRestrictRollback"
+    },
+    {
+      "id": "X06",
+      "function": "UpdateRole",
+      "state": "接続構造のみ",
+      "reason": "Store同一Tx・Checkpoint・履歴接続を実装。合成試験をCI必須Inventoryへ追加（実行結果は最終CI参照）。",
+      "test": "TestB2IdentityUserRoleSameTransaction / AssignmentNilEmptyAndLastAdmin / SessionPendingAndCurrentState / CascadeAndRestrictRollback"
+    },
+    {
+      "id": "X07",
+      "function": "DeleteRole",
+      "state": "接続構造のみ",
+      "reason": "Store同一Tx・Checkpoint・履歴接続を実装。合成試験をCI必須Inventoryへ追加（実行結果は最終CI参照）。",
+      "test": "TestB2IdentityUserRoleSameTransaction / AssignmentNilEmptyAndLastAdmin / SessionPendingAndCurrentState / CascadeAndRestrictRollback"
+    },
+    {
+      "id": "X08",
+      "function": "canonical source trigger builder",
+      "state": "SOURCE_ONLY",
+      "reason": "既存設計・Sourceのみ。起動は明示L2時にDB/migrationより前で拒否。監査の独立DMLは今回L2へ接続しない。",
+      "test": ""
+    },
+    {
+      "id": "X09",
+      "function": "GetSession / other expired getters",
+      "state": "接続構造のみ",
+      "reason": "SessionのL2 getterは期限切れを拒否し、物理削除をしない純Read。暗黙cleanup参加は未接続。他factor getterはclosed。",
+      "test": ""
+    },
+    {
+      "id": "X10",
+      "function": "allow / record / clear",
+      "state": "SOURCE_ONLY",
+      "reason": "既存設計・Sourceのみ。起動は明示L2時にDB/migrationより前で拒否。監査の独立DMLは今回L2へ接続しない。",
+      "test": ""
+    },
+    {
+      "id": "X11",
+      "function": "updateSecret",
+      "state": "未接続",
+      "reason": "Provider/Policy/Secret/独立した所有元の参加契約が未完成。製品L2資格なし。",
+      "test": ""
+    },
+    {
+      "id": "X12",
+      "function": "UpdateAppSettingsRevision",
+      "state": "未接続",
+      "reason": "Provider/Policy/Secret/独立した所有元の参加契約が未完成。製品L2資格なし。",
+      "test": ""
+    },
+    {
+      "id": "X13",
+      "function": "beginSystemSettingsMutation",
+      "state": "未接続",
+      "reason": "Provider/Policy/Secret/独立した所有元の参加契約が未完成。製品L2資格なし。",
+      "test": ""
+    },
+    {
+      "id": "X14",
+      "function": "DeleteUser child/FK closure",
+      "state": "接続構造のみ",
+      "reason": "Store同一Tx・Checkpoint・履歴接続を実装。合成試験をCI必須Inventoryへ追加（実行結果は最終CI参照）。",
+      "test": "TestB2IdentityUserRoleSameTransaction / AssignmentNilEmptyAndLastAdmin / SessionPendingAndCurrentState / CascadeAndRestrictRollback"
+    },
+    {
+      "id": "X15",
+      "function": "UpdateUserUIPreference",
+      "state": "対象外（理由を記載）",
+      "reason": "今回のIdentity参加所有元の外。config/表示/UI/avatarの全体保証へ拡張しない。User削除の実FK閉包は別途実環境確認が必要。",
+      "test": ""
+    },
+    {
+      "id": "X16",
+      "function": "RunOAuthTokenRefreshLoop",
+      "state": "未接続",
+      "reason": "Provider/Policy/Secret/独立した所有元の参加契約が未完成。製品L2資格なし。",
+      "test": ""
+    },
+    {
+      "id": "X17",
+      "function": "UpdateSecretTx",
+      "state": "未接続",
+      "reason": "Provider/Policy/Secret/独立した所有元の参加契約が未完成。製品L2資格なし。",
+      "test": ""
+    },
+    {
+      "id": "X18",
+      "function": "WriteAudit",
+      "state": "SOURCE_ONLY",
+      "reason": "既存設計・Sourceのみ。起動は明示L2時にDB/migrationより前で拒否。監査の独立DMLは今回L2へ接続しない。",
+      "test": ""
+    },
+    {
+      "id": "X19",
+      "function": "MemoryAuthStore mirrored User/Session/MFA/Passkey/Email methods",
+      "state": "SOURCE_ONLY",
+      "reason": "既存Memory代替実装58関数との対応を維持。永続性/Restart/L2の証明にはしない。",
+      "test": ""
+    },
+    {
+      "id": "V01",
+      "function": "UpsertUserAvatar",
+      "state": "対象外（理由を記載）",
+      "reason": "今回のIdentity参加所有元の外。config/表示/UI/avatarの全体保証へ拡張しない。User削除の実FK閉包は別途実環境確認が必要。",
+      "test": ""
+    },
+    {
+      "id": "V02",
+      "function": "DeleteUserAvatar",
+      "state": "対象外（理由を記載）",
+      "reason": "今回のIdentity参加所有元の外。config/表示/UI/avatarの全体保証へ拡張しない。User削除の実FK閉包は別途実環境確認が必要。",
+      "test": ""
+    }
+  ],
+  "memory_state": "SOURCE_ONLY",
+  "memory_methods": 58,
+  "qualification": "NOT_QUALIFIED"
+}

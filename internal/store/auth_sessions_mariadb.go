@@ -8,7 +8,11 @@ import (
 	"time"
 )
 
-func (s MariaDBAuthStore) CreateSession(ctx context.Context, userID string, idleTTL, absoluteTTL time.Duration) (Session, error) {
+func (s MariaDBAuthStore) identityCreateSession(ctx context.Context, userID string, idleTTL, absoluteTTL time.Duration) (Session, error) {
+	identityQ, identityErr := s.identitySQL(ctx)
+	if identityErr != nil {
+		return Session{}, identityErr
+	}
 	rawToken, err := security.RandomToken(32)
 	if err != nil {
 		return Session{}, err
@@ -23,16 +27,20 @@ func (s MariaDBAuthStore) CreateSession(ctx context.Context, userID string, idle
 		CSRFToken: csrfToken, CSRFTokenHash: security.HashToken(csrfToken),
 		UserID: userID, IdleExpiresAt: now.Add(idleTTL), AbsoluteExpiresAt: now.Add(absoluteTTL),
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO sessions (id, user_id, csrf_token_hash, idle_expires_at, absolute_expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?)`, session.TokenHash, session.UserID, session.CSRFTokenHash, session.IdleExpiresAt, session.AbsoluteExpiresAt, now)
+	_, err = identityQ.ExecContext(ctx, `INSERT INTO sessions (id, user_id, csrf_token_hash, idle_expires_at, absolute_expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?)`, session.TokenHash, session.UserID, session.CSRFTokenHash, session.IdleExpiresAt, session.AbsoluteExpiresAt, now)
 	return session, err
 }
 
-func (s MariaDBAuthStore) GetSession(ctx context.Context, rawToken string) (Session, error) {
+func (s MariaDBAuthStore) identityGetSession(ctx context.Context, rawToken string) (Session, error) {
+	identityQ, identityErr := s.identitySQL(ctx)
+	if identityErr != nil {
+		return Session{}, identityErr
+	}
 	hash := security.HashToken(rawToken)
 	var session Session
 	session.Token = rawToken
 	session.TokenHash = hash
-	err := s.db.QueryRowContext(ctx, `SELECT user_id, csrf_token_hash, idle_expires_at, absolute_expires_at FROM sessions WHERE id = ?`, hash).Scan(&session.UserID, &session.CSRFTokenHash, &session.IdleExpiresAt, &session.AbsoluteExpiresAt)
+	err := identityQ.QueryRowContext(ctx, `SELECT user_id, csrf_token_hash, idle_expires_at, absolute_expires_at FROM sessions WHERE id = ?`, hash).Scan(&session.UserID, &session.CSRFTokenHash, &session.IdleExpiresAt, &session.AbsoluteExpiresAt)
 	if err == sql.ErrNoRows {
 		return Session{}, ErrNotFound
 	}
@@ -40,18 +48,24 @@ func (s MariaDBAuthStore) GetSession(ctx context.Context, rawToken string) (Sess
 		return Session{}, err
 	}
 	if time.Now().UTC().After(session.IdleExpiresAt) || time.Now().UTC().After(session.AbsoluteExpiresAt) {
-		_ = s.DeleteSession(ctx, rawToken)
+		if s.identityGate == nil {
+			_ = s.identityDeleteSession(ctx, rawToken)
+		}
 		return Session{}, ErrNotFound
 	}
 	return session, nil
 }
 
-func (s MariaDBAuthStore) RefreshSession(ctx context.Context, rawToken string, idleTTL time.Duration) (Session, error) {
+func (s MariaDBAuthStore) identityRefreshSession(ctx context.Context, rawToken string, idleTTL time.Duration) (Session, error) {
 	return s.refreshSessionAt(ctx, rawToken, idleTTL, time.Now().UTC())
 }
 
 func (s MariaDBAuthStore) refreshSessionAt(ctx context.Context, rawToken string, idleTTL time.Duration, now time.Time) (Session, error) {
-	session, err := s.GetSession(ctx, rawToken)
+	identityQ, identityErr := s.identitySQL(ctx)
+	if identityErr != nil {
+		return Session{}, identityErr
+	}
+	session, err := s.identityGetSession(ctx, rawToken)
 	if err != nil {
 		return Session{}, err
 	}
@@ -59,7 +73,7 @@ func (s MariaDBAuthStore) refreshSessionAt(ctx context.Context, rawToken string,
 	if nextIdleExpiry.After(session.AbsoluteExpiresAt) {
 		nextIdleExpiry = session.AbsoluteExpiresAt
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE sessions SET idle_expires_at = ? WHERE id = ? AND idle_expires_at > ? AND absolute_expires_at > ?`, nextIdleExpiry, session.TokenHash, now, now)
+	result, err := identityQ.ExecContext(ctx, `UPDATE sessions SET idle_expires_at = ? WHERE id = ? AND idle_expires_at > ? AND absolute_expires_at > ?`, nextIdleExpiry, session.TokenHash, now, now)
 	if err != nil {
 		return Session{}, err
 	}
@@ -71,7 +85,7 @@ func (s MariaDBAuthStore) refreshSessionAt(ctx context.Context, rawToken string,
 		// MariaDB reports changed rows. A same-second refresh can be valid
 		// without changing the precision-zero expiry. Re-read the same token,
 		// retaining the UPDATE's strict expiry predicates and revocation fence.
-		current, readErr := s.GetSession(ctx, rawToken)
+		current, readErr := s.identityGetSession(ctx, rawToken)
 		if readErr != nil {
 			return Session{}, readErr
 		}
@@ -84,22 +98,34 @@ func (s MariaDBAuthStore) refreshSessionAt(ctx context.Context, rawToken string,
 	return session, nil
 }
 
-func (s MariaDBAuthStore) DeleteSession(ctx context.Context, rawToken string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE id = ?`, security.HashToken(rawToken))
+func (s MariaDBAuthStore) identityDeleteSession(ctx context.Context, rawToken string) error {
+	identityQ, identityErr := s.identitySQL(ctx)
+	if identityErr != nil {
+		return identityErr
+	}
+	_, err := identityQ.ExecContext(ctx, `DELETE FROM sessions WHERE id = ?`, security.HashToken(rawToken))
 	return err
 }
 
-func (s MariaDBAuthStore) DeleteUserSessions(ctx context.Context, userID string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ?`, userID)
+func (s MariaDBAuthStore) identityDeleteUserSessions(ctx context.Context, userID string) error {
+	identityQ, identityErr := s.identitySQL(ctx)
+	if identityErr != nil {
+		return identityErr
+	}
+	_, err := identityQ.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ?`, userID)
 	return err
 }
 
-func (s MariaDBAuthStore) RecordLoginSuccess(ctx context.Context, userID, ip string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE users SET failed_login_count = 0, last_login_at = ?, last_login_ip = ? WHERE id = ?`, time.Now().UTC(), ip, userID)
+func (s MariaDBAuthStore) identityRecordLoginSuccess(ctx context.Context, userID, ip string) error {
+	identityQ, identityErr := s.identitySQL(ctx)
+	if identityErr != nil {
+		return identityErr
+	}
+	_, err := identityQ.ExecContext(ctx, `UPDATE users SET failed_login_count = 0, last_login_at = ?, last_login_ip = ? WHERE id = ?`, time.Now().UTC(), ip, userID)
 	return err
 }
 
-func (s MariaDBAuthStore) RecordLoginFailure(ctx context.Context, username string, lockoutThreshold int) error {
+func (s MariaDBAuthStore) identityRecordLoginFailure(ctx context.Context, username string, lockoutThreshold int) error {
 	if lockoutThreshold < 1 {
 		lockoutThreshold = defaultSecurityConfig.LoginLockoutThreshold
 	}

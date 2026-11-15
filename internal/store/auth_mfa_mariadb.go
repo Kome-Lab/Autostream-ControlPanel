@@ -9,7 +9,11 @@ import (
 	"time"
 )
 
-func (s MariaDBAuthStore) GetMFAConfig(ctx context.Context, userID string) (MFAConfig, error) {
+func (s MariaDBAuthStore) identityGetMFAConfig(ctx context.Context, userID string) (MFAConfig, error) {
+	q, err := s.identitySQL(ctx)
+	if err != nil {
+		return MFAConfig{}, err
+	}
 	var (
 		cfg                     MFAConfig
 		secretCiphertext        sql.NullString
@@ -19,7 +23,7 @@ func (s MariaDBAuthStore) GetMFAConfig(ctx context.Context, userID string) (MFAC
 		recoveryJSON            sql.NullString
 		updatedAt               time.Time
 	)
-	err := s.db.QueryRowContext(ctx, `SELECT user_id, enabled, totp_secret_ciphertext, totp_secret_nonce, pending_totp_secret_ciphertext, pending_totp_secret_nonce, recovery_code_hashes_json, updated_at FROM user_mfa WHERE user_id = ?`, userID).Scan(&cfg.UserID, &cfg.Enabled, &secretCiphertext, &secretNonce, &pendingSecretCiphertext, &pendingSecretNonce, &recoveryJSON, &updatedAt)
+	err = q.QueryRowContext(ctx, `SELECT user_id, enabled, totp_secret_ciphertext, totp_secret_nonce, pending_totp_secret_ciphertext, pending_totp_secret_nonce, recovery_code_hashes_json, updated_at FROM user_mfa WHERE user_id = ?`, userID).Scan(&cfg.UserID, &cfg.Enabled, &secretCiphertext, &secretNonce, &pendingSecretCiphertext, &pendingSecretNonce, &recoveryJSON, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return MFAConfig{UserID: userID}, nil
 	}
@@ -28,7 +32,9 @@ func (s MariaDBAuthStore) GetMFAConfig(ctx context.Context, userID string) (MFAC
 	}
 	cfg.UpdatedAt = updatedAt
 	if recoveryJSON.Valid && recoveryJSON.String != "" {
-		_ = json.Unmarshal([]byte(recoveryJSON.String), &cfg.RecoveryCodeHashes)
+		if err := json.Unmarshal([]byte(recoveryJSON.String), &cfg.RecoveryCodeHashes); err != nil && s.identityGate != nil {
+			return MFAConfig{}, err
+		}
 	}
 	if secretCiphertext.Valid && secretNonce.Valid {
 		secret, err := s.decryptMFASecret(secretCiphertext.String, secretNonce.String)
@@ -48,6 +54,9 @@ func (s MariaDBAuthStore) GetMFAConfig(ctx context.Context, userID string) (MFAC
 }
 
 func (s MariaDBAuthStore) StartTOTPEnrollment(ctx context.Context, userID, secret string, recoveryCodeHashes []string) error {
+	if err := s.identityFactorUnavailable(ctx); err != nil {
+		return err
+	}
 	if s.secretKeyMaterial == "" {
 		return ErrSecretKeyRequired
 	}
@@ -65,6 +74,9 @@ func (s MariaDBAuthStore) StartTOTPEnrollment(ctx context.Context, userID, secre
 }
 
 func (s MariaDBAuthStore) ConfirmTOTPEnrollment(ctx context.Context, userID string) error {
+	if err := s.identityFactorUnavailable(ctx); err != nil {
+		return err
+	}
 	result, err := s.db.ExecContext(ctx, `UPDATE user_mfa SET enabled = true, totp_secret_ciphertext = pending_totp_secret_ciphertext, totp_secret_nonce = pending_totp_secret_nonce, pending_totp_secret_ciphertext = NULL, pending_totp_secret_nonce = NULL, updated_at = ? WHERE user_id = ? AND pending_totp_secret_ciphertext IS NOT NULL`, time.Now().UTC(), userID)
 	if err != nil {
 		return err
@@ -80,11 +92,17 @@ func (s MariaDBAuthStore) ConfirmTOTPEnrollment(ctx context.Context, userID stri
 }
 
 func (s MariaDBAuthStore) DisableMFA(ctx context.Context, userID string) error {
+	if err := s.identityFactorUnavailable(ctx); err != nil {
+		return err
+	}
 	_, err := s.db.ExecContext(ctx, `DELETE FROM user_mfa WHERE user_id = ?`, userID)
 	return err
 }
 
 func (s MariaDBAuthStore) RegenerateRecoveryCodes(ctx context.Context, userID string, recoveryCodeHashes []string) error {
+	if err := s.identityFactorUnavailable(ctx); err != nil {
+		return err
+	}
 	recoveryJSON, err := json.Marshal(recoveryCodeHashes)
 	if err != nil {
 		return err
@@ -103,12 +121,19 @@ func (s MariaDBAuthStore) RegenerateRecoveryCodes(ctx context.Context, userID st
 	return nil
 }
 
-func (s MariaDBAuthStore) ConsumeRecoveryCode(ctx context.Context, userID, recoveryCodeHash string) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+func (s MariaDBAuthStore) identityConsumeRecoveryCode(ctx context.Context, userID, recoveryCodeHash string) error {
+	tx, err := s.identityBeginSQL(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	if s.identityGate != nil {
+		// The Lifecycle prefix already exists. Revalidate and lock User before
+		// taking the factor lock; a stale proof cannot consume for a disabled User.
+		if _, err := s.identityLockCurrentUser(ctx, userID); err != nil {
+			return err
+		}
+	}
 	var recoveryJSON sql.NullString
 	err = tx.QueryRowContext(ctx, `SELECT recovery_code_hashes_json FROM user_mfa WHERE user_id = ? AND enabled = true FOR UPDATE`, userID).Scan(&recoveryJSON)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -146,6 +171,9 @@ func (s MariaDBAuthStore) ConsumeRecoveryCode(ctx context.Context, userID, recov
 }
 
 func (s MariaDBAuthStore) CreateMFAChallenge(ctx context.Context, userID string, ttl time.Duration) (MFAChallenge, error) {
+	if err := s.identityFactorUnavailable(ctx); err != nil {
+		return MFAChallenge{}, err
+	}
 	raw, err := security.RandomToken(32)
 	if err != nil {
 		return MFAChallenge{}, err
@@ -156,6 +184,9 @@ func (s MariaDBAuthStore) CreateMFAChallenge(ctx context.Context, userID string,
 }
 
 func (s MariaDBAuthStore) GetMFAChallenge(ctx context.Context, rawToken string) (MFAChallenge, error) {
+	if err := s.identityFactorUnavailable(ctx); err != nil {
+		return MFAChallenge{}, err
+	}
 	hash := security.HashToken(rawToken)
 	var challenge MFAChallenge
 	challenge.Token = rawToken
@@ -175,6 +206,9 @@ func (s MariaDBAuthStore) GetMFAChallenge(ctx context.Context, rawToken string) 
 }
 
 func (s MariaDBAuthStore) DeleteMFAChallenge(ctx context.Context, rawToken string) error {
+	if err := s.identityFactorUnavailable(ctx); err != nil {
+		return err
+	}
 	_, err := s.db.ExecContext(ctx, `DELETE FROM mfa_challenges WHERE id = ?`, security.HashToken(rawToken))
 	return err
 }
