@@ -50,7 +50,8 @@ The new lock prefix is Lifecycle head before any product lock. Within it:
 
 No Ledger call is added under SQL locks. Existing provider behavior inside
 WithCurrent is not redefined as remote-effect atomicity. Native NOWAIT checks,
-real owner transactions, independent-process CAS and existing regressions are
+real owner transactions, a native Operational-epoch NOWAIT probe after the
+real SQL Snapshot returns, independent-process CAS and existing regressions are
 the evidence; source order alone is not execution proof.
 
 ## Connected stages

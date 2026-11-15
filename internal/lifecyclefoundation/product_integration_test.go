@@ -345,3 +345,86 @@ func TestB1UnreachableUnknownAndMismatch(t *testing.T) {
 		})
 	}
 }
+
+// observedOperationalSQL retains real product SQL; it only probes its native
+// row lock after Snapshot returns to prove the admitted transaction still owns it.
+type observedOperationalSQL struct {
+	oa.Store
+	db *sql.DB
+	t  *testing.T
+}
+
+func (s observedOperationalSQL) Snapshot(ctx context.Context, principal string) (oa.Snapshot, error) {
+	snapshot, err := s.Store.Snapshot(ctx, principal)
+	if err != nil {
+		return snapshot, err
+	}
+	probe, err := s.db.BeginTx(context.Background(), nil)
+	if err != nil {
+		return oa.Snapshot{}, err
+	}
+	defer probe.Rollback()
+	var revision uint64
+	err = probe.QueryRow("SELECT generation FROM operational_authorization_epoch WHERE singleton=1 FOR UPDATE NOWAIT").Scan(&revision)
+	check(s.t, err != nil, "Snapshot committed independently and released the epoch before the CP participant")
+	return snapshot, nil
+}
+
+func TestB1OperationalSQLParticipation(t *testing.T) {
+	f := newProductFixture(t)
+	for _, query := range []string{
+		"CREATE TABLE roles(id CHAR(36) PRIMARY KEY,name VARCHAR(96) NOT NULL) ENGINE=InnoDB",
+		"CREATE TABLE role_permissions(role_id CHAR(36),permission VARCHAR(96),PRIMARY KEY(role_id,permission)) ENGINE=InnoDB",
+		"CREATE TABLE user_roles(user_id CHAR(36),role_id CHAR(36),PRIMARY KEY(user_id,role_id)) ENGINE=InnoDB",
+		"INSERT INTO roles VALUES('role-create','custom'),('role-start','starter')",
+		"INSERT INTO role_permissions VALUES('role-create','roles.create'),('role-start','streams.start')",
+		"INSERT INTO user_roles VALUES('operator-1','role-create'),('operator-1','role-start')",
+	} {
+		_, err := f.db.Exec(query)
+		require(t, err)
+	}
+	require(t, oa.ApplyOperationalMigrations(context.Background(), f.db))
+	source := func(ctx context.Context, q lf.Executor) (lf.Checkpoint, error) {
+		cp, err := productCheckpoint(ctx, q)
+		if err != nil {
+			return cp, err
+		}
+		err = q.QueryRowContext(ctx, "SELECT generation FROM operational_authorization_epoch WHERE singleton=1").Scan(&cp.OperationalRevision)
+		if err != nil {
+			return cp, err
+		}
+		rows, err := q.QueryContext(ctx, "SELECT ur.user_id,ur.role_id,r.name,rp.permission FROM user_roles ur JOIN roles r ON r.id=ur.role_id JOIN role_permissions rp ON rp.role_id=r.id ORDER BY ur.user_id,ur.role_id,rp.permission")
+		if err != nil {
+			return cp, err
+		}
+		var rights []string
+		for rows.Next() {
+			var principal, role, name, operation string
+			if err = rows.Scan(&principal, &role, &name, &operation); err != nil {
+				rows.Close()
+				return cp, err
+			}
+			rights = append(rights, principal+":"+role+":"+name+":"+operation)
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return cp, err
+		}
+		cp.Content = lf.SyntheticReference([]any{cp.Content, cp.OperationalRevision, rights})
+		cp.HistoryHead = lf.SyntheticReference([]any{cp.HistoryHead, cp.OperationalRevision})
+		return cp, nil
+	}
+	// Explicit fixture enrollment before its first request; never a product repair.
+	f.env.Configure(t, "operator-1", source)
+	core := store.NewMariaDBAuthStoreWithSecretKey(f.db, "synthetic-test-only")
+	service := oa.NewService(observedOperationalSQL{Store: core, db: f.db, t: t}).WithLifecycleGate(f.env.Gate)
+	_, rights, err := service.Current(context.Background(), "operator-1", oa.Scope{Type: oa.ScopeGlobal})
+	require(t, err)
+	check(t, len(rights) == 2 && f.attempts(t, "operational.current") == 1, "real SQL Role union did not join the participant")
+	tx, err := f.db.BeginTx(context.Background(), nil)
+	require(t, err)
+	defer tx.Rollback()
+	var revision uint64
+	require(t, tx.QueryRow("SELECT generation FROM operational_authorization_epoch WHERE singleton=1 FOR UPDATE NOWAIT").Scan(&revision))
+}

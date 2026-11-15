@@ -20,6 +20,7 @@ var productTables = []string{
 	"v3_cp_management_grant_history", "v3_cp_management_audit", "v3_cp_management_grants", "v3_cp_management_bootstrap", "v3_cp_management_schema",
 	"v3_cp_authority_history", "v3_cp_authority_records", "v3_cp_authority_epoch", "v3_cp_authority_schema",
 	"v3_cp_authorization_issuances", "v3_cp_authorization_schema", "sessions", "users", "user_admin_guard",
+	"roles", "role_permissions", "user_roles", "operational_authorization_migrations", "operational_authorization_history", "operational_authorization_epoch",
 }
 
 type productFixture struct {
