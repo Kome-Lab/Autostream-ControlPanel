@@ -51,7 +51,7 @@
     "internal/database/migrations/094_manual_auto_start_hold.sql": "612bd76ea9e8ec46ce613f68ee4462452fb355675d85bf157403d494aa5a7595",
     "internal/httpapi/manual_auto_start_msr_cross_test.go": "2dc552c9786d264acc11169cd532b464f779d64675cdd59528e964cb01d24d00",
     "internal/httpapi/manual_auto_start_msr_process_test.go": "7864e1273324594636a8b178556bc2552c51ce2e4727512c8cea13284bd31bf6",
-    "internal/httpapi/manual_auto_start_msr_test.go": "a7404e56c0f79932202cace0143a97fe3d0a3c633d5904b690d5e7ee1863bc05",
+    "internal/httpapi/manual_auto_start_msr_test.go": "6b4dad23a8438e43344f0fb419a2f98700d99b2b91bd7492a4a6ba032c3b87a1",
     "internal/httpapi/manual_hold_route_characterization_test.go": "dc34957b1892c3ffd1575330d7b43a38fcb2253266c571542dd9e31286a710e8",
     "internal/httpapi/server_manual_auto_start.go": "3dc6f33502a1dd286af85549937cf888cb073ed25d9372c1f03d1427702d3c51",
     "internal/httpapi/server_start_admission.go": "f0e77d22fa6b15187d5c503348e785dba514a7c99f75129f2d0da9ffdb84529c",
@@ -906,6 +906,20 @@
         {
           "old": "\tif err := json.Unmarshal(bytes, &historical); err != nil {\n\t\tt.Fatal(err)\n\t}\n",
           "new": "\tif err := json.Unmarshal(bytes, &historical); err != nil {\n\t\tt.Fatal(err)\n\t}\n\taddManualHoldRouteCharacterization(t, &historical)\n"
+        }
+      ]
+    },
+    "web/tests/helpers/shared-node-status-source.mts": {
+      "before_sha256": "464672bf6481e570b24ac392eed6107aa98301435a2a7fe73454f46f5e5c857f",
+      "after_sha256": "b92ca8114473d9ef66131113b83ba306e390a1630c4f9f13484514b940c93424",
+      "edits": [
+        {
+          "old": "\nexport function inverseSharedNodeStatusSource(path: string, current: Buffer): Buffer {\n",
+          "new": "\n// IU-WS2-10 changes only this reviewed creation transaction and its import.\n// The exact inverse retains every historical status byte and pinned digest.\nconst holdGenesisChanges = [\n  {\n    \"after\": \"\\t\\\"time\\\"\\n\\n\\tlf \\\"github.com/example/autostream-control-panel/internal/lifecyclefoundation\\\"\\n\",\n    \"before\": \"\\t\\\"time\\\"\\n\"\n  },\n  {\n    \"after\": \"func (s MariaDBStreamStore) CreateStream(ctx context.Context, name string) (Stream, error) {\\n\\tnow := time.Now().UTC()\\n\\tstream := Stream{ID: newUUID(), Name: name, Status: \\\"created\\\", CreatedAt: now, UpdatedAt: now, SettingsRevision: UnconfiguredStreamSettingsRevision}\\n\\ttx, err := lf.BeginSQL(ctx, s.db, nil)\\n\\tif err != nil {\\n\\t\\treturn Stream{}, err\\n\\t}\\n\\tdefer tx.Rollback()\\n\\tinstalled, err := autoStartHoldSchemaInstalled(ctx, tx)\\n\\tif err != nil {\\n\\t\\treturn Stream{}, err\\n\\t}\\n\\tif _, err = tx.ExecContext(ctx, `INSERT INTO streams (id, name, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`, stream.ID, stream.Name, stream.Status, stream.CreatedAt, stream.UpdatedAt); err != nil {\\n\\t\\treturn Stream{}, err\\n\\t}\\n\\tif installed {\\n\\t\\tif err := initializeAutoStartHoldSQL(ctx, tx, stream); err != nil {\\n\\t\\t\\treturn Stream{}, err\\n\\t\\t}\\n\\t}\\n\\tif err = tx.Commit(); err != nil {\\n\\t\\treturn Stream{}, holdAttemptError(err)\\n\\t}\\n\\treturn stream, nil\\n}\\n\",\n    \"before\": \"func (s MariaDBStreamStore) CreateStream(ctx context.Context, name string) (Stream, error) {\\n\\tnow := time.Now().UTC()\\n\\tstream := Stream{ID: newUUID(), Name: name, Status: \\\"created\\\", CreatedAt: now, UpdatedAt: now, SettingsRevision: UnconfiguredStreamSettingsRevision}\\n\\t_, err := s.db.ExecContext(ctx, `INSERT INTO streams (id, name, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`, stream.ID, stream.Name, stream.Status, stream.CreatedAt, stream.UpdatedAt)\\n\\treturn stream, err\\n}\\n\"\n  }\n] as const;\n\nexport function inverseSharedNodeStatusSource(path: string, current: Buffer): Buffer {\n"
+        },
+        {
+          "old": "    for (const change of queryChanges) {\n",
+          "new": "    for (const change of holdGenesisChanges) {\n      assert.equal(text.split(change.after).length, 2, \"manual Hold genesis source digest: exact unique insertion required\");\n      text = text.replace(change.after, () => change.before);\n    }\n    for (const change of queryChanges) {\n"
         }
       ]
     }
