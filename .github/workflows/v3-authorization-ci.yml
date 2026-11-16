@@ -341,12 +341,6 @@ jobs:
       MSR_ENCODER_SHA: '5dbe82f92795e6931133ff0a84e52b4d4ac2006a'
       MSR_WORKER_SHA: 'e08d017a0d9c4c1412350b1dd21d140a6e3f3229'
       MSR_BOT_SHA: 'f29a816935e701597aaa6977fd7278a54903671a'
-      AUTOSTREAM_MSR_ENCODER_TEST_BINARY: ${{ runner.temp }}/msr-encoder.test
-      AUTOSTREAM_MSR_WORKER_TEST_BINARY: ${{ runner.temp }}/msr-worker.test
-      AUTOSTREAM_MSR_BOT_TEST_BINARY: ${{ runner.temp }}/msr-bot.test
-      AUTOSTREAM_MSR_ENCODER_RACE_TEST_BINARY: ${{ runner.temp }}/msr-encoder-race.test
-      AUTOSTREAM_MSR_WORKER_RACE_TEST_BINARY: ${{ runner.temp }}/msr-worker-race.test
-      AUTOSTREAM_MSR_BOT_RACE_TEST_BINARY: ${{ runner.temp }}/msr-bot-race.test
     services:
       msr-mariadb:
         image: mariadb:11.4.12@sha256:a794d9eb009e20de605858a11f32f63b4075cbd197c650436f0e3b457e4caed7
@@ -371,6 +365,17 @@ jobs:
           go-version: '1.26.5'
           check-latest: false
           cache: false
+      - name: Set isolated process binary paths
+        run: |
+          set -euo pipefail
+          {
+            printf 'AUTOSTREAM_MSR_ENCODER_TEST_BINARY=%s/msr-encoder.test\n' "$RUNNER_TEMP"
+            printf 'AUTOSTREAM_MSR_WORKER_TEST_BINARY=%s/msr-worker.test\n' "$RUNNER_TEMP"
+            printf 'AUTOSTREAM_MSR_BOT_TEST_BINARY=%s/msr-bot.test\n' "$RUNNER_TEMP"
+            printf 'AUTOSTREAM_MSR_ENCODER_RACE_TEST_BINARY=%s/msr-encoder-race.test\n' "$RUNNER_TEMP"
+            printf 'AUTOSTREAM_MSR_WORKER_RACE_TEST_BINARY=%s/msr-worker-race.test\n' "$RUNNER_TEMP"
+            printf 'AUTOSTREAM_MSR_BOT_RACE_TEST_BINARY=%s/msr-bot-race.test\n' "$RUNNER_TEMP"
+          } >> "$GITHUB_ENV"
       - name: Require immutable reviewed child candidates
         run: |
           set -euo pipefail
