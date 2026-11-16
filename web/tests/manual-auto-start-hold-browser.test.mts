@@ -118,6 +118,7 @@ test("MSR-UI-BROWSER: normal Stream detail preserves confirmation and same-reque
         }
       };
       const openConfirmation = async () => {
+        await activeBrowser.waitFor(`document.querySelector('[role="alertdialog"]') === null`, Boolean, "previous confirmation fully closed");
         await activeBrowser.waitFor(`document.querySelector(${JSON.stringify(resumeTrigger + ":not([disabled])")}) !== null`, Boolean, "current Resume trigger");
         await scrollSelectorIntoView(activeBrowser, resumeTrigger);
         await activeBrowser.clickSelector(resumeTrigger);
@@ -137,14 +138,26 @@ test("MSR-UI-BROWSER: normal Stream detail preserves confirmation and same-reque
       });
 
       await t.test("fresh permission revocation sends no browser mutation", async () => {
-        await openConfirmation();
-        fixture.authResponse = { body: { ...currentUser, permissions: ["streams.read"] } };
-        await activeBrowser.clickSelector(confirmationAction);
-        await activeBrowser.waitFor(`document.querySelector('${panel}')?.textContent?.includes('現在の権限またはSessionを確認できません') === true`, Boolean, "fresh permission rejection");
-        assert.equal(posts.length, 0);
-        assert.equal(currentHold.held, true);
-        await clickButtonText("キャンセル");
+        // Own a fresh page and query cache; a prior stale confirmation and its
+        // closing animation must not substitute for this confirmation.
         fixture.authResponse = { body: currentUser };
+        await openDetail();
+        await openConfirmation();
+        try {
+          fixture.authResponse = { body: { ...currentUser, permissions: ["streams.read"] } };
+          await clickButtonText("確認して自動開始を再開");
+          try { await activeBrowser.waitFor(`document.querySelector('${panel}')?.textContent?.includes('現在の権限またはSessionを確認できません') === true`, Boolean, "fresh permission rejection"); }
+          catch (error) {
+            console.error("MSR_BROWSER_FIXTURE_OBSERVATION", JSON.stringify({ phase: "fresh-permission-confirm", authGETs: activeBrowser.requests.get("/auth/me") || 0, posts: posts.length, consoleErrors: activeBrowser.consoleErrorCount, panel: await activeBrowser.evaluate<string>(`document.querySelector('${panel}')?.textContent?.slice(0,1500) || 'panel_missing'`) }));
+            throw error;
+          }
+          assert.equal(posts.length, 0);
+          assert.equal(currentHold.held, true);
+        } finally {
+          fixture.authResponse = { body: currentUser };
+          if (await activeBrowser.evaluate<boolean>(`document.querySelector('[role="alertdialog"]') !== null`)) await clickButtonText("キャンセル");
+          await activeBrowser.waitFor(`document.querySelector('[role="alertdialog"]') === null`, Boolean, "permission confirmation closed");
+        }
       });
 
       await t.test("ambiguous ACK survives reload and only inspects the original request", async () => {

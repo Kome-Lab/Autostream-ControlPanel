@@ -24,6 +24,18 @@ test("MSR-UI-PANEL-01: actual normal Stream panel shows held/clear/UNKNOWN and c
   }
 });
 
+test("MSR-UI-PANEL-05: missing identity cannot authorize Resume or break existing operations display", () => {
+  for (const identity of [{ permissions: ["*"] }, { user: null, permissions: ["streams.start", "streams.read"] }]) {
+    const html = renderUI(createElement(StreamAutoStartHoldPanel, { stream }), "en", "/streams", client => {
+      client.setQueryData(["auth", "me"], identity);
+      client.setQueryData(["streams", stream.id, "auto-start-hold", stream.updated_at, stream.settings_revision, stream.archive_run_id, stream.status], { stream, hold });
+    });
+    assert.match(html, /data-manual-auto-start-hold/);
+    const resume = (html.match(/<button[^>]*>[^<]*Resume automatic start<\/button>/g) || [])[0];
+    assert.ok(resume); assert.equal(resume.includes('disabled=""'), true);
+  }
+});
+
 test("MSR-UI-PANEL-02: untrusted reason/body is not echoed and normal detail owns the feature", () => {
   const html = renderUI(createElement(StreamAutoStartHoldPanel, { stream }), "ja", "/streams", client => {
     client.setQueryData(["auth", "me"], { user: { id: "operator", username: "Synthetic" }, permissions: ["streams.start"] });

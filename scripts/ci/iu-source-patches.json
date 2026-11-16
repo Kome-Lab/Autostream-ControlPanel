@@ -49,7 +49,7 @@
     "docs/v3/iu-ws2-10-manual-auto-start-hold.md": "3cd9d9a375ec0a2840764492e66c14a52cb7ffb85fd7740160e4b8275e35cab7",
     "internal/database/manual_auto_start_hold_migration_test.go": "81645721db13ac076a41436f856bd11269c02d3e089b914d2153121912613912",
     "internal/database/migrations/094_manual_auto_start_hold.sql": "612bd76ea9e8ec46ce613f68ee4462452fb355675d85bf157403d494aa5a7595",
-    "internal/httpapi/manual_auto_start_msr_cross_test.go": "d9802963b06014801fc364e18f388a60b6bb6050f774009258a79256d4460c11",
+    "internal/httpapi/manual_auto_start_msr_cross_test.go": "2dc552c9786d264acc11169cd532b464f779d64675cdd59528e964cb01d24d00",
     "internal/httpapi/manual_auto_start_msr_process_test.go": "7864e1273324594636a8b178556bc2552c51ce2e4727512c8cea13284bd31bf6",
     "internal/httpapi/manual_auto_start_msr_test.go": "a7404e56c0f79932202cace0143a97fe3d0a3c633d5904b690d5e7ee1863bc05",
     "internal/httpapi/manual_hold_route_characterization_test.go": "dc34957b1892c3ffd1575330d7b43a38fcb2253266c571542dd9e31286a710e8",
@@ -73,12 +73,12 @@
     "scripts/ci/msr-required-tests.txt": "df320dc35ca2793c7b2bb55f3ccd29afdb29970d93251338ce94e82971670858",
     "scripts/ci/msr-ui-browser-required-tests.txt": "5d66788e10f89271c01b1fcf2b777ff1f73885c7e701129090c32e9929e6c8dd",
     "scripts/ci/msr-ui-events.mjs": "41e832901a3a8b78f4076a4941dfdd739de5c44caf97f4feb2a81f3793e85f30",
-    "scripts/ci/msr-ui-required-tests.txt": "1d54fb6f02d6ded83aac46a2a0beefa94433b964c7a754395874ed8c0a25bc0c",
+    "scripts/ci/msr-ui-required-tests.txt": "3219927cd312aa49a77870c78c09fc2c1f942de272ee430a3300fb74cd53c087",
     "scripts/ci/test_msr_json_events.py": "0bad09c746a5d274132978cb99035131aa487055654740d90b6bdf7093ff1bd8",
-    "web/src/features/streams/stream-auto-start-hold-panel.tsx": "91335e1ed8fd56afc67fd35113e555b0b2bbdb97b6f434c47a4b8c961024f206",
+    "web/src/features/streams/stream-auto-start-hold-panel.tsx": "4f91852510477df17943448b5df9fb1c5c731feb5020167a0ed7827b5fa8f0f0",
     "web/src/features/streams/stream-auto-start-hold.ts": "0391c6c2f864b01f47b067df790a66536fe2239497aad0558c931ec84f425fa1",
-    "web/tests/manual-auto-start-hold-browser.test.mts": "e7e244adb8a47dcaf53e831286f10c9769ef41ecb92f889ab1e993fdc7712dfa",
-    "web/tests/manual-auto-start-hold-panel.test.mts": "532cf86e7e81c74259e9b0bca1d0c1e65db637e6b756a10e29e7b7a3be372ce2",
+    "web/tests/manual-auto-start-hold-browser.test.mts": "304e26c67b03e889430f8820378acfc69e589285bfbcb02d6646f9018f2e1621",
+    "web/tests/manual-auto-start-hold-panel.test.mts": "e424bc736a4642b49674ec3e7d105d4caac5fb4b306954d4372558251ea913e6",
     "web/tests/manual-auto-start-hold.test.mts": "d5aa2e99c816b9a7e9f2f8b38cd3e9b0505fe76b84a5811ea6e2b2fea5f81b6d",
     "web/tests/manual-stop-request.test.mts": "cf2660e7d076ca4441fc279659b05605a77c3416cf25c5f390218848e9c7e7a3"
   },
@@ -896,6 +896,16 @@
         {
           "old": "      rendererPath,\n      \"src/features/application/deferred-updater-host-confirmation.tsx\",\n      \"src/features/nodes/deferred-node-confirmation.tsx\",\n      \"src/features/streams/stream-control-platform-panel.tsx\",\n        ].sort(),\n    \"ConfirmationDialogFrame has exactly the reviewed owners\",\n",
           "new": "      rendererPath,\n      \"src/features/application/deferred-updater-host-confirmation.tsx\",\n      \"src/features/nodes/deferred-node-confirmation.tsx\",\n      \"src/features/streams/stream-auto-start-hold-panel.tsx\",\n      \"src/features/streams/stream-control-platform-panel.tsx\",\n        ].sort(),\n    \"ConfirmationDialogFrame has exactly the reviewed owners\",\n"
+        }
+      ]
+    },
+    "internal/httpapi/routes_media_upload_characterization_test.go": {
+      "before_sha256": "d79009bc226e051df0b9d4f695dd073a09cb552c4468546bdb273c882f0846f6",
+      "after_sha256": "6b6500a33ace94271a763bdb3f76ad9f367fcb81c6c4f10b0e00b4651a0c3363",
+      "edits": [
+        {
+          "old": "\tif err := json.Unmarshal(bytes, &historical); err != nil {\n\t\tt.Fatal(err)\n\t}\n",
+          "new": "\tif err := json.Unmarshal(bytes, &historical); err != nil {\n\t\tt.Fatal(err)\n\t}\n\taddManualHoldRouteCharacterization(t, &historical)\n"
         }
       ]
     }

@@ -11,3 +11,4 @@ MSR-UI-PANEL-03: a newer normal Stream frame cannot present an old cached clear 
 MSR-UI-08: force Stop retains its original UUID without borrowing a normal Stop receipt or retrying
 MSR-UI-09: generic Hold inspection is read scoped and never proves physical Stop or Start
 MSR-UI-PANEL-04: a server-owned pending Hold exposes a read-only inspector without Resume permission
+MSR-UI-PANEL-05: missing identity cannot authorize Resume or break existing operations display

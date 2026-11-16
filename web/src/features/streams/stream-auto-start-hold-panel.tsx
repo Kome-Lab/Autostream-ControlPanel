@@ -23,7 +23,7 @@ const boundedSignal = (signal: AbortSignal) => AbortSignal.any([signal, AbortSig
 
 export function StreamAutoStartHoldPanel({ stream }: { stream: Stream }) {
   const currentUser = useCurrentUser();
-  return <StreamAutoStartHoldContent key={`${stream.id}:${currentUser.data?.user.id || "unauthenticated"}`} stream={stream} />;
+  return <StreamAutoStartHoldContent key={`${stream.id}:${currentUser.data?.user?.id || "unauthenticated"}`} stream={stream} />;
 }
 
 function StreamAutoStartHoldContent({ stream }: { stream: Stream }) {
@@ -34,7 +34,7 @@ function StreamAutoStartHoldContent({ stream }: { stream: Stream }) {
   const [result, setResult] = useState<ResumeResult | null>(null);
   const [pendingID, setPendingID] = useState<string | null>(null);
   const [serverInspection, setServerInspection] = useState<Readonly<{ requestID: string; projection?: HoldAttemptProjection; denied?: boolean }> | null>(null);
-  const actorID = currentUser.data?.user.id || "";
+  const actorID = currentUser.data?.user?.id || "";
   const readPath = `/streams/${encodeURIComponent(stream.id)}/auto-start-hold`;
   const queryKey = ["streams", stream.id, "auto-start-hold", stream.updated_at || "", stream.settings_revision || "", stream.archive_run_id || "", stream.status] as const;
   const storageKey = actorID ? `autostream.resume-attempt:${encodeURIComponent(actorID)}:${encodeURIComponent(stream.id)}` : "";
@@ -52,13 +52,13 @@ function StreamAutoStartHoldContent({ stream }: { stream: Stream }) {
     },
     currentIdentity: () => {
       const value = queryClient.getQueryData<CurrentUser>(["auth", "me"]);
-      return value?.user.id ? { actorID: value.user.id, sessionMarker: getCSRFToken() } : undefined;
+      return value?.user?.id ? { actorID: value.user.id, sessionMarker: getCSRFToken() } : undefined;
     },
     newRequestID: () => globalThis.crypto.randomUUID(),
     send: (request, signal) => apiPost(`/streams/${encodeURIComponent(stream.id)}/auto-start/resume`, request, boundedSignal(signal)),
     inspect: (id, signal) => apiGet(`/streams/${encodeURIComponent(stream.id)}/auto-start/resume-attempts/${encodeURIComponent(id)}`, boundedSignal(signal)),
     onAttempt: id => {
-      if (queryClient.getQueryData<CurrentUser>(["auth", "me"])?.user.id !== actorID) return;
+      if (queryClient.getQueryData<CurrentUser>(["auth", "me"])?.user?.id !== actorID) return;
       setPendingID(id);
       // Only the original non-secret request ID is mirrored for read-only
       // recovery after a page reload. The server remains the attempt owner.
@@ -120,7 +120,7 @@ function StreamAutoStartHoldContent({ stream }: { stream: Stream }) {
     if (busy || genericInspection.current || pendingID || !readAllowed || !/^[A-Za-z0-9_.:-]{1,80}$/.test(serverPendingID)) return;
     const owner = controller, id = serverPendingID, marker = getCSRFToken(), operation = new AbortController();
     genericInspection.current = operation; setBusy(true); setServerInspection({ requestID: id });
-    const sameOwner = () => owned(owner) && queryClient.getQueryData<CurrentUser>(["auth", "me"])?.user.id === actorID && getCSRFToken() === marker;
+    const sameOwner = () => owned(owner) && queryClient.getQueryData<CurrentUser>(["auth", "me"])?.user?.id === actorID && getCSRFToken() === marker;
     try {
       const identity = await apiGet<CurrentUser>("/auth/me", boundedSignal(operation.signal));
       if (!sameOwner()) return;

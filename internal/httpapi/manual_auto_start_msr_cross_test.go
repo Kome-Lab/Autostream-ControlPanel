@@ -91,7 +91,7 @@ func msrDriverJSON(t *testing.T, base, method, endpoint string, body any, out an
 }
 func msrBotSnapshot(f *msrHTTPFixture, known, held bool, revision uint64) map[string]any {
 	s := f.stream
-	h := map[string]any{"stream_id": s.ID, "service_id": "msr-bot", "service_type": "discord_bot", "selection_epoch": time.Unix(100, 0).UTC().Format(time.RFC3339Nano), "profile_id": "msr-discord-profile", "profile_revision": "synthetic-profile-revision", "profile_owner_service_id": "msr-bot", "secret_name": "synthetic_reference_only", "fingerprint": "synthetic_reference_only", "ready": true, "guild_id": "100000000000000001", "voice_channel_id": "100000000000000002", "target_revision": uint64(7), "auto_start_trigger": "discord_voice_join", "auto_start_hold_required": true, "auto_start_hold_known": known, "auto_start_hold": held, "auto_start_hold_revision": revision, "expected_stream_revision": s.UpdatedAt.UTC().Format(time.RFC3339Nano), "expected_settings_revision": s.SettingsRevision, "expected_run_id": s.ArchiveRunID}
+	h := map[string]any{"stream_id": s.ID, "service_id": "msr-bot", "service_type": "discord_bot", "selection_epoch": time.Unix(100, 0).UTC().Format(time.RFC3339Nano), "profile_id": "msr-discord-profile", "profile_revision": "synthetic-profile-revision", "profile_owner_service_id": "msr-bot", "secret_name": "discord_bot_token", "fingerprint": "synthetic_reference_only", "ready": true, "guild_id": "100000000000000001", "voice_channel_id": "100000000000000002", "target_revision": uint64(7), "auto_start_trigger": "discord_voice_join", "auto_start_hold_required": true, "auto_start_hold_known": known, "auto_start_hold": held, "auto_start_hold_revision": revision, "expected_stream_revision": s.UpdatedAt.UTC().Format(time.RFC3339Nano), "expected_settings_revision": s.SettingsRevision, "expected_run_id": s.ArchiveRunID}
 	return map[string]any{"service": map[string]any{"service_id": "msr-bot", "service_type": "discord_bot"}, "assignments": []any{}, "profiles": map[string]any{}, "current_discord_bindings": map[string]any{"version": 1, "bindings": []any{}}, "discord_waiting_monitor": map[string]any{"version": 1, "execution_active": false, "bindings": []any{h}}}
 }
 func msrRunBotProcess(t *testing.T, f *msrHTTPFixture, mode string) {
@@ -626,8 +626,18 @@ func msrResumeWithPendingBotRefresh(t *testing.T, f *msrHTTPFixture) {
 			return e
 		}
 		defer response.Body.Close()
-		if response.StatusCode < 400 {
-			t.Error("strict cached-Hold condition accepted pending runtime")
+		var strictCondition struct {
+			StreamID        string `json:"stream_id"`
+			AssignmentEpoch string `json:"assignment_epoch"`
+			HoldRevision    uint64 `json:"hold_revision"`
+			Known           bool   `json:"known"`
+			Present         bool   `json:"present"`
+		}
+		if response.StatusCode != http.StatusOK || json.NewDecoder(response.Body).Decode(&strictCondition) != nil {
+			t.Error("strict cached-Hold condition did not return its typed observation")
+		}
+		if strictCondition.StreamID != f.stream.ID || strictCondition.AssignmentEpoch != epoch || strictCondition.HoldRevision != pending.Revision || strictCondition.Known || strictCondition.Present {
+			t.Errorf("pending cached-Hold condition must remain original-frame UNKNOWN: %+v", strictCondition)
 		}
 		presence, e := f.dispatcher.ObserveAutoStartPresence(ctx, store.RegisteredService{}, f.stream.ID, epoch)
 		if e != nil || !presence.Known || !presence.Present {
