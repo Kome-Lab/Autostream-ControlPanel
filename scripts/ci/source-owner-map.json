@@ -5463,7 +5463,7 @@
       },
       {
         "path": "web/src/features/application/updater-bootstrap-status-sections.tsx",
-        "sha256": "325c9ba04cfa7acaf01c6f5f95daf68150648fb27ad598d893d56eb4526e555b",
+        "sha256": "472249ef6915acbc064cf42217b0a79aadc72b67077648e67298197592a6b711",
         "symbols": [
           "BootstrapFeedback",
           "BootstrapHostResults",
@@ -6077,7 +6077,7 @@
       },
       {
         "path": "web/src/features/nodes/node-registration-view.tsx",
-        "sha256": "a516c46a619a76e986739773de2ea8a6a5d6630e2f00e07133ceb87d8f041eeb",
+        "sha256": "4ce5e93e6324f606aa80882e2ebdc37f7c794b990d1cbde477bf28ca57c66f58",
         "symbols": [
           "LegacyNodeRegistrationView",
           "NodeRegistrationView",
@@ -6148,7 +6148,7 @@
       },
       {
         "path": "web/src/features/application/updater-settings-form.tsx",
-        "sha256": "fff4a01cc310fccd2fe66cec5f87271f82d931905e158a389355f05fad43b6db",
+        "sha256": "f23c72929ed79a5d23c433d63ab343ca70d06c81b1ead6fd2e0d746c7cd8a547",
         "symbols": [
           "OwnershipStateItem",
           "UpdaterSettingsForm",
@@ -6180,7 +6180,7 @@
       },
       {
         "path": "web/src/components/layout/detail-section.tsx",
-        "sha256": "cd839d0093e4513131b5d7b6dd7656ce217d61e6a86e936232540bae80305bef",
+        "sha256": "5490bd9851a96f2d8fcfaec392f3a584dd5f8b10351407b8e1bda94e36b66dc0",
         "symbols": [
           "DetailSection",
           "SectionNavigation"
@@ -6332,7 +6332,7 @@
       },
       {
         "path": "web/src/features/application/updater-settings-form.tsx",
-        "sha256": "fff4a01cc310fccd2fe66cec5f87271f82d931905e158a389355f05fad43b6db",
+        "sha256": "f23c72929ed79a5d23c433d63ab343ca70d06c81b1ead6fd2e0d746c7cd8a547",
         "symbols": [
           "OwnershipStateItem",
           "UpdaterSettingsForm",
