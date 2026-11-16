@@ -51,7 +51,7 @@
     "internal/database/migrations/094_manual_auto_start_hold.sql": "612bd76ea9e8ec46ce613f68ee4462452fb355675d85bf157403d494aa5a7595",
     "internal/httpapi/manual_auto_start_msr_cross_test.go": "2dc552c9786d264acc11169cd532b464f779d64675cdd59528e964cb01d24d00",
     "internal/httpapi/manual_auto_start_msr_process_test.go": "7864e1273324594636a8b178556bc2552c51ce2e4727512c8cea13284bd31bf6",
-    "internal/httpapi/manual_auto_start_msr_test.go": "6b4dad23a8438e43344f0fb419a2f98700d99b2b91bd7492a4a6ba032c3b87a1",
+    "internal/httpapi/manual_auto_start_msr_test.go": "ab317380df4c8520a9addf6a69928e99dfc570a1b5d55d1163748d6dc0d396b6",
     "internal/httpapi/manual_hold_route_characterization_test.go": "dc34957b1892c3ffd1575330d7b43a38fcb2253266c571542dd9e31286a710e8",
     "internal/httpapi/server_manual_auto_start.go": "3dc6f33502a1dd286af85549937cf888cb073ed25d9372c1f03d1427702d3c51",
     "internal/httpapi/server_start_admission.go": "f0e77d22fa6b15187d5c503348e785dba514a7c99f75129f2d0da9ffdb84529c",
@@ -69,7 +69,7 @@
     "internal/store/auto_start_hold_test.go": "0867c396fd0f02e3975b1526f4196764fe7280bc29f8dcc284d27b963f5027b9",
     "scripts/ci/msr-checks.sh": "ab87b51639e8f860ee4a1c045ac63af40dcac77c62651edfd0e0d5e6dedae3d0",
     "scripts/ci/msr-json-events.py": "33314128bc672ce619fc452fdeb7bee99ff07b4d16104461b4f1ea99e5199b5b",
-    "scripts/ci/msr-required-subtests.txt": "a50a40a62accaa01a46fd6af3e2df23416a340212efdfa23c25d7f93e1b89180",
+    "scripts/ci/msr-required-subtests.txt": "7b625330932d904817bf0ebcaaf547b03c79f80bd7a7ea7182ffea2a2eade51a",
     "scripts/ci/msr-required-tests.txt": "df320dc35ca2793c7b2bb55f3ccd29afdb29970d93251338ce94e82971670858",
     "scripts/ci/msr-ui-browser-required-tests.txt": "5d66788e10f89271c01b1fcf2b777ff1f73885c7e701129090c32e9929e6c8dd",
     "scripts/ci/msr-ui-events.mjs": "41e832901a3a8b78f4076a4941dfdd739de5c44caf97f4feb2a81f3793e85f30",
@@ -80,7 +80,8 @@
     "web/tests/manual-auto-start-hold-browser.test.mts": "304e26c67b03e889430f8820378acfc69e589285bfbcb02d6646f9018f2e1621",
     "web/tests/manual-auto-start-hold-panel.test.mts": "e424bc736a4642b49674ec3e7d105d4caac5fb4b306954d4372558251ea913e6",
     "web/tests/manual-auto-start-hold.test.mts": "d5aa2e99c816b9a7e9f2f8b38cd3e9b0505fe76b84a5811ea6e2b2fea5f81b6d",
-    "web/tests/manual-stop-request.test.mts": "cf2660e7d076ca4441fc279659b05605a77c3416cf25c5f390218848e9c7e7a3"
+    "web/tests/manual-stop-request.test.mts": "cf2660e7d076ca4441fc279659b05605a77c3416cf25c5f390218848e9c7e7a3",
+    "internal/httpapi/manual_auto_start_msr_commit_barrier_test.go": "3c7d177268d472bd61dd5fbf8ee5179802b5e409b9e5069640a301417bd24aaa"
   },
   "patches": {
     ".github/workflows/v3-authorization-ci.yml": {
