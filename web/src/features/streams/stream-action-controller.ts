@@ -54,14 +54,16 @@ export type StreamActionController = Readonly<{
   cancel: (intent?: StreamActionIntent) => void;
   reconcile: (intent: StreamActionIntent) => void;
   reconcileStop: (intent: StreamActionIntent) => Promise<StreamActionExecutionResult>;
+  getOriginalRequestID?: (intent: StreamActionIntent) => string | undefined;
   isPending: (intent: StreamActionIntent) => boolean;
 }>;
 
 export type StreamActionControllerDependencies = Readonly<{
   getPermissions: () => PermissionSnapshot;
   getState: (intent: StreamActionIntent) => StreamActionStateSnapshot;
-  mutate: (request: StreamActionRequest & Readonly<{ signal: AbortSignal }>) => Promise<unknown>;
-  readStopOutcome?: (intent: StreamActionIntent) => Promise<unknown>;
+  mutate: (request: StreamActionRequest & Readonly<{ signal: AbortSignal; requestID?: string }>) => Promise<unknown>;
+  readStopOutcome?: (intent: StreamActionIntent, requestID?: string) => Promise<unknown>;
+  newStopRequestID?: () => string;
   revalidate?: (intent: StreamActionIntent, signal: AbortSignal) => Promise<Readonly<{ permissions: PermissionSnapshot; state: StreamActionStateSnapshot }>>;
 }>;
 
@@ -92,7 +94,7 @@ export function createStreamActionController(dependencies: StreamActionControlle
   const active = new Map<string, ActiveOperation>();
   const generations = new Map<string, number>();
   const unresolved = new Set<string>();
-  const stopOrigins = new Map<string, StreamActionIntent>();
+  const stopOrigins = new Map<string, Readonly<{ intent: StreamActionIntent; requestID: string }>>();
 
   const evaluateBase = (intent: StreamActionIntent, proven?: Readonly<{ permissions: PermissionSnapshot; state: StreamActionStateSnapshot }>): ActionEvaluation => {
     const descriptor = buildStreamActionDescriptor(intent);
@@ -195,9 +197,15 @@ export function createStreamActionController(dependencies: StreamActionControlle
         if (currentReason) return blocked(currentReason);
       }
       try {
-        if (opened.intent.id === "STR-05") stopOrigins.set(scope, opened.intent);
+        let requestID: string | undefined;
+        if (opened.intent.id === "STR-05" || opened.intent.id === "STR-06") {
+          try { requestID = dependencies.newStopRequestID ? dependencies.newStopRequestID() : globalThis.crypto.randomUUID(); }
+          catch { return blocked("state-unavailable"); }
+          if (!/^[A-Za-z0-9_.:-]{1,80}$/.test(requestID)) return blocked("state-unavailable");
+          stopOrigins.set(scope, Object.freeze({ intent: opened.intent, requestID }));
+        }
         operation.sent = true;
-        const value = await dependencies.mutate(Object.freeze({ ...requestValue, signal: operation.abort.signal }));
+        const value = await dependencies.mutate(Object.freeze({ ...requestValue, signal: operation.abort.signal, ...(requestID ? { requestID } : {}) }));
         if (!current(scope, operation)) return blocked("cancelled");
         if (opened.intent.id === "STR-05") {
           if (!isStreamStopResponse(value, opened.intent)) {
@@ -217,7 +225,7 @@ export function createStreamActionController(dependencies: StreamActionControlle
           // Stop; a stale/live/failed row is not a successful Stop receipt.
           if (opened.intent.id === "STR-05" && dependencies.readStopOutcome) {
             try {
-              const value = await dependencies.readStopOutcome(opened.intent);
+              const value = await dependencies.readStopOutcome(opened.intent, stopOrigins.get(scope)?.requestID);
               if (!current(scope, operation)) return blocked("cancelled");
               if (isConfirmedStreamStopOutcome(value, opened.intent)) {
                 unresolved.delete(scope);
@@ -279,12 +287,12 @@ export function createStreamActionController(dependencies: StreamActionControlle
     reconcileStop: async (intent) => {
       const scope = streamActionScope(intent);
       if (!scope || intent.id !== "STR-05" || !dependencies.readStopOutcome) return blocked("invalid-intent");
-      const original = stopOrigins.get(scope) ?? intent;
+      const origin = stopOrigins.get(scope), original = origin?.intent ?? intent;
       if (original.stream?.id !== intent.stream?.id || original.stream?.updated_at !== intent.stream?.updated_at) return blocked("invalid-intent");
       const operation = acquire(scope);
       if (!operation) return blocked("duplicate");
       try {
-        const value = await dependencies.readStopOutcome(original);
+        const value = await dependencies.readStopOutcome(original, origin?.requestID);
         if (!current(scope, operation)) return blocked("cancelled");
         if (isConfirmedStreamStopOutcome(value, original)) {
           unresolved.delete(scope);
@@ -298,6 +306,10 @@ export function createStreamActionController(dependencies: StreamActionControlle
     isPending: (intent) => {
       const scope = streamActionScope(intent);
       return Boolean(scope && active.has(scope));
+    },
+    getOriginalRequestID: (intent) => {
+      const scope = streamActionScope(intent);
+      return scope ? stopOrigins.get(scope)?.requestID : undefined;
     },
   });
 

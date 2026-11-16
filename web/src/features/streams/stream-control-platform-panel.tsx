@@ -35,6 +35,7 @@ import { withBoundedActionRevalidation } from "@/lib/actions/bounded-revalidatio
 import { readStreamLifecycleOutcome } from "./stream-lifecycle-outcome";
 import { unavailableLifecycleOutcome } from "./lifecycle-outcome-presentation";
 import { LifecycleOutcomeView } from "./lifecycle-outcome-view";
+import { StreamAutoStartHoldPanel } from "./stream-auto-start-hold-panel";
 
 class CoverActionUnavailable extends Error {}
 type CoverAuthorityTarget = Pick<Stream, "id" | "status" | "assigned_encoder_id">;
@@ -42,7 +43,7 @@ type CoverAuthorityTarget = Pick<Stream, "id" | "status" | "assigned_encoder_id"
 type OperationsResults = Readonly<{ notification?: unknown; media?: unknown; release?: unknown }>;
 
 export function StreamControlPlatformPanel({ stream, operationsResults }: { stream: Stream; operationsResults?: OperationsResults }) {
-  return <StreamControlPlatformPanelContent key={stream.id} stream={stream} operationsResults={operationsResults} />;
+  return <div className="space-y-3"><StreamAutoStartHoldPanel stream={stream} /><StreamControlPlatformPanelContent key={stream.id} stream={stream} operationsResults={operationsResults} /></div>;
 }
 
 function StreamControlPlatformPanelContent({ stream, operationsResults }: { stream: Stream; operationsResults?: OperationsResults }) {

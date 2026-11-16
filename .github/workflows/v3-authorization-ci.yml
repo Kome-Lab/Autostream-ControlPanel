@@ -323,3 +323,165 @@ jobs:
             ${{ runner.temp }}/ws7-cross.tap
           if-no-files-found: error
           retention-days: 14
+
+  v3-manual-auto-start-hold-checks:
+    name: v3-manual-auto-start-hold-checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      GOTOOLCHAIN: local
+      GOWORK: 'off'
+      GOFLAGS: '-mod=readonly'
+      GOTELEMETRY: 'off'
+      GOMAXPROCS: '2'
+      AUTOSTREAM_MSR_REQUIRED: '1'
+      AUTOSTREAM_MARIADB_TEST_DSN: 'autostream_msr_ci:synthetic-msr-only@tcp(127.0.0.1:3306)/autostream_msr_ci?parseTime=true'
+      MSR_ENCODER_SHA: '5dbe82f92795e6931133ff0a84e52b4d4ac2006a'
+      MSR_WORKER_SHA: 'e08d017a0d9c4c1412350b1dd21d140a6e3f3229'
+      MSR_BOT_SHA: 'f29a816935e701597aaa6977fd7278a54903671a'
+      AUTOSTREAM_MSR_ENCODER_TEST_BINARY: ${{ runner.temp }}/msr-encoder.test
+      AUTOSTREAM_MSR_WORKER_TEST_BINARY: ${{ runner.temp }}/msr-worker.test
+      AUTOSTREAM_MSR_BOT_TEST_BINARY: ${{ runner.temp }}/msr-bot.test
+      AUTOSTREAM_MSR_ENCODER_RACE_TEST_BINARY: ${{ runner.temp }}/msr-encoder-race.test
+      AUTOSTREAM_MSR_WORKER_RACE_TEST_BINARY: ${{ runner.temp }}/msr-worker-race.test
+      AUTOSTREAM_MSR_BOT_RACE_TEST_BINARY: ${{ runner.temp }}/msr-bot-race.test
+    services:
+      msr-mariadb:
+        image: mariadb:11.4.12@sha256:a794d9eb009e20de605858a11f32f63b4075cbd197c650436f0e3b457e4caed7
+        env:
+          MARIADB_DATABASE: autostream_msr_ci
+          MARIADB_USER: autostream_msr_ci
+          MARIADB_PASSWORD: synthetic-msr-only
+          MARIADB_ROOT_PASSWORD: synthetic-msr-root-only
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd "healthcheck.sh --connect --innodb_initialized"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - name: Checkout exact ControlPanel candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version: '1.26.5'
+          check-latest: false
+          cache: false
+      - name: Require immutable reviewed child candidates
+        run: |
+          set -euo pipefail
+          for candidate in "$MSR_ENCODER_SHA" "$MSR_WORKER_SHA" "$MSR_BOT_SHA"; do
+            test "${#candidate}" = 40
+            test "$candidate" != 0000000000000000000000000000000000000000
+          done
+      - name: Permit only the synthetic disposable claim-schema prefix
+        run: |
+          set -euo pipefail
+          docker exec -i "${{ job.services.msr-mariadb.id }}" mariadb --user=root --password=synthetic-msr-root-only <<'SQL'
+          GRANT ALL PRIVILEGES ON `autostream077\_claim\_%`.* TO 'autostream_msr_ci'@'%';
+          SQL
+      - name: Exact Encoder target source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: Kome-Lab/Autostream-Encoder-Recorder
+          ref: ${{ env.MSR_ENCODER_SHA }}
+          path: .msr-encoder
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Exact Worker target source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: Kome-Lab/Autostream-Worker
+          ref: ${{ env.MSR_WORKER_SHA }}
+          path: .msr-worker
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Exact Bot public runtime source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: Kome-Lab/Autostream-DiscordBot
+          ref: ${{ env.MSR_BOT_SHA }}
+          path: .msr-bot
+          fetch-depth: 0
+          submodules: recursive
+          persist-credentials: false
+      - name: Verify child trees and construct isolated process binaries
+        run: |
+          set -euo pipefail
+          test "$(git -C .msr-encoder rev-parse HEAD)" = "$MSR_ENCODER_SHA"
+          test "$(git -C .msr-worker rev-parse HEAD)" = "$MSR_WORKER_SHA"
+          test "$(git -C .msr-bot rev-parse HEAD)" = "$MSR_BOT_SHA"
+          for source in .msr-encoder .msr-worker .msr-bot; do
+            git -C "$source" log -1 --format="MSR child tested commit: %H%nMSR child tested tree: %T"
+            (cd "$source" && python3 scripts/ci/iu-source-boundary.py)
+          done
+          (cd .msr-encoder && CGO_ENABLED=0 go test -p 1 -c -o "$AUTOSTREAM_MSR_ENCODER_TEST_BINARY" ./internal/httpapi)
+          (cd .msr-worker && CGO_ENABLED=0 go test -p 1 -c -o "$AUTOSTREAM_MSR_WORKER_TEST_BINARY" ./internal/httpapi)
+          (cd .msr-encoder && CGO_ENABLED=1 go test -race -p 1 -c -o "$AUTOSTREAM_MSR_ENCODER_RACE_TEST_BINARY" ./internal/httpapi)
+          (cd .msr-worker && CGO_ENABLED=1 go test -race -p 1 -c -o "$AUTOSTREAM_MSR_WORKER_RACE_TEST_BINARY" ./internal/httpapi)
+          (cd .msr-bot && bash scripts/ci/msr-native-dave.sh "$RUNNER_TEMP/msr-bot-dave.env")
+          (cd .msr-bot && source "$RUNNER_TEMP/msr-bot-dave.env" && go test -p 1 -c -o "$AUTOSTREAM_MSR_BOT_TEST_BINARY" ./cmd/discord-bot)
+          (cd .msr-bot && source "$RUNNER_TEMP/msr-bot-dave.env" && go test -race -p 1 -c -o "$AUTOSTREAM_MSR_BOT_RACE_TEST_BINARY" ./cmd/discord-bot)
+      - name: Strict disposable MariaDB, MSR01 through15, delayed Start and independent-process roots
+        run: bash scripts/ci/msr-checks.sh
+      - name: Preserve exact MSR root execution evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: manual-auto-start-hold-${{ github.sha }}
+          path: ${{ runner.temp }}/msr-*.json
+          if-no-files-found: error
+          retention-days: 14
+
+  v3-manual-auto-start-hold-ui-checks:
+    name: v3-manual-auto-start-hold-ui-checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    permissions:
+      contents: read
+    env:
+      NEXT_TELEMETRY_DISABLED: '1'
+      NEXT_PUBLIC_AUTOSTREAM_DEMO: 'false'
+      CI: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 26
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Preserve legacy UI and dependency boundaries
+        run: |
+          set -euo pipefail
+          python3 scripts/ci/iu-source-boundary.py
+          git diff --exit-code 3d6885c1ec3835b09cbeed1e83110d1111e237a3 HEAD -- web/package-lock.json web/package.json go.mod go.sum
+          (cd web && npm ci --ignore-scripts --no-audit --no-fund && npm run typecheck && npm run lint)
+      - name: Actual UI component, barrier and HTTP ACK-loss roots
+        run: |
+          set -euo pipefail
+          (cd web && node --no-warnings --test --test-reporter=tap --test-concurrency=1 tests/manual-auto-start-hold.test.mts tests/manual-auto-start-hold-panel.test.mts tests/manual-stop-request.test.mts) | tee "$RUNNER_TEMP/msr-ui.tap"
+          node scripts/ci/msr-ui-events.mjs scripts/ci/msr-ui-required-tests.txt "$RUNNER_TEMP/msr-ui.tap" | tee "$RUNNER_TEMP/msr-ui-summary.json"
+      - name: Native browser normal Stream detail and same-request inspection
+        run: |
+          set -euo pipefail
+          (cd web && node --no-warnings --test --test-force-exit --test-reporter=tap --test-concurrency=1 tests/manual-auto-start-hold-browser.test.mts) | tee "$RUNNER_TEMP/msr-ui-browser.tap"
+          node scripts/ci/msr-ui-events.mjs scripts/ci/msr-ui-browser-required-tests.txt "$RUNNER_TEMP/msr-ui-browser.tap" | tee "$RUNNER_TEMP/msr-ui-browser-summary.json"
+          python3 scripts/ci/iu-source-boundary.py
+      - name: Preserve UI and native browser execution evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: manual-auto-start-hold-ui-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/msr-ui*.tap
+            ${{ runner.temp }}/msr-ui*-summary.json
+          if-no-files-found: error
+          retention-days: 14

@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -60,12 +61,35 @@ func (s *Server) stopStream(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "atomic_stop_receipt_unavailable"})
 		return
 	}
-	stopping, transitioned, err := stopReceipts.ClaimNormalStop(r.Context(), stream)
+	r, holdRequest, err := s.bindManualStopHold(r, stream, primaryAssignments, store.AutoStartManualStop)
+	if err != nil {
+		writeManualHoldError(w, err)
+		return
+	}
+	if holdRequest != nil {
+		w.Header().Set("X-AutoStream-Manual-Stop-Attempt", holdRequest.RequestID)
+	}
+	var stopping store.Stream
+	var transitioned bool
+	claimStop := func(ctx context.Context) error {
+		var claimErr error
+		stopping, transitioned, claimErr = stopReceipts.ClaimNormalStop(ctx, stream)
+		return claimErr
+	}
+	if holdRequest != nil {
+		err = s.runManualHoldMutation(r.Context(), *holdRequest, "stop", claimStop)
+	} else {
+		err = claimStop(r.Context())
+	}
 	if errors.Is(err, store.ErrNotFound) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
 		return
 	}
 	if err != nil {
+		if holdRequest != nil {
+			writeManualHoldError(w, err)
+			return
+		}
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "update_stream_failed"})
 		return
 	}
@@ -78,6 +102,12 @@ func (s *Server) stopStream(w http.ResponseWriter, r *http.Request) {
 	stream = stopping
 	r, cancelStopLifecycle := detachedStopLifecycleRequest(r)
 	defer cancelStopLifecycle()
+	// Target closure and its durable ACK happen outside the claim transaction.
+	// Even when an ACK is lost, the intent remains held. Stop still runs; a
+	// known physical Stop must not fabricate knowledge about the Hold boundary.
+	if holdErr := s.confirmManualStopHold(w, r, stream, holdRequest, primaryAssignments); holdErr != nil {
+		w.Header().Set("X-AutoStream-Manual-Hold", "UNKNOWN")
+	}
 	results := s.dispatcher.Stop(r.Context(), stream, primaryAssignments)
 	results = sanitizeDispatchResults(results)
 	results = s.normalizeManualStopAlreadyStoppedResults(r.Context(), stream.ID, results)
@@ -235,12 +265,35 @@ func (s *Server) forceStopStream(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "atomic_stop_receipt_unavailable"})
 		return
 	}
-	updated, transitioned, err := receipts.ClaimForceStop(r.Context(), stream)
+	r, holdRequest, err := s.bindManualStopHold(r, stream, primaryStreamAssignments(assignments), store.AutoStartForceStop)
+	if err != nil {
+		writeManualHoldError(w, err)
+		return
+	}
+	if holdRequest != nil {
+		w.Header().Set("X-AutoStream-Manual-Stop-Attempt", holdRequest.RequestID)
+	}
+	var updated store.Stream
+	var transitioned bool
+	claimStop := func(ctx context.Context) error {
+		var claimErr error
+		updated, transitioned, claimErr = receipts.ClaimForceStop(ctx, stream)
+		return claimErr
+	}
+	if holdRequest != nil {
+		err = s.runManualHoldMutation(r.Context(), *holdRequest, "stop", claimStop)
+	} else {
+		err = claimStop(r.Context())
+	}
 	if errors.Is(err, store.ErrNotFound) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
 		return
 	}
 	if err != nil {
+		if holdRequest != nil {
+			writeManualHoldError(w, err)
+			return
+		}
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "update_stream_failed"})
 		return
 	}
@@ -252,6 +305,9 @@ func (s *Server) forceStopStream(w http.ResponseWriter, r *http.Request) {
 	}
 	r, cancelStopLifecycle := detachedStopLifecycleRequest(r)
 	defer cancelStopLifecycle()
+	if holdErr := s.confirmManualStopHold(w, r, updated, holdRequest, primaryStreamAssignments(assignments)); holdErr != nil {
+		w.Header().Set("X-AutoStream-Manual-Hold", "UNKNOWN")
+	}
 	results = sanitizeDispatchResults(s.dispatcher.Stop(r.Context(), updated, primaryStreamAssignments(assignments)))
 	metadata := map[string]any{"dispatch": results, "previous_status": stream.Status}
 	if hasDispatchFailure(results) {

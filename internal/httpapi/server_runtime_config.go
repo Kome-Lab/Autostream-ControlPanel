@@ -129,6 +129,7 @@ type serviceRuntimeConfigService struct {
 }
 
 type serviceRuntimeDiscordStreamConfig struct {
+	manualAutoStartObservation
 	StreamID         string `json:"stream_id"`
 	AssignmentRole   string `json:"assignment_role"`
 	DiscordConfigID  string `json:"discord_config_id"`
@@ -542,12 +543,13 @@ func (s *Server) runtimeDiscordStreamConfigs(ctx context.Context, service store.
 			continue
 		}
 		item := serviceRuntimeDiscordStreamConfig{
-			StreamID:         stream.ID,
-			DiscordConfigID:  profile.ID,
-			GuildID:          guildID,
-			VoiceChannelID:   voiceChannelID,
-			TextChannelID:    strings.TrimSpace(firstNonEmpty(visual.DiscordTextChannelID, configString(profile.Config, "text_channel_id"))),
-			AutoStartTrigger: strings.TrimSpace(stream.AutoStartTrigger),
+			manualAutoStartObservation: s.runtimeManualAutoStartObservation(ctx, stream),
+			StreamID:                   stream.ID,
+			DiscordConfigID:            profile.ID,
+			GuildID:                    guildID,
+			VoiceChannelID:             voiceChannelID,
+			TextChannelID:              strings.TrimSpace(firstNonEmpty(visual.DiscordTextChannelID, configString(profile.Config, "text_channel_id"))),
+			AutoStartTrigger:           strings.TrimSpace(stream.AutoStartTrigger),
 		}
 		voiceKey := runtimeDiscordVoiceKey(guildID, voiceChannelID)
 		if assignmentRole, assigned := assignmentRoles[stream.ID]; assigned {

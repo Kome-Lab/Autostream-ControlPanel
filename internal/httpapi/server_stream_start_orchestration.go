@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	lf "github.com/example/autostream-control-panel/internal/lifecyclefoundation"
+	"github.com/example/autostream-control-panel/internal/manualhold"
 	"github.com/example/autostream-control-panel/internal/servicecall"
 	"github.com/example/autostream-control-panel/internal/store"
 	"log"
@@ -268,16 +270,61 @@ func (s *Server) startStreamWithMaterialization(w http.ResponseWriter, r *http.R
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "stream_start_claim_unavailable"})
 		return
 	}
+	if original, automatic := r.Context().Value(autoStartOriginalKey{}).(autoStartOriginal); automatic {
+		if _, resumed := r.Context().Value(resumeStartOriginKey{}).(string); resumed {
+			var authorized bool
+			r, authorized = s.recheckResumeActor(w, r, currentFromContext(r.Context()).User.ID)
+			if !authorized {
+				return
+			}
+		}
+		if err := s.validateAutomaticStart(r.Context(), stream, original); err != nil {
+			writeManualHoldError(w, err)
+			return
+		}
+	} else if s.manualAutoStartManaged() {
+		owner, available := s.streams.(store.ManualAutoStartHoldStore)
+		if !available {
+			writeManualHoldError(w, manualhold.ErrUnknown)
+			return
+		}
+		hold, observeErr := owner.ObserveAutoStartHold(r.Context(), stream.ID)
+		if observeErr != nil {
+			writeManualHoldError(w, observeErr)
+			return
+		}
+		if !hold.Known {
+			writeManualHoldError(w, manualhold.ErrUnknown)
+			return
+		}
+		if hold.PendingAttemptID != "" {
+			writeManualHoldError(w, lf.ErrHeld)
+			return
+		}
+		r = r.WithContext(store.WithManualStartHold(r.Context(), hold.Revision))
+	}
+	r, err = s.bindOriginalStartClaim(r, stream)
+	if err != nil {
+		writeManualHoldError(w, err)
+		return
+	}
+	if requestID, managed := r.Context().Value(startClaimRequestIDKey{}).(string); managed {
+		w.Header().Set("X-AutoStream-Start-Request-ID", requestID)
+	}
 	claimedStart, err := claimStore.ClaimStreamStart(r.Context(), store.StreamStartClaimRequest{
 		StreamID: stream.ID, ExpectedStatus: stream.Status, ExpectedStreamUpdatedAt: stream.UpdatedAt,
 		ExpectedPrimaryAssignments: primaryAssignments, ExpectedNodeSelections: selectedNodes,
 		MaterializeServiceID: claimMaterializeServiceID, MaterializeActorUserID: claimMaterializeActorUserID,
-		// The prepared start also needs the existing unique run fence when no
-		// archive profile is selected. Profile selection still controls archive
-		// obligations; this flag allocates identity only in ClaimStreamStart.
-		ArchiveEnabled: strings.TrimSpace(body.ArchiveProfileID) != "" || servicecall.WorkerVideoCapabilitiesEnabled(primaryAssignments), ArchiveStartedAt: time.Now().UTC(),
+		// Managed/prepared starts need the existing unique Run even without an
+		// upload profile. Existing local archive completion protection remains;
+		// an empty profile never proves that every local artifact duty is absent.
+		ArchiveEnabled: strings.TrimSpace(body.ArchiveProfileID) != "" || servicecall.WorkerVideoCapabilitiesEnabled(primaryAssignments) || s.manualAutoStartManaged(), ArchiveStartedAt: time.Now().UTC(),
 	})
 	if err != nil {
+		if errors.Is(err, lf.ErrUnknown) || errors.Is(err, lf.ErrHeld) || errors.Is(err, lf.ErrConflict) {
+			writeManualHoldError(w, err)
+			return
+		}
 		current := currentFromContext(r.Context())
 		code := "stream_start_claim_failed"
 		status := http.StatusInternalServerError
@@ -297,6 +344,13 @@ func (s *Server) startStreamWithMaterialization(w http.ResponseWriter, r *http.R
 	}
 	stream = claimedStart.Stream
 	primaryAssignments = claimedStart.PrimaryAssignments
+	r, err = s.bindStartAdmissions(r, stream, primaryAssignments)
+	if err != nil {
+		// Claim and remote dispatch are separate boundaries. Never auto-reissue
+		// the request or infer rollback from an admission/ACK failure.
+		writeManualHoldError(w, err)
+		return
+	}
 	body.ArchiveRunID = claimedStart.ArchiveAuthority.RunID
 	body.ArchiveStartedAt = time.Time{}
 	if claimedStart.ArchiveAuthority.StartedAt != nil {
@@ -344,6 +398,10 @@ func (s *Server) startStreamWithMaterialization(w http.ResponseWriter, r *http.R
 		applyYouTubeOutput = func(ctx context.Context, stream store.Stream, req *servicecall.StartRequest) error {
 			return s.applyYouTubeOutputProfile(ctx, stream, relayStaticOutput.Profile, claimedStart.OwnershipClaim, req)
 		}
+	}
+	if err := s.startAdmissionCurrent(r.Context()); err != nil {
+		writeManualHoldError(w, err)
+		return
 	}
 	if err := applyYouTubeOutput(r.Context(), stream, &body); err != nil {
 		s.convergeRelayStaticPreDispatchFailure(r.Context(), claimedStart.OwnershipClaim)
@@ -402,6 +460,10 @@ func (s *Server) startStreamWithMaterialization(w http.ResponseWriter, r *http.R
 	if servicecall.WorkerVideoCapabilitiesEnabled(primaryAssignments) {
 		body.StartPreparation = &servicecall.StartPreparationControl{OwnershipClaim: &claimedStart.OwnershipClaim}
 		body.StartPreparation.CheckClaim = func(ctx context.Context) bool { return s.startPreparationClaimCurrent(ctx, claimedStart) }
+	}
+	if err := s.startAdmissionCurrent(r.Context()); err != nil {
+		writeManualHoldError(w, err)
+		return
 	}
 	results := s.dispatcher.Start(r.Context(), stream, primaryAssignments, body)
 	if body.StartPreparation != nil {

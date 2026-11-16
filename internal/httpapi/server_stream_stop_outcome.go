@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"errors"
+	lf "github.com/example/autostream-control-panel/internal/lifecyclefoundation"
 	"github.com/example/autostream-control-panel/internal/store"
 	"net/http"
 	"time"
@@ -15,6 +16,24 @@ func (s *Server) getStreamStopOutcome(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	source = stamp.UTC().Format(time.RFC3339Nano)
+	// This optional original request narrows a pure read; it never reissues Stop.
+	if requestID := r.URL.Query().Get("request_id"); requestID != "" {
+		owner, ok := s.streams.(store.ManualAutoStartHoldStore)
+		if !ok {
+			writeManualHoldError(w, lf.ErrUnknown)
+			return
+		}
+		attempt, inspectErr := owner.InspectAutoStartAttempt(r.Context(), r.PathValue("id"), requestID)
+		if inspectErr != nil {
+			writeManualHoldError(w, lf.ErrUnknown)
+			return
+		}
+		if (attempt.Request.Operation != store.AutoStartManualStop && attempt.Request.Operation != store.AutoStartForceStop) || !attempt.Request.ExpectedStreamUpdatedAt.Equal(stamp) {
+			writeManualHoldError(w, lf.ErrConflict)
+			return
+		}
+		w.Header().Set("X-AutoStream-Manual-Stop-Attempt", requestID)
+	}
 	if observer, ok := s.streams.(store.NormalStopOutcomeStore); ok {
 		snapshot, observeErr := observer.ObserveNormalStop(r.Context(), r.PathValue("id"), source)
 		if errors.Is(observeErr, store.ErrNotFound) {

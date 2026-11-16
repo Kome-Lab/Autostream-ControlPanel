@@ -198,6 +198,9 @@ func (r *SQLRepository) CreateStream(ctx context.Context, userID string, input C
 	if _, err = tx.ExecContext(ctx, `INSERT INTO streams(id,name,status,created_at,updated_at)VALUES(?,?,'created',?,?)`, stream.ID, stream.Name, now, now); err != nil {
 		return store.Stream{}, Settings{}, err
 	}
+	if err = store.InitializeNewStreamAutoStartHold(ctx, tx, stream); err != nil {
+		return store.Stream{}, Settings{}, err
+	}
 	if strings.TrimSpace(input.StreamSettings.DiscordConfigID) != strings.TrimSpace(input.Assignments.DiscordConfigID) {
 		return store.Stream{}, Settings{}, store.ErrServiceAssignmentConflict
 	}

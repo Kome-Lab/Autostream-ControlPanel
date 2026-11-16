@@ -79,6 +79,8 @@ type Server struct {
 	videoCovers              videocover.Repository
 	videoCoverDispatcher     servicecall.VideoCoverDispatcher
 	lifecycleOutcomes        *LifecycleOutcomeBridge
+	manualAutoStartProducer manualHoldProducer
+	manualAutoStartGate *manualHoldLifecycle
 }
 
 type serviceDispatcher interface {

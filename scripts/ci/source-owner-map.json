@@ -3121,7 +3121,7 @@
       },
       {
         "path": "internal/servicecall/client_json_transport.go",
-        "sha256": "26b44ac512531d56f6e2086aa51f97ca4823ae78e3b80415433cb2cf8f0d0658",
+        "sha256": "26f7c75572749233d6c31ef8a36a4178ab7b7d846e6bd817c75433b86fc1b108",
         "symbols": [
           "Client.authToken",
           "Client.post",
@@ -3131,7 +3131,7 @@
           "Client.serviceJSONActionInternal",
           "encoderStopRequestTimeout"
         ],
-        "physical_lines": 189
+        "physical_lines": 194
       },
       {
         "path": "internal/servicecall/client_preflight_redaction.go",
@@ -3205,7 +3205,7 @@
       },
       {
         "path": "internal/servicecall/client_start_payload.go",
-        "sha256": "107810a143bdf60603217b0bb4bab346c8c8297d383f78c1a3c03a4e2b7a6678",
+        "sha256": "8b44ac680463469f7844f8018dd96eab9f1e9eeaf03fcc5d4f3a54c6677baf89",
         "symbols": [
           "Client.issueIngestToken",
           "Client.issueIngestTokenForAudience",
@@ -3215,7 +3215,7 @@
           "stopPayload",
           "workerEventPayload"
         ],
-        "physical_lines": 174
+        "physical_lines": 177
       },
       {
         "path": "internal/servicecall/client_transport_settings.go",
@@ -3412,7 +3412,7 @@
       },
       {
         "path": "internal/store/stream_queries_mariadb.go",
-        "sha256": "e7c0043116dcea2c1520efcd0ccf5cf2b90f0d3289cb3c68d312b087ed64e4a7",
+        "sha256": "4644f2e52bb56b77ab0f71868c07a98c2b678660b4e98abafdae25741c99bcb9",
         "symbols": [
           "MariaDBStreamStore.CreateStream",
           "MariaDBStreamStore.HasActiveStream",
@@ -3426,7 +3426,7 @@
           "streamRowScanner",
           "streamSelectFields"
         ],
-        "physical_lines": 170
+        "physical_lines": 191
       },
       {
         "path": "internal/store/stream_youtube_runtime_mariadb.go",
@@ -4471,7 +4471,7 @@
       },
       {
         "path": "web/tests/confirmation-renderer-cases.mts",
-        "sha256": "bcf17480395102861dca0c84f1008c5e60946ac621e10100d8966b500fbc8281",
+        "sha256": "5a6ada3b453c8270cfe73b8b5b0e3e10889c290a1563b09b75e30328f35bc84f",
         "symbols": [],
         "physical_lines": 182
       },
@@ -4813,12 +4813,12 @@
       },
       {
         "path": "internal/httpapi/server_stream_service_actions.go",
-        "sha256": "6fe4f56c3b94b0ba52dcba5f23f3169a83954e7aa71934f57fddeb4f8a9ba000",
+        "sha256": "0585cc8dcdce9c7245b9749d03bda467f660dcc928e7466094607eb12c5428cc",
         "symbols": [
           "*Server.serviceStartStream",
           "*Server.serviceStopStream"
         ],
-        "physical_lines": 159
+        "physical_lines": 178
       },
       {
         "path": "internal/httpapi/server_stream_start.go",
@@ -4848,12 +4848,12 @@
       },
       {
         "path": "internal/httpapi/server_stream_start_orchestration.go",
-        "sha256": "af63977c2a4fcd8cf146316737f59764c95cc7cc80e2df3a4ee8b49cc613cd39",
+        "sha256": "abade09cc1550e84b0e8656c8a4d40a992cd2186172192470486159d48350c5b",
         "symbols": [
           "*Server.startStream",
           "*Server.startStreamWithMaterialization"
         ],
-        "physical_lines": 506
+        "physical_lines": 568
       },
       {
         "path": "internal/httpapi/server_stream_start_youtube.go",
@@ -5022,7 +5022,7 @@
     "destinations": [
       {
         "path": "internal/store/memory.go",
-        "sha256": "5b1ca3ff36193e5aed4dfd38aa57e93cf8013796aa73448e0ef6108ac5b5fadb",
+        "sha256": "7f50a5c5d50bcb2456088a41d348e78f271c2989ba8fb85657c663e76caa38c6",
         "symbols": [
           "*MemoryStreamStore.AssignmentGuardMemoryStore",
           "*MemoryStreamStore.CreateStream",
@@ -5036,7 +5036,7 @@
           "MemoryStreamStore",
           "NewMemoryStreamStore"
         ],
-        "physical_lines": 279
+        "physical_lines": 285
       },
       {
         "path": "internal/store/memory_stream_artifact_catalog.go",
@@ -5091,7 +5091,7 @@
       },
       {
         "path": "internal/store/memory_stream_start_claim.go",
-        "sha256": "0235ecf4d99e56666ea38edb167e7d8a9e6cbee616e7d4d0d7e1a4d6e99e7245",
+        "sha256": "fbba2a46ca3cde01f4363efc5ff28e44353a1532d0d60bb7eedf49b79c4dc040",
         "symbols": [
           "*MemoryStreamStore.ClaimStreamStart",
           "*MemoryStreamStore.PrepareStreamArchiveRun",
@@ -5104,7 +5104,7 @@
           "startAssignmentClaimsEqual",
           "streamStartClaimStatus"
         ],
-        "physical_lines": 341
+        "physical_lines": 348
       },
       {
         "path": "internal/store/memory_stream_youtube_runtime.go",
@@ -5121,11 +5121,11 @@
       },
       {
         "path": "internal/store/memory_stream_selected_start_claim.go",
-        "sha256": "1dc1a505e451510838b4403b95a13b013ed73a43d5a25785ff2f4179076201b2",
+        "sha256": "931a128bfaabfc2b22232acbbcd31beed9108e55be46582e413971f386d06db5",
         "symbols": [
           "*MemoryStreamStore.claimSelectedStreamStart"
         ],
-        "physical_lines": 151
+        "physical_lines": 158
       },
       {
         "path": "internal/store/stream_selected_start_claim.go",
@@ -5304,20 +5304,20 @@
       },
       {
         "path": "internal/store/stream_start_claim_mariadb.go",
-        "sha256": "0152ab434cdcae28e1f8fdc6d19951550e13da96423e6c2b8ce215a3fced1ed8",
+        "sha256": "162e39633e02330384ed7dd6bccdf197c7913f82d6cba56e4476ab8db9207c4c",
         "symbols": [
           "MariaDBStreamStore.ClaimStreamStart",
           "MariaDBStreamStore.TransitionClaimedStreamStart"
         ],
-        "physical_lines": 334
+        "physical_lines": 345
       },
       {
         "path": "internal/store/stream_selected_start_claim_mariadb.go",
-        "sha256": "c232f2968b8bccfa6bdf40144a29a521b7a3bcebca08456296cb941bd8cd8ab3",
+        "sha256": "66520fb146d504b59b3a3866f56275ea278be25f577a95bb67c51b8a9af20cac",
         "symbols": [
           "MariaDBStreamStore.claimSelectedStreamStart"
         ],
-        "physical_lines": 219
+        "physical_lines": 230
       },
       {
         "path": "internal/store/stream_selected_start_claim.go",

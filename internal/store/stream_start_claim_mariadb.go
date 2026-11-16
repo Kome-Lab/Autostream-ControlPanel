@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"errors"
+	lf "github.com/example/autostream-control-panel/internal/lifecyclefoundation"
 	"sort"
 	"strings"
 	"time"
@@ -12,7 +14,7 @@ func (s MariaDBStreamStore) ClaimStreamStart(ctx context.Context, request Stream
 		return s.claimSelectedStreamStart(ctx, request)
 	}
 	defer func() {
-		if isMariaDBLockConflict(err) {
+		if isMariaDBLockConflict(err) && !errors.Is(err, lf.ErrUnknown) {
 			claimed = ClaimedStreamStart{}
 			err = mariaDBLockConflictAsAssignmentConflict(err)
 		}
@@ -81,6 +83,12 @@ func (s MariaDBStreamStore) ClaimStreamStart(ctx context.Context, request Stream
 		!strings.EqualFold(strings.TrimSpace(lockedTarget.Status), strings.TrimSpace(request.ExpectedStatus)) ||
 		!lockedTarget.UpdatedAt.Equal(request.ExpectedStreamUpdatedAt) {
 		return ClaimedStreamStart{}, ErrServiceAssignmentConflict
+	}
+	if err := checkAutomaticStartHoldSQL(ctx, tx, request.StreamID); err != nil {
+		return ClaimedStreamStart{}, err
+	}
+	if err := reserveStartClaimRequestSQL(ctx, tx, request.StreamID); err != nil {
+		return ClaimedStreamStart{}, err
 	}
 	state, err := mariaDBStreamAssignmentProtectionAfterLocks(ctx, tx, request.StreamID)
 	if err != nil {
@@ -248,6 +256,9 @@ WHERE id = ? AND status = ? AND updated_at = ? AND deleted_at IS NULL`, archiveR
 	}
 	ownership := StreamStartOwnershipClaim{StreamID: stream.ID, StreamUpdatedAt: now, StreamIdentity: streamStartOwnershipIdentity(stream), Assignments: assignmentClaims, Archive: authority}
 	if err := tx.Commit(); err != nil {
+		if _, managed := ctx.Value(startClaimRequestKey{}).(StartClaimRequestOriginal); managed {
+			return ClaimedStreamStart{}, holdAttemptError(err)
+		}
 		return ClaimedStreamStart{}, err
 	}
 	return ClaimedStreamStart{Stream: stream, PrimaryAssignments: primaryAssignments, ArchiveAuthority: authority, OwnershipClaim: ownership, Materialized: materialized}, nil

@@ -1,0 +1,1 @@
+MSR-UI-BROWSER: normal Stream detail preserves confirmation and same-request result boundaries

@@ -9,6 +9,11 @@ import (
 
 type MemoryStreamStore struct {
 	mu                                         sync.Mutex
+	autoStartHolds                             map[string]AutoStartHold
+	autoStartHoldHistory                       map[string][]AutoStartHoldHistory
+	autoStartHoldAttempts                      map[string]AutoStartHoldAttempt
+	autoStartAdmissions                        map[string]AutoStartAdmission
+	autoStartClaimRequests                     map[string]StartClaimRequestOriginal
 	serviceAssignmentGuard                     *MemoryAuthStore
 	youtubeRelayBindingOutputMu                sync.Mutex
 	streams                                    map[string]Stream
@@ -141,6 +146,7 @@ func (s *MemoryStreamStore) CreateStream(ctx context.Context, name string) (Stre
 	stream := Stream{ID: newUUID(), Name: name, Status: "created", CreatedAt: now, UpdatedAt: now, SettingsRevision: UnconfiguredStreamSettingsRevision}
 	s.mu.Lock()
 	s.streams[stream.ID] = stream
+	s.initializeAutoStartHoldLocked(stream)
 	s.mu.Unlock()
 	return stream, nil
 }

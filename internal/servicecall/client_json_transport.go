@@ -110,6 +110,11 @@ func (c Client) serviceJSONActionInternal(ctx context.Context, service store.Reg
 		return result
 	}
 	request.Header.Set("Authorization", "Bearer "+authToken)
+	if err := attachStartAdmission(ctx, request, service, endpoint); err != nil {
+		result.FailurePhase = "pre_dispatch"
+		result.Code = "start_admission_unknown"
+		return result
+	}
 	if payload != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}

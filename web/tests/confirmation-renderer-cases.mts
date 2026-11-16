@@ -129,7 +129,7 @@ test("B-05 i18n copy is exact, parallel, placeholder-bounded, and token-literal"
 test("AST guard rejects retired confirmation definitions and callers while preserving Foundation owners", () => {
   assert.deepEqual(assertConfirmationFoundationBoundaries(webRoot), {
     dangerConsumerCount: 0,
-    frameConsumerCount: 4,
+    frameConsumerCount: 5,
     rendererConsumerCount: 9,
     reviewedFileCount: 4,
   });

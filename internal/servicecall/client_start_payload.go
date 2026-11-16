@@ -75,6 +75,9 @@ func (c Client) startPayload(stream store.Stream, service store.RegisteredServic
 			"overlay_profile_id":   req.OverlayProfileID,
 			"caption_profile_id":   req.CaptionProfileID,
 		}
+		if reportedCapabilityTrue(service.ReportedCapabilities, ManualAutoStartHoldCapability) && req.ArchiveRunID != "" {
+			payload["archive_run_id"] = req.ArchiveRunID
+		}
 		if token := c.issueIngestToken(stream.ID, service, "worker_events", now); token != "" {
 			payload["stream_ingest_token"] = token
 		}

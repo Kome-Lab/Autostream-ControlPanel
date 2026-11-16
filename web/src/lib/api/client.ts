@@ -53,7 +53,8 @@ export async function apiGet<T>(path: string, signal?: AbortSignal): Promise<T> 
   }
 }
 
-export async function apiPost<T>(path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+export async function apiPost<T>(path: string, body?: unknown, signal?: AbortSignal, correlation?: Readonly<{ requestID: string }>): Promise<T> {
+  if (correlation && !/^[A-Za-z0-9_.:-]{1,80}$/.test(correlation.requestID)) throw new APIError("Invalid request correlation.", 0, "invalid_request_correlation");
   if (forceMock()) return mockPost(path, body) as T;
   try {
     const response = await fetch(path, {
@@ -64,6 +65,7 @@ export async function apiPost<T>(path: string, body?: unknown, signal?: AbortSig
         Accept: "application/json",
         "Content-Type": "application/json",
         "X-CSRF-Token": getCSRFToken(),
+        ...(correlation ? { "X-AutoStream-Request-ID": correlation.requestID } : {}),
       },
       body: body === undefined ? undefined : JSON.stringify(body),
     });

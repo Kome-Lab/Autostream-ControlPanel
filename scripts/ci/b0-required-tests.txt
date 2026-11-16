@@ -12,3 +12,4 @@ TestLifecycleProcessHelper
 TestLifecycleStageOrderAndPrivateParticipation
 TestLifecycleStaleAndPartialRestore
 TestLifecycleWriteRead
+TestManualAutoStartExplicitAttemptLifecycle

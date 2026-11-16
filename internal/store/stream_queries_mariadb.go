@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"strings"
 	"time"
+
+	lf "github.com/example/autostream-control-panel/internal/lifecyclefoundation"
 )
 
 func (s MariaDBStreamStore) ListStreams(ctx context.Context) ([]Stream, error) {
@@ -165,6 +167,25 @@ func (s MariaDBStreamStore) HasActiveStream(ctx context.Context) (bool, error) {
 func (s MariaDBStreamStore) CreateStream(ctx context.Context, name string) (Stream, error) {
 	now := time.Now().UTC()
 	stream := Stream{ID: newUUID(), Name: name, Status: "created", CreatedAt: now, UpdatedAt: now, SettingsRevision: UnconfiguredStreamSettingsRevision}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO streams (id, name, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`, stream.ID, stream.Name, stream.Status, stream.CreatedAt, stream.UpdatedAt)
-	return stream, err
+	tx, err := lf.BeginSQL(ctx, s.db, nil)
+	if err != nil {
+		return Stream{}, err
+	}
+	defer tx.Rollback()
+	installed, err := autoStartHoldSchemaInstalled(ctx, tx)
+	if err != nil {
+		return Stream{}, err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO streams (id, name, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`, stream.ID, stream.Name, stream.Status, stream.CreatedAt, stream.UpdatedAt); err != nil {
+		return Stream{}, err
+	}
+	if installed {
+		if err := initializeAutoStartHoldSQL(ctx, tx, stream); err != nil {
+			return Stream{}, err
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return Stream{}, holdAttemptError(err)
+	}
+	return stream, nil
 }

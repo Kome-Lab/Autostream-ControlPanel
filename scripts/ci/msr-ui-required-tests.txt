@@ -1,0 +1,13 @@
+MSR-UI-01: confirmation binds the detached original hold, Run and configuration
+MSR-UI-02: fresh permission, Session and cancellation control the actual mutation
+MSR-UI-03: real HTTP ACK loss retains one original request and only inspects it
+MSR-UI-04: duplicate submits and changed same-ID receipts cannot become another resume
+MSR-UI-05: CP commit, condition and external start are independent knowledge
+MSR-UI-06: a persisted original ID permits only authorized read recovery
+MSR-UI-PANEL-01: actual normal Stream panel shows held/clear/UNKNOWN and current permission in ja/en
+MSR-UI-PANEL-02: untrusted reason/body is not echoed and normal detail owns the feature
+MSR-UI-07: actual Stop transport retains one bounded original request through ACK loss and pure lookup
+MSR-UI-PANEL-03: a newer normal Stream frame cannot present an old cached clear hold as current
+MSR-UI-08: force Stop retains its original UUID without borrowing a normal Stop receipt or retrying
+MSR-UI-09: generic Hold inspection is read scoped and never proves physical Stop or Start
+MSR-UI-PANEL-04: a server-owned pending Hold exposes a read-only inspector without Resume permission

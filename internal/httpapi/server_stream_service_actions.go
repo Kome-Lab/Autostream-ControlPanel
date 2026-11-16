@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"errors"
+	lf "github.com/example/autostream-control-panel/internal/lifecyclefoundation"
 	"github.com/example/autostream-control-panel/internal/store"
 	"net/http"
 	"strings"
@@ -54,7 +55,24 @@ func (s *Server) serviceStartStream(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusForbidden, map[string]string{"code": "service_not_primary_assignment"})
 		return
 	}
+	var original autoStartOriginal
+	if err := decodeOptionalSingleJSON(r, &original); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_auto_start_request"})
+		return
+	}
+	if original.RequestID != "" || s.manualAutoStartManaged() {
+		if err := s.validateAutomaticStart(r.Context(), stream, original); err != nil {
+			writeManualHoldError(w, err)
+			return
+		}
+		r = r.WithContext(context.WithValue(r.Context(), autoStartOriginalKey{}, original))
+		r = r.WithContext(store.WithAutomaticStartHold(r.Context(), original.ExpectedHoldRevision))
+	}
 	if isActiveStreamStatus(stream.Status) {
+		if original.RequestID != "" {
+			writeManualHoldError(w, lf.ErrConflict)
+			return
+		}
 		s.writeServiceAudit(r, token, "streams.start", "stream", stream.ID, "success", map[string]any{"service_id": service.ServiceID, "skipped": true, "reason": "stream_already_active"})
 		writeJSON(w, http.StatusOK, map[string]any{"stream": stream, "already_active": true})
 		return
@@ -155,5 +173,6 @@ func (s *Server) serviceStopStream(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Body = http.NoBody
 	r = r.WithContext(context.WithValue(r.Context(), currentUserKey{}, serviceCurrentUser(service)))
+	r = r.WithContext(context.WithValue(r.Context(), serviceStopOriginKey{}, true))
 	s.stopStream(w, r)
 }

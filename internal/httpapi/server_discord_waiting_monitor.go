@@ -23,6 +23,7 @@ type serviceRuntimeDiscordWaitingMonitor struct {
 
 type serviceRuntimeDiscordWaitingBinding struct {
 	store.DiscordWaitingCredentialBinding
+	manualAutoStartObservation
 	GuildID          string `json:"guild_id"`
 	VoiceChannelID   string `json:"voice_channel_id"`
 	TextChannelID    string `json:"text_channel_id,omitempty"`
@@ -59,6 +60,11 @@ func (s *Server) runtimeDiscordWaitingMonitor(ctx context.Context, service store
 		binding := serviceRuntimeDiscordWaitingBinding{
 			DiscordWaitingCredentialBinding: credential,
 			AutoStartTrigger:                autoStartTriggerDiscordVoiceJoin,
+		}
+		if stream, streamErr := s.streams.GetStream(ctx, credential.StreamID); streamErr == nil {
+			binding.manualAutoStartObservation = s.runtimeManualAutoStartObservation(ctx, stream)
+		} else {
+			binding.manualAutoStartObservation = manualAutoStartObservation{Required: true, Held: true}
 		}
 		if credential.Ready {
 			if s.streamVisual == nil {
