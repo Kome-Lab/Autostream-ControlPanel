@@ -199,6 +199,7 @@ jobs:
       NEXT_TELEMETRY_DISABLED: '1'
       GOTELEMETRY: 'off'
       CI: '1'
+      AUTOSTREAM_STATUS_CONTRACTS_ROOT: ${{ github.workspace }}/.ws7-status-contracts
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -209,6 +210,14 @@ jobs:
           node-version: 26
           cache: npm
           cache-dependency-path: web/package-lock.json
+      - name: Fixed Contracts status source with preserved historical objects
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: Kome-Lab/Autostream-Contracts
+          ref: d32ea3514b1c1010391caae0348b0ff9e751f447
+          path: .ws7-status-contracts
+          fetch-depth: 0
+          persist-credentials: false
       - name: WS7 exact roots, existing UI regressions, build and browser fixture
         run: bash scripts/ci/ws7-ui-checks.sh
       - name: Preserve WS7 root execution evidence

@@ -15,6 +15,8 @@ const { createStreamActionController } = await import("../src/features/streams/s
 const { createStreamVisualActionController } = await import("../src/features/streams/stream-visual-action-controller.ts");
 const { createVideoCoverActionController, buildVideoCoverAction } = await import("../src/features/streams/control-platform.ts");
 const { isConfirmedStreamStopOutcome } = await import("../src/features/streams/stream-action-response.ts");
+const { cacheStreamActionResponse } = await import("../src/features/streams/stream-action-runtime.ts");
+const { QueryClient } = await import("@tanstack/react-query");
 
 const stream = { id: "fixture-stream", name: "Synthetic stream", status: "live", updated_at: "2026-11-15T00:00:00Z" };
 const cover = { stream_id: stream.id, job_generation: 7, desired_active: true, desired_revision: 11, applied_active: true, applied_revision: 11, status: "applied" as const, pipeline_order: [], cover_watermark_independent: true };
@@ -109,7 +111,11 @@ test("WS7-STOP-01: same-source HTTP lookup never substitutes a status or sends a
   assert.equal((await controller.submit(opened,{confirmed:true})).kind,"outcome_unknown");assert.equal(posts,1);assert.equal(gets,1);
   assert.equal((await controller.reconcileStop({...intent,stream:{...stream,updated_at:"2026-11-16T00:00:00Z"}})).kind,"blocked");assert.equal(gets,1,"a new source version cannot replace the unresolved original Stop");
   for(const invalid of [{stream:{...stream,status:"stopping"}},{stream:{...stream,id:"other",status:"completed"},stop_confirmed:true,source_updated_at:stream.updated_at},{stream:{...stream,status:"completed"},stop_confirmed:true,source_updated_at:"2026-11-16T00:00:00Z"}])assert.equal(isConfirmedStreamStopOutcome(invalid,intent),false);
-  receipt={stream:{...stream,status:"completed"},stop_confirmed:true,source_updated_at:stream.updated_at};assert.equal((await controller.reconcileStop(intent)).kind,"succeeded");assert.equal(posts,1);assert.equal(gets,2);
+  const newerLive={...stream,name:"Newer live execution",updated_at:"2026-11-16T00:00:00Z"};
+  receipt={stream:newerLive,stop_confirmed:true,source_updated_at:stream.updated_at};const settled=await controller.reconcileStop(intent);assert.equal(settled.kind,"succeeded");assert.equal(posts,1);assert.equal(gets,2);
+  assert.equal(isConfirmedStreamStopOutcome({stream:newerLive,stop_confirmed:true},{...intent,stream:{...stream,updated_at:undefined}}),false,"missing source versions must not compare as undefined equals undefined");
+  const cache=new QueryClient({defaultOptions:{queries:{gcTime:Infinity}}});
+  try{cache.setQueryData(["streams"],[stream]);if(settled.kind!=="succeeded")throw Error("old receipt was not settled");await cacheStreamActionResponse(cache,intent,settled.value);assert.deepEqual(cache.getQueryData(["streams"]),[newerLive],"settling the old Stop cannot mark the newer live execution completed");}finally{cache.clear();}
   await t.test("completed alone is not the normal Stop response envelope",async()=>{
     const bare=createStreamActionController({getPermissions:()=>({kind:"ready",permissions:["streams.stop"]}),getState:()=>({kind:"ready",freshness:"fresh",fingerprint:"live"}),mutate:async()=>({...stream,status:"completed"})});
     const opened=await bare.open(intent);if(opened.kind!=="allowed")throw Error("not opened");assert.equal((await bare.submit(opened,{confirmed:true})).kind,"outcome_unknown");

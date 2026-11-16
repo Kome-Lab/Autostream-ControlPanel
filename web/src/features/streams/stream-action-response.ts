@@ -9,10 +9,15 @@ export function isStreamValue(value: unknown): value is Stream {
 }
 
 export function isConfirmedStreamStopOutcome(value: unknown, intent: StreamActionIntent) {
-  const stream = streamActionResponseStream(value, intent.stream?.id);
+  const streamID = intent.stream?.id;
+  const sourceVersion = intent.stream?.updated_at;
+  if (!streamID || typeof sourceVersion !== "string" || !sourceVersion) return false;
+  const stream = streamActionResponseStream(value, streamID);
+  // The receipt settles this original Stop. The same atomic read may carry a
+  // newer live execution; preserve that row rather than declaring it completed.
   return Boolean(value && typeof value === "object" && "stop_confirmed" in value && value.stop_confirmed === true
-    && "source_updated_at" in value && value.source_updated_at === intent.stream?.updated_at
-    && stream?.status === "completed");
+    && "source_updated_at" in value && value.source_updated_at === sourceVersion
+    && stream);
 }
 
 // The normal synchronous route returns the completed row together with its
