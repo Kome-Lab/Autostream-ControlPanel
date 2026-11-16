@@ -66,6 +66,10 @@ func TestUI188ConcurrentCoverGETRecordsOneExactSystemOutcome(t *testing.T) {
 			dispatcher := &ui188ConcurrentCoverReconciler{entered: make(chan struct{}, 2), release: make(chan struct{}), result: servicecall.VideoCoverDispatchResult{Applied: outcome == "success", SafeErrorCode: "video_cover_action_failed"}}
 			handler := NewServer(streams, WithAuthStore(auth), WithAuditStore(auth), WithServiceRegistryStore(auth), WithVideoCoverRepository(covers), WithVideoCoverDispatcher(dispatcher))
 			cookie, _ := loginForTest(t, handler, "reader", "correct horse battery")
+			reader, err := auth.FindUserByUsername(t.Context(), "reader")
+			if err != nil {
+				t.Fatal(err)
+			}
 			responses := make(chan *httptest.ResponseRecorder, 2)
 			for range 2 {
 				go func() {
@@ -100,7 +104,9 @@ func TestUI188ConcurrentCoverGETRecordsOneExactSystemOutcome(t *testing.T) {
 				t.Fatalf("durable outcome audits=%d", len(events))
 			}
 			event := events[0]
-			if event.Result != outcome || event.ActorUsername != "system" || event.ActorUserID != "" || event.Metadata["desired_revision"] != prepared.RequestedRevision || event.Metadata["job_generation"] != uint64(7) {
+			// The reader's existing convergence capability now records its Human
+			// identity in the same transaction as the immutable local outcome.
+			if event.Result != outcome || event.ActorUsername != reader.Username || event.ActorUserID != reader.ID || event.Metadata["desired_revision"] != prepared.RequestedRevision || event.Metadata["job_generation"] != uint64(7) {
 				t.Fatalf("wrong action audit: %#v", event)
 			}
 			again := serveUserJSON(t, handler, http.MethodGet, "/streams/"+stream.ID+"/video-cover-state", "", cookie, "")

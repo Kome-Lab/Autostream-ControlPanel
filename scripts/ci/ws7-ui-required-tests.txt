@@ -1,0 +1,8 @@
+WS7-COV-01: permissions, fixed request and fresh confirmation prevent stale dispatch
+WS7-COV-03: confirming and ACK loss have different same-attempt read obligations
+WS7-VIS-01: immutable requested fields and exact response correlation survive held reads
+WS7-STOP-01: same-source HTTP lookup never substitutes a status or sends another Stop
+WS7-PREV-01: actual issue controller retains URL aliases, rejection and same-attempt uncertainty
+WS7-PREV-02: existing signed media failures retry playback without issuing an operation
+WS7-PREV-03: actual controls, native fallback and retry cleanup reject stale callbacks
+WS7-OPS-008: fixed shared results reach the actual display without granting delivery or recovery

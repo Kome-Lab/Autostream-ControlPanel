@@ -1,0 +1,492 @@
+name: v3 CP Authorization
+on:
+  push:
+    branches: ['v3-dev']
+  pull_request:
+    branches: ['v3-dev']
+permissions:
+  contents: read
+concurrency:
+  group: v3-cp-authorization-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  v3-cp-authorization-checks:
+    name: v3-cp-authorization-checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      GOTOOLCHAIN: local
+      GOWORK: 'off'
+      GOFLAGS: '-mod=readonly'
+      GOMAXPROCS: '2'
+      AUTOSTREAM_V3_AUTH_TEST_DSN: 'autostream_v3_auth_ci:synthetic-ci-only@tcp(127.0.0.1:3306)/autostream_v3_auth_ci?parseTime=true'
+    services:
+      mariadb:
+        image: mariadb:11.4.12@sha256:a794d9eb009e20de605858a11f32f63b4075cbd197c650436f0e3b457e4caed7
+        env:
+          MARIADB_DATABASE: autostream_v3_auth_ci
+          MARIADB_USER: autostream_v3_auth_ci
+          MARIADB_PASSWORD: synthetic-ci-only
+          MARIADB_ROOT_PASSWORD: synthetic-ci-root-only
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd "healthcheck.sh --connect --innodb_initialized"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version: '1.26.5'
+          cache: true
+      - name: S12-B2 required Identity transaction integration
+        run: bash scripts/ci/b2-checks.sh
+      - name: S12-B1 required product Lifecycle integration
+        run: bash scripts/ci/b1-checks.sh
+      - name: S12-B0 required Lifecycle Foundation
+        run: bash scripts/ci/b0-checks.sh
+      - name: Toolchain and pinned evidence dependency
+        run: |
+          set -euo pipefail
+          test "$(go env GOVERSION)" = go1.26.5
+          test "$(go list -m -f '{{.Version}}' github.com/Kome-Lab/Autostream-Contracts/v3evidence)" = v0.0.0-20261113091349-790be850e98c
+          test -z "$(go list -m -f '{{if .Replace}}{{.Replace.Path}}{{end}}' github.com/Kome-Lab/Autostream-Contracts/v3evidence)"
+          bash scripts/ci/verify-v3-evidence-module.sh
+      - name: Check Go formatting
+        run: |
+          set -euo pipefail
+          unformatted="$(gofmt -l internal/v3authorization/*.go internal/httpapi/server_v3_*authorization*.go internal/httpapi/server_v3_canonical_resolver_test.go scripts/ci/cp_authorization_interop_test.go)"
+          if test -n "$unformatted"; then
+            gofmt -d internal/v3authorization/*.go internal/httpapi/server_v3_*authorization*.go internal/httpapi/server_v3_canonical_resolver_test.go scripts/ci/cp_authorization_interop_test.go
+            exit 1
+          fi
+      - name: CP unit and disposable MariaDB integration tests
+        run: |
+          set -euo pipefail
+          go test -count=1 -json ./internal/v3authorization | tee "$RUNNER_TEMP/v3-cp-tests.json"
+          test "$(jq -r 'select(.Action=="pass" and ((.Test//"")|startswith("TestSQLStore")))|.Test' "$RUNNER_TEMP/v3-cp-tests.json" | wc -l)" -ge 6
+          ! jq -e 'select(.Action=="skip" and ((.Test//"")|startswith("TestSQLStore")))' "$RUNNER_TEMP/v3-cp-tests.json" >/dev/null
+          while IFS= read -r required; do
+            test -n "$required" || continue
+            test "$(jq -sr --arg test "$required" '[.[]|select(.Test==$test and .Action=="run")]|length' "$RUNNER_TEMP/v3-cp-tests.json")" = 1
+            test "$(jq -sr --arg test "$required" '[.[]|select(.Test==$test and .Action=="pass")]|length' "$RUNNER_TEMP/v3-cp-tests.json")" = 1
+            test "$(jq -sr --arg test "$required" '[.[]|select(.Test==$test and (.Action=="skip" or .Action=="fail"))]|length' "$RUNNER_TEMP/v3-cp-tests.json")" = 0
+          done < scripts/ci/v3-authority-required-tests.txt
+          go test -count=1 ./...
+      - name: Management HTTP boundary required inventory
+        run: |
+          set -euo pipefail
+          go test -count=1 -json ./internal/httpapi -run '^TestV3AuthorizationManagementHTTP' | tee "$RUNNER_TEMP/v3-management-http-tests.json"
+          while IFS= read -r required; do
+            test -n "$required" || continue
+            test "$(jq -sr --arg test "$required" '[.[]|select(.Test==$test and .Action=="run")]|length' "$RUNNER_TEMP/v3-management-http-tests.json")" = 1
+            test "$(jq -sr --arg test "$required" '[.[]|select(.Test==$test and .Action=="pass")]|length' "$RUNNER_TEMP/v3-management-http-tests.json")" = 1
+            test "$(jq -sr --arg test "$required" '[.[]|select(.Test==$test and (.Action=="skip" or .Action=="fail"))]|length' "$RUNNER_TEMP/v3-management-http-tests.json")" = 0
+          done < scripts/ci/v3-management-http-required-tests.txt
+      - name: Vet
+        run: go vet ./...
+      - name: CGO-free and affected race tests
+        run: |
+          set -euo pipefail
+          CGO_ENABLED=0 go test -count=1 ./internal/v3authorization ./internal/httpapi -run 'Test(SQLAuthority|CanonicalResolver|V3Canonical|V3Authorization|Issue|ConcurrentIssuance|MissingDependencies|RevisionRace|SaveUnknown|ReadCurrent|CancellationMissing|StrictHTTP|SQLStore)'
+          go test -race -count=1 ./internal/v3authorization ./internal/httpapi -run 'Test(SQLAuthority|CanonicalResolver|V3Canonical|V3Authorization|Issue|ConcurrentIssuance|MissingDependencies|RevisionRace|SaveUnknown|ReadCurrent|CancellationMissing|StrictHTTP|SQLStore)'
+      - name: Management HTTP through real disposable SQL owner
+        run: |
+          set -euo pipefail
+          go test -tags=v3_management_http_sql -count=1 -json ./internal/httpapi -run '^TestV3AuthorizationManagementHTTPSQL$' | tee "$RUNNER_TEMP/v3-management-http-sql-tests.json"
+          for action in run pass; do
+            test "$(jq -sr --arg action "$action" '[.[]|select(.Test=="TestV3AuthorizationManagementHTTPSQL" and .Action==$action)]|length' "$RUNNER_TEMP/v3-management-http-sql-tests.json")" = 1
+          done
+          ! jq -e 'select(.Action=="skip" or .Action=="fail")' "$RUNNER_TEMP/v3-management-http-sql-tests.json" >/dev/null
+          go vet -tags=v3_management_http_sql ./internal/httpapi
+          CGO_ENABLED=0 go test -tags=v3_management_http_sql -count=1 ./internal/httpapi -run '^TestV3AuthorizationManagementHTTPSQL$'
+          go test -race -tags=v3_management_http_sql -count=1 ./internal/httpapi -run '^TestV3AuthorizationManagementHTTPSQL$'
+      - name: Existing entrypoints and Linux CGO-free cross-builds
+        run: |
+          set -euo pipefail
+          go build ./cmd/...
+          for arch in amd64 arm64; do
+            mkdir -p "$RUNNER_TEMP/cp-build-$arch"
+            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -o "$RUNNER_TEMP/cp-build-$arch/" ./cmd/...
+          done
+          git diff --exit-code -- go.mod go.sum
+      - name: Acquire fixed disposable C10 interop source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: Kome-Lab/Autostream-Updater
+          ref: cdc106ab795623e41e2fe42a73c598c782e5c8de
+          path: .cp-interop-updater
+          persist-credentials: false
+      - name: CP Service to canonical Codec to C10 (synthetic collaborators)
+        run: |
+          set -euo pipefail
+          export CP_INTEROP_DIR="$RUNNER_TEMP/cp-authorization-interop"
+          mkdir -p "$CP_INTEROP_DIR"
+          test "$(git -C .cp-interop-updater rev-parse HEAD)" = cdc106ab795623e41e2fe42a73c598c782e5c8de
+          cp scripts/ci/cp_authorization_interop_test.go .cp-interop-updater/internal/localexecutor/registry/zz_cp_producer_interop_test.go
+          (cd .cp-interop-updater && go test -tags=cp_producer_interop -run '^TestCPProducerExport$' -count=1 -v ./internal/localexecutor/registry)
+          go test -run '^TestCPProducerInterop$' -count=1 -v ./internal/v3authorization
+          (cd .cp-interop-updater && go test -tags=cp_producer_interop -run '^TestCPProducerImport$' -count=1 -v ./internal/localexecutor/registry)
+          git diff --exit-code -- go.mod go.sum
+
+  v3-product-integration-checks:
+    name: v3-product-integration-checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      GOTOOLCHAIN: local
+      GOWORK: 'off'
+      GOFLAGS: '-mod=readonly'
+      GOTELEMETRY: 'off'
+      GOMAXPROCS: '2'
+      AUTOSTREAM_S13_TEST_DSN: 'autostream_s13_ci:synthetic-s13-only@tcp(127.0.0.1:3306)/autostream_s13_ci?parseTime=true'
+      AUTOSTREAM_V3_AUTH_TEST_DSN: 'autostream_v3_auth_ci:synthetic-ci-only@tcp(127.0.0.1:3307)/autostream_v3_auth_ci?parseTime=true'
+    services:
+      iu-s13-mariadb:
+        image: mariadb:11.4.12@sha256:a794d9eb009e20de605858a11f32f63b4075cbd197c650436f0e3b457e4caed7
+        env:
+          MARIADB_DATABASE: autostream_s13_ci
+          MARIADB_USER: autostream_s13_ci
+          MARIADB_PASSWORD: synthetic-s13-only
+          MARIADB_ROOT_PASSWORD: synthetic-s13-root-only
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd "healthcheck.sh --connect --innodb_initialized"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+      iu-auth-mariadb:
+        image: mariadb:11.4.12@sha256:a794d9eb009e20de605858a11f32f63b4075cbd197c650436f0e3b457e4caed7
+        env:
+          MARIADB_DATABASE: autostream_v3_auth_ci
+          MARIADB_USER: autostream_v3_auth_ci
+          MARIADB_PASSWORD: synthetic-ci-only
+          MARIADB_ROOT_PASSWORD: synthetic-ci-root-only
+        ports: ['3307:3306']
+        options: >-
+          --health-cmd "healthcheck.sh --connect --innodb_initialized"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version: '1.26.5'
+          check-latest: false
+          cache: false
+      - name: Required IU-WS1 and IU-WS2 SQL, process and HTTP inventory
+        run: bash scripts/ci/iu-checks.sh
+      - name: Preserve exact root execution evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: iu-cp-root-events-${{ github.sha }}
+          path: ${{ runner.temp }}/iu-*.json
+          if-no-files-found: error
+          retention-days: 14
+
+  v3-ws7-ui-checks:
+    name: v3-ws7-ui-checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    permissions:
+      contents: read
+    env:
+      NEXT_TELEMETRY_DISABLED: '1'
+      GOTELEMETRY: 'off'
+      CI: '1'
+      AUTOSTREAM_STATUS_CONTRACTS_ROOT: ${{ github.workspace }}/.ws7-status-contracts
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 26
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Fixed Contracts status source with preserved historical objects
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: Kome-Lab/Autostream-Contracts
+          ref: d32ea3514b1c1010391caae0348b0ff9e751f447
+          path: .ws7-status-contracts
+          fetch-depth: 0
+          persist-credentials: false
+      - name: WS7 exact roots, existing UI regressions, build and browser fixture
+        run: bash scripts/ci/ws7-ui-checks.sh
+      - name: Preserve WS7 root execution evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ws7-ui-events-${{ github.sha }}
+          path: ${{ runner.temp }}/ws7-ui.tap
+          if-no-files-found: error
+          retention-days: 14
+
+  v3-ws7-producer-consumer-checks:
+    name: v3-ws7-producer-consumer-checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      GOTOOLCHAIN: local
+      GOWORK: 'off'
+      GOFLAGS: '-mod=readonly'
+      GOTELEMETRY: 'off'
+      GOMAXPROCS: '2'
+      NEXT_TELEMETRY_DISABLED: '1'
+      CI: '1'
+      WS7_OBSERVABILITY_SHA: '14da2031a46c755c9201f94ac57a7a2a99f8d0b9'
+      WS7_UPDATER_SHA: '5741d48d94f6fe7c6727f637ea32667860882dfd'
+      WS7_ENCODER_SHA: '7c7ec14d2b06b866ebd5b006331f55ba01da8dfe'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version: '1.26.5'
+          check-latest: false
+          cache: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 26
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Fixed notification Caller source, disposable read-only copy
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: Kome-Lab/Autostream-Observability
+          ref: ${{ env.WS7_OBSERVABILITY_SHA }}
+          path: .ws7-observability
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Fixed requirements evaluator source, disposable read-only copy
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: Kome-Lab/Autostream-Updater
+          ref: ${{ env.WS7_UPDATER_SHA }}
+          path: .ws7-updater
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Fixed Media source, isolated fake queue and process only
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: Kome-Lab/Autostream-Encoder-Recorder
+          ref: ${{ env.WS7_ENCODER_SHA }}
+          path: .ws7-encoder
+          persist-credentials: false
+      - name: Actual product outputs to the same UI consumer with independent oracles
+        run: |
+          set -euo pipefail
+          python3 scripts/ci/iu-source-boundary.py
+          test "$(git -C .ws7-observability rev-parse HEAD)" = "$WS7_OBSERVABILITY_SHA"
+          test "$(git -C .ws7-updater rev-parse HEAD)" = "$WS7_UPDATER_SHA"
+          test "$(git -C .ws7-encoder rev-parse HEAD)" = "$WS7_ENCODER_SHA"
+          export WS5_CROSS_RESULT_DIR="$RUNNER_TEMP/ws7-notification-results"
+          mkdir "$WS5_CROSS_RESULT_DIR"
+          (cd .ws7-observability && python3 scripts/ci/verify_ws5_exact_delta.py)
+          (cd .ws7-observability && go test -json ./internal/httpapi -run '^TestWS5NotificationHTTPBoundaries$' -count=1) | tee "$RUNNER_TEMP/ws7-ws5-producer.json"
+          python3 scripts/ci/iu-json-events.py scripts/ci/ws7-ws5-producer-required-tests.txt "$RUNNER_TEMP/ws7-ws5-producer.json"
+          (cd .ws7-updater && python3 scripts/ci/iu-source-boundary.py && CGO_ENABLED=0 go build -trimpath -o "$RUNNER_TEMP/ws7-release-evaluator" ./tools/check-v3-release-requirements)
+          jq '.base' .ws7-updater/internal/releasequalification/testdata/conformance.json > "$RUNNER_TEMP/ws7-release-descriptor.json"
+          "$RUNNER_TEMP/ws7-release-evaluator" --max-input-bytes 2097152 --max-depth 64 < "$RUNNER_TEMP/ws7-release-descriptor.json" > "$RUNNER_TEMP/ws7-release-result.json"
+          (cd .ws7-encoder && CGO_ENABLED=0 go test -tags=iu_crossrepo -c -o "$RUNNER_TEMP/ws7-media-fixture" ./internal/httpapi)
+          mkdir "$RUNNER_TEMP/ws7-media-results"
+          node scripts/ci/ws7-media-producer.mjs "$RUNNER_TEMP/ws7-media-fixture" "$GITHUB_WORKSPACE/.ws7-encoder" "$RUNNER_TEMP/ws7-media-results"
+          export WS7_WS5_RESULT_DIR="$WS5_CROSS_RESULT_DIR"
+          export WS7_WS6_RESULT_FILE="$RUNNER_TEMP/ws7-release-result.json"
+          export WS7_WS3_RESULT_FILE="$RUNNER_TEMP/ws7-media-results/ws7-media-ingest.json"
+          test -s "$WS7_WS6_RESULT_FILE" && test -s "$WS7_WS3_RESULT_FILE"
+          for name in provider-accepted-local-known provider-ack-unknown provider-accepted-local-unknown; do test -s "$WS7_WS5_RESULT_DIR/$name.json"; done
+          (cd web && npm ci --ignore-scripts --no-audit --no-fund && node --no-warnings --test --test-reporter=tap tests/v3-workstream-results.test.mts) | tee "$RUNNER_TEMP/ws7-cross.tap"
+          node scripts/ci/ws7-ui-events.mjs scripts/ci/ws7-cross-required-tests.txt "$RUNNER_TEMP/ws7-cross.tap"
+          git -C .ws7-observability diff --exit-code HEAD --
+          git -C .ws7-updater diff --exit-code HEAD --
+          git -C .ws7-encoder diff --exit-code HEAD --
+          python3 scripts/ci/iu-source-boundary.py
+      - name: Preserve producer and consumer root evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ws7-cross-events-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/ws7-ws5-producer.json
+            ${{ runner.temp }}/ws7-cross.tap
+          if-no-files-found: error
+          retention-days: 14
+
+  v3-manual-auto-start-hold-checks:
+    name: v3-manual-auto-start-hold-checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      GOTOOLCHAIN: local
+      GOWORK: 'off'
+      GOFLAGS: '-mod=readonly'
+      GOTELEMETRY: 'off'
+      GOMAXPROCS: '2'
+      AUTOSTREAM_MSR_REQUIRED: '1'
+      AUTOSTREAM_MARIADB_TEST_DSN: 'autostream_msr_ci:synthetic-msr-only@tcp(127.0.0.1:3306)/autostream_msr_ci?parseTime=true'
+      MSR_ENCODER_SHA: '5dbe82f92795e6931133ff0a84e52b4d4ac2006a'
+      MSR_WORKER_SHA: 'e08d017a0d9c4c1412350b1dd21d140a6e3f3229'
+      MSR_BOT_SHA: 'f29a816935e701597aaa6977fd7278a54903671a'
+    services:
+      msr-mariadb:
+        image: mariadb:11.4.12@sha256:a794d9eb009e20de605858a11f32f63b4075cbd197c650436f0e3b457e4caed7
+        env:
+          MARIADB_DATABASE: autostream_msr_ci
+          MARIADB_USER: autostream_msr_ci
+          MARIADB_PASSWORD: synthetic-msr-only
+          MARIADB_ROOT_PASSWORD: synthetic-msr-root-only
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd "healthcheck.sh --connect --innodb_initialized"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - name: Checkout exact ControlPanel candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version: '1.26.5'
+          check-latest: false
+          cache: false
+      - name: Set isolated process binary paths
+        run: |
+          set -euo pipefail
+          {
+            printf 'AUTOSTREAM_MSR_ENCODER_TEST_BINARY=%s/msr-encoder.test\n' "$RUNNER_TEMP"
+            printf 'AUTOSTREAM_MSR_WORKER_TEST_BINARY=%s/msr-worker.test\n' "$RUNNER_TEMP"
+            printf 'AUTOSTREAM_MSR_BOT_TEST_BINARY=%s/msr-bot.test\n' "$RUNNER_TEMP"
+            printf 'AUTOSTREAM_MSR_ENCODER_RACE_TEST_BINARY=%s/msr-encoder-race.test\n' "$RUNNER_TEMP"
+            printf 'AUTOSTREAM_MSR_WORKER_RACE_TEST_BINARY=%s/msr-worker-race.test\n' "$RUNNER_TEMP"
+            printf 'AUTOSTREAM_MSR_BOT_RACE_TEST_BINARY=%s/msr-bot-race.test\n' "$RUNNER_TEMP"
+          } >> "$GITHUB_ENV"
+      - name: Require immutable reviewed child candidates
+        run: |
+          set -euo pipefail
+          for candidate in "$MSR_ENCODER_SHA" "$MSR_WORKER_SHA" "$MSR_BOT_SHA"; do
+            test "${#candidate}" = 40
+            test "$candidate" != 0000000000000000000000000000000000000000
+          done
+      - name: Permit only the synthetic disposable claim-schema prefix
+        run: |
+          set -euo pipefail
+          docker exec -i "${{ job.services.msr-mariadb.id }}" mariadb --user=root --password=synthetic-msr-root-only <<'SQL'
+          GRANT ALL PRIVILEGES ON `autostream077\_claim\_%`.* TO 'autostream_msr_ci'@'%';
+          SQL
+      - name: Exact Encoder target source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: Kome-Lab/Autostream-Encoder-Recorder
+          ref: ${{ env.MSR_ENCODER_SHA }}
+          path: .msr-encoder
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Exact Worker target source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: Kome-Lab/Autostream-Worker
+          ref: ${{ env.MSR_WORKER_SHA }}
+          path: .msr-worker
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Exact Bot public runtime source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: Kome-Lab/Autostream-DiscordBot
+          ref: ${{ env.MSR_BOT_SHA }}
+          path: .msr-bot
+          fetch-depth: 0
+          submodules: recursive
+          persist-credentials: false
+      - name: Verify child trees and construct isolated process binaries
+        run: |
+          set -euo pipefail
+          test "$(git -C .msr-encoder rev-parse HEAD)" = "$MSR_ENCODER_SHA"
+          test "$(git -C .msr-worker rev-parse HEAD)" = "$MSR_WORKER_SHA"
+          test "$(git -C .msr-bot rev-parse HEAD)" = "$MSR_BOT_SHA"
+          for source in .msr-encoder .msr-worker .msr-bot; do
+            git -C "$source" log -1 --format="MSR child tested commit: %H%nMSR child tested tree: %T"
+            (cd "$source" && python3 scripts/ci/iu-source-boundary.py)
+          done
+          (cd .msr-encoder && CGO_ENABLED=0 go test -p 1 -c -o "$AUTOSTREAM_MSR_ENCODER_TEST_BINARY" ./internal/httpapi)
+          (cd .msr-worker && CGO_ENABLED=0 go test -p 1 -c -o "$AUTOSTREAM_MSR_WORKER_TEST_BINARY" ./internal/httpapi)
+          (cd .msr-encoder && CGO_ENABLED=1 go test -race -p 1 -c -o "$AUTOSTREAM_MSR_ENCODER_RACE_TEST_BINARY" ./internal/httpapi)
+          (cd .msr-worker && CGO_ENABLED=1 go test -race -p 1 -c -o "$AUTOSTREAM_MSR_WORKER_RACE_TEST_BINARY" ./internal/httpapi)
+          (cd .msr-bot && bash scripts/ci/msr-native-dave.sh "$RUNNER_TEMP/msr-bot-dave.env")
+          (cd .msr-bot && source "$RUNNER_TEMP/msr-bot-dave.env" && go test -p 1 -c -o "$AUTOSTREAM_MSR_BOT_TEST_BINARY" ./cmd/discord-bot)
+          (cd .msr-bot && source "$RUNNER_TEMP/msr-bot-dave.env" && go test -race -p 1 -c -o "$AUTOSTREAM_MSR_BOT_RACE_TEST_BINARY" ./cmd/discord-bot)
+      - name: Strict disposable MariaDB, MSR01 through15, delayed Start and independent-process roots
+        run: bash scripts/ci/msr-checks.sh
+      - name: Preserve exact MSR root execution evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: manual-auto-start-hold-${{ github.sha }}
+          path: ${{ runner.temp }}/msr-*.json
+          if-no-files-found: error
+          retention-days: 14
+
+  v3-manual-auto-start-hold-ui-checks:
+    name: v3-manual-auto-start-hold-ui-checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    permissions:
+      contents: read
+    env:
+      NEXT_TELEMETRY_DISABLED: '1'
+      NEXT_PUBLIC_AUTOSTREAM_DEMO: 'false'
+      CI: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 26
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Preserve legacy UI and dependency boundaries
+        run: |
+          set -euo pipefail
+          python3 scripts/ci/iu-source-boundary.py
+          git diff --exit-code 3d6885c1ec3835b09cbeed1e83110d1111e237a3 HEAD -- web/package-lock.json web/package.json go.mod go.sum
+          (cd web && npm ci --ignore-scripts --no-audit --no-fund && npm run typecheck && npm run lint)
+      - name: Actual UI component, barrier and HTTP ACK-loss roots
+        run: |
+          set -euo pipefail
+          (cd web && node --no-warnings --test --test-reporter=tap --test-concurrency=1 tests/manual-auto-start-hold.test.mts tests/manual-auto-start-hold-panel.test.mts tests/manual-stop-request.test.mts) | tee "$RUNNER_TEMP/msr-ui.tap"
+          node scripts/ci/msr-ui-events.mjs scripts/ci/msr-ui-required-tests.txt "$RUNNER_TEMP/msr-ui.tap" | tee "$RUNNER_TEMP/msr-ui-summary.json"
+      - name: Native browser normal Stream detail and same-request inspection
+        run: |
+          set -euo pipefail
+          (cd web && node --no-warnings --test --test-force-exit --test-reporter=tap --test-concurrency=1 tests/manual-auto-start-hold-browser.test.mts) | tee "$RUNNER_TEMP/msr-ui-browser.tap"
+          node scripts/ci/msr-ui-events.mjs scripts/ci/msr-ui-browser-required-tests.txt "$RUNNER_TEMP/msr-ui-browser.tap" | tee "$RUNNER_TEMP/msr-ui-browser-summary.json"
+          python3 scripts/ci/iu-source-boundary.py
+      - name: Preserve UI and native browser execution evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: manual-auto-start-hold-ui-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/msr-ui*.tap
+            ${{ runner.temp }}/msr-ui*-summary.json
+          if-no-files-found: error
+          retention-days: 14

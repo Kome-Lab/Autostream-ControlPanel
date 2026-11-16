@@ -2,8 +2,9 @@
 
 on:
   push:
-    branches: ['**']
+    branches-ignore: ['v3-dev', 'codex/v3-cp-authorization-*']
   pull_request:
+    branches-ignore: ['v3-dev']
   workflow_dispatch:
 
 permissions:

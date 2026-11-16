@@ -1,0 +1,13 @@
+CREATE TABLE v3_cp_lifecycle_heads (deployment VARCHAR(96) COLLATE utf8mb4_bin PRIMARY KEY, body LONGTEXT NOT NULL) ENGINE=InnoDB;
+CREATE TABLE v3_cp_lifecycle_attempts (deployment VARCHAR(96) COLLATE utf8mb4_bin NOT NULL, attempt VARCHAR(96) COLLATE utf8mb4_bin NOT NULL, body LONGTEXT NOT NULL, PRIMARY KEY(deployment,attempt)) ENGINE=InnoDB;
+CREATE TABLE v3_cp_lifecycle_consumptions (deployment VARCHAR(96) COLLATE utf8mb4_bin NOT NULL, origin VARCHAR(96) COLLATE utf8mb4_bin NOT NULL, approval VARCHAR(96) COLLATE utf8mb4_bin NOT NULL, attempt VARCHAR(96) COLLATE utf8mb4_bin NOT NULL, PRIMARY KEY(deployment,origin,approval)) ENGINE=InnoDB;
+CREATE TABLE v3_cp_lifecycle_receipts (deployment VARCHAR(96) COLLATE utf8mb4_bin NOT NULL, attempt VARCHAR(96) COLLATE utf8mb4_bin NOT NULL, body LONGTEXT NOT NULL, PRIMARY KEY(deployment,attempt)) ENGINE=InnoDB;
+CREATE TABLE v3_cp_lifecycle_history (id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY, deployment VARCHAR(96) COLLATE utf8mb4_bin NOT NULL, attempt VARCHAR(96) COLLATE utf8mb4_bin NOT NULL, phase VARCHAR(24) NOT NULL, body LONGTEXT NOT NULL, UNIQUE KEY lifecycle_phase(deployment,attempt,phase)) ENGINE=InnoDB;
+CREATE TABLE v3_cp_lifecycle_unknowns (deployment VARCHAR(96) COLLATE utf8mb4_bin NOT NULL, attempt VARCHAR(96) COLLATE utf8mb4_bin NOT NULL, phase VARCHAR(24) NOT NULL, PRIMARY KEY(deployment,attempt)) ENGINE=InnoDB;
+CREATE TABLE v3_cp_lifecycle_schema_history (generation BIGINT UNSIGNED PRIMARY KEY, checksum CHAR(64) NOT NULL) ENGINE=InnoDB;
+CREATE TRIGGER v3_cp_lifecycle_history_no_update BEFORE UPDATE ON v3_cp_lifecycle_history FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='lifecycle history is append only';
+CREATE TRIGGER v3_cp_lifecycle_history_no_delete BEFORE DELETE ON v3_cp_lifecycle_history FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='lifecycle history is append only';
+CREATE TRIGGER v3_cp_lifecycle_schema_history_no_update BEFORE UPDATE ON v3_cp_lifecycle_schema_history FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='lifecycle schema history is append only';
+CREATE TRIGGER v3_cp_lifecycle_schema_history_no_delete BEFORE DELETE ON v3_cp_lifecycle_schema_history FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='lifecycle schema history is append only';
+CREATE TRIGGER v3_cp_lifecycle_unknowns_no_update BEFORE UPDATE ON v3_cp_lifecycle_unknowns FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='lifecycle quarantine requires recovery';
+CREATE TRIGGER v3_cp_lifecycle_unknowns_no_delete BEFORE DELETE ON v3_cp_lifecycle_unknowns FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='lifecycle quarantine requires recovery';

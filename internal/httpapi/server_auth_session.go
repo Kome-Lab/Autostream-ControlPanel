@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	lf "github.com/example/autostream-control-panel/internal/lifecyclefoundation"
 	"github.com/example/autostream-control-panel/internal/security"
 	"github.com/example/autostream-control-panel/internal/store"
 )
@@ -55,29 +56,39 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	}
 	body.Username = strings.TrimSpace(body.Username)
 	if status, code := s.turnstileFailure(r.Context(), r, body.TurnstileToken, "login"); code != "" {
-		s.writeAudit(r, store.AuditEvent{Action: "auth.login", ResourceType: "user", ResourceID: body.Username, Result: "failure", Metadata: map[string]any{"reason": code}})
+		s.writeIdentityAudit(r, store.AuditEvent{Action: "auth.login", ResourceType: "user", ResourceID: body.Username, Result: "failure", Metadata: map[string]any{"reason": code}})
 		writeJSON(w, status, map[string]string{"code": code})
 		return
 	}
 	settings, err := s.settings.GetSecuritySettings(r.Context())
 	if err != nil {
+		if s.writeIdentityLifecycleFailure(w, s.identitySourceError(err)) {
+			return
+		}
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "security_settings_unavailable"})
 		return
 	}
 	failureKey := loginFailureKey(body.Username, clientIP(r))
 	if !s.loginFailures.allow(failureKey, settings.LoginLockoutThreshold) {
-		s.writeAudit(r, store.AuditEvent{Action: "auth.login", ResourceType: "user", ResourceID: body.Username, Result: "failure", Metadata: map[string]any{"reason": "rate_limited"}})
+		s.writeIdentityAudit(r, store.AuditEvent{Action: "auth.login", ResourceType: "user", ResourceID: body.Username, Result: "failure", Metadata: map[string]any{"reason": "rate_limited"}})
 		w.Header().Set("Retry-After", strconv.Itoa(int(defaultLoginFailureWindow/time.Second)))
 		writeJSON(w, http.StatusTooManyRequests, map[string]string{"code": "login_rate_limited"})
 		return
 	}
 	user, err := s.auth.FindUserByUsername(r.Context(), body.Username)
+	if err != nil && s.writeIdentityLifecycleFailure(w, s.identitySourceError(err)) {
+		return
+	}
 	if err != nil || user.Status == "disabled" || user.Status == "locked" || !security.VerifyPassword(body.Password, user.PasswordHash) {
 		s.loginFailures.record(failureKey)
 		if s.auth != nil {
-			_ = s.auth.RecordLoginFailure(r.Context(), body.Username, settings.LoginLockoutThreshold)
+			err := s.auth.RecordLoginFailure(r.Context(), body.Username, settings.LoginLockoutThreshold)
+			if s.identityLifecycleRequired() && err != nil {
+				s.writeIdentityLifecycleFailure(w, s.identityMutationError(err))
+				return
+			}
 		}
-		s.writeAudit(r, store.AuditEvent{Action: "auth.login", ResourceType: "user", ResourceID: body.Username, Result: "failure", Metadata: map[string]any{"reason": "invalid_credentials"}})
+		s.writeIdentityAudit(r, store.AuditEvent{Action: "auth.login", ResourceType: "user", ResourceID: body.Username, Result: "failure", Metadata: map[string]any{"reason": "invalid_credentials"}})
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"code": "invalid_credentials"})
 		return
 	}
@@ -87,6 +98,9 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	}
 	mfaConfig, mfaRequired, err := s.loginMFARequirement(r.Context(), settings, user)
 	if err != nil {
+		if s.writeIdentityLifecycleFailure(w, s.identitySourceError(err)) {
+			return
+		}
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "mfa_state_unavailable"})
 		return
 	}
@@ -98,14 +112,17 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		if mfaConfig.Enabled {
 			challenge, err := s.mfa.CreateMFAChallenge(r.Context(), user.ID, 10*time.Minute)
 			if err != nil {
+				if s.writeIdentityLifecycleFailure(w, s.identitySourceError(err)) {
+					return
+				}
 				writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "mfa_challenge_failed"})
 				return
 			}
-			s.writeAudit(r, store.AuditEvent{ActorUserID: user.ID, ActorUsername: user.Username, Action: "auth.login", ResourceType: "user", ResourceID: user.ID, Result: "mfa_required"})
+			s.writeIdentityAudit(r, store.AuditEvent{ActorUserID: user.ID, ActorUsername: user.Username, Action: "auth.login", ResourceType: "user", ResourceID: user.ID, Result: "mfa_required"})
 			writeJSON(w, http.StatusAccepted, map[string]any{"mfa_required": true, "challenge_token": challenge.Token, "expires_at": challenge.ExpiresAt})
 			return
 		}
-		s.writeAudit(r, store.AuditEvent{ActorUserID: user.ID, ActorUsername: user.Username, Action: "auth.login", ResourceType: "user", ResourceID: user.ID, Result: "failure", Metadata: map[string]any{"reason": "mfa_enrollment_required"}})
+		s.writeIdentityAudit(r, store.AuditEvent{ActorUserID: user.ID, ActorUsername: user.Username, Action: "auth.login", ResourceType: "user", ResourceID: user.ID, Result: "failure", Metadata: map[string]any{"reason": "mfa_enrollment_required"}})
 		writeJSON(w, http.StatusForbidden, map[string]string{"code": "mfa_enrollment_required"})
 		return
 	}
@@ -113,28 +130,50 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) completeLogin(w http.ResponseWriter, r *http.Request, user store.User, settings store.SecuritySettings) {
-	session, err := s.auth.CreateSession(r.Context(), user.ID, time.Duration(settings.SessionIdleTimeoutMin)*time.Minute, time.Duration(settings.SessionAbsoluteLifetimeH)*time.Hour)
+	idleTTL := time.Duration(settings.SessionIdleTimeoutMin) * time.Minute
+	absoluteTTL := time.Duration(settings.SessionAbsoluteLifetimeH) * time.Hour
+	var session store.Session
+	var err error
+	if s.identityLifecycleRequired() {
+		owner, ok := s.auth.(identityLoginOwner)
+		if !ok {
+			s.writeIdentityLifecycleFailure(w, lf.ErrHeld)
+			return
+		}
+		session, err = owner.CompleteIdentityLogin(r.Context(), user, clientIP(r), idleTTL, absoluteTTL)
+	} else {
+		session, err = s.auth.CreateSession(r.Context(), user.ID, idleTTL, absoluteTTL)
+	}
 	if err != nil {
+		if s.writeIdentityLifecycleFailure(w, s.identitySourceError(err)) {
+			return
+		}
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "create_session_failed"})
 		return
 	}
-	_ = s.auth.RecordLoginSuccess(r.Context(), user.ID, clientIP(r))
+	if !s.identityLifecycleRequired() {
+		_ = s.auth.RecordLoginSuccess(r.Context(), user.ID, clientIP(r))
+	}
 	s.loginFailures.clear(loginFailureKey(user.Username, clientIP(r)))
 	http.SetCookie(w, &http.Cookie{
 		Name: sessionCookieName, Value: session.Token, Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode,
 		Secure: sessionCookieSecure(), Expires: session.AbsoluteExpiresAt,
 	})
-	s.writeAudit(r, store.AuditEvent{ActorUserID: user.ID, ActorUsername: user.Username, Action: "auth.login", ResourceType: "user", ResourceID: user.ID, Result: "success"})
+	s.writeIdentityAudit(r, store.AuditEvent{ActorUserID: user.ID, ActorUsername: user.Username, Action: "auth.login", ResourceType: "user", ResourceID: user.ID, Result: "success"})
 	writeJSON(w, http.StatusOK, map[string]any{"csrf_token": session.CSRFToken, "user": publicUser(user)})
 }
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	current := currentFromContext(r.Context())
 	if cookie, err := r.Cookie(sessionCookieName); err == nil {
-		_ = s.auth.DeleteSession(r.Context(), cookie.Value)
+		err := s.auth.DeleteSession(r.Context(), cookie.Value)
+		if s.identityLifecycleRequired() && err != nil {
+			s.writeIdentityLifecycleFailure(w, s.identityMutationError(err))
+			return
+		}
 	}
 	http.SetCookie(w, &http.Cookie{Name: sessionCookieName, Value: "", Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: sessionCookieSecure(), Expires: time.Unix(0, 0), MaxAge: -1})
-	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "auth.logout", ResourceType: "session", Result: "success"})
+	s.writeIdentityAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "auth.logout", ResourceType: "session", Result: "success"})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -142,11 +181,17 @@ func (s *Server) refreshSession(w http.ResponseWriter, r *http.Request) {
 	current := currentFromContext(r.Context())
 	settings, err := s.settings.GetSecuritySettings(r.Context())
 	if err != nil {
+		if s.writeIdentityLifecycleFailure(w, s.identitySourceError(err)) {
+			return
+		}
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "security_settings_unavailable"})
 		return
 	}
 	session, err := s.auth.RefreshSession(r.Context(), current.Session.Token, time.Duration(settings.SessionIdleTimeoutMin)*time.Minute)
 	if err != nil {
+		if s.writeIdentityLifecycleFailure(w, s.identitySourceError(err)) {
+			return
+		}
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"code": "unauthorized"})
 		return
 	}
@@ -180,21 +225,36 @@ func (s *Server) changePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !security.VerifyPassword(body.CurrentPassword, current.User.PasswordHash) {
-		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "auth.change_password", ResourceType: "user", ResourceID: current.User.ID, Result: "failure", Metadata: map[string]any{"reason": "current_password_invalid"}})
+		s.writeIdentityAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "auth.change_password", ResourceType: "user", ResourceID: current.User.ID, Result: "failure", Metadata: map[string]any{"reason": "current_password_invalid"}})
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"code": "current_password_invalid"})
 		return
 	}
 	if !s.passwordMeetsConfiguredPolicy(w, r, body.NewPassword) {
-		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "auth.change_password", ResourceType: "user", ResourceID: current.User.ID, Result: "failure", Metadata: map[string]any{"reason": "password_policy"}})
+		s.writeIdentityAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "auth.change_password", ResourceType: "user", ResourceID: current.User.ID, Result: "failure", Metadata: map[string]any{"reason": "password_policy"}})
 		return
 	}
-	if err := s.auth.ChangePassword(r.Context(), current.User.ID, body.NewPassword); err != nil {
-		s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "auth.change_password", ResourceType: "user", ResourceID: current.User.ID, Result: "failure", Metadata: map[string]any{"reason": "password_policy"}})
+	var changeErr error
+	if s.identityLifecycleRequired() {
+		if owner, ok := s.auth.(identityPasswordOwner); ok {
+			changeErr = owner.ChangeIdentityPassword(r.Context(), current.User, body.NewPassword)
+		} else {
+			changeErr = lf.ErrHeld
+		}
+	} else {
+		changeErr = s.auth.ChangePassword(r.Context(), current.User.ID, body.NewPassword)
+	}
+	if changeErr != nil {
+		if s.writeIdentityLifecycleFailure(w, s.identityMutationError(changeErr)) {
+			return
+		}
+		s.writeIdentityAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "auth.change_password", ResourceType: "user", ResourceID: current.User.ID, Result: "failure", Metadata: map[string]any{"reason": "password_policy"}})
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "password_change_failed"})
 		return
 	}
-	_ = s.auth.DeleteUserSessions(r.Context(), current.User.ID)
+	if !s.identityLifecycleRequired() {
+		_ = s.auth.DeleteUserSessions(r.Context(), current.User.ID)
+	}
 	http.SetCookie(w, &http.Cookie{Name: sessionCookieName, Value: "", Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: sessionCookieSecure(), Expires: time.Unix(0, 0), MaxAge: -1})
-	s.writeAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "auth.change_password", ResourceType: "user", ResourceID: current.User.ID, Result: "success"})
+	s.writeIdentityAudit(r, store.AuditEvent{ActorUserID: current.User.ID, ActorUsername: current.User.Username, Action: "auth.change_password", ResourceType: "user", ResourceID: current.User.ID, Result: "success"})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "password_changed"})
 }

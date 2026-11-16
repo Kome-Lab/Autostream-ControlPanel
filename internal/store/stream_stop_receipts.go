@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"time"
+
+	lf "github.com/example/autostream-control-panel/internal/lifecyclefoundation"
 )
 
 // NormalStopReceiptStore records only acknowledged normal stops. The source
@@ -153,7 +155,7 @@ func (s MariaDBStreamStore) ClaimForceStop(ctx context.Context, expected Stream)
 	return s.claimStop(ctx, expected, "failed")
 }
 func (s MariaDBStreamStore) claimStop(ctx context.Context, expected Stream, status string) (Stream, bool, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := lf.BeginSQL(ctx, s.db, nil)
 	if err != nil {
 		return Stream{}, false, err
 	}
@@ -164,6 +166,11 @@ func (s MariaDBStreamStore) claimStop(ctx context.Context, expected Stream, stat
 	}
 	if current.Status != expected.Status || !current.UpdatedAt.Equal(expected.UpdatedAt) {
 		return current, false, nil
+	}
+	if req, bound := ctx.Value(manualStopHoldKey{}).(AutoStartHoldRequest); bound {
+		if err := beginManualStopHoldSQL(ctx, tx, current, req); err != nil {
+			return Stream{}, false, err
+		}
 	}
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	if !now.After(current.UpdatedAt) {
@@ -178,7 +185,7 @@ func (s MariaDBStreamStore) claimStop(ctx context.Context, expected Stream, stat
 	current.Status = status
 	current.UpdatedAt = now
 	if err = tx.Commit(); err != nil {
-		return Stream{}, false, err
+		return Stream{}, false, holdAttemptError(err)
 	}
 	return current, true, nil
 }
@@ -200,6 +207,9 @@ func (s *MemoryStreamStore) claimStop(ctx context.Context, expected Stream, stat
 	}
 	if current.Status != expected.Status || !current.UpdatedAt.Equal(expected.UpdatedAt) {
 		return current, false, nil
+	}
+	if err := s.beginManualStopHoldLocked(ctx, current); err != nil {
+		return Stream{}, false, err
 	}
 	current.Status = status
 	current.UpdatedAt = streamMutationTime(current.UpdatedAt)

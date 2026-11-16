@@ -13,6 +13,8 @@ import (
 
 type MemoryAuthStore struct {
 	mu                    sync.Mutex
+	operationalRevision   uint64
+	operationalDigest     [32]byte
 	streamAssignmentGuard *MemoryStreamStore
 	heartbeatNow          func() time.Time
 	users                 map[string]User

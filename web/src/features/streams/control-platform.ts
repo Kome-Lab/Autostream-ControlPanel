@@ -142,6 +142,27 @@ export type VideoCoverActionRequest = ReturnType<typeof buildVideoCoverAction> &
 export type VideoCoverAuthorityProof = Readonly<{ permission: CoverPermissionSnapshot; capability: CoverCapabilitySnapshot; valid: boolean; reason?: string }>;
 export type VideoCoverAuthorityBaseline = Readonly<{ streamID: string; streamStatus: string; encoderID: string; encoderAuthority: string; visualRevision: number }>;
 
+export function isVideoCoverStateForStream(value: unknown, streamID: string): value is VideoCoverState {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const state=value as Partial<VideoCoverState>;
+  return state.stream_id===streamID && Number.isSafeInteger(state.job_generation) && Number(state.job_generation)>=0
+    && Number.isSafeInteger(state.desired_revision) && Number(state.desired_revision)>=0 && typeof state.desired_active==="boolean"
+    && (state.applied_active===null || typeof state.applied_active==="boolean")
+    && (state.applied_revision===null || Number.isSafeInteger(state.applied_revision) && Number(state.applied_revision)>=0)
+    && ["idle","confirming","applied","failed"].includes(String(state.status));
+}
+
+export function isVideoCoverActionResponse(value: unknown, request: VideoCoverActionRequest, streamID: string): value is VideoCoverState {
+  if (!isVideoCoverStateForStream(value,streamID)) return false;
+  const state = value as Partial<VideoCoverState>;
+  if (state.stream_id !== streamID || state.job_generation !== request.expected_job_generation || !Number.isSafeInteger(state.job_generation)
+    || !Number.isSafeInteger(state.desired_revision) || state.desired_revision !== request.expected_revision + 1 || state.desired_active !== request.active
+    || !["confirming", "applied", "failed"].includes(String(state.status))
+    || request.candidate_variant_id && state.asset_variant_id !== request.candidate_variant_id) return false;
+  return state.status !== "applied" || state.applied_revision === state.desired_revision && state.applied_active === state.desired_active
+    && (!state.desired_active || state.applied_asset_variant_id === state.asset_variant_id);
+}
+
 export function newVideoCoverIdempotencyKey(random: Pick<Crypto, "getRandomValues" | "randomUUID"> = globalThis.crypto) {
   if (typeof random?.randomUUID === "function") return random.randomUUID();
   if (typeof random?.getRandomValues !== "function") throw new Error("video_cover_secure_random_unavailable");
@@ -164,6 +185,8 @@ export function createVideoCoverActionController<T>(
 	let accepted: VideoCoverState | undefined;
 	let active: { abort: AbortController; sent: boolean } | undefined;
 	const issueRequest = async (request: VideoCoverActionRequest, baseline?: VideoCoverAuthorityBaseline) => {
+		request = Object.freeze({ ...request });
+		if (baseline) baseline = Object.freeze({ ...baseline });
 		const availability = coverActionAvailability(request.active, permission(), pending, capability(), unresolved);
 		if (!availability.allowed || (!request.active && request.hide_confirmed !== true)) {
 			return { sent: false as const, reason: availability.reason || "確認が必要です。" };
@@ -179,6 +202,8 @@ export function createVideoCoverActionController<T>(
 				const fresh = coverActionAvailability(request.active, proof.permission, false, proof.capability, unresolved);
 				if (!fresh.allowed || !proof.valid) return { sent: false as const, reason: fresh.reason || proof.reason || "対象の設定または担当Encoderが変更されました。最新状態を確認してください。" };
 			}
+			const currentPermission = coverActionAvailability(request.active, permission(), false, capability(), unresolved);
+			if (!currentPermission.allowed) return { sent: false as const, reason: currentPermission.reason };
 			if (operation.abort.signal.aborted) return { sent: false as const, reason: "最新の権限または配信状態を確認できないため、操作を送信しませんでした。" };
 			try {
 				operation.sent = true;

@@ -45,6 +45,7 @@ func (s *Server) registerStreamRoutes() {
 	s.mux.HandleFunc("PUT /streams/{id}/runtime-settings", s.requirePermission("streams.update", s.updateStreamRuntimeSettings))
 	s.mux.HandleFunc("POST /streams/{id}/start-readiness", s.requirePermission("streams.start", s.startReadiness))
 	s.mux.HandleFunc("POST /streams/{id}/start", s.requirePermission("streams.start", s.startStream))
+	s.registerManualAutoStartRoutes()
 	s.mux.HandleFunc("GET /streams/{id}/youtube-live-notification", s.requirePermission("streams.read", s.getDiscordYouTubeLiveNotification))
 	s.mux.HandleFunc("POST /streams/{id}/youtube-live-notifications/{notification_id}/recover", s.requirePermission("streams.start", s.recoverDiscordYouTubeLiveNotification))
 	s.mux.HandleFunc("POST /streams/{id}/stop", s.requirePermission("streams.stop", s.stopStream))

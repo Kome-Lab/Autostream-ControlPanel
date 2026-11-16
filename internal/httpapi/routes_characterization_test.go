@@ -67,6 +67,7 @@ func loadRouteCharacterizationFixture(t *testing.T) routeCharacterizationFixture
 		fixture.Registrations[index] = registration
 	}
 	addMediaUploadOperationRouteCharacterization(t, &fixture)
+	addManualHoldRouteCharacterization(t, &fixture)
 	return fixture
 }
 

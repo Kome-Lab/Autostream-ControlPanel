@@ -2,8 +2,9 @@ name: UI188 source and harness preflight
 
 on:
   push:
-    branches: ['**']
+    branches-ignore: ['v3-dev', 'codex/v3-cp-authorization-*']
   pull_request:
+    branches-ignore: ['v3-dev']
 
 permissions:
   contents: read

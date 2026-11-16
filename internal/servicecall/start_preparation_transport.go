@@ -53,6 +53,9 @@ func (c Client) preparationJSON(ctx context.Context, service store.RegisteredSer
 		return fail("pre_dispatch", "start_preparation_request_invalid")
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
+	if err := attachStartAdmission(ctx, req, service, endpoint); err != nil {
+		return fail("pre_dispatch", "start_admission_unknown")
+	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	c.Config.Timeout = limit

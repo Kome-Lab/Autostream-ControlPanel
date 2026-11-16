@@ -22,7 +22,7 @@ const preSubmitEvaluation = "const reason = evaluationReason(evaluateIgnoringPen
 const provenState = "const state = proven?.state ?? dependencies.getState(opened.intent);";
 const boundedRevalidation = 'if (dependencies.revalidate) { try { proven = await withBoundedActionRevalidation((signal) => dependencies.revalidate!(opened.intent, signal), operation.abort.signal); } catch { return blocked(current(scope, operation) ? "state-unavailable" : "cancelled"); } }';
 const currentOperation = 'if (!current(scope, operation)) return blocked("cancelled");';
-const guardedMutation = "const value = await dependencies.mutate(Object.freeze({ ...requestValue, signal: operation.abort.signal }));";
+const guardedMutation = "const value = await dependencies.mutate(Object.freeze({ ...requestValue, signal: operation.abort.signal, ...(requestID ? { requestID } : {}) }));";
 
 export function assertStreamsStartReadinessHandlerGuard(sources: StreamsStartReadinessGuardSources) {
   assertReadinessOwnerBindings(sources);

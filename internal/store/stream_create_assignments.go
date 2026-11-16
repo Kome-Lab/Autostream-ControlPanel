@@ -130,5 +130,6 @@ func (s *MemoryStreamStore) CreateAssignedStream(ctx context.Context, streamID, 
 	stream = applyMemoryStreamSettings(stream, settings)
 	applyStreamNodeSelections(&stream, a.selections())
 	s.streams[streamID] = stream
+	s.initializeAutoStartHoldLocked(stream)
 	return stream, nil
 }

@@ -71,7 +71,7 @@ export function StreamsView() {
     getState: (intent) => streamActionStateSnapshot(queryClient, intent),
     revalidate: (intent, signal) => revalidateStreamActionAuthority(queryClient, intent, signal),
     mutate: mutateStreamAction,
-    readStopOutcome: (intent) => readStreamStopOutcome(queryClient, intent),
+    readStopOutcome: (intent, requestID) => readStreamStopOutcome(queryClient, intent, requestID),
   }), [queryClient]);
   const can = (permission: string) => hasPermission(currentUser.data, permission);
   const canCreate = can("streams.create");

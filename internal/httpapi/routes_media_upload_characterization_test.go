@@ -52,6 +52,7 @@ func TestMediaUploadRouteCharacterizationRetainsEveryHistoricalRegistration(t *t
 	if err := json.Unmarshal(bytes, &historical); err != nil {
 		t.Fatal(err)
 	}
+	addManualHoldRouteCharacterization(t, &historical)
 	current := loadRouteCharacterizationFixture(t)
 	additions := map[string]bool{}
 	for _, pattern := range []string{

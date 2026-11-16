@@ -1,0 +1,325 @@
+{
+  "new": [
+    "internal/lifecyclefoundation/product.go",
+    "internal/lifecyclefoundation/product_export_test.go",
+    "internal/lifecyclefoundation/product_fixture_test.go",
+    "internal/lifecyclefoundation/product_integration_test.go",
+    "internal/lifecyclefoundation/product_process_test.go",
+    "internal/v3authorization/lifecycle.go",
+    "internal/operationalauthorization/lifecycle.go",
+    "scripts/ci/b1-checks.sh",
+    "scripts/ci/b1-required-tests.txt",
+    "scripts/ci/b1-source-boundary.py",
+    "scripts/ci/b1-source-patches.json",
+    "docs/lifecycle-foundation/S12_B1_INTEGRATION.md",
+    "docs/lifecycle-foundation/B1_CONNECTION_INVENTORY.md"
+  ],
+  "patches": {
+    "internal/lifecyclefoundation/types.go": [
+      {
+        "old": "\tcase \"AUTHORITY_CHANGE\", \"OPERATIONAL_CHANGE\", \"IDENTITY_CHANGE\":",
+        "new": "\tcase \"AUTHORITY_CHANGE\", \"OPERATIONAL_CHANGE\", \"IDENTITY_CHANGE\", \"EVIDENCE_CHANGE\":"
+      }
+    ],
+    "internal/lifecyclefoundation/store.go": [
+      {
+        "old": "\tactive  bool\n",
+        "new": "\tactive  bool\n\tfailed bool\n\tgate *Gate\n\ttx *sql.Tx\n\tbefore Checkpoint\n\tauthorization Authorization\n\tjoins []*joinedTransaction\n"
+      },
+      {
+        "old": "\tif after.Content == before.Content || after.HistoryHead == before.HistoryHead ||",
+        "new": "\tif intent.Purpose == \"EVIDENCE_CHANGE\" {\n\t\treturn after.OperationalRevision == before.OperationalRevision && after.AuthorityEpoch == before.AuthorityEpoch && after.IdentityRevision == before.IdentityRevision &&\n\t\t\t(after == before || after.Content != before.Content && after.HistoryHead != before.HistoryHead)\n\t}\n\tif after.Content == before.Content || after.HistoryHead == before.HistoryHead ||"
+      },
+      {
+        "old": "\tp := &participation{store: s, request: r.Request, active: true}",
+        "new": "\tp := &participation{store: s, request: r.Request, active: true, tx: tx, before: frame.Checkpoint, authorization: r.Authorization}"
+      },
+      {
+        "old": "\tif !nextCheckpoint(frame.Checkpoint, after, r.Request.Intent) {",
+        "new": "\tp.mu.Lock()\n\tparticipantsComplete := !p.failed\n\tfor _, joined := range p.joins { participantsComplete = participantsComplete && joined.done }\n\tp.mu.Unlock()\n\tif !participantsComplete { return CommitRecord{}, ErrHeld }\n\tif !nextCheckpoint(frame.Checkpoint, after, r.Request.Intent) {"
+      }
+    ],
+    "internal/v3authorization/authority_store.go": [
+      {
+        "old": "import (\n",
+        "new": "import (\n\tlf \"github.com/example/autostream-control-panel/internal/lifecyclefoundation\"\n"
+      },
+      {
+        "old": "type SQLAuthority struct{ db *sql.DB }",
+        "new": "type SQLAuthority struct{\n\tdb *sql.DB\n\tlifecycle *lf.Gate\n}"
+      },
+      {
+        "old": "\tvar tx *sql.Tx\n",
+        "new": "\tvar tx lf.SQLTransaction\n"
+      },
+      {
+        "old": "tx, err = a.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})",
+        "new": "tx, err = lf.BeginSQL(ctx, a.db, &sql.TxOptions{Isolation: sql.LevelReadCommitted})"
+      },
+      {
+        "old": "func (a *SQLAuthority) Generation(ctx context.Context) (uint64, error) {\n",
+        "new": "func (a *SQLAuthority) Generation(ctx context.Context) (uint64, error) {\n\tif a != nil && a.lifecycle != nil {\n\t\tjoined, err := a.lifecycle.Require(ctx, \"authority.generation\")\n\t\tif err != nil { return 0, lifecycleError(err) }\n\t\tif !joined { return lifecycleCall(ctx, a.lifecycle, lf.Call{Operation: \"authority.generation\", Purpose: \"CURRENT_READ\", Target: \"authority\", Content: \"generation\"}, func(admitted context.Context) (uint64, error) { return a.Generation(admitted) }) }\n\t}\n"
+      },
+      {
+        "old": "\tif a.db.QueryRowContext(ctx, \"SELECT generation FROM v3_cp_authority_epoch WHERE singleton=1\").Scan(&generation) != nil {",
+        "new": "\tq, err := lifecycleExecutor(ctx, a.db)\n\tif err != nil { return 0, ErrUnavailable }\n\tif q.QueryRowContext(ctx, \"SELECT generation FROM v3_cp_authority_epoch WHERE singleton=1\").Scan(&generation) != nil {"
+      },
+      {
+        "old": "func (a *SQLAuthority) Save(ctx context.Context, expected uint64, records []AuthorityRecord) (uint64, error) {\n",
+        "new": "func (a *SQLAuthority) Save(ctx context.Context, expected uint64, records []AuthorityRecord) (uint64, error) {\n\tif a != nil && a.lifecycle != nil {\n\t\tjoined, err := a.lifecycle.Require(ctx, \"authority.save\")\n\t\tif err != nil { return 0, lifecycleError(err) }\n\t\tif !joined {\n\t\t\t// An already-locked Management/WithCurrent owner may not acquire a\n\t\t\t// new Lifecycle prefix or perform external I/O at this point.\n\t\t\tif ctx.Value(managementSaveKey{}) != nil || ctx.Value(authorityTxKey{}) != nil { return 0, ErrUnavailable }\n\t\t\towned, _, err := freezeManagementChanges(records, nil)\n\t\t\tif err != nil { return 0, err }\n\t\t\treturn lifecycleCall(ctx, a.lifecycle, lf.Call{Operation: \"authority.save\", Purpose: \"AUTHORITY_CHANGE\", Target: \"authority\", Content: struct{ Expected uint64; Records []AuthorityRecord }{expected, owned}}, func(admitted context.Context) (uint64, error) { return a.Save(admitted, expected, owned) })\n\t\t}\n\t}\n"
+      }
+    ],
+    "internal/v3authorization/sql_authority.go": [
+      {
+        "old": "import (\n",
+        "new": "import (\n\tlf \"github.com/example/autostream-control-panel/internal/lifecyclefoundation\"\n"
+      },
+      {
+        "old": "\ttx         *sql.Tx\n",
+        "new": "\ttx         lf.SQLTransaction\n"
+      },
+      {
+        "old": "\ttx                      *sql.Tx\n",
+        "new": "\ttx                      lf.SQLTransaction\n"
+      },
+      {
+        "old": "tx, err := a.db.BeginTx(ctx, options)",
+        "new": "tx, err := lf.BeginSQL(ctx, a.db, options)"
+      },
+      {
+        "old": "func (a *SQLAuthority) Read(ctx context.Context, p Principal, i Intent) (Decision, error) {\n",
+        "new": "func (a *SQLAuthority) Read(ctx context.Context, p Principal, i Intent) (Decision, error) {\n\tif a != nil && a.lifecycle != nil {\n\t\tjoined, err := a.lifecycle.Require(ctx, \"authority.read\")\n\t\tif err != nil { return Decision{}, lifecycleError(err) }\n\t\tif !joined {\n\t\t\treturn lifecycleCall(ctx, a.lifecycle, lf.Call{Operation: \"authority.read\", Purpose: \"CURRENT_READ\", Actor: p.ID, Target: i.Scope, Content: i}, func(admitted context.Context) (Decision, error) { return a.Read(admitted, p, i) })\n\t\t}\n\t}\n"
+      },
+      {
+        "old": "func (a *SQLAuthority) ResolveTarget(ctx context.Context, i Intent) (ResolvedTarget, error) {\n",
+        "new": "func (a *SQLAuthority) ResolveTarget(ctx context.Context, i Intent) (ResolvedTarget, error) {\n\tif a != nil && a.lifecycle != nil {\n\t\tjoined, err := a.lifecycle.Require(ctx, \"authority.target\")\n\t\tif err != nil { return ResolvedTarget{}, lifecycleError(err) }\n\t\tif !joined {\n\t\t\treturn lifecycleCall(ctx, a.lifecycle, lf.Call{Operation: \"authority.target\", Purpose: \"CURRENT_READ\", Actor: \"\", Target: i.Scope, Content: i}, func(admitted context.Context) (ResolvedTarget, error) { return a.ResolveTarget(admitted, i) })\n\t\t}\n\t}\n"
+      },
+      {
+        "old": "func (a *SQLAuthority) ResolvePolicyTrust(ctx context.Context, scope evidence.Scope, action string) (ResolvedPolicyTrust, error) {\n",
+        "new": "func (a *SQLAuthority) ResolvePolicyTrust(ctx context.Context, scope evidence.Scope, action string) (ResolvedPolicyTrust, error) {\n\tif a != nil && a.lifecycle != nil {\n\t\tjoined, err := a.lifecycle.Require(ctx, \"authority.policy\")\n\t\tif err != nil { return ResolvedPolicyTrust{}, lifecycleError(err) }\n\t\tif !joined {\n\t\t\treturn lifecycleCall(ctx, a.lifecycle, lf.Call{Operation: \"authority.policy\", Purpose: \"CURRENT_READ\", Actor: \"\", Target: scope, Content: action}, func(admitted context.Context) (ResolvedPolicyTrust, error) { return a.ResolvePolicyTrust(admitted, scope, action) })\n\t\t}\n\t}\n"
+      },
+      {
+        "old": "func (a *SQLAuthority) AuthorizeRead(ctx context.Context, p Principal, q Lookup) error {\n",
+        "new": "func (a *SQLAuthority) AuthorizeRead(ctx context.Context, p Principal, q Lookup) error {\n\tif a != nil && a.lifecycle != nil {\n\t\tjoined, err := a.lifecycle.Require(ctx, \"authority.history\")\n\t\tif err != nil { return lifecycleError(err) }\n\t\tif !joined {\n\t\t\t_, err := lifecycleCall(ctx, a.lifecycle, lf.Call{Operation: \"authority.history\", Purpose: \"CURRENT_READ\", Actor: p.ID, Target: q.Scope, Content: q}, func(admitted context.Context) (struct{}, error) { return struct{}{}, a.AuthorizeRead(admitted, p, q) })\n\t\t\treturn err\n\t\t}\n\t}\n"
+      },
+      {
+        "old": "func (a *SQLAuthority) WithCurrent(ctx context.Context, p Principal, i Intent, expected Decision, fn func(context.Context, Decision) error) error {\n",
+        "new": "func (a *SQLAuthority) WithCurrent(ctx context.Context, p Principal, i Intent, expected Decision, fn func(context.Context, Decision) error) error {\n\tif a != nil && a.lifecycle != nil {\n\t\tjoined, err := a.lifecycle.Require(ctx, \"evidence.finish\")\n\t\tif err != nil { return lifecycleError(err) }\n\t\tif !joined {\n\t\t\t_, err := lifecycleCall(ctx, a.lifecycle, lf.Call{Operation: \"evidence.finish\", Purpose: \"EVIDENCE_CHANGE\", Actor: p.ID, Target: i.Scope, Content: struct{ Intent Intent; Decision Decision }{i, expected}}, func(admitted context.Context) (struct{}, error) { return struct{}{}, a.WithCurrent(admitted, p, i, expected, fn) })\n\t\t\treturn err\n\t\t}\n\t}\n"
+      }
+    ],
+    "internal/v3authorization/management_sql.go": [
+      {
+        "old": "import (\n",
+        "new": "import (\n\tlf \"github.com/example/autostream-control-panel/internal/lifecyclefoundation\"\n"
+      },
+      {
+        "old": "\ttx           *sql.Tx\n",
+        "new": "\ttx           lf.SQLTransaction\n"
+      },
+      {
+        "old": "func managementAudit(ctx context.Context, tx *sql.Tx,",
+        "new": "func managementAudit(ctx context.Context, tx lf.SQLTransaction,"
+      },
+      {
+        "old": "tx, e := s.authority.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})",
+        "new": "tx, e := lf.BeginSQL(ctx, s.authority.db, &sql.TxOptions{Isolation: sql.LevelReadCommitted})"
+      },
+      {
+        "old": "func (s *ManagementService) Bootstrap(ctx context.Context, a ManagementActor, m ManagementMetadata, g ManagementGrant) ManagementResult {\n",
+        "new": "func (s *ManagementService) Bootstrap(ctx context.Context, a ManagementActor, m ManagementMetadata, g ManagementGrant) ManagementResult {\n\tif s != nil && s.authority != nil && s.authority.lifecycle != nil { return managementFailure(ErrUnavailable) }\n"
+      },
+      {
+        "old": "func (s *ManagementService) RecordTransportDenial(ctx context.Context, p Principal, code string) error {\n",
+        "new": "func (s *ManagementService) RecordTransportDenial(ctx context.Context, p Principal, code string) error {\n\tif s != nil && s.authority != nil && s.authority.lifecycle != nil { return ErrUnavailable }\n"
+      },
+      {
+        "old": "func (s *ManagementService) denial(ctx context.Context, p Principal, m ManagementMetadata, code string) error {\n",
+        "new": "func (s *ManagementService) denial(ctx context.Context, p Principal, m ManagementMetadata, code string) error {\n\tif s != nil && s.authority != nil && s.authority.lifecycle != nil { return ErrUnavailable }\n"
+      },
+      {
+        "old": "func (s *ManagementService) Apply(ctx context.Context, a ManagementActor, m ManagementMetadata, records []AuthorityRecord, grants []ManagementGrant) ManagementResult {\n",
+        "new": "func (s *ManagementService) Apply(ctx context.Context, a ManagementActor, m ManagementMetadata, records []AuthorityRecord, grants []ManagementGrant) ManagementResult {\n\tif s != nil && s.authority != nil && s.authority.lifecycle != nil {\n\t\tjoined, err := s.authority.lifecycle.Require(ctx, \"management.apply\")\n\t\tif err != nil { return managementLifecycleResult(err) }\n\t\tif !joined {\n\t\t\towned, gs, err := freezeManagementChanges(records, grants)\n\t\t\tif err != nil { return managementFailure(err) }\n\t\t\tresult, err := lifecycleCall(ctx, s.authority.lifecycle, lf.Call{Operation: \"management.apply\", Purpose: \"AUTHORITY_CHANGE\", Actor: a.Principal.ID, Target: m.Scope, Content: struct{ Metadata ManagementMetadata; Records []AuthorityRecord; Grants []ManagementGrant }{m, owned, gs}}, func(admitted context.Context) (ManagementResult, error) {\n\t\t\t\tresult := s.Apply(admitted, a, m, owned, gs)\n\t\t\t\treturn result, managementLifecycleError(result)\n\t\t\t})\n\t\t\tif err != nil { return managementFailure(err) }\n\t\t\treturn result\n\t\t}\n\t}\n"
+      },
+      {
+        "old": "func (s *ManagementService) Inspect(ctx context.Context, a ManagementActor, m ManagementMetadata) ManagementResult {\n",
+        "new": "func (s *ManagementService) Inspect(ctx context.Context, a ManagementActor, m ManagementMetadata) ManagementResult {\n\tif s != nil && s.authority != nil && s.authority.lifecycle != nil {\n\t\tjoined, err := s.authority.lifecycle.Require(ctx, \"management.inspect\")\n\t\tif err != nil { return managementLifecycleResult(err) }\n\t\tif !joined {\n\t\t\tresult, err := lifecycleCall(ctx, s.authority.lifecycle, lf.Call{Operation: \"management.inspect\", Purpose: \"CURRENT_READ\", Actor: a.Principal.ID, Target: m.Scope, Content: m}, func(admitted context.Context) (ManagementResult, error) {\n\t\t\t\tresult := s.Inspect(admitted, a, m)\n\t\t\t\treturn result, managementLifecycleError(result)\n\t\t\t})\n\t\t\tif err != nil { return managementFailure(err) }\n\t\t\treturn result\n\t\t}\n\t}\n"
+      }
+    ],
+    "internal/v3authorization/sqlstore.go": [
+      {
+        "old": "import (\n",
+        "new": "import (\n\tlf \"github.com/example/autostream-control-panel/internal/lifecyclefoundation\"\n"
+      },
+      {
+        "old": "type SQLStore struct{ db *sql.DB }",
+        "new": "type SQLStore struct{\n\tdb *sql.DB\n\tlifecycle *lf.Gate\n}"
+      },
+      {
+        "old": "tx, err := s.db.BeginTx(ctx, nil)",
+        "new": "tx, err := lf.BeginSQL(ctx, s.db, nil)"
+      },
+      {
+        "old": "func (s *SQLStore) Claim(ctx context.Context, r Record) (Record, ClaimStatus, error) {\n",
+        "new": "func (s *SQLStore) Claim(ctx context.Context, r Record) (Record, ClaimStatus, error) {\n\tif s != nil && s.lifecycle != nil {\n\t\tjoined, err := s.lifecycle.Require(ctx, \"evidence.claim\")\n\t\tif err != nil { return Record{}, \"\", lifecycleError(err) }\n\t\tif !joined {\n\t\t\ttype claimResult struct { Record Record; Status ClaimStatus }\n\t\t\towned := sqlCloneRecord(r)\n\t\t\tresult, err := lifecycleCall(ctx, s.lifecycle, lf.Call{Operation: \"evidence.claim\", Purpose: \"EVIDENCE_CHANGE\", Actor: owned.Principal, Target: owned.Intent.Scope, Content: owned}, func(admitted context.Context) (claimResult, error) {\n\t\t\t\trecord, status, err := s.Claim(admitted, owned)\n\t\t\t\treturn claimResult{record, status}, err\n\t\t\t})\n\t\t\treturn result.Record, result.Status, err\n\t\t}\n\t}\n"
+      },
+      {
+        "old": "\ttx, err := lf.BeginSQL(ctx, s.db, nil)",
+        "new": "\tif _, bound, err := lf.SQL(ctx, s.db); err != nil { return Record{}, \"\", ErrUnavailable } else if bound {\n\t\tfound, err := s.findIdentity(ctx, r)\n\t\tif err != nil { return Record{}, \"\", err }\n\t\tif len(found) != 0 {\n\t\t\tif len(found) != 1 || !bytes.Equal(found[0].Immutable, r.Immutable) { return Record{}, Collided, nil }\n\t\t\treturn found[0], Existing, nil\n\t\t}\n\t}\n\ttx, err := lf.BeginSQL(ctx, s.db, nil)"
+      },
+      {
+        "old": "\trows, err := s.db.QueryContext(ctx, `SELECT `+issuanceColumns+` FROM v3_cp_authorization_issuances WHERE realm=? AND (request_id=? OR execution_key=? OR (operation_id=? AND attempt_id=? AND step_id=?))`,",
+        "new": "\tquery, err := lifecycleExecutor(ctx, s.db)\n\tif err != nil { return nil, ErrUnavailable }\n\trows, err := query.QueryContext(ctx, `SELECT `+issuanceColumns+` FROM v3_cp_authorization_issuances WHERE realm=? AND (request_id=? OR execution_key=? OR (operation_id=? AND attempt_id=? AND step_id=?))`,"
+      },
+      {
+        "old": "func (s *SQLStore) Finish(ctx context.Context, r Record) error {\n",
+        "new": "func (s *SQLStore) Finish(ctx context.Context, r Record) error {\n\tif s != nil && s.lifecycle != nil {\n\t\toperation := \"evidence.close\"\n\t\tif ctx != nil && ctx.Value(authorityTxKey{}) != nil { operation = \"evidence.store.finish\" }\n\t\tjoined, err := s.lifecycle.Require(ctx, operation)\n\t\tif err != nil { return lifecycleError(err) }\n\t\tif !joined {\n\t\t\tif operation != \"evidence.close\" || r.State != \"CLOSED\" { return ErrUnavailable }\n\t\t\towned := sqlCloneRecord(r)\n\t\t\t_, err := lifecycleCall(ctx, s.lifecycle, lf.Call{Operation: operation, Purpose: \"EVIDENCE_CHANGE\", Actor: owned.Principal, Target: owned.Intent.Scope, Content: owned}, func(admitted context.Context) (struct{}, error) { return struct{}{}, s.Finish(admitted, owned) })\n\t\t\treturn err\n\t\t}\n\t}\n"
+      },
+      {
+        "old": "\treturn finishSQLRecord(ctx, s.db, r)",
+        "new": "\tquery, err := lifecycleExecutor(ctx, s.db)\n\tif err != nil { return ErrUnavailable }\n\treturn finishSQLRecord(ctx, query, r)"
+      },
+      {
+        "old": "func (s *SQLStore) Lookup(ctx context.Context, q Lookup) (Record, error) {\n",
+        "new": "func (s *SQLStore) Lookup(ctx context.Context, q Lookup) (Record, error) {\n\tif s != nil && s.lifecycle != nil {\n\t\tjoined, err := s.lifecycle.Require(ctx, \"evidence.lookup\")\n\t\tif err != nil { return Record{}, lifecycleError(err) }\n\t\tif !joined { return lifecycleCall(ctx, s.lifecycle, lf.Call{Operation: \"evidence.lookup\", Purpose: \"CURRENT_READ\", Target: q.Scope, Content: q}, func(admitted context.Context) (Record, error) { return s.Lookup(admitted, q) }) }\n\t}\n"
+      },
+      {
+        "old": "\treturn lookupSQLRecord(ctx, s.db, q)",
+        "new": "\tquery, err := lifecycleExecutor(ctx, s.db)\n\tif err != nil { return Record{}, ErrUnavailable }\n\treturn lookupSQLRecord(ctx, query, q)"
+      }
+    ],
+    "internal/v3authorization/service.go": [
+      {
+        "old": "import (\n",
+        "new": "import (\n\tlf \"github.com/example/autostream-control-panel/internal/lifecyclefoundation\"\n"
+      },
+      {
+        "old": "\tdeps   Dependencies\n",
+        "new": "\tdeps   Dependencies\n\tlifecycle *lf.Gate\n"
+      },
+      {
+        "old": "return &Service{config, deps}",
+        "new": "return &Service{config: config, deps: deps}"
+      },
+      {
+        "old": "func (s *Service) Issue(ctx context.Context, principal Principal, request IssueRequest) Result {\n",
+        "new": "func (s *Service) Issue(ctx context.Context, principal Principal, request IssueRequest) Result {\n\tif s != nil && s.lifecycleDependencies() != nil { return failure(Unavailable, ErrUnavailable.Code) }\n"
+      },
+      {
+        "old": "func (s *Service) Read(ctx context.Context, principal Principal, lookup Lookup) Result {\n",
+        "new": "func (s *Service) Read(ctx context.Context, principal Principal, lookup Lookup) Result {\n\tif s != nil && s.lifecycleDependencies() != nil { return failure(Unavailable, ErrUnavailable.Code) }\n"
+      }
+    ],
+    "internal/operationalauthorization/service.go": [
+      {
+        "old": "import \"context\"",
+        "new": "import (\n\t\"context\"\n\tlf \"github.com/example/autostream-control-panel/internal/lifecyclefoundation\"\n)"
+      },
+      {
+        "old": "type Service struct{ store Store }",
+        "new": "type Service struct{\n\tstore Store\n\tlifecycle *lf.Gate\n}"
+      },
+      {
+        "old": "func (s *Service) Current(ctx context.Context, principalID string, scope Scope) (Snapshot, []string, error) {\n",
+        "new": "func (s *Service) Current(ctx context.Context, principalID string, scope Scope) (Snapshot, []string, error) {\n\tif s != nil && s.lifecycle != nil {\n\t\tjoined, err := s.lifecycle.Require(ctx, \"operational.current\")\n\t\tif err != nil { return Snapshot{}, nil, ErrUnavailable }\n\t\tif !joined {\n\t\t\tcall := lf.Call{Operation: \"operational.current\", Purpose: \"CURRENT_READ\", Actor: principalID, Target: scope, Content: scope}\n\t\t\ttype currentResult struct { Snapshot Snapshot; Permissions []string }\n\t\t\tvar result currentResult\n\t\t\terr := s.lifecycle.Do(ctx, call, func(admitted context.Context) error { var e error; result.Snapshot, result.Permissions, e = s.Current(admitted, principalID, scope); return e })\n\t\t\tif err != nil { return Snapshot{}, nil, ErrUnavailable }\n\t\t\treturn result.Snapshot, result.Permissions, nil\n\t\t}\n\t}\n"
+      },
+      {
+        "old": "func (s *Service) Authorize(ctx context.Context, request Request) (Decision, error) {\n",
+        "new": "func (s *Service) Authorize(ctx context.Context, request Request) (Decision, error) {\n\tif s != nil && s.lifecycle != nil {\n\t\tjoined, err := s.lifecycle.Require(ctx, \"operational.authorize\")\n\t\tif err != nil { return Decision{}, ErrUnavailable }\n\t\tif !joined {\n\t\t\tcall := lf.Call{Operation: \"operational.authorize\", Purpose: \"CURRENT_READ\", Actor: request.PrincipalID, Target: request.Scope, Content: request}\n\t\t\tvar result Decision\n\t\t\terr := s.lifecycle.Do(ctx, call, func(admitted context.Context) error { var e error; result, e = s.Authorize(admitted, request); return e })\n\t\t\tif err != nil { return Decision{}, ErrUnavailable }\n\t\t\treturn result, nil\n\t\t}\n\t}\n"
+      },
+      {
+        "old": "func (s *Service) ValidateDelegation(ctx context.Context, request DelegationRequest) error {\n",
+        "new": "func (s *Service) ValidateDelegation(ctx context.Context, request DelegationRequest) error {\n\tif s != nil && s.lifecycle != nil {\n\t\tjoined, err := s.lifecycle.Require(ctx, \"operational.delegate\")\n\t\tif err != nil { return ErrUnavailable }\n\t\tif !joined {\n\t\t\tcall := lf.Call{Operation: \"operational.delegate\", Purpose: \"CURRENT_READ\", Actor: request.PrincipalID, Target: request.Scope, Content: request}\n\t\t\towned := cloneDelegation(request)\n\t\t\tcall.Content = owned\n\t\t\tif err := s.lifecycle.Do(ctx, call, func(admitted context.Context) error { return s.ValidateDelegation(admitted, owned) }); err != nil { return ErrUnavailable }\n\t\t\treturn nil\n\t\t}\n\t}\n"
+      }
+    ],
+    "internal/store/operational_authorization_mariadb.go": [
+      {
+        "old": "import (\n",
+        "new": "import (\n\tlf \"github.com/example/autostream-control-panel/internal/lifecyclefoundation\"\n"
+      },
+      {
+        "old": "f func(*sql.Tx, uint64) error",
+        "new": "f func(lf.Executor, uint64) error"
+      },
+      {
+        "old": "tx, err := db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})",
+        "new": "tx, err := lf.BeginSQL(ctx, db, &sql.TxOptions{Isolation: sql.LevelReadCommitted})"
+      },
+      {
+        "old": "func(_ *sql.Tx, current uint64) error",
+        "new": "func(_ lf.Executor, current uint64) error"
+      },
+      {
+        "old": "func(tx *sql.Tx, generation uint64) error",
+        "new": "func(tx lf.Executor, generation uint64) error"
+      }
+    ],
+    "cmd/control-panel/main.go": [
+      {
+        "old": "import (\n",
+        "new": "import (\n\tlf \"github.com/example/autostream-control-panel/internal/lifecyclefoundation\"\n"
+      },
+      {
+        "old": "\trunCtx, stop := signal.NotifyContext",
+        "new": "\tif err := lf.ProductStartup(os.Getenv(\"AUTOSTREAM_L2_REQUIRED\")); err != nil {\n\t\tlog.Fatal(\"lifecycle gate required but no qualified product provider is configured\")\n\t}\n\trunCtx, stop := signal.NotifyContext"
+      }
+    ],
+    ".github/workflows/v3-authorization-ci.yml": [
+      {
+        "old": "      - name: S12-B0 required Lifecycle Foundation\n",
+        "new": "      - name: S12-B1 required product Lifecycle integration\n        run: bash scripts/ci/b1-checks.sh\n      - name: S12-B0 required Lifecycle Foundation\n"
+      }
+    ],
+    ".github/workflows/v3-operational-authorization-ci.yml": [
+      {
+        "old": "      - name: S12-B0 required Lifecycle Foundation\n",
+        "new": "      - name: S12-B1 required product Lifecycle integration\n        run: bash scripts/ci/b1-checks.sh\n      - name: S12-B0 required Lifecycle Foundation\n"
+      }
+    ],
+    "scripts/ci/b0-source-boundary.py": [
+      {
+        "old": "BASE = \"ee26856bbf7e808424a658345dd5f362d5500bb6\"",
+        "new": "BASE = \"ee26856bbf7e808424a658345dd5f362d5500bb6\"\nB0 = \"2446b5b451cc3749a3245be640b5b43cf086183e\""
+      },
+      {
+        "old": "changed = git(\"diff\", \"--name-only\", BASE, \"HEAD\").splitlines()",
+        "new": "changed = git(\"diff\", \"--name-only\", BASE, B0).splitlines()"
+      },
+      {
+        "old": "assert pathlib.Path(path).read_text() == expected_workflow",
+        "new": "assert git(\"show\", B0 + \":\" + path) == expected_workflow"
+      },
+      {
+        "old": "assert pathlib.Path(S13).read_text() == expected",
+        "new": "assert git(\"show\", B0 + \":\" + S13) == expected"
+      },
+      {
+        "old": "[\"git\", \"diff\", \"--exit-code\", BASE, \"HEAD\", \"--\", *protected]",
+        "new": "[\"git\", \"diff\", \"--exit-code\", BASE, B0, \"--\", *protected]"
+      },
+      {
+        "old": "print(\"B0 exact source boundary: PASS\")",
+        "new": "subprocess.run([\"python3\", \"scripts/ci/b1-source-boundary.py\"], check=True)\nprint(\"B0 historical exact source boundary and B1 reviewed extensions: PASS\")"
+      }
+    ],
+    "scripts/ci/s13-source-boundary.sh": [
+      {
+        "old": "  case \"$file\" in\n",
+        "new": "  case \"$file\" in\n    internal/lifecyclefoundation/product.go|internal/lifecyclefoundation/product_export_test.go|internal/lifecyclefoundation/product_fixture_test.go|internal/lifecyclefoundation/product_integration_test.go|internal/lifecyclefoundation/product_process_test.go|internal/v3authorization/lifecycle.go|internal/operationalauthorization/lifecycle.go|scripts/ci/b1-checks.sh|scripts/ci/b1-required-tests.txt|scripts/ci/b1-source-boundary.py|scripts/ci/b1-source-patches.json|docs/lifecycle-foundation/S12_B1_INTEGRATION.md|docs/lifecycle-foundation/B1_CONNECTION_INVENTORY.md|cmd/control-panel/main.go|internal/lifecyclefoundation/types.go|internal/lifecyclefoundation/store.go|internal/v3authorization/authority_store.go|internal/v3authorization/sql_authority.go|internal/v3authorization/sqlstore.go|internal/v3authorization/service.go|internal/v3authorization/management_sql.go) python3 scripts/ci/b1-source-boundary.py ;;\n"
+      },
+      {
+        "old": "git diff --exit-code \"$baseline\" HEAD -- go.mod go.sum internal/database/migrations internal/v3authorization internal/httpapi/server_v3_authorization.go internal/httpapi/server_v3_authorization_management.go ':(exclude)internal/database/migrations/093_user_admin_guard.sql'",
+        "new": "git diff --exit-code \"$baseline\" HEAD -- go.mod go.sum internal/database/migrations internal/v3authorization internal/httpapi/server_v3_authorization.go internal/httpapi/server_v3_authorization_management.go ':(exclude)internal/database/migrations/093_user_admin_guard.sql' ':(exclude)internal/v3authorization/lifecycle.go' ':(exclude)internal/v3authorization/authority_store.go' ':(exclude)internal/v3authorization/sql_authority.go' ':(exclude)internal/v3authorization/sqlstore.go' ':(exclude)internal/v3authorization/service.go' ':(exclude)internal/v3authorization/management_sql.go'"
+      }
+    ],
+    "internal/operationalauthorization/boundary_test.go": [
+      {
+        "old": "if strings.Contains(dependency, \".\") && dependency != \"github.com/example/autostream-control-panel/internal/security\" {",
+        "new": "if strings.Contains(dependency, \".\") && dependency != \"github.com/example/autostream-control-panel/internal/security\" && dependency != \"github.com/example/autostream-control-panel/internal/lifecyclefoundation\" {"
+      },
+      {
+        "old": "\t\t}\n\t}\n}\n",
+        "new": "\t\t}\n\t}\n\t// The sole new infrastructure dependency must remain independent of every\n\t// product authority/workload/provider package; do not allow a transitive bridge.\n\tfoundation := filepath.Join(filepath.Dir(file), \"..\", \"lifecyclefoundation\")\n\tfoundationEntries, err := os.ReadDir(foundation)\n\tif err != nil { t.Fatal(err) }\n\tfor _, entry := range foundationEntries {\n\t\tif entry.IsDir() || !strings.HasSuffix(entry.Name(), \".go\") || strings.HasSuffix(entry.Name(), \"_test.go\") { continue }\n\t\tparsed, err := parser.ParseFile(token.NewFileSet(), filepath.Join(foundation, entry.Name()), nil, parser.ImportsOnly)\n\t\tif err != nil { t.Fatal(err) }\n\t\tfor _, spec := range parsed.Imports {\n\t\t\tdependency, err := strconv.Unquote(spec.Path.Value)\n\t\t\tif err != nil { t.Fatal(err) }\n\t\t\tif strings.Contains(dependency, \".\") { t.Errorf(\"Lifecycle infrastructure imports product/provider authority in %s: %s\", entry.Name(), dependency) }\n\t\t}\n\t}\n}\n"
+      }
+    ]
+  }
+}

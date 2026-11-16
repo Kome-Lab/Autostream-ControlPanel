@@ -28,6 +28,12 @@ func (s *MemoryStreamStore) claimSelectedStreamStart(ctx context.Context, reques
 		!stream.UpdatedAt.Equal(request.ExpectedStreamUpdatedAt) {
 		return ClaimedStreamStart{}, ErrServiceAssignmentConflict
 	}
+	if err := s.checkAutomaticStartHoldLocked(ctx, request.StreamID); err != nil {
+		return ClaimedStreamStart{}, err
+	}
+	if err := s.checkStartClaimRequestLocked(ctx, stream); err != nil {
+		return ClaimedStreamStart{}, err
+	}
 	if memoryStreamAssignmentProtectionLocked(s, stream).protected() {
 		return ClaimedStreamStart{}, ErrServiceAssignmentConflict
 	}
@@ -147,5 +153,6 @@ func (s *MemoryStreamStore) claimSelectedStreamStart(ctx context.Context, reques
 	sort.Slice(claims, func(i, j int) bool { return claims[i].AssignmentID < claims[j].AssignmentID })
 	ownership := StreamStartOwnershipClaim{StreamID: stream.ID, StreamUpdatedAt: now,
 		StreamIdentity: streamStartOwnershipIdentity(stream), Assignments: claims, Archive: authority}
+	s.commitStartClaimRequestLocked(ctx)
 	return ClaimedStreamStart{Stream: stream, PrimaryAssignments: primary, ArchiveAuthority: authority, OwnershipClaim: ownership}, nil
 }

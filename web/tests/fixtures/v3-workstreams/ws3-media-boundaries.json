@@ -1,0 +1,309 @@
+{
+  "Header": {
+    "ContractRef": {
+      "ContractID": "CC08",
+      "LogicalRevision": 1,
+      "SpecRef": "G0-LOGICAL-20261115-R1",
+      "ModuleCommitRef": "d32ea3514b1c1010391caae0348b0ff9e751f447"
+    },
+    "RecordKey": {
+      "ContractRef": {
+        "ContractID": "CC08",
+        "LogicalRevision": 1,
+        "SpecRef": "G0-LOGICAL-20261115-R1",
+        "ModuleCommitRef": "d32ea3514b1c1010391caae0348b0ff9e751f447"
+      },
+      "OwnerID": "encoder-1",
+      "RecordID": "media-inspection-fixed-vector"
+    },
+    "Correlation": {
+      "RequestID": "request-1",
+      "OperationID": "operation-1",
+      "AttemptID": "attempt-1",
+      "StepID": "step-1",
+      "ExecutionKey": "execution-1"
+    },
+    "DomainRef": {
+      "DeploymentID": "fixture-deployment-1",
+      "Realm": "isolated-test",
+      "DomainID": "domain-1",
+      "MembershipRevision": 1,
+      "SnapshotRef": "membership-1",
+      "Resources": [
+        {
+          "Kind": "RUN",
+          "OwnerID": "encoder-1",
+          "ResourceID": "stream-1"
+        },
+        {
+          "Kind": "PARTITION",
+          "OwnerID": "encoder-1",
+          "ResourceID": "audio-queue-1"
+        },
+        {
+          "Kind": "HOST",
+          "OwnerID": "encoder-1",
+          "ResourceID": "host-1"
+        }
+      ]
+    },
+    "ProducerRef": {
+      "ComponentID": "C04",
+      "ServiceID": "encoder-1",
+      "HostID": "host-1",
+      "BootID": "encoder-boot-1",
+      "ProcessIncarnation": "encoder-process-1",
+      "WriterID": "encoder-writer-1"
+    },
+    "RecordRevision": 1,
+    "ProfileRef": {
+      "ProfileID": "G0-P-MEDIA-INGRESS",
+      "Revision": 1
+    }
+  },
+  "Inspection": {
+    "Target": {
+      "Correlation": {
+        "RequestID": "request-1",
+        "OperationID": "operation-1",
+        "AttemptID": "attempt-1",
+        "StepID": "step-1",
+        "ExecutionKey": "execution-1"
+      },
+      "BindingRef": "media-original-record-fixed",
+      "ExecutionKey": "execution-1",
+      "TargetRecordRef": "media-original-record-fixed",
+      "Scope": "domain-1",
+      "Purpose": "STOP_LOOKUP"
+    },
+    "Observations": {
+      "Observations": [
+        {
+          "Address": {
+            "Kind": "LOCAL_PERSISTENCE",
+            "OwnerID": "encoder-1",
+            "Resource": {
+              "Kind": "RUN",
+              "OwnerID": "encoder-1",
+              "ResourceID": "stream-1"
+            },
+            "SubBoundary": "RAW_WRITE"
+          },
+          "Knowledge": "KNOWN",
+          "Presence": "PRESENT",
+          "Outcome": {
+            "State": "OBSERVED",
+            "Value": "SUCCESS_AT_BOUNDARY",
+            "Observation": {
+              "FrameRef": "encoder-frame-1",
+              "OwnerID": "encoder-1",
+              "Scope": "domain-1",
+              "SourceRevision": 1
+            }
+          },
+          "Details": {
+            "RawExtent": {
+              "ExtentRef": "raw-fixed-work",
+              "Offset": 0,
+              "Length": 4,
+              "RequestedLength": 4
+            }
+          }
+        },
+        {
+          "Address": {
+            "Kind": "LOCAL_PERSISTENCE",
+            "OwnerID": "encoder-1",
+            "Resource": {
+              "Kind": "RUN",
+              "OwnerID": "encoder-1",
+              "ResourceID": "stream-1"
+            },
+            "SubBoundary": "DURABILITY"
+          },
+          "Knowledge": "KNOWN",
+          "Presence": "PRESENT",
+          "Outcome": {
+            "State": "OBSERVED",
+            "Value": "SUCCESS_AT_BOUNDARY",
+            "Observation": {
+              "FrameRef": "encoder-frame-1",
+              "OwnerID": "encoder-1",
+              "Scope": "domain-1",
+              "SourceRevision": 1
+            }
+          },
+          "Details": {
+            "Durability": {
+              "ProfileRef": {
+                "ProfileID": "G0-P-MEDIA-INGRESS",
+                "Revision": 1
+              },
+              "Level": "SYNC_OBSERVED",
+              "WitnessRef": "raw-fixed-sync-close"
+            }
+          }
+        },
+        {
+          "Address": {
+            "Kind": "LOCAL_PERSISTENCE",
+            "OwnerID": "encoder-1",
+            "Resource": {
+              "Kind": "PARTITION",
+              "OwnerID": "encoder-1",
+              "ResourceID": "audio-queue-1"
+            },
+            "SubBoundary": "QUEUE_ADMISSION"
+          },
+          "Knowledge": "KNOWN",
+          "Presence": "PRESENT",
+          "Outcome": {
+            "State": "OBSERVED",
+            "Value": "SUCCESS_AT_BOUNDARY",
+            "Observation": {
+              "FrameRef": "encoder-frame-1",
+              "OwnerID": "encoder-1",
+              "Scope": "domain-1",
+              "SourceRevision": 1
+            }
+          },
+          "Details": {
+            "Queue": {
+              "Work": {
+                "WorkID": "queue-fixed-work",
+                "ParentWorkID": "raw-fixed-work",
+                "Namespace": {
+                  "OwnerID": "encoder-1",
+                  "Resource": {
+                    "Kind": "PARTITION",
+                    "OwnerID": "encoder-1",
+                    "ResourceID": "audio-queue-1"
+                  },
+                  "WorkKind": "MEDIA",
+                  "ProducerIncarnation": "encoder-process-1",
+                  "SequenceEpoch": "queue-epoch-1"
+                },
+                "Sequence": 2,
+                "AdmissionRecordRef": "admission-record-1"
+              },
+              "ReceiptRef": "queue-fixed-receipt"
+            }
+          }
+        },
+        {
+          "Address": {
+            "Kind": "LOCAL_PERSISTENCE",
+            "OwnerID": "encoder-1",
+            "Resource": {
+              "Kind": "PARTITION",
+              "OwnerID": "encoder-1",
+              "ResourceID": "audio-queue-1"
+            },
+            "SubBoundary": "QUEUE_TERMINAL"
+          },
+          "Knowledge": "KNOWN",
+          "Presence": "PRESENT",
+          "Outcome": {
+            "State": "OBSERVED",
+            "Value": "PENDING",
+            "Observation": {
+              "FrameRef": "encoder-frame-1",
+              "OwnerID": "encoder-1",
+              "Scope": "domain-1",
+              "SourceRevision": 1
+            }
+          },
+          "Details": {
+            "Queue": {
+              "Work": {
+                "WorkID": "queue-fixed-work",
+                "ParentWorkID": "raw-fixed-work",
+                "Namespace": {
+                  "OwnerID": "encoder-1",
+                  "Resource": {
+                    "Kind": "PARTITION",
+                    "OwnerID": "encoder-1",
+                    "ResourceID": "audio-queue-1"
+                  },
+                  "WorkKind": "MEDIA",
+                  "ProducerIncarnation": "encoder-process-1",
+                  "SequenceEpoch": "queue-epoch-1"
+                },
+                "Sequence": 2,
+                "AdmissionRecordRef": "admission-record-1"
+              },
+              "ReceiptRef": "queue-fixed-receipt"
+            }
+          }
+        }
+      ],
+      "Gate": "HELD",
+      "PhysicalObligations": [
+        {
+          "ObligationID": "raw-fixed-work-fd",
+          "Kind": "FD",
+          "OwnerID": "encoder-1",
+          "Resource": {
+            "Kind": "RUN",
+            "OwnerID": "encoder-1",
+            "ResourceID": "stream-1"
+          },
+          "WorkRef": "raw-fixed-work",
+          "Knowledge": "KNOWN",
+          "Terminal": {
+            "State": "OBSERVED",
+            "Value": "raw-fixed-work-file-closed",
+            "Observation": {
+              "FrameRef": "encoder-frame-1",
+              "OwnerID": "encoder-1",
+              "Scope": "domain-1",
+              "SourceRevision": 1
+            }
+          }
+        },
+        {
+          "ObligationID": "queue-fixed-work",
+          "Kind": "QUEUE",
+          "OwnerID": "encoder-1",
+          "Resource": {
+            "Kind": "PARTITION",
+            "OwnerID": "encoder-1",
+            "ResourceID": "audio-queue-1"
+          },
+          "WorkRef": "queue-fixed-work",
+          "Knowledge": "UNKNOWN",
+          "Terminal": {
+            "State": "UNAVAILABLE",
+            "Unavailable": {
+              "Code": "QUEUE_TERMINAL_NOT_OBSERVED"
+            }
+          }
+        }
+      ],
+      "RemainingObligations": [
+        "queue-fixed-work"
+      ]
+    },
+    "ObservedScopes": [
+      "domain-1"
+    ],
+    "SourceFrames": [
+      {
+        "FrameRef": "encoder-frame-1",
+        "OwnerID": "encoder-1",
+        "Scope": "domain-1",
+        "SourceRevision": 1
+      }
+    ],
+    "Coverage": {
+      "State": "OBSERVED",
+      "Value": "LOCAL_BOUNDARIES_ONLY",
+      "Observation": {
+        "FrameRef": "encoder-frame-1",
+        "OwnerID": "encoder-1",
+        "Scope": "domain-1",
+        "SourceRevision": 1
+      }
+    }
+  }
+}

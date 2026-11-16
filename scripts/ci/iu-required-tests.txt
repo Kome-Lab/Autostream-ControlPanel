@@ -1,0 +1,19 @@
+# Reviewed package/root inventory: WS1 approval and WS2 Stop/Cover product paths.
+# Each root must actually run and pass once in Native, CGO-free and Race JSON.
+github.com/example/autostream-control-panel/internal/bootstrapapproval TestIUWS1ApprovalStructuralBoundary
+github.com/example/autostream-control-panel/internal/bootstrapapproval TestIUWS1ApprovalPrivateParticipantRequired
+github.com/example/autostream-control-panel/internal/bootstrapapproval TestIUWS1ApprovalImmutableClone
+github.com/example/autostream-control-panel/internal/v3authorization TestIUWS1ExplicitCompositionRequired
+github.com/example/autostream-control-panel/internal/v3authorization TestIUWS1ApprovalSameTransactionHTTP
+github.com/example/autostream-control-panel/internal/v3authorization TestIUWS1ApprovalBindingAndCeilingRejections
+github.com/example/autostream-control-panel/internal/v3authorization TestIUWS1ApprovalTwoServersDoubleConsumption
+github.com/example/autostream-control-panel/internal/v3authorization TestIUWS1ApprovalRollbackAndCommitUnknown
+github.com/example/autostream-control-panel/internal/v3authorization TestIUWS1ApprovalNoSecretTransport
+github.com/example/autostream-control-panel/internal/v3authorization TestIUWS1ApprovalRestartProcessInspect
+github.com/example/autostream-control-panel/internal/httpapi TestIUWS2StopLookupHTTPBoundaries
+github.com/example/autostream-control-panel/internal/httpapi TestIUWS2CoverHTTPConvergenceHumanAudit
+github.com/example/autostream-control-panel/internal/httpapi TestIUWS2CoverHTTPRefusalRaces
+github.com/example/autostream-control-panel/internal/httpapi TestIUWS2CoverOutcomeBindingRefusals
+github.com/example/autostream-control-panel/internal/httpapi TestIUWS2CoverHTTPAckLossNoResend
+github.com/example/autostream-control-panel/internal/videocover TestIUWS2CoverObservationAuditRollback
+github.com/example/autostream-control-panel/internal/store TestIUWS2CoverSQLTransaction

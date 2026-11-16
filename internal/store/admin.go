@@ -97,8 +97,15 @@ func ValidateUserStatusActor(actor, target User) error {
 	return nil
 }
 
-func (s MariaDBAuthStore) ListUsers(ctx context.Context) ([]User, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, username, COALESCE(email, ''), password_hash, status, last_login_at, last_login_ip FROM users ORDER BY username`)
+func (s MariaDBAuthStore) identityListUsers(ctx context.Context) ([]User, error) {
+	if s.identityGate != nil {
+		return s.identityListUsersJoined(ctx)
+	}
+	identityQ, identityErr := s.identitySQL(ctx)
+	if identityErr != nil {
+		return nil, identityErr
+	}
+	rows, err := identityQ.QueryContext(ctx, `SELECT id, username, COALESCE(email, ''), password_hash, status, last_login_at, last_login_ip FROM users ORDER BY username`)
 	if err != nil {
 		return nil, err
 	}
@@ -115,7 +122,7 @@ func (s MariaDBAuthStore) ListUsers(ctx context.Context) ([]User, error) {
 	return users, rows.Err()
 }
 
-func (s MariaDBAuthStore) CreateUser(ctx context.Context, username, email, temporaryPassword string, roleIDs []string) (User, error) {
+func (s MariaDBAuthStore) identityCreateUser(ctx context.Context, username, email, temporaryPassword string, roleIDs []string) (User, error) {
 	hash, err := security.HashPassword(temporaryPassword)
 	if err != nil {
 		return User{}, err
@@ -124,7 +131,7 @@ func (s MariaDBAuthStore) CreateUser(ctx context.Context, username, email, tempo
 	if err != nil {
 		return User{}, err
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.identityBeginSQL(ctx, nil)
 	if err != nil {
 		return User{}, err
 	}
@@ -139,13 +146,23 @@ func (s MariaDBAuthStore) CreateUser(ctx context.Context, username, email, tempo
 			return User{}, err
 		}
 	}
+	var joinedReadback User
+	if s.identityGate != nil {
+		joinedReadback, err = s.identityGetUser(ctx, user.ID)
+		if err != nil {
+			return User{}, err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return User{}, err
 	}
-	return s.GetUser(ctx, user.ID)
+	if s.identityGate != nil {
+		return joinedReadback, nil
+	}
+	return s.identityGetUser(ctx, user.ID)
 }
 
-func (s MariaDBAuthStore) CreateOAuthUser(ctx context.Context, username, email string, roleIDs []string) (User, error) {
+func (s MariaDBAuthStore) identityCreateOAuthUser(ctx context.Context, username, email string, roleIDs []string) (User, error) {
 	email, err := normalizeUserEmail(email)
 	if err != nil {
 		return User{}, err
@@ -158,7 +175,7 @@ func (s MariaDBAuthStore) CreateOAuthUser(ctx context.Context, username, email s
 	if err != nil {
 		return User{}, err
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.identityBeginSQL(ctx, nil)
 	if err != nil {
 		return User{}, err
 	}
@@ -173,18 +190,47 @@ func (s MariaDBAuthStore) CreateOAuthUser(ctx context.Context, username, email s
 			return User{}, err
 		}
 	}
+	var joinedReadback User
+	if s.identityGate != nil {
+		joinedReadback, err = s.identityGetUser(ctx, user.ID)
+		if err != nil {
+			return User{}, err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return User{}, err
 	}
-	return s.GetUser(ctx, user.ID)
+	if s.identityGate != nil {
+		return joinedReadback, nil
+	}
+	return s.identityGetUser(ctx, user.ID)
 }
 
-func (s MariaDBAuthStore) UpdateUser(ctx context.Context, id string, patch UserPatch) (User, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
+func (s MariaDBAuthStore) identityUpdateUser(ctx context.Context, id string, patch UserPatch) (User, error) {
+	tx, err := s.identityBeginSQL(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return User{}, err
 	}
 	defer tx.Rollback()
+	if patch.RoleIDs != nil {
+		target, err := lockLastAdminUser(ctx, tx, id)
+		if err != nil {
+			return User{}, err
+		}
+		retainsSuper := false
+		for _, roleID := range patch.RoleIDs {
+			var name string
+			if err := tx.QueryRowContext(ctx, "SELECT name FROM roles WHERE id=?", roleID).Scan(&name); err != nil {
+				return User{}, err
+			}
+			retainsSuper = retainsSuper || name == "super_admin"
+		}
+		if target.super && target.status == "active" && !retainsSuper {
+			if err := requireAnotherActiveSuperAdmin(ctx, tx); err != nil {
+				return User{}, err
+			}
+		}
+	}
 	if patch.Username != "" {
 		if _, err := tx.ExecContext(ctx, `UPDATE users SET username = ?, updated_at = ? WHERE id = ?`, patch.Username, time.Now().UTC(), id); err != nil {
 			return User{}, err
@@ -209,27 +255,39 @@ func (s MariaDBAuthStore) UpdateUser(ctx context.Context, id string, patch UserP
 			}
 		}
 	}
-	if err := tx.Commit(); err != nil {
-		return User{}, err
-	}
-	return s.GetUser(ctx, id)
-}
-
-func (s MariaDBAuthStore) SetUserStatus(ctx context.Context, id, status string) (User, error) {
-	hasSuperAdmin, err := s.UserHasRole(ctx, id, "super_admin")
-	if err != nil {
-		return User{}, err
-	}
-	if hasSuperAdmin && (status == "disabled" || status == "locked") {
-		count, err := s.CountActiveSuperAdmins(ctx)
+	var joinedReadback User
+	if s.identityGate != nil {
+		joinedReadback, err = s.identityGetUser(ctx, id)
 		if err != nil {
 			return User{}, err
 		}
-		if count <= 1 {
-			return User{}, ErrLastSuperAdmin
+	}
+	if err := commitUserAdministration(tx); err != nil {
+		return User{}, err
+	}
+	if s.identityGate != nil {
+		return joinedReadback, nil
+	}
+	return s.identityGetUser(ctx, id)
+}
+
+func (s MariaDBAuthStore) identitySetUserStatus(ctx context.Context, id, status string) (User, error) {
+	tx, err := s.identityBeginSQL(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		return User{}, err
+	}
+	defer tx.Rollback()
+	target, err := lockLastAdminUser(ctx, tx, id)
+	if err != nil {
+		return User{}, err
+	}
+	// Retain the legacy disabled/locked refusal, including inactive Role holders.
+	if target.super && (status == "disabled" || status == "locked" || (target.status == "active" && status != "active")) {
+		if err := requireAnotherActiveSuperAdmin(ctx, tx); err != nil {
+			return User{}, err
 		}
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE users SET status = ?, updated_at = ? WHERE id = ?`, status, time.Now().UTC(), id)
+	result, err := tx.ExecContext(ctx, `UPDATE users SET status = ?, updated_at = ? WHERE id = ?`, status, time.Now().UTC(), id)
 	if err != nil {
 		return User{}, err
 	}
@@ -240,28 +298,37 @@ func (s MariaDBAuthStore) SetUserStatus(ctx context.Context, id, status string) 
 	if affected == 0 {
 		return User{}, ErrNotFound
 	}
-	return s.GetUser(ctx, id)
+	var joinedReadback User
+	if s.identityGate != nil {
+		joinedReadback, err = s.identityGetUser(ctx, id)
+		if err != nil {
+			return User{}, err
+		}
+	}
+	if err := commitUserAdministration(tx); err != nil {
+		return User{}, err
+	}
+	if s.identityGate != nil {
+		return joinedReadback, nil
+	}
+	return s.identityGetUser(ctx, id)
 }
 
-func (s MariaDBAuthStore) DeleteUser(ctx context.Context, id string) error {
-	user, err := s.GetUser(ctx, id)
-	if err != nil {
-		return err
-	}
-	if hasRole(user, "super_admin") && user.Status == "active" {
-		count, err := s.CountActiveSuperAdmins(ctx)
-		if err != nil {
-			return err
-		}
-		if count <= 1 {
-			return ErrLastSuperAdmin
-		}
-	}
-	tx, err := s.db.BeginTx(ctx, nil)
+func (s MariaDBAuthStore) identityDeleteUser(ctx context.Context, id string) error {
+	tx, err := s.identityBeginSQL(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	target, err := lockLastAdminUser(ctx, tx, id)
+	if err != nil {
+		return err
+	}
+	if target.super && target.status == "active" {
+		if err := requireAnotherActiveSuperAdmin(ctx, tx); err != nil {
+			return err
+		}
+	}
 	for _, query := range []string{
 		`DELETE FROM sessions WHERE user_id = ?`,
 		`DELETE FROM oauth_user_links WHERE user_id = ?`,
@@ -287,15 +354,29 @@ func (s MariaDBAuthStore) DeleteUser(ctx context.Context, id string) error {
 	if affected == 0 {
 		return ErrNotFound
 	}
-	return tx.Commit()
+	return commitUserAdministration(tx)
 }
 
-func (s MariaDBAuthStore) ResetPassword(ctx context.Context, id, temporaryPassword string) error {
+func (s MariaDBAuthStore) identityResetPassword(ctx context.Context, id, temporaryPassword string) error {
 	hash, err := security.HashPassword(temporaryPassword)
 	if err != nil {
 		return err
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE users SET password_hash = ?, status = 'pending_password_change', updated_at = ? WHERE id = ?`, hash, time.Now().UTC(), id)
+	tx, err := s.identityBeginSQL(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	target, err := lockLastAdminUser(ctx, tx, id)
+	if err != nil {
+		return err
+	}
+	if target.super && target.status == "active" {
+		if err := requireAnotherActiveSuperAdmin(ctx, tx); err != nil {
+			return err
+		}
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE users SET password_hash = ?, status = 'pending_password_change', updated_at = ? WHERE id = ?`, hash, time.Now().UTC(), id)
 	if err != nil {
 		return err
 	}
@@ -306,26 +387,41 @@ func (s MariaDBAuthStore) ResetPassword(ctx context.Context, id, temporaryPasswo
 	if affected == 0 {
 		return ErrNotFound
 	}
-	return nil
+	return commitUserAdministration(tx)
 }
 
-func (s MariaDBAuthStore) CountActiveSuperAdmins(ctx context.Context) (int, error) {
+func (s MariaDBAuthStore) identityCountActiveSuperAdmins(ctx context.Context) (int, error) {
+	identityQ, identityErr := s.identitySQL(ctx)
+	if identityErr != nil {
+		return 0, identityErr
+	}
 	var count int
-	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users u INNER JOIN user_roles ur ON ur.user_id = u.id INNER JOIN roles r ON r.id = ur.role_id WHERE r.name = 'super_admin' AND u.status = 'active'`).Scan(&count)
+	err := identityQ.QueryRowContext(ctx, `SELECT COUNT(*) FROM users u INNER JOIN user_roles ur ON ur.user_id = u.id INNER JOIN roles r ON r.id = ur.role_id WHERE r.name = 'super_admin' AND u.status = 'active'`).Scan(&count)
 	return count, err
 }
 
-func (s MariaDBAuthStore) UserHasRole(ctx context.Context, userID, roleName string) (bool, error) {
+func (s MariaDBAuthStore) identityUserHasRole(ctx context.Context, userID, roleName string) (bool, error) {
+	identityQ, identityErr := s.identitySQL(ctx)
+	if identityErr != nil {
+		return false, identityErr
+	}
 	var got string
-	err := s.db.QueryRowContext(ctx, `SELECT r.name FROM roles r INNER JOIN user_roles ur ON ur.role_id = r.id WHERE ur.user_id = ? AND r.name = ?`, userID, roleName).Scan(&got)
+	err := identityQ.QueryRowContext(ctx, `SELECT r.name FROM roles r INNER JOIN user_roles ur ON ur.role_id = r.id WHERE ur.user_id = ? AND r.name = ?`, userID, roleName).Scan(&got)
 	if err == sql.ErrNoRows {
 		return false, nil
 	}
 	return err == nil, err
 }
 
-func (s MariaDBAuthStore) ListRoles(ctx context.Context) ([]Role, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, name, created_at FROM roles ORDER BY name`)
+func (s MariaDBAuthStore) identityListRoles(ctx context.Context) ([]Role, error) {
+	if s.identityGate != nil {
+		return s.identityListRolesJoined(ctx)
+	}
+	identityQ, identityErr := s.identitySQL(ctx)
+	if identityErr != nil {
+		return nil, identityErr
+	}
+	rows, err := identityQ.QueryContext(ctx, `SELECT id, name, created_at FROM roles ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -342,13 +438,13 @@ func (s MariaDBAuthStore) ListRoles(ctx context.Context) ([]Role, error) {
 	return roles, rows.Err()
 }
 
-func (s MariaDBAuthStore) CreateRole(ctx context.Context, name string, permissions []string) (Role, error) {
+func (s MariaDBAuthStore) identityCreateRole(ctx context.Context, name string, permissions []string) (Role, error) {
 	if err := validatePermissions(permissions); err != nil {
 		return Role{}, err
 	}
 	now := time.Now().UTC()
 	role := Role{ID: newUUID(), Name: name, Permissions: permissions, CreatedAt: now}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.identityBeginSQL(ctx, nil)
 	if err != nil {
 		return Role{}, err
 	}
@@ -364,24 +460,31 @@ func (s MariaDBAuthStore) CreateRole(ctx context.Context, name string, permissio
 	return role, tx.Commit()
 }
 
-func (s MariaDBAuthStore) GetRole(ctx context.Context, id string) (Role, error) {
+func (s MariaDBAuthStore) identityGetRole(ctx context.Context, id string) (Role, error) {
+	identityQ, identityErr := s.identitySQL(ctx)
+	if identityErr != nil {
+		return Role{}, identityErr
+	}
 	var role Role
-	err := s.db.QueryRowContext(ctx, `SELECT id, name, created_at FROM roles WHERE id = ?`, id).Scan(&role.ID, &role.Name, &role.CreatedAt)
+	err := identityQ.QueryRowContext(ctx, `SELECT id, name, created_at FROM roles WHERE id = ?`, id).Scan(&role.ID, &role.Name, &role.CreatedAt)
 	if err == sql.ErrNoRows {
 		return Role{}, ErrNotFound
 	}
 	if err != nil {
 		return Role{}, err
 	}
-	role.Permissions, _ = s.rolePermissions(ctx, role.ID)
+	role.Permissions, err = s.rolePermissions(ctx, role.ID)
+	if err != nil && s.identityGate != nil {
+		return Role{}, err
+	}
 	return role, nil
 }
 
-func (s MariaDBAuthStore) UpdateRole(ctx context.Context, id, name string, permissions []string) (Role, error) {
+func (s MariaDBAuthStore) identityUpdateRole(ctx context.Context, id, name string, permissions []string) (Role, error) {
 	if err := validatePermissions(permissions); err != nil {
 		return Role{}, err
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.identityBeginSQL(ctx, nil)
 	if err != nil {
 		return Role{}, err
 	}
@@ -397,21 +500,31 @@ func (s MariaDBAuthStore) UpdateRole(ctx context.Context, id, name string, permi
 			return Role{}, err
 		}
 	}
+	var joinedReadback Role
+	if s.identityGate != nil {
+		joinedReadback, err = s.identityGetRole(ctx, id)
+		if err != nil {
+			return Role{}, err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return Role{}, err
 	}
-	return s.GetRole(ctx, id)
+	if s.identityGate != nil {
+		return joinedReadback, nil
+	}
+	return s.identityGetRole(ctx, id)
 }
 
-func (s MariaDBAuthStore) DeleteRole(ctx context.Context, id string) error {
-	role, err := s.GetRole(ctx, id)
+func (s MariaDBAuthStore) identityDeleteRole(ctx context.Context, id string) error {
+	role, err := s.identityGetRole(ctx, id)
 	if err != nil {
 		return err
 	}
 	if role.Name == "super_admin" {
 		return ErrLastSuperAdmin
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.identityBeginSQL(ctx, nil)
 	if err != nil {
 		return err
 	}
@@ -429,7 +542,11 @@ func (s MariaDBAuthStore) DeleteRole(ctx context.Context, id string) error {
 }
 
 func (s MariaDBAuthStore) rolePermissions(ctx context.Context, roleID string) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT permission FROM role_permissions WHERE role_id = ? ORDER BY permission`, roleID)
+	identityQ, identityErr := s.identitySQL(ctx)
+	if identityErr != nil {
+		return nil, identityErr
+	}
+	rows, err := identityQ.QueryContext(ctx, `SELECT permission FROM role_permissions WHERE role_id = ? ORDER BY permission`, roleID)
 	if err != nil {
 		return nil, err
 	}

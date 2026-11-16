@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	lf "github.com/example/autostream-control-panel/internal/lifecyclefoundation"
 	"github.com/example/autostream-control-panel/internal/mediaassets"
 	"github.com/example/autostream-control-panel/internal/security"
 	"github.com/example/autostream-control-panel/internal/servicecall"
@@ -375,42 +376,63 @@ func (s *Server) getVideoCoverState(w http.ResponseWriter, r *http.Request) {
 		writeVideoCoverError(w, err)
 		return
 	}
+	if state.StreamID != r.PathValue("id") {
+		writeJSON(w, http.StatusConflict, map[string]string{"code": "video_cover_target_mismatch"})
+		return
+	}
+	if wantsLifecycleOutcome(r) && state.Status == "confirming" {
+		if _, bound := s.coverLifecycleBinding(r.Context(), state); !bound {
+			w.Header().Set(lifecycleResultHeader, "NEEDS_EVIDENCE")
+			writeJSON(w, http.StatusConflict, map[string]string{"code": "lifecycle_outcome_binding_unavailable"})
+			return
+		}
+	}
 	if state.Status == "confirming" && state.LastIdempotencyKey != "" {
+		if s.identityLifecycleRequired() {
+			writeCoverObservationFailure(w, lf.ErrHeld)
+			return
+		}
 		if reconciler, ok := s.videoCoverDispatcher.(servicecall.VideoCoverReconciler); ok {
 			assignments, lookupErr := s.streamAssignments(r.Context(), state.StreamID)
 			encoder, found := primaryVideoCoverEncoder(assignments)
 			if lookupErr == nil && found && reportedBool(encoder, servicecall.CapabilityLiveVideoCoverV1) {
+				if wantsLifecycleOutcome(r) {
+					binding, bound := s.coverLifecycleBinding(r.Context(), state)
+					_, backendBound := coverBackendBoundary(binding, state.StreamID, encoder.ServiceID)
+					if !bound || !backendBound {
+						w.Header().Set(lifecycleResultHeader, "NEEDS_EVIDENCE")
+						writeJSON(w, http.StatusConflict, map[string]string{"code": "lifecycle_outcome_binding_unavailable"})
+						return
+					}
+				}
 				requested := state
+				// Provider observation is deliberately outside every local SQL or
+				// memory lock. The record owner rechecks Human identity, current
+				// permission and the exact generation/action before one commit.
 				result := reconciler.ReconcileVideoCover(r.Context(), encoder, servicecall.VideoCoverReconcileRequest{StreamID: state.StreamID, JobGeneration: state.JobGeneration, Revision: state.DesiredRevision, Active: state.DesiredActive, AssetVariantID: state.AssetVariantID})
-				if result.Applied {
-					if confirmed, recordErr := s.videoCovers.RecordApplied(r.Context(), state.StreamID, state.JobGeneration, state.LastIdempotencyKey, state.DesiredActive, state.DesiredRevision); recordErr == nil {
-						state = confirmed
-						action := "streams.video_cover.show"
-						if !requested.DesiredActive {
-							action = "streams.video_cover.hide"
-						}
-						if confirmed.RecordedAction != nil {
-							s.writeSystemAudit(r.Context(), store.AuditEvent{Action: action, ResourceType: "stream", ResourceID: requested.StreamID, Result: "success", Metadata: map[string]any{"status": "applied", "reconciled": true, "desired_revision": requested.DesiredRevision, "job_generation": requested.JobGeneration}})
-						}
+				localKnown := false
+				if !result.Ambiguous && (result.Applied || result.SafeErrorCode != "") {
+					confirmed, recordErr := s.recordObservedCover(r, requested, result)
+					s.writeCoverLifecycleOutcome(w, r, requested, encoder, result, recordErr == nil)
+					if recordErr != nil {
+						writeCoverObservationFailure(w, recordErr)
+						return
 					}
-				} else if !result.Ambiguous && result.SafeErrorCode != "" {
-					if failed, recordErr := s.videoCovers.RecordFailed(r.Context(), requested.StreamID, requested.JobGeneration, requested.LastIdempotencyKey, result.SafeErrorCode); recordErr == nil {
-						state = failed
-						if failed.RecordedAction != nil {
-							action := "streams.video_cover.show"
-							if !requested.DesiredActive {
-								action = "streams.video_cover.hide"
-							}
-							s.writeSystemAudit(r.Context(), store.AuditEvent{Action: action, ResourceType: "stream", ResourceID: requested.StreamID, Result: "failure", Metadata: map[string]any{"status": "failed", "reconciled": true, "desired_revision": requested.DesiredRevision, "job_generation": requested.JobGeneration, "error_code": failed.RecordedAction.SafeErrorCode}})
-						}
-					}
+					state, localKnown = confirmed, true
+				}
+				if !localKnown {
+					s.writeCoverLifecycleOutcome(w, r, requested, encoder, result, false)
 				}
 			}
 		}
 	}
+	if wantsLifecycleOutcome(r) && w.Header().Get(lifecycleResultHeader) == "" {
+		// Terminal legacy state does not contain the original Attempt/Binding.
+		// Never synthesize a qualified CC08 from a status string alone.
+		w.Header().Set(lifecycleResultHeader, "NEEDS_EVIDENCE")
+	}
 	writeJSON(w, http.StatusOK, state)
 }
-
 func (s *Server) updateVideoCoverState(w http.ResponseWriter, r *http.Request) {
 	var request videocover.ActionRequest
 	if decodeSingleJSON(r, &request) != nil || videocover.ValidateRequest(request) != nil {

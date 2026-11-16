@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	lf "github.com/example/autostream-control-panel/internal/lifecyclefoundation"
 	"log"
 	"net/http"
 	"os"
@@ -32,6 +33,9 @@ func main() {
 	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "version") {
 		fmt.Printf("autostream-control-panel %s\ncommit: %s\nbuild_date: %s\n", version.Current(), version.Commit, version.BuildDate)
 		return
+	}
+	if err := lf.ProductStartup(os.Getenv("AUTOSTREAM_L2_REQUIRED")); err != nil {
+		log.Fatal("lifecycle gate required but no qualified product provider is configured")
 	}
 	runCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

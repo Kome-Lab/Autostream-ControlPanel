@@ -39,11 +39,13 @@ export async function cacheStreamActionResponse(queryClient: QueryClient, intent
   });
 }
 
-export async function readStreamStopOutcome(queryClient: QueryClient, intent: StreamActionIntent) {
+export async function readStreamStopOutcome(queryClient: QueryClient, intent: StreamActionIntent, requestID?: string) {
   if (intent.id !== "STR-05" || !intent.stream?.id || !intent.stream.updated_at) return undefined;
+  if (requestID !== undefined && !/^[A-Za-z0-9_.:-]{1,80}$/.test(requestID)) return undefined;
+  const correlation = requestID ? `&request_id=${encodeURIComponent(requestID)}` : "";
   for (let attempt = 0; attempt < 3; attempt++) {
     if (attempt) await new Promise((resolve) => setTimeout(resolve, attempt * 250));
-    const value = await apiGet<unknown>(`/streams/${encodeURIComponent(intent.stream.id)}/stop-outcome?expected_updated_at=${encodeURIComponent(intent.stream.updated_at)}`, AbortSignal.timeout(5000));
+    const value = await apiGet<unknown>(`/streams/${encodeURIComponent(intent.stream.id)}/stop-outcome?expected_updated_at=${encodeURIComponent(intent.stream.updated_at)}${correlation}`, AbortSignal.timeout(5000));
     const stream = streamActionResponseStream(value, intent.stream.id);
     if (isConfirmedStreamStopOutcome(value, intent)) {
       await cacheStreamActionResponse(queryClient, intent, value);
@@ -158,11 +160,11 @@ export async function refreshStreamActionAuthority(queryClient: QueryClient) {
   return true;
 }
 
-export async function mutateStreamAction(request: StreamActionRequest & Readonly<{ signal: AbortSignal }>) {
+export async function mutateStreamAction(request: StreamActionRequest & Readonly<{ signal: AbortSignal; requestID?: string }>) {
   if (request.signal.aborted) throw new DOMException("Cancelled", "AbortError");
   if (request.method === "DELETE") return apiDelete<unknown>(request.path, request.signal);
   if (request.method === "PUT") return apiPut<unknown>(request.path, request.body, request.signal);
-  return apiPost<unknown>(request.path, request.body, request.signal);
+  return apiPost<unknown>(request.path, request.body, request.signal, request.requestID ? { requestID: request.requestID } : undefined);
 }
 
 function streamFingerprintFields(stream: Stream) {

@@ -15,6 +15,15 @@ import (
 //go:embed migrations/*.sql
 var embeddedMigrations embed.FS
 
+const manualAutoStartHoldMigration = "094_manual_auto_start_hold.sql"
+
+// ManualAutoStartHoldMigrationSQL exposes the explicit schema artifact for
+// separately authorized isolated migration tests. Normal startup never applies it.
+func ManualAutoStartHoldMigrationSQL() (string, error) {
+	body, err := embeddedMigrations.ReadFile("migrations/" + manualAutoStartHoldMigration)
+	return string(body), err
+}
+
 func RunEmbeddedMigrations(ctx context.Context, db *sql.DB) error {
 	if err := prepareNodeSelectionActivationJournal(ctx, db); err != nil {
 		return err
@@ -47,6 +56,9 @@ func runMigrationsOS(ctx context.Context, db *sql.DB, dir string) error {
 	sort.Strings(files)
 	for _, file := range files {
 		id := filepath.Base(file)
+		if id == manualAutoStartHoldMigration {
+			continue
+		}
 		applied, err := migrationApplied(ctx, db, id)
 		if err != nil {
 			return err
@@ -81,6 +93,9 @@ func runMigrationsFS(ctx context.Context, db *sql.DB, source fs.FS, dir string) 
 			continue
 		}
 		id := entry.Name()
+		if id == manualAutoStartHoldMigration {
+			continue
+		}
 		applied, err := migrationApplied(ctx, db, id)
 		if err != nil {
 			return err

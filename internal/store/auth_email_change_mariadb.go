@@ -10,6 +10,9 @@ import (
 )
 
 func (s MariaDBAuthStore) CreateEmailChangeChallenge(ctx context.Context, userID, email string, ttl time.Duration) (EmailChangeChallenge, error) {
+	if err := s.identityFactorUnavailable(ctx); err != nil {
+		return EmailChangeChallenge{}, err
+	}
 	challenge, err := newEmailChangeChallenge(userID, email, ttl)
 	if err != nil {
 		return EmailChangeChallenge{}, err
@@ -23,6 +26,9 @@ func (s MariaDBAuthStore) CreateEmailChangeChallenge(ctx context.Context, userID
 }
 
 func (s MariaDBAuthStore) GetEmailChangeChallenge(ctx context.Context, rawToken string) (EmailChangeChallenge, error) {
+	if err := s.identityFactorUnavailable(ctx); err != nil {
+		return EmailChangeChallenge{}, err
+	}
 	hash := security.HashToken(strings.TrimSpace(rawToken))
 	var challenge EmailChangeChallenge
 	challenge.Token = rawToken
@@ -42,6 +48,9 @@ func (s MariaDBAuthStore) GetEmailChangeChallenge(ctx context.Context, rawToken 
 }
 
 func (s MariaDBAuthStore) ConsumeEmailChangeChallenge(ctx context.Context, rawToken string) (EmailChangeChallenge, error) {
+	if err := s.identityFactorUnavailable(ctx); err != nil {
+		return EmailChangeChallenge{}, err
+	}
 	hash := security.HashToken(strings.TrimSpace(rawToken))
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -71,6 +80,9 @@ func (s MariaDBAuthStore) ConsumeEmailChangeChallenge(ctx context.Context, rawTo
 }
 
 func (s MariaDBAuthStore) deleteEmailChangeChallenge(ctx context.Context, rawToken string) error {
+	if err := s.identityFactorUnavailable(ctx); err != nil {
+		return err
+	}
 	_, err := s.db.ExecContext(ctx, `DELETE FROM email_change_challenges WHERE id = ?`, security.HashToken(strings.TrimSpace(rawToken)))
 	return err
 }
