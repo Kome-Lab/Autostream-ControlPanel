@@ -937,6 +937,16 @@
           "new": "      const before = inversePollingCurrentRecord(record, inverseManualHoldGenesis(path, current), io);\n"
         }
       ]
+    },
+    "web/tests/helpers/streams-start-readiness-handler-guard.mts": {
+      "before_sha256": "e5a00e42060c9779eb21154b310284d19814f4380da5b83e85928f6f98a79112",
+      "after_sha256": "aea4d31441746afba1b3b898b6868fbd6f7a7eb8aae7946c4a842b2cca332feb",
+      "edits": [
+        {
+          "old": "const guardedMutation = \"const value = await dependencies.mutate(Object.freeze({ ...requestValue, signal: operation.abort.signal }));\";",
+          "new": "const guardedMutation = \"const value = await dependencies.mutate(Object.freeze({ ...requestValue, signal: operation.abort.signal, ...(requestID ? { requestID } : {}) }));\";"
+        }
+      ]
     }
   }
 }
