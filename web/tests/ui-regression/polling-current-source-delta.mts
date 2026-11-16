@@ -132,6 +132,48 @@ export function inversePollingCurrentRecord(record: PollingRecord, current: Buff
   return restored;
 }
 
+// IU-WS2-10 adds Hold genesis without changing any historical polling/status
+// source oracle. Remove only these reviewed exact bytes before its strict replay.
+const manualHoldGenesisDeltas = [
+  {
+    "path": "internal/store/memory.go",
+    "changes": [
+      {
+        "after": "\tautoStartHolds                             map[string]AutoStartHold\n\tautoStartHoldHistory                       map[string][]AutoStartHoldHistory\n\tautoStartHoldAttempts                      map[string]AutoStartHoldAttempt\n\tautoStartAdmissions                        map[string]AutoStartAdmission\n\tautoStartClaimRequests                     map[string]StartClaimRequestOriginal\n",
+        "before": ""
+      },
+      {
+        "after": "\ts.streams[stream.ID] = stream\n\ts.initializeAutoStartHoldLocked(stream)\n\ts.mu.Unlock()\n",
+        "before": "\ts.streams[stream.ID] = stream\n\ts.mu.Unlock()\n"
+      }
+    ]
+  },
+  {
+    "path": "internal/store/stream_queries_mariadb.go",
+    "changes": [
+      {
+        "after": "\t\"time\"\n\n\tlf \"github.com/example/autostream-control-panel/internal/lifecyclefoundation\"\n",
+        "before": "\t\"time\"\n"
+      },
+      {
+        "after": "func (s MariaDBStreamStore) CreateStream(ctx context.Context, name string) (Stream, error) {\n\tnow := time.Now().UTC()\n\tstream := Stream{ID: newUUID(), Name: name, Status: \"created\", CreatedAt: now, UpdatedAt: now, SettingsRevision: UnconfiguredStreamSettingsRevision}\n\ttx, err := lf.BeginSQL(ctx, s.db, nil)\n\tif err != nil {\n\t\treturn Stream{}, err\n\t}\n\tdefer tx.Rollback()\n\tinstalled, err := autoStartHoldSchemaInstalled(ctx, tx)\n\tif err != nil {\n\t\treturn Stream{}, err\n\t}\n\tif _, err = tx.ExecContext(ctx, `INSERT INTO streams (id, name, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`, stream.ID, stream.Name, stream.Status, stream.CreatedAt, stream.UpdatedAt); err != nil {\n\t\treturn Stream{}, err\n\t}\n\tif installed {\n\t\tif err := initializeAutoStartHoldSQL(ctx, tx, stream); err != nil {\n\t\t\treturn Stream{}, err\n\t\t}\n\t}\n\tif err = tx.Commit(); err != nil {\n\t\treturn Stream{}, holdAttemptError(err)\n\t}\n\treturn stream, nil\n}\n",
+        "before": "func (s MariaDBStreamStore) CreateStream(ctx context.Context, name string) (Stream, error) {\n\tnow := time.Now().UTC()\n\tstream := Stream{ID: newUUID(), Name: name, Status: \"created\", CreatedAt: now, UpdatedAt: now, SettingsRevision: UnconfiguredStreamSettingsRevision}\n\t_, err := s.db.ExecContext(ctx, `INSERT INTO streams (id, name, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`, stream.ID, stream.Name, stream.Status, stream.CreatedAt, stream.UpdatedAt)\n\treturn stream, err\n}\n"
+      }
+    ]
+  }
+] as const;
+
+function inverseManualHoldGenesis(path: string, current: Buffer): Buffer {
+  const delta = manualHoldGenesisDeltas.find(candidate => candidate.path === path);
+  if (!delta) return current;
+  let text = current.toString("utf8");
+  for (const change of delta.changes) {
+    assert.equal(text.split(change.after).length, 2, "polling IU-WS2-10 source digest: exact unique Hold genesis insertion required");
+    text = text.replace(change.after, () => change.before);
+  }
+  return Buffer.from(text, "utf8");
+}
+
 export function createPollingCurrentAdapter(root: string, overrides: Partial<PollingSourceIO> = {}) {
   const io = pollingCurrentIO(root, overrides);
   return {
@@ -139,7 +181,7 @@ export function createPollingCurrentAdapter(root: string, overrides: Partial<Pol
       if (!pollingCurrentPaths.some(listed => listed === path)) return current;
       const contract = assertPollingCurrentContract(io.raw(pollingCurrentFixturePath));
       const record = contract.records.find(candidate => candidate.path === path)!;
-      const before = inversePollingCurrentRecord(record, current, io);
+      const before = inversePollingCurrentRecord(record, inverseManualHoldGenesis(path, current), io);
       assert.ok(before, "polling introduced source has no historical content");
       return before;
     },
